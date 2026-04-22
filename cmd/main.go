@@ -80,6 +80,12 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	var collectorImage string
+	var ringMaxEvents int
+	flag.StringVar(&collectorImage, "collector-image", controller.DefaultCollectorImage,
+		"Image for the generic collector sidecar injected into every HarnessRun Pod.")
+	flag.IntVar(&ringMaxEvents, "recent-events-cap", 50,
+		"Maximum entries retained in HarnessRun.status.recentEvents when parsing collector snapshots (ADR-0007).")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -215,8 +221,10 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.HarnessRunReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		CollectorImage: collectorImage,
+		RingMaxEvents:  ringMaxEvents,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HarnessRun")
 		os.Exit(1)

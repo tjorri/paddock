@@ -17,13 +17,17 @@ limitations under the License.
 package controller
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -52,6 +56,16 @@ type HarnessRunReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+
+	// CollectorImage is the image used for the generic collector
+	// sidecar. When empty, DefaultCollectorImage is used.
+	CollectorImage string
+
+	// RingMaxEvents caps status.recentEvents at decode time.
+	// Mirrors the collector's ring-max-events flag (ADR-0007);
+	// the controller trims the parsed list to this count as
+	// belt-and-braces against ConfigMap-side drift. 0 disables.
+	RingMaxEvents int
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=harnessruns,verbs=get;list;watch;create;update;patch;delete
@@ -65,6 +79,8 @@ type HarnessRunReconciler struct {
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile drives a HarnessRun through its lifecycle. See
 // docs/specs/0001-core-v0.1.md §3.3 for the state machine.
@@ -174,12 +190,24 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	})
 	run.Status.WorkspaceRef = ws.Name
 
-	// 4. Materialise prompt ConfigMap.
+	// 4. Materialise prompt ConfigMap + output ConfigMap + collector RBAC.
 	if err := r.ensurePromptConfigMap(ctx, &run); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.ensureOutputConfigMap(ctx, &run); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.ensureCollectorRBAC(ctx, &run); err != nil {
+		return ctrl.Result{}, err
+	}
 
-	// 5. Ensure the Job.
+	// 5. Ingest whatever the collector has already published. Safe to
+	// call pre-Job-creation — it's a no-op until data shows up.
+	if err := r.ingestOutputConfigMap(ctx, &run); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// 6. Ensure the Job.
 	job, err := r.ensureJob(ctx, &run, tpl, ws.Status.PVCName)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -193,7 +221,7 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		ObservedGeneration: run.Generation,
 	})
 
-	// 6. Translate Job phase to HarnessRun phase.
+	// 7. Translate Job phase to HarnessRun phase.
 	jp := jobPhase(job)
 	newPhase := run.Status.Phase
 	completedCond := metav1.Condition{
@@ -251,7 +279,7 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	run.Status.Phase = newPhase
 
-	// 7. Commit status; release workspace on terminal transitions.
+	// 8. Commit status; release workspace on terminal transitions.
 	if isTerminal(newPhase) {
 		if err := r.clearWorkspaceBinding(ctx, ws, run.Name); err != nil {
 			return ctrl.Result{}, err
@@ -464,6 +492,191 @@ func (r *HarnessRunReconciler) resolvePrompt(ctx context.Context, run *paddockv1
 	return "", fmt.Errorf("spec.promptFrom has no source set")
 }
 
+// ensureOutputConfigMap creates the <run>-out ConfigMap the collector
+// writes into (ADR-0005). Owned by the run so cleanup cascades. Empty
+// on create — the collector fills it over the run's lifetime.
+func (r *HarnessRunReconciler) ensureOutputConfigMap(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
+	name := outputCMName(run)
+	var existing corev1.ConfigMap
+	err := r.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: name}, &existing)
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+	desired := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: run.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "paddock",
+				"app.kubernetes.io/component": "harnessrun-output",
+				"paddock.dev/run":             run.Name,
+			},
+		},
+	}
+	if err := controllerutil.SetControllerReference(run, desired, r.Scheme); err != nil {
+		return err
+	}
+	return r.Create(ctx, desired)
+}
+
+// ensureCollectorRBAC provisions a per-run ServiceAccount + Role +
+// RoleBinding granting the collector sidecar get/update access to its
+// owned output ConfigMap. Scoped by resourceName so a compromised
+// collector cannot tamper with other runs' status. All three objects
+// are owned by the HarnessRun for cascade cleanup.
+func (r *HarnessRunReconciler) ensureCollectorRBAC(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
+	saName := collectorSAName(run)
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: run.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "paddock",
+				"app.kubernetes.io/component": "collector",
+				"paddock.dev/run":             run.Name,
+			},
+		},
+	}
+	if err := r.createIfMissing(ctx, sa, run); err != nil {
+		return fmt.Errorf("serviceaccount: %w", err)
+	}
+
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: run.Namespace,
+			Labels:    sa.Labels,
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups:     []string{""},
+				Resources:     []string{"configmaps"},
+				ResourceNames: []string{outputCMName(run)},
+				Verbs:         []string{"get", "update", "patch"},
+			},
+		},
+	}
+	if err := r.createIfMissing(ctx, role, run); err != nil {
+		return fmt.Errorf("role: %w", err)
+	}
+
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: run.Namespace,
+			Labels:    sa.Labels,
+		},
+		Subjects: []rbacv1.Subject{
+			{Kind: "ServiceAccount", Name: saName, Namespace: run.Namespace},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     saName,
+		},
+	}
+	if err := r.createIfMissing(ctx, rb, run); err != nil {
+		return fmt.Errorf("rolebinding: %w", err)
+	}
+	return nil
+}
+
+// createIfMissing is a thin Get+Create helper used by the per-run RBAC
+// reconciliation. Objects carry controller-ref ownership so they
+// cascade with the run.
+func (r *HarnessRunReconciler) createIfMissing(
+	ctx context.Context,
+	obj client.Object,
+	owner *paddockv1alpha1.HarnessRun,
+) error {
+	if err := controllerutil.SetControllerReference(owner, obj, r.Scheme); err != nil {
+		return err
+	}
+	var existing = obj.DeepCopyObject().(client.Object)
+	key := client.ObjectKeyFromObject(obj)
+	err := r.Get(ctx, key, existing)
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+	return r.Create(ctx, obj)
+}
+
+// ingestOutputConfigMap parses the collector's output ConfigMap into
+// run.Status (recentEvents + outputs). Silent no-op when the map or
+// its keys don't exist yet. Called on every reconcile so a ConfigMap
+// update re-enqueues via Owns and the latest ring snapshot appears on
+// the next status commit.
+func (r *HarnessRunReconciler) ingestOutputConfigMap(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
+	var cm corev1.ConfigMap
+	key := client.ObjectKey{Namespace: run.Namespace, Name: outputCMName(run)}
+	if err := r.Get(ctx, key, &cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if data := cm.Data["events.jsonl"]; data != "" {
+		events, err := parseEventsJSONL(data, r.RingMaxEvents)
+		if err != nil {
+			log.FromContext(ctx).V(1).Info("events.jsonl parse error", "err", err)
+		} else {
+			run.Status.RecentEvents = events
+		}
+	}
+	if data := cm.Data["result.json"]; data != "" {
+		out, err := parseResultJSON(data)
+		if err != nil {
+			log.FromContext(ctx).V(1).Info("result.json parse error", "err", err)
+		} else {
+			run.Status.Outputs = out
+		}
+	}
+	return nil
+}
+
+// parseEventsJSONL decodes a \n-separated JSONL ring buffer. Silently
+// drops individual malformed lines — the collector-side ring may have
+// raced a partial write; we'd rather degrade than empty the status.
+func parseEventsJSONL(data string, cap int) ([]paddockv1alpha1.PaddockEvent, error) {
+	scanner := bufio.NewScanner(strings.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 4096), 1<<20) // 1 MiB matches the ConfigMap ceiling
+	var out []paddockv1alpha1.PaddockEvent
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var ev paddockv1alpha1.PaddockEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			continue
+		}
+		out = append(out, ev)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if cap > 0 && len(out) > cap {
+		out = out[len(out)-cap:]
+	}
+	return out, nil
+}
+
+// parseResultJSON decodes the collector's relayed result.json into the
+// status.outputs shape. Unknown fields are ignored (forward-compat).
+func parseResultJSON(data string) (*paddockv1alpha1.HarnessRunOutputs, error) {
+	var out paddockv1alpha1.HarnessRunOutputs
+	if err := json.Unmarshal([]byte(data), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ensureJob builds and creates the backing Job. No-op when one already
 // exists (Job spec is immutable once the HarnessRun spec is).
 func (r *HarnessRunReconciler) ensureJob(
@@ -472,7 +685,13 @@ func (r *HarnessRunReconciler) ensureJob(
 	tpl *resolvedTemplate,
 	pvcName string,
 ) (*batchv1.Job, error) {
-	desired := buildJob(run, tpl, run.Status.WorkspaceRef, pvcName, promptCMName(run))
+	desired := buildJob(run, tpl, run.Status.WorkspaceRef, podSpecInputs{
+		workspacePVC:    pvcName,
+		promptConfigMap: promptCMName(run),
+		outputConfigMap: outputCMName(run),
+		collectorImage:  r.CollectorImage,
+		serviceAccount:  collectorSAName(run),
+	})
 	if err := controllerutil.SetControllerReference(run, desired, r.Scheme); err != nil {
 		return nil, err
 	}
