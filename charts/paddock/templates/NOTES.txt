@@ -1,0 +1,29 @@
+
+Paddock {{ .Chart.AppVersion }} installed into namespace {{ .Release.Namespace }}.
+
+Verify the controller rolled out:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/paddock-controller-manager
+
+Apply the reference echo template + run:
+
+  kubectl apply -f https://raw.githubusercontent.com/paddock-dev/paddock/main/config/samples/paddock_v1alpha1_clusterharnesstemplate.yaml
+  kubectl create ns paddock-demo
+  cat <<EOF | kubectl apply -n paddock-demo -f -
+  apiVersion: paddock.dev/v1alpha1
+  kind: HarnessRun
+  metadata:
+    name: hello
+  spec:
+    templateRef:
+      name: echo-default
+      kind: ClusterHarnessTemplate
+    prompt: "hello paddock"
+  EOF
+
+Watch it run:
+
+  kubectl paddock events hello -n paddock-demo -f
+  kubectl paddock status hello -n paddock-demo
+
+Full docs: https://github.com/paddock-dev/paddock

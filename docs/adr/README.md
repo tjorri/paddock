@@ -19,6 +19,7 @@ Do not use an ADR for routine implementation decisions that the code itself make
 - [ADR-0005 — Collector → controller delivery via an owned ConfigMap](0005-collector-controller-delivery.md)
 - [ADR-0007 — `status.recentEvents` ring buffer is bounded by count and bytes](0007-recent-events-ring-size.md)
 - [ADR-0009 — Sidecar ordering guarantees](0009-sidecar-ordering.md)
+- [ADR-0010 — Pod Security Standards posture](0010-pod-security-standards.md)
 
 ## Conventions
 

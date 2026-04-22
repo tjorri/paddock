@@ -1,0 +1,21 @@
+apiVersion: v2
+name: paddock
+description: Kubernetes-native platform for running headless AI agent harnesses as batch workloads.
+type: application
+# Chart follows the app version; bump together.
+version: 0.1.0
+appVersion: "0.1.0-dev"
+kubeVersion: ">=1.29.0-0"
+keywords:
+  - paddock
+  - ai
+  - agents
+  - harness
+  - kubernetes
+home: https://github.com/paddock-dev/paddock
+sources:
+  - https://github.com/paddock-dev/paddock
+maintainers:
+  - name: Paddock contributors
+annotations:
+  artifacthub.io/prerelease: "true"

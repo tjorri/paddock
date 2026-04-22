@@ -198,6 +198,10 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
 	"$(KUSTOMIZE)" build config/default > dist/install.yaml
 
+.PHONY: helm-chart
+helm-chart: manifests generate kustomize ## Regenerate charts/paddock/ from the kustomize overlay.
+	hack/gen-helm-chart.sh
+
 ##@ Deployment
 
 ifndef ignore-not-found
