@@ -185,6 +185,28 @@ func TestConvertLine_ResultError(t *testing.T) {
 	}
 }
 
+// TestConvertLine_ResultError_BillingShape locks in the exact shape
+// Claude Code 2.1.117 emits for a billing error: subtype="success"
+// is misleading, is_error=true is the authoritative failure flag,
+// and the human message lives on .result (not .error).
+func TestConvertLine_ResultError_BillingShape(t *testing.T) {
+	now := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
+	line := `{"type":"result","subtype":"success","is_error":true,"api_error_status":400,"duration_ms":199,"num_turns":1,"result":"Credit balance is too low","session_id":"s1","total_cost_usd":0}`
+	evs, err := convertLine(line, now)
+	if err != nil {
+		t.Fatalf("convertLine: %v", err)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("events = %d, want 1", len(evs))
+	}
+	if evs[0].Type != "Error" {
+		t.Errorf("type = %q, want Error — subtype=success is misleading; is_error is the authority", evs[0].Type)
+	}
+	if evs[0].Summary != "Credit balance is too low" {
+		t.Errorf("summary = %q — must surface .result, not fall back to generic text", evs[0].Summary)
+	}
+}
+
 func TestConvertLine_UnknownType(t *testing.T) {
 	now := time.Date(2026, 4, 22, 10, 0, 7, 0, time.UTC)
 	evs, err := convertLine(`{"type":"hypothetical_future_type","foo":"bar"}`, now)
