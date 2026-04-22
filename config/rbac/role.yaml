@@ -7,13 +7,7 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - events
-  verbs:
-  - create
-  - patch
-- apiGroups:
-  - ""
-  resources:
+  - configmaps
   - persistentvolumeclaims
   verbs:
   - create
@@ -22,6 +16,21 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - batch
@@ -38,6 +47,16 @@ rules:
 - apiGroups:
   - paddock.dev
   resources:
+  - clusterharnesstemplates
+  - harnesstemplates
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - paddock.dev
+  resources:
+  - harnessruns
   - workspaces
   verbs:
   - create
@@ -50,12 +69,14 @@ rules:
 - apiGroups:
   - paddock.dev
   resources:
+  - harnessruns/finalizers
   - workspaces/finalizers
   verbs:
   - update
 - apiGroups:
   - paddock.dev
   resources:
+  - harnessruns/status
   - workspaces/status
   verbs:
   - get

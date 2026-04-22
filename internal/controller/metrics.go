@@ -22,6 +22,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	batchv1 "k8s.io/api/batch/v1"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
+
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
 
 // Paddock-specific Prometheus metrics. controller-runtime already
@@ -50,12 +52,36 @@ var (
 		},
 		[]string{"from", "to"},
 	)
+
+	// paddock_harnessrun_phase_transitions_total counts HarnessRun
+	// phase transitions. Pairs with _duration_seconds for per-run
+	// diagnostics.
+	harnessRunPhaseTransitionsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "paddock_harnessrun_phase_transitions_total",
+			Help: "Count of HarnessRun phase transitions.",
+		},
+		[]string{"from", "to"},
+	)
+
+	// paddock_harnessrun_duration_seconds observes time from
+	// StartTime to CompletionTime, labelled by the terminal phase.
+	harnessRunDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "paddock_harnessrun_duration_seconds",
+			Help:    "Duration of HarnessRuns from start to terminal state.",
+			Buckets: prometheus.ExponentialBuckets(1, 2, 12), // 1s → ~68min
+		},
+		[]string{"phase"},
+	)
 )
 
 func init() {
 	metrics.Registry.MustRegister(
 		workspaceSeedDurationSeconds,
 		workspacePhaseTransitionsTotal,
+		harnessRunPhaseTransitionsTotal,
+		harnessRunDurationSeconds,
 	)
 }
 
@@ -86,4 +112,32 @@ func recordPhaseTransition(origPhase, newPhase string) {
 		origPhase = "None"
 	}
 	workspacePhaseTransitionsTotal.WithLabelValues(origPhase, newPhase).Inc()
+}
+
+// recordHarnessRunPhaseTransition mirrors recordPhaseTransition for runs.
+func recordHarnessRunPhaseTransition(origPhase, newPhase string) {
+	if origPhase == newPhase {
+		return
+	}
+	if origPhase == "" {
+		origPhase = "None"
+	}
+	harnessRunPhaseTransitionsTotal.WithLabelValues(origPhase, newPhase).Inc()
+}
+
+// observeHarnessRunDuration records wall-clock time from StartTime to
+// CompletionTime when both are set on the run; no-op otherwise.
+func observeHarnessRunDuration(run *paddockv1alpha1.HarnessRun, phase string) {
+	if run.Status.StartTime == nil {
+		return
+	}
+	end := time.Now()
+	if run.Status.CompletionTime != nil {
+		end = run.Status.CompletionTime.Time
+	}
+	d := end.Sub(run.Status.StartTime.Time).Seconds()
+	if d < 0 {
+		return
+	}
+	harnessRunDurationSeconds.WithLabelValues(phase).Observe(d)
 }
