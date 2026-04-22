@@ -16,6 +16,8 @@ Do not use an ADR for routine implementation decisions that the code itself make
 - [ADR-0002 — Monorepo for the Paddock ecosystem](0002-monorepo.md)
 - [ADR-0003 — Cluster vs. namespaced HarnessTemplate override semantics](0003-template-override-semantics.md)
 - [ADR-0004 — Ephemeral workspaces are real `Workspace` CRs](0004-ephemeral-workspaces.md)
+- [ADR-0005 — Collector → controller delivery via an owned ConfigMap](0005-collector-controller-delivery.md)
+- [ADR-0007 — `status.recentEvents` ring buffer is bounded by count and bytes](0007-recent-events-ring-size.md)
 
 ## Conventions
 
