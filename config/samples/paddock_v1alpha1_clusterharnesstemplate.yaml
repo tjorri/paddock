@@ -7,12 +7,13 @@ metadata:
   name: echo-default
 spec:
   harness: echo
-  image: ghcr.io/paddock/harness-echo:v0.1
+  # Built locally via `make image-echo` and loaded into Kind by Tilt.
+  image: paddock-echo:dev
   command:
-    - /bin/sh
-    - -c
-    - |
-      /paddock/emit --prompt-file "$PADDOCK_PROMPT_PATH" > "$PADDOCK_RAW_PATH"
+    - /usr/local/bin/paddock-echo
+  eventAdapter:
+    # Built locally via `make image-adapter-echo`.
+    image: paddock-adapter-echo:dev
   defaults:
     model: none
     timeout: 30s

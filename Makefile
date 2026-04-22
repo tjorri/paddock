@@ -144,6 +144,22 @@ docker-build: ## Build docker image with the manager.
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
+##@ Reference images
+
+ECHO_IMG ?= paddock-echo:dev
+ADAPTER_ECHO_IMG ?= paddock-adapter-echo:dev
+
+.PHONY: image-echo
+image-echo: ## Build the paddock-echo harness image.
+	$(CONTAINER_TOOL) build -t $(ECHO_IMG) images/harness-echo
+
+.PHONY: image-adapter-echo
+image-adapter-echo: ## Build the paddock-adapter-echo sidecar image.
+	$(CONTAINER_TOOL) build -t $(ADAPTER_ECHO_IMG) -f images/adapter-echo/Dockerfile .
+
+.PHONY: images
+images: image-echo image-adapter-echo ## Build all reference images.
+
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
