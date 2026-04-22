@@ -19,13 +19,17 @@ limitations under the License.
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"paddock.dev/paddock/internal/cli"
 )
 
 func main() {
+	// Root cmd sets SilenceErrors: true so cobra doesn't prepend
+	// "Error:" — but we still need to surface the message ourselves.
 	if err := cli.NewRootCmd().Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "kubectl-paddock:", err)
 		os.Exit(1)
 	}
 }

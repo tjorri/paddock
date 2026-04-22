@@ -63,6 +63,8 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newStatusCmd(cfg))
 	root.AddCommand(newListCmd(cfg))
 	root.AddCommand(newCancelCmd(cfg))
+	root.AddCommand(newEventsCmd(cfg))
+	root.AddCommand(newLogsCmd(cfg))
 	root.AddCommand(newVersionCmd())
 
 	root.SetErr(os.Stderr)
