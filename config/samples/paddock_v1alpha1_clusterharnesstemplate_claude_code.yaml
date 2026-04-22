@@ -1,0 +1,41 @@
+apiVersion: paddock.dev/v1alpha1
+kind: ClusterHarnessTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: paddock
+    app.kubernetes.io/managed-by: kustomize
+  name: claude-code
+spec:
+  harness: claude-code
+  # Built locally via `make image-claude-code` and loaded into Kind by Tilt.
+  # Replace with a published image reference for production installs.
+  image: paddock-claude-code:dev
+  command:
+    - /usr/local/bin/paddock-claude-code
+  eventAdapter:
+    # Built locally via `make image-adapter-claude-code`.
+    image: paddock-adapter-claude-code:dev
+  # Anthropic's API key — wired through the credentials machinery
+  # (same shape the broker will later satisfy with short-lived secrets).
+  # Pre-create the Secret in the run's namespace:
+  #   kubectl create secret generic anthropic-api -n <ns> --from-literal=key=sk-...
+  credentials:
+    - name: anthropic-api-key
+      envKey: ANTHROPIC_API_KEY
+      secretRef:
+        name: anthropic-api
+        key: key
+  defaults:
+    model: claude-sonnet-4-6
+    timeout: 30m
+    # Claude Code runs can push into the hundreds-of-MB range on real
+    # repos; size up generously by default.
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "512Mi"
+      limits:
+        memory: "2Gi"
+  workspace:
+    required: true
+    mountPath: /workspace

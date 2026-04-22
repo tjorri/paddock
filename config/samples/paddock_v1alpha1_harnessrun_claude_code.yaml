@@ -1,0 +1,16 @@
+# Example Claude Code run. Submits a tiny, self-contained prompt so a
+# contributor can exercise the full pipeline end-to-end without a
+# pre-seeded workspace. Requires:
+#   1. `claude-code` ClusterHarnessTemplate applied
+#   2. anthropic-api Secret present in this namespace with key `key`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: claude-code-demo
+spec:
+  templateRef:
+    name: claude-code
+    kind: ClusterHarnessTemplate
+  prompt: |
+    Write a two-sentence haiku about running AI agents in Kubernetes.
+    Do not call any tools — just reply with the haiku text.
