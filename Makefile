@@ -124,6 +124,11 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
+.PHONY: cli
+cli: fmt vet ## Build the kubectl-paddock plugin binary.
+	go build -o bin/kubectl-paddock ./cmd/kubectl-paddock
+	@echo "built bin/kubectl-paddock — place on PATH to use as 'kubectl paddock'"
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
