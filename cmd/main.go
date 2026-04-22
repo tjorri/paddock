@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/controller"
 	webhookv1alpha1 "paddock.dev/paddock/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -205,6 +206,13 @@ func main() {
 			setupLog.Error(err, "unable to create webhook", "webhook", "Workspace")
 			os.Exit(1)
 		}
+	}
+	if err := (&controller.WorkspaceReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Workspace")
+		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
 
