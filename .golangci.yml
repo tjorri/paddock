@@ -9,7 +9,6 @@ linters:
     - errcheck
     - ginkgolinter
     - goconst
-    - gocyclo
     - govet
     - ineffassign
     - lll
@@ -21,7 +20,30 @@ linters:
     - unconvert
     - unparam
     - unused
+    # gocyclo is deliberately off. Operator Reconcile functions and
+    # stream-JSON adapters legitimately have high cyclomatic complexity
+    # (per-phase switches, per-event-type switches). Splitting them
+    # just to appease the lint reduces local reasoning — the lint
+    # doesn't know the difference between incidental and essential
+    # branching.
   settings:
+    errcheck:
+      # Canonical Go idioms that produce a checkable error which is
+      # safe to ignore at the call sites we use them.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*os.File).Sync
+        - (*text/tabwriter.Writer).Flush
+    goconst:
+      # Default (3) fires on "Error" / "Running" / "Read" — accidental
+      # coincidences rather than real knobs. Require a real pattern
+      # before suggesting a constant.
+      min-occurrences: 5
+      min-len: 4
     revive:
       rules:
         - name: comment-spacings
@@ -36,6 +58,21 @@ linters:
           - dupl
           - lll
         path: internal/*
+      # cmd/* binaries carry flag-description lines (with help strings
+      # that legitimately run long) and tests with embedded JSON
+      # fixtures that don't line-wrap usefully.
+      - linters:
+          - lll
+          - dupl
+        path: cmd/*
+      # unparam flags test stub callbacks whose error return is
+      # mandated by the function signature they're standing in for.
+      # The error return is required by the interface contract; the
+      # fact that the happy-path test never exercises it isn't
+      # something the test itself should fix.
+      - linters:
+          - unparam
+        path: _test\.go$
     paths:
       - third_party$
       - builtin$

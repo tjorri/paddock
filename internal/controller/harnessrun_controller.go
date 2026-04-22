@@ -233,23 +233,23 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		ObservedGeneration: run.Generation,
 	}
 	switch jp {
-	case "Pending":
+	case jobPhasePending:
 		newPhase = paddockv1alpha1.HarnessRunPhasePending
 		podReady.Status = metav1.ConditionFalse
-		podReady.Reason = "Pending"
+		podReady.Reason = jobPhasePending
 		completedCond.Status = metav1.ConditionFalse
 		completedCond.Reason = "InProgress"
-	case "Running":
+	case jobPhaseRunning:
 		newPhase = paddockv1alpha1.HarnessRunPhaseRunning
 		if run.Status.StartTime == nil {
 			now := metav1.Now()
 			run.Status.StartTime = &now
 		}
 		podReady.Status = metav1.ConditionTrue
-		podReady.Reason = "Running"
+		podReady.Reason = jobPhaseRunning
 		completedCond.Status = metav1.ConditionFalse
 		completedCond.Reason = "InProgress"
-	case "Succeeded":
+	case jobPhaseSucceeded:
 		newPhase = paddockv1alpha1.HarnessRunPhaseSucceeded
 		if run.Status.CompletionTime == nil {
 			now := metav1.Now()
@@ -258,17 +258,17 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		podReady.Status = metav1.ConditionFalse
 		podReady.Reason = "Completed"
 		completedCond.Status = metav1.ConditionTrue
-		completedCond.Reason = "Succeeded"
-	case "Failed":
+		completedCond.Reason = jobPhaseSucceeded
+	case jobPhaseFailed:
 		newPhase = paddockv1alpha1.HarnessRunPhaseFailed
 		if run.Status.CompletionTime == nil {
 			now := metav1.Now()
 			run.Status.CompletionTime = &now
 		}
 		podReady.Status = metav1.ConditionFalse
-		podReady.Reason = "Failed"
+		podReady.Reason = jobPhaseFailed
 		completedCond.Status = metav1.ConditionTrue
-		completedCond.Reason = "Failed"
+		completedCond.Reason = jobPhaseFailed
 	}
 	setCondition(&run.Status.Conditions, podReady)
 	setCondition(&run.Status.Conditions, completedCond)
@@ -485,7 +485,7 @@ func (r *HarnessRunReconciler) resolvePrompt(ctx context.Context, run *paddockv1
 		}
 		v, ok := sec.Data[pf.SecretKeyRef.Key]
 		if !ok {
-			return "", fmt.Errorf("Secret %s does not have key %q", pf.SecretKeyRef.Name, pf.SecretKeyRef.Key)
+			return "", fmt.Errorf("secret %s does not have key %q", pf.SecretKeyRef.Name, pf.SecretKeyRef.Key)
 		}
 		return string(v), nil
 	}

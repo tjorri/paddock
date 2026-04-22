@@ -124,8 +124,18 @@ func seedJobForWorkspace(ws *paddockv1alpha1.Workspace, image string) *batchv1.J
 	}
 }
 
-// jobPhase summarises a Job's condition into one of Pending, Running,
-// Succeeded, or Failed.
+// Job phase labels returned by jobPhase. Not a Kubernetes enum — the
+// helper normalises Job status conditions into this small set so
+// callers can switch on a single string.
+const (
+	jobPhasePending   = "Pending"
+	jobPhaseRunning   = "Running"
+	jobPhaseSucceeded = "Succeeded"
+	jobPhaseFailed    = "Failed"
+)
+
+// jobPhase summarises a Job's condition into one of the jobPhase*
+// constants above.
 func jobPhase(job *batchv1.Job) string {
 	for _, c := range job.Status.Conditions {
 		if c.Status != corev1.ConditionTrue {
@@ -133,15 +143,15 @@ func jobPhase(job *batchv1.Job) string {
 		}
 		switch c.Type {
 		case batchv1.JobComplete, batchv1.JobSuccessCriteriaMet:
-			return "Succeeded"
+			return jobPhaseSucceeded
 		case batchv1.JobFailed:
-			return "Failed"
+			return jobPhaseFailed
 		}
 	}
 	if job.Status.Active > 0 {
-		return "Running"
+		return jobPhaseRunning
 	}
-	return "Pending"
+	return jobPhasePending
 }
 
 // pvcName and seedJobName keep owned-resource naming deterministic.

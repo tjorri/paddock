@@ -301,10 +301,10 @@ func effectiveResources(run *paddockv1alpha1.HarnessRun, template *resolvedTempl
 
 func effectiveTimeout(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate) (d durationSeconds) {
 	if run.Spec.Timeout != nil {
-		return durationSeconds(run.Spec.Timeout.Duration.Seconds())
+		return durationSeconds(run.Spec.Timeout.Seconds())
 	}
 	if template.Spec.Defaults.Timeout != nil {
-		return durationSeconds(template.Spec.Defaults.Timeout.Duration.Seconds())
+		return durationSeconds(template.Spec.Defaults.Timeout.Seconds())
 	}
 	return 0
 }
