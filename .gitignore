@@ -30,3 +30,14 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Local tool binaries (controller-gen, kustomize, setup-envtest, golangci-lint,
+# envtest k8s binaries) installed under bin/ by the Makefile.
+/bin/
+
+# Tilt artifacts
+/tilt_modules/
+/.tiltbuild/
+
+# kubebuilder build-installer output
+/dist/
