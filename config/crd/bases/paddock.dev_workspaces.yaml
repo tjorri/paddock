@@ -1,0 +1,248 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: workspaces.paddock.dev
+spec:
+  group: paddock.dev
+  names:
+    kind: Workspace
+    listKind: WorkspaceList
+    plural: workspaces
+    shortNames:
+    - ws
+    singular: workspace
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.activeRunRef
+      name: Active-Run
+      type: string
+    - jsonPath: .status.totalRuns
+      name: Runs
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Workspace is a persistent scratch area shared across HarnessRuns. The
+          workspace outlives the runs that use it; at most one run mounts it at
+          a time (ReadWriteOnce default).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              WorkspaceSpec is the desired state of a Workspace — a persistent scratch
+              area backed by a PVC, shared across one or more HarnessRuns. A Workspace
+              outlives the runs that reference it: runs terminate, workspaces persist.
+            properties:
+              ephemeral:
+                description: |-
+                  Ephemeral marks a workspace auto-provisioned by a HarnessRun when
+                  no workspaceRef was supplied. Ephemeral workspaces carry an
+                  ownerReference to their HarnessRun and cascade-delete with it.
+                  See ADR-0004.
+                type: boolean
+              seed:
+                description: |-
+                  Seed describes how the workspace is initialised. When set, the
+                  Workspace controller spawns a seed Job that populates the PVC
+                  before any run may start.
+                properties:
+                  git:
+                    description: Git clones a git repository into the workspace at
+                      /workspace.
+                    properties:
+                      branch:
+                        description: Branch to clone. Defaults to the remote's HEAD.
+                        type: string
+                      credentialsSecretRef:
+                        description: |-
+                          CredentialsSecretRef, when set, supplies git credentials. The Secret
+                          may contain either username/password or ssh-privatekey. Mounted
+                          read-only into the seed Job only. See ADR-0006.
+                        properties:
+                          name:
+                            description: Name of the referenced object.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      depth:
+                        description: Depth is the shallow-clone depth. Zero or unset
+                          means a full clone.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      url:
+                        description: URL is the clone URL (https or ssh).
+                        type: string
+                    required:
+                    - url
+                    type: object
+                type: object
+              storage:
+                description: Storage configures the backing PVC.
+                properties:
+                  accessMode:
+                    default: ReadWriteOnce
+                    description: |-
+                      AccessMode is the PVC access mode. Defaults to ReadWriteOnce.
+                      ReadWriteMany is supported but requires a networked filesystem
+                      StorageClass and is not exercised on Kind.
+                    enum:
+                    - ReadWriteOnce
+                    - ReadWriteMany
+                    type: string
+                  size:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: Size is the requested storage capacity (e.g. "20Gi").
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  storageClass:
+                    description: |-
+                      StorageClass names the StorageClass for the PVC. When empty, the
+                      cluster's default StorageClass is used.
+                    type: string
+                required:
+                - size
+                type: object
+            required:
+            - storage
+            type: object
+          status:
+            description: WorkspaceStatus reports the observed state of a Workspace.
+            properties:
+              activeRunRef:
+                description: |-
+                  ActiveRunRef names the HarnessRun currently using the workspace.
+                  Empty when the workspace is idle. Used to serialise concurrent
+                  runs against a ReadWriteOnce PVC without reliance on PVC attach
+                  errors.
+                type: string
+              conditions:
+                description: |-
+                  Conditions report typed lifecycle signals. Known types: PVCBound,
+                  Seeded, Ready.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastActivity:
+                description: |-
+                  LastActivity is the time of the most recent run's last event. Used
+                  by future archive-on-idle logic.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the spec generation last reconciled.
+                format: int64
+                type: integer
+              phase:
+                description: Phase summarises the workspace's lifecycle.
+                enum:
+                - Seeding
+                - Active
+                - Failed
+                - Terminating
+                type: string
+              pvcName:
+                description: PVCName is the backing PersistentVolumeClaim, once created.
+                type: string
+              seedJobName:
+                description: SeedJobName is the backing seed Job, while it exists.
+                type: string
+              totalRuns:
+                description: |-
+                  TotalRuns is a monotonic count of HarnessRuns that have bound to
+                  this workspace. Informational only.
+                format: int32
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -1,0 +1,21 @@
+apiVersion: paddock.dev/v1alpha1
+kind: ClusterHarnessTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: paddock
+    app.kubernetes.io/managed-by: kustomize
+  name: echo-default
+spec:
+  harness: echo
+  image: ghcr.io/paddock/harness-echo:v0.1
+  command:
+    - /bin/sh
+    - -c
+    - |
+      /paddock/emit --prompt-file "$PADDOCK_PROMPT_PATH" > "$PADDOCK_RAW_PATH"
+  defaults:
+    model: none
+    timeout: 30s
+  workspace:
+    required: true
+    mountPath: /workspace

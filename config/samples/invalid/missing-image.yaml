@@ -1,0 +1,11 @@
+# Invalid: standalone ClusterHarnessTemplate with no image.
+# Expected to be rejected by the validating webhook with an "image" field
+# error. Used for end-to-end verification of admission rules.
+apiVersion: paddock.dev/v1alpha1
+kind: ClusterHarnessTemplate
+metadata:
+  name: invalid-no-image
+spec:
+  harness: echo
+  command:
+    - /bin/echo

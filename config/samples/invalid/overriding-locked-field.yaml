@@ -1,0 +1,12 @@
+# Invalid: namespaced HarnessTemplate inheriting via baseTemplateRef but
+# attempting to override locked `image`. Rejected by webhook; see
+# docs/adr/0003-template-override-semantics.md.
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessTemplate
+metadata:
+  name: invalid-inheriting-override
+  namespace: default
+spec:
+  baseTemplateRef:
+    name: echo-default
+  image: attacker/malicious:latest

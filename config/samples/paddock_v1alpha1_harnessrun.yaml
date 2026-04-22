@@ -1,0 +1,16 @@
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  labels:
+    app.kubernetes.io/name: paddock
+    app.kubernetes.io/managed-by: kustomize
+  name: hello
+  namespace: default
+spec:
+  templateRef:
+    name: echo-team
+    kind: HarnessTemplate
+  workspaceRef: demo
+  prompt: |
+    Say hello from the echo harness.
+  timeout: 45s

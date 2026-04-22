@@ -1,0 +1,122 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+)
+
+var _ = Describe("HarnessTemplate Webhook", func() {
+	var validator HarnessTemplateCustomValidator
+
+	BeforeEach(func() {
+		validator = HarnessTemplateCustomValidator{}
+	})
+
+	Context("standalone template (no baseTemplateRef)", func() {
+		It("admits a complete spec", func() {
+			obj := &paddockv1alpha1.HarnessTemplate{
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Harness: "echo",
+					Image:   "ghcr.io/paddock/harness-echo:v1",
+					Command: []string{"/bin/echo"},
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rejects missing image", func() {
+			obj := &paddockv1alpha1.HarnessTemplate{
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Harness: "echo",
+					Command: []string{"/bin/echo"},
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("image"))
+		})
+
+		It("rejects missing command", func() {
+			obj := &paddockv1alpha1.HarnessTemplate{
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Harness: "echo",
+					Image:   "ghcr.io/paddock/harness-echo:v1",
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("command"))
+		})
+
+		It("rejects eventAdapter with empty image", func() {
+			obj := &paddockv1alpha1.HarnessTemplate{
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Image:        "ghcr.io/paddock/harness-echo:v1",
+					Command:      []string{"/bin/echo"},
+					EventAdapter: &paddockv1alpha1.EventAdapterSpec{},
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("eventAdapter.image"))
+		})
+	})
+
+	Context("inheriting template (baseTemplateRef set)", func() {
+		It("admits a spec that only overrides permitted fields", func() {
+			obj := &paddockv1alpha1.HarnessTemplate{
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					BaseTemplateRef: &paddockv1alpha1.LocalObjectReference{Name: "codex-base"},
+					Defaults: paddockv1alpha1.HarnessTemplateDefaults{
+						Model: "gpt-5-codex",
+					},
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rejects setting locked image field", func() {
+			obj := &paddockv1alpha1.HarnessTemplate{
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					BaseTemplateRef: &paddockv1alpha1.LocalObjectReference{Name: "codex-base"},
+					Image:           "attacker/image:latest",
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("image"))
+		})
+
+		It("rejects setting locked command field", func() {
+			obj := &paddockv1alpha1.HarnessTemplate{
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					BaseTemplateRef: &paddockv1alpha1.LocalObjectReference{Name: "codex-base"},
+					Command:         []string{"/bin/evil"},
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("command"))
+		})
+	})
+})

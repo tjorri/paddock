@@ -1,0 +1,86 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-paddock-dev-v1alpha1-clusterharnesstemplate
+  failurePolicy: Fail
+  name: vclusterharnesstemplate-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - paddock.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - clusterharnesstemplates
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-paddock-dev-v1alpha1-harnessrun
+  failurePolicy: Fail
+  name: vharnessrun-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - paddock.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - harnessruns
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-paddock-dev-v1alpha1-harnesstemplate
+  failurePolicy: Fail
+  name: vharnesstemplate-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - paddock.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - harnesstemplates
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-paddock-dev-v1alpha1-workspace
+  failurePolicy: Fail
+  name: vworkspace-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - paddock.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - workspaces
+  sideEffects: None

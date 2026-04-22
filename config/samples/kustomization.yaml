@@ -1,0 +1,7 @@
+## Append samples of your project ##
+resources:
+- paddock_v1alpha1_harnesstemplate.yaml
+- paddock_v1alpha1_clusterharnesstemplate.yaml
+- paddock_v1alpha1_harnessrun.yaml
+- paddock_v1alpha1_workspace.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

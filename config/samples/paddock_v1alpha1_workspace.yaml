@@ -1,0 +1,17 @@
+apiVersion: paddock.dev/v1alpha1
+kind: Workspace
+metadata:
+  labels:
+    app.kubernetes.io/name: paddock
+    app.kubernetes.io/managed-by: kustomize
+  name: demo
+  namespace: default
+spec:
+  storage:
+    size: 1Gi
+    accessMode: ReadWriteOnce
+  seed:
+    git:
+      url: https://github.com/kubernetes-sigs/kubebuilder.git
+      branch: master
+      depth: 1

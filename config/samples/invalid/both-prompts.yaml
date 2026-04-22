@@ -1,0 +1,16 @@
+# Invalid: HarnessRun with both prompt and promptFrom. Webhook should
+# reject with "exactly one of prompt or promptFrom may be set".
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: invalid-both-prompts
+  namespace: default
+spec:
+  templateRef:
+    name: echo-default
+    kind: ClusterHarnessTemplate
+  prompt: inline
+  promptFrom:
+    configMapKeyRef:
+      name: prompts
+      key: refactor

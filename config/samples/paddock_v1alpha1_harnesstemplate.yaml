@@ -1,0 +1,16 @@
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: paddock
+    app.kubernetes.io/managed-by: kustomize
+  name: echo-team
+  namespace: default
+spec:
+  # Inherit pod shape (image, command, eventAdapter) from the cluster template.
+  # Only defaults, credentials, and podTemplateOverlay may be overridden;
+  # see docs/adr/0003-template-override-semantics.md.
+  baseTemplateRef:
+    name: echo-default
+  defaults:
+    timeout: 1m
