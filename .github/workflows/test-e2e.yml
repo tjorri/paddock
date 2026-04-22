@@ -8,6 +8,7 @@ jobs:
   test-e2e:
     name: Run on Ubuntu
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Clone the code
         uses: actions/checkout@v4
@@ -17,16 +18,33 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install the latest version of kind
+      # Pin kind to a tested version; chasing :latest has bitten CI before.
+      - name: Install kind
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.25.0/kind-linux-$(go env GOARCH)
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
+          kind version
 
-      - name: Verify kind installation
-        run: kind version
-
-      - name: Running Test e2e
+      - name: Run e2e tests
         run: |
           go mod tidy
           make test-e2e
+
+      # When the suite fails, grab every logline Kind has so failures
+      # on CI are reproducible without re-running. Artifact retention
+      # defaults are fine — M8 diagnostics don't need long-term keep.
+      - name: Export Kind cluster logs on failure
+        if: failure()
+        run: |
+          mkdir -p /tmp/kind-logs
+          kind export logs /tmp/kind-logs --name paddock-test-e2e || true
+
+      - name: Upload Kind logs artifact on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-logs
+          path: /tmp/kind-logs
+          if-no-files-found: ignore
+          retention-days: 7
