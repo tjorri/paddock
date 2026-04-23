@@ -32,12 +32,30 @@ var _ = Describe("Workspace Webhook", func() {
 		validator = WorkspaceCustomValidator{}
 	})
 
-	It("admits a workspace with git seed", func() {
+	It("admits a workspace with a single-repo seed", func() {
 		obj := &paddockv1alpha1.Workspace{
 			Spec: paddockv1alpha1.WorkspaceSpec{
 				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
 				Seed: &paddockv1alpha1.WorkspaceSeed{
-					Git: &paddockv1alpha1.WorkspaceGitSource{URL: "https://example.com/foo.git"},
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "https://example.com/foo.git"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("admits a workspace with multiple repos with unique paths", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "https://example.com/frontend.git", Path: "frontend"},
+						{URL: "https://example.com/backend.git", Path: "backend"},
+					},
 				},
 			},
 		}
@@ -66,7 +84,7 @@ var _ = Describe("Workspace Webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("size"))
 	})
 
-	It("rejects seed with no source", func() {
+	It("rejects seed with an empty repos list", func() {
 		obj := &paddockv1alpha1.Workspace{
 			Spec: paddockv1alpha1.WorkspaceSpec{
 				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
@@ -75,21 +93,104 @@ var _ = Describe("Workspace Webhook", func() {
 		}
 		_, err := validator.ValidateCreate(ctx, obj)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("seed"))
+		Expect(err.Error()).To(ContainSubstring("repos"))
 	})
 
-	It("rejects seed.git with empty url", func() {
+	It("rejects a repo with empty url", func() {
 		obj := &paddockv1alpha1.Workspace{
 			Spec: paddockv1alpha1.WorkspaceSpec{
 				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
 				Seed: &paddockv1alpha1.WorkspaceSeed{
-					Git: &paddockv1alpha1.WorkspaceGitSource{},
+					Repos: []paddockv1alpha1.WorkspaceGitSource{{}},
 				},
 			},
 		}
 		_, err := validator.ValidateCreate(ctx, obj)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("url"))
+	})
+
+	It("rejects multiple repos when any path is missing", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "https://example.com/a.git", Path: "a"},
+						{URL: "https://example.com/b.git"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("path"))
+	})
+
+	It("rejects duplicate repo paths", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "https://example.com/a.git", Path: "src"},
+						{URL: "https://example.com/b.git", Path: "src"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("collides"))
+	})
+
+	It("rejects duplicate repo paths that only collide after path.Clean", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "https://example.com/a.git", Path: "src"},
+						{URL: "https://example.com/b.git", Path: "./src"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("collides"))
+	})
+
+	It("rejects an absolute repo path", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "https://example.com/a.git", Path: "/etc/a"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("relative"))
+	})
+
+	It("rejects a repo path with '..'", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "https://example.com/a.git", Path: "a/../../etc"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(".."))
 	})
 
 	It("rejects updates that change storage (immutable)", func() {
@@ -110,12 +211,14 @@ var _ = Describe("Workspace Webhook", func() {
 			Spec: paddockv1alpha1.WorkspaceSpec{
 				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
 				Seed: &paddockv1alpha1.WorkspaceSeed{
-					Git: &paddockv1alpha1.WorkspaceGitSource{URL: "https://example.com/foo.git"},
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "https://example.com/foo.git"},
+					},
 				},
 			},
 		}
 		newObj := oldObj.DeepCopy()
-		newObj.Spec.Seed.Git.URL = "https://example.com/bar.git"
+		newObj.Spec.Seed.Repos[0].URL = "https://example.com/bar.git"
 		_, err := validator.ValidateUpdate(ctx, oldObj, newObj)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("immutable"))

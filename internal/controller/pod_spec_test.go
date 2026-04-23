@@ -176,6 +176,7 @@ func TestBuildPodSpec_AgentEnvContract(t *testing.T) {
 		{"PADDOCK_EVENTS_PATH", "/paddock/events/events.jsonl"},
 		{"PADDOCK_RESULT_PATH", "/workspace/.paddock/runs/run-echo/result.json"},
 		{"PADDOCK_WORKSPACE", "/workspace"},
+		{"PADDOCK_REPOS_PATH", "/workspace/.paddock/repos.json"},
 		{"PADDOCK_RUN_NAME", "run-echo"},
 	}
 	for _, tc := range cases {

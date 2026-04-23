@@ -17,7 +17,9 @@ limitations under the License.
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 
@@ -41,6 +43,17 @@ const (
 	// Seed-job volume + mount used by both the PVC and the clone path.
 	seedVolumeName = "workspace"
 	seedMountPath  = "/workspace"
+
+	// Relative path (under the workspace root) where the seed Job
+	// writes the repo manifest that harness pods read via
+	// PADDOCK_REPOS_PATH.
+	seedManifestRelPath = ".paddock/repos.json"
+
+	// Directory inside the seed pod where per-repo credential secrets
+	// and helper scripts are mounted. Separate from /workspace so
+	// credentials never land on the PVC.
+	seedCredsRoot    = "/paddock/creds"
+	seedScratchMount = "/paddock/scratch"
 )
 
 // pvcForWorkspace returns the PVC that backs this Workspace. The PVC
@@ -73,22 +86,65 @@ func pvcForWorkspace(ws *paddockv1alpha1.Workspace) *corev1.PersistentVolumeClai
 	return pvc
 }
 
-// seedJobForWorkspace returns the seed Job that clones spec.seed.git into
-// the workspace PVC. Assumes spec.seed.git is non-nil; callers gate this.
+// seedJobForWorkspace returns the seed Job that clones spec.seed.repos
+// into the workspace PVC. The Job uses one init container per repo and
+// a main container that writes /workspace/.paddock/repos.json once all
+// clones have completed. Callers gate this on len(spec.seed.repos) > 0.
 func seedJobForWorkspace(ws *paddockv1alpha1.Workspace, image string) *batchv1.Job {
 	if image == "" {
 		image = defaultSeedImage
 	}
 
-	git := ws.Spec.Seed.Git
-	args := []string{"clone"}
-	if git.Depth > 0 {
-		args = append(args, "--depth", strconv.FormatInt(int64(git.Depth), 10))
+	repos := ws.Spec.Seed.Repos
+	initContainers := make([]corev1.Container, 0, len(repos))
+	volumes := []corev1.Volume{
+		{
+			Name: seedVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: pvcName(ws),
+				},
+			},
+		},
+		{
+			// Writable tmpfs for HOME, .gitconfig, known_hosts, and any
+			// helper scripts we generate. Keeps the PVC clear of
+			// credential artefacts. Shared across all seed init
+			// containers — safe because Kubernetes runs init containers
+			// sequentially, so each repo's askpass.sh and
+			// PADDOCK_CREDS_DIR are only live during its own clone.
+			Name:         "seed-scratch",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}},
+		},
 	}
-	if git.Branch != "" {
-		args = append(args, "--branch", git.Branch, "--single-branch")
+
+	for i, repo := range repos {
+		c, extraVolumes := seedInitContainer(i, repo, image)
+		initContainers = append(initContainers, c)
+		volumes = append(volumes, extraVolumes...)
 	}
-	args = append(args, git.URL, seedMountPath)
+
+	manifestJSON := repoManifestJSON(repos)
+	manifestDir := path.Join(seedMountPath, path.Dir(seedManifestRelPath))
+	manifestPath := path.Join(seedMountPath, seedManifestRelPath)
+
+	mainCmd := fmt.Sprintf(
+		`set -eu; mkdir -p %s; cat > %s <<'PADDOCK_EOF'
+%s
+PADDOCK_EOF`,
+		shellQuote(manifestDir), shellQuote(manifestPath), manifestJSON,
+	)
+
+	mainContainer := corev1.Container{
+		Name:            "manifest",
+		Image:           image,
+		Command:         []string{"sh", "-c", mainCmd},
+		WorkingDir:      "/",
+		SecurityContext: seedContainerSecurityContext(),
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: seedVolumeName, MountPath: seedMountPath},
+		},
+	}
 
 	// backoffLimit=0: seed failures surface immediately; we don't want
 	// alpine/git retrying a bad URL six times.
@@ -109,26 +165,174 @@ func seedJobForWorkspace(ws *paddockv1alpha1.Workspace, image string) *batchv1.J
 				Spec: corev1.PodSpec{
 					RestartPolicy:   corev1.RestartPolicyNever,
 					SecurityContext: seedPodSecurityContext(),
-					Containers: []corev1.Container{{
-						Name:            "git",
-						Image:           image,
-						Args:            args,
-						WorkingDir:      "/",
-						SecurityContext: seedContainerSecurityContext(),
-						VolumeMounts:    []corev1.VolumeMount{{Name: seedVolumeName, MountPath: seedMountPath}},
-					}},
-					Volumes: []corev1.Volume{{
-						Name: seedVolumeName,
-						VolumeSource: corev1.VolumeSource{
-							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-								ClaimName: pvcName(ws),
-							},
-						},
-					}},
+					InitContainers:  initContainers,
+					Containers:      []corev1.Container{mainContainer},
+					Volumes:         volumes,
 				},
 			},
 		},
 	}
+}
+
+// seedInitContainer builds one init container that clones a single
+// repo. Returns the container and any pod-level Volumes it introduced
+// (currently just its credentials Secret, if any).
+func seedInitContainer(idx int, repo paddockv1alpha1.WorkspaceGitSource, image string) (corev1.Container, []corev1.Volume) {
+	target := path.Join(seedMountPath, strings.TrimSpace(repo.Path))
+
+	mounts := []corev1.VolumeMount{
+		{Name: seedVolumeName, MountPath: seedMountPath},
+		{Name: "seed-scratch", MountPath: seedScratchMount},
+	}
+	env := []corev1.EnvVar{
+		// alpine/git needs HOME for .gitconfig; keep it on tmpfs.
+		{Name: "HOME", Value: seedScratchMount},
+	}
+	var volumes []corev1.Volume
+
+	if repo.CredentialsSecretRef != nil {
+		credVolName := fmt.Sprintf("repo-%d-creds", idx)
+		credMount := fmt.Sprintf("%s/%d", seedCredsRoot, idx)
+		volumes = append(volumes, corev1.Volume{
+			Name: credVolName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName:  repo.CredentialsSecretRef.Name,
+					DefaultMode: ptr.To[int32](0o400),
+				},
+			},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      credVolName,
+			MountPath: credMount,
+			ReadOnly:  true,
+		})
+
+		if isSSHURL(repo.URL) {
+			env = append(env, corev1.EnvVar{
+				Name: "GIT_SSH_COMMAND",
+				Value: fmt.Sprintf(
+					"ssh -i %s/ssh-privatekey -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=%s/known_hosts",
+					credMount, seedScratchMount,
+				),
+			})
+		} else {
+			// https: a trivial askpass helper echoes the matching
+			// credential based on the prompt ('Username' vs
+			// 'Password'). Keeps secrets off argv and out of the PVC.
+			env = append(env,
+				corev1.EnvVar{Name: "GIT_TERMINAL_PROMPT", Value: "0"},
+				corev1.EnvVar{Name: "GIT_ASKPASS", Value: seedScratchMount + "/askpass.sh"},
+				corev1.EnvVar{Name: "PADDOCK_CREDS_DIR", Value: credMount},
+			)
+		}
+	}
+
+	args := buildCloneArgs(repo, target)
+
+	c := corev1.Container{
+		Name:            fmt.Sprintf("repo-%d", idx),
+		Image:           image,
+		WorkingDir:      "/",
+		SecurityContext: seedContainerSecurityContext(),
+		VolumeMounts:    mounts,
+		Env:             env,
+	}
+
+	// When credentials are mounted we shell out to set up the askpass
+	// helper first; otherwise we can exec git directly with args.
+	if repo.CredentialsSecretRef != nil && !isSSHURL(repo.URL) {
+		c.Command = []string{"sh", "-c", askpassSetupScript() + " && exec git " + strings.Join(quoteArgs(args), " ")}
+	} else {
+		c.Args = args
+	}
+	return c, volumes
+}
+
+// buildCloneArgs returns the argv (starting with "clone") for cloning
+// repo into target.
+func buildCloneArgs(repo paddockv1alpha1.WorkspaceGitSource, target string) []string {
+	args := []string{"clone"}
+	if repo.Depth > 0 {
+		args = append(args, "--depth", strconv.FormatInt(int64(repo.Depth), 10))
+	}
+	if repo.Branch != "" {
+		args = append(args, "--branch", repo.Branch, "--single-branch")
+	}
+	args = append(args, repo.URL, target)
+	return args
+}
+
+// askpassSetupScript emits a tiny inline helper that git invokes via
+// GIT_ASKPASS. The helper echoes the username/password loaded from the
+// mounted Secret (keys `username` / `password`).
+func askpassSetupScript() string {
+	// Kept as a here-doc to avoid shell-quoting the body of the helper.
+	return `cat > "$HOME/askpass.sh" <<'PADDOCK_HELPER'
+#!/bin/sh
+case "$1" in
+  Username*) cat "$PADDOCK_CREDS_DIR/username" 2>/dev/null ;;
+  Password*) cat "$PADDOCK_CREDS_DIR/password" 2>/dev/null ;;
+esac
+PADDOCK_HELPER
+chmod 0500 "$HOME/askpass.sh"`
+}
+
+// quoteArgs produces POSIX-quoted argv so the exec line is safe when
+// interpolated into an sh -c string.
+func quoteArgs(args []string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = shellQuote(a)
+	}
+	return out
+}
+
+// shellQuote wraps s in single quotes, escaping any embedded single
+// quote. Sufficient for argv assembled from CRD fields.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+// repoManifestJSON marshals the repos slice to the schema harnesses
+// read from /workspace/.paddock/repos.json.
+func repoManifestJSON(repos []paddockv1alpha1.WorkspaceGitSource) string {
+	type entry struct {
+		URL    string `json:"url"`
+		Path   string `json:"path"`
+		Branch string `json:"branch,omitempty"`
+	}
+	out := make([]entry, len(repos))
+	for i, r := range repos {
+		out[i] = entry{URL: r.URL, Path: strings.TrimSpace(r.Path), Branch: r.Branch}
+	}
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		// Inputs are plain strings from the CRD; marshalling can't fail.
+		return "[]"
+	}
+	return string(b)
+}
+
+// isSSHURL reports whether url uses an ssh transport (ssh:// or the
+// scp-style git@host:path form).
+func isSSHURL(url string) bool {
+	if strings.HasPrefix(url, "ssh://") {
+		return true
+	}
+	// scp-style is git@host:path — it never carries a scheme
+	// separator. Bail before the scp-style check so a URL like
+	// https://user@host:port/repo isn't misread as SSH.
+	if strings.Contains(url, "://") {
+		return false
+	}
+	if at := strings.Index(url, "@"); at > 0 {
+		rest := url[at+1:]
+		if colon := strings.Index(rest, ":"); colon > 0 && !strings.Contains(rest[:colon], "/") {
+			return true
+		}
+	}
+	return false
 }
 
 // seedPodSecurityContext returns the pod-level SecurityContext the seed
@@ -214,12 +418,23 @@ func workspaceLabels(ws *paddockv1alpha1.Workspace) map[string]string {
 // describeSeed produces a short human-readable summary of the seed source
 // for event messages.
 func describeSeed(ws *paddockv1alpha1.Workspace) string {
-	if ws.Spec.Seed == nil || ws.Spec.Seed.Git == nil {
+	if ws.Spec.Seed == nil || len(ws.Spec.Seed.Repos) == 0 {
 		return "(none)"
 	}
-	parts := []string{ws.Spec.Seed.Git.URL}
-	if ws.Spec.Seed.Git.Branch != "" {
-		parts = append(parts, "branch="+ws.Spec.Seed.Git.Branch)
+	repos := ws.Spec.Seed.Repos
+	if len(repos) == 1 {
+		parts := []string{repos[0].URL}
+		if p := strings.TrimSpace(repos[0].Path); p != "" {
+			parts = append(parts, "path="+p)
+		}
+		if repos[0].Branch != "" {
+			parts = append(parts, "branch="+repos[0].Branch)
+		}
+		return "git " + strings.Join(parts, " ")
 	}
-	return fmt.Sprintf("git %s", strings.Join(parts, " "))
+	entries := make([]string, len(repos))
+	for i, r := range repos {
+		entries[i] = strings.TrimSpace(r.Path) + "=" + r.URL
+	}
+	return fmt.Sprintf("%d repos: %s", len(repos), strings.Join(entries, ", "))
 }

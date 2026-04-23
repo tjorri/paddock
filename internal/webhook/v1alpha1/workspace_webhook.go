@@ -19,7 +19,9 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"path"
 	"reflect"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -81,12 +83,13 @@ func validateWorkspaceSpec(spec *paddockv1alpha1.WorkspaceSpec) error {
 	}
 
 	if spec.Seed != nil {
-		// Exactly one seed source. v0.1 ships only Git; add FromArchive in v0.2.
-		if spec.Seed.Git == nil {
-			errs = append(errs, field.Required(specPath.Child("seed"),
-				"at least one seed source (git) must be set"))
-		} else if spec.Seed.Git.URL == "" {
-			errs = append(errs, field.Required(specPath.Child("seed").Child("git").Child("url"), ""))
+		reposPath := specPath.Child("seed").Child("repos")
+		switch {
+		case len(spec.Seed.Repos) == 0:
+			errs = append(errs, field.Required(reposPath,
+				"at least one repo must be declared when seed is set"))
+		default:
+			errs = append(errs, validateWorkspaceRepos(reposPath, spec.Seed.Repos)...)
 		}
 	}
 
@@ -94,4 +97,57 @@ func validateWorkspaceSpec(spec *paddockv1alpha1.WorkspaceSpec) error {
 		return nil
 	}
 	return fmt.Errorf("%s", errs.ToAggregate().Error())
+}
+
+// validateWorkspaceRepos checks per-entry constraints and cross-entry
+// path uniqueness.
+func validateWorkspaceRepos(reposPath *field.Path, repos []paddockv1alpha1.WorkspaceGitSource) field.ErrorList {
+	var errs field.ErrorList
+	seenPaths := map[string]int{}
+	multi := len(repos) > 1
+
+	for i, repo := range repos {
+		entryPath := reposPath.Index(i)
+		if repo.URL == "" {
+			errs = append(errs, field.Required(entryPath.Child("url"), ""))
+		}
+
+		trimmed := strings.TrimSpace(repo.Path)
+		if multi && trimmed == "" {
+			errs = append(errs, field.Required(entryPath.Child("path"),
+				"path is required when multiple repos are declared"))
+			continue
+		}
+		if trimmed == "" {
+			continue
+		}
+		if err := validateRepoPath(entryPath.Child("path"), trimmed); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		cleaned := path.Clean(trimmed)
+		if prev, ok := seenPaths[cleaned]; ok {
+			errs = append(errs, field.Duplicate(entryPath.Child("path"),
+				fmt.Sprintf("path %q collides with repos[%d].path", trimmed, prev)))
+			continue
+		}
+		seenPaths[cleaned] = i
+	}
+	return errs
+}
+
+func validateRepoPath(p *field.Path, raw string) *field.Error {
+	if strings.HasPrefix(raw, "/") {
+		return field.Invalid(p, raw, "must be a relative path")
+	}
+	cleaned := path.Clean(raw)
+	if cleaned == "." || cleaned == "/" {
+		return field.Invalid(p, raw, "must not resolve to the workspace root")
+	}
+	for _, seg := range strings.Split(cleaned, "/") {
+		if seg == ".." {
+			return field.Invalid(p, raw, "must not contain '..' segments")
+		}
+	}
+	return nil
 }

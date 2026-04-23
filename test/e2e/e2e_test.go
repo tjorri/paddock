@@ -40,6 +40,17 @@ const (
 	runNamespace          = "paddock-e2e"
 	clusterTemplateName   = "echo-e2e"
 	runName               = "echo-1"
+
+	// Multi-repo seeding test. Canonical tiny public repos that have
+	// been stable for a decade — shallow clones take <1s. Pinned paths
+	// give the assertions something concrete to check.
+	multiNamespace = "paddock-multi-e2e"
+	multiWorkspace = "multi"
+	multiDebugPod  = "multi-debug"
+	multiRepoAURL  = "https://github.com/octocat/Hello-World.git"
+	multiRepoBURL  = "https://github.com/octocat/Spoon-Knife.git"
+	multiRepoAPath = "hello"
+	multiRepoBPath = "spoon"
 )
 
 // paddockEvent mirrors the serialised PaddockEvent — the e2e package
@@ -98,6 +109,7 @@ var _ = Describe("paddock v0.1 pipeline", Ordered, func() {
 		// can't eat the 10-minute ginkgo suite budget and hide the
 		// preceding pass/fail result.
 		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", runNamespace, "--wait=false")
+		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", multiNamespace, "--wait=false")
 		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", clusterTemplateName, "--ignore-not-found=true")
 		runWithTimeout(90*time.Second, "make", "undeploy", "ignore-not-found=true")
 		runWithTimeout(90*time.Second, "make", "uninstall", "ignore-not-found=true")
@@ -229,6 +241,117 @@ spec:
 				Expect(code).To(Equal("0"),
 					"non-zero container exit code: %q", podOut)
 			}
+		})
+	})
+
+	Context("multi-repo workspace seeding", func() {
+		It("clones every repo to its own subdir and writes /workspace/.paddock/repos.json", func() {
+			By("creating the multi-repo namespace")
+			_, err := utils.Run(exec.Command("kubectl", "create", "ns", multiNamespace))
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a Workspace with two public repos")
+			applyFromYAML(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: Workspace
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  storage:
+    size: 100Mi
+  seed:
+    repos:
+      - url: %s
+        path: %s
+        depth: 1
+      - url: %s
+        path: %s
+        depth: 1
+`, multiWorkspace, multiNamespace, multiRepoAURL, multiRepoAPath, multiRepoBURL, multiRepoBPath))
+
+			By("waiting for the Workspace to reach phase=Active")
+			Eventually(func(g Gomega) {
+				out, err := utils.Run(exec.Command("kubectl", "-n", multiNamespace,
+					"get", "workspace", multiWorkspace, "-o", "jsonpath={.status.phase}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(out)).To(Equal("Active"),
+					"workspace still in phase %q", strings.TrimSpace(out))
+			}, 3*time.Minute, 3*time.Second).Should(Succeed())
+
+			By("verifying the seed Job emitted an init container per repo")
+			initNames, err := utils.Run(exec.Command("kubectl", "-n", multiNamespace,
+				"get", "job", multiWorkspace+"-seed",
+				"-o", "jsonpath={.spec.template.spec.initContainers[*].name}"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.Fields(strings.TrimSpace(initNames))).To(ConsistOf("repo-0", "repo-1"))
+
+			By("launching a debug Pod that mounts the PVC and prints the layout")
+			applyFromYAML(fmt.Sprintf(`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: inspect
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - |
+          set -eu
+          echo '===MANIFEST==='
+          cat /workspace/.paddock/repos.json
+          echo '===HELLO==='
+          ls /workspace/%s
+          echo '===SPOON==='
+          ls /workspace/%s
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: ws
+          mountPath: /workspace
+  volumes:
+    - name: ws
+      persistentVolumeClaim:
+        claimName: ws-%s
+`, multiDebugPod, multiNamespace, multiRepoAPath, multiRepoBPath, multiWorkspace))
+
+			By("waiting for the debug pod to Succeed")
+			Eventually(func(g Gomega) {
+				out, err := utils.Run(exec.Command("kubectl", "-n", multiNamespace,
+					"get", "pod", multiDebugPod, "-o", "jsonpath={.status.phase}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				phase := strings.TrimSpace(out)
+				g.Expect(phase).To(Equal("Succeeded"), "debug pod phase=%q", phase)
+			}, 90*time.Second, 2*time.Second).Should(Succeed())
+
+			By("verifying the manifest and directory layout")
+			logs, err := utils.Run(exec.Command("kubectl", "-n", multiNamespace,
+				"logs", multiDebugPod))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(logs).To(ContainSubstring("===MANIFEST==="))
+			Expect(logs).To(ContainSubstring(`"url": "` + multiRepoAURL + `"`))
+			Expect(logs).To(ContainSubstring(`"url": "` + multiRepoBURL + `"`))
+			Expect(logs).To(ContainSubstring(`"path": "` + multiRepoAPath + `"`))
+			Expect(logs).To(ContainSubstring(`"path": "` + multiRepoBPath + `"`))
+			// Hello-World repo contains README; both clones should
+			// leave a real working tree with a .git dir.
+			Expect(logs).To(ContainSubstring("===HELLO==="))
+			Expect(logs).To(ContainSubstring("README"))
+			Expect(logs).To(ContainSubstring("===SPOON==="))
 		})
 	})
 })

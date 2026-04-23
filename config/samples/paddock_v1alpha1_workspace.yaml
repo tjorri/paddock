@@ -11,7 +11,33 @@ spec:
     size: 1Gi
     accessMode: ReadWriteOnce
   seed:
-    git:
-      url: https://github.com/kubernetes-sigs/kubebuilder.git
-      branch: master
-      depth: 1
+    repos:
+      - url: https://github.com/kubernetes-sigs/kubebuilder.git
+        branch: master
+        depth: 1
+---
+# Multi-repo workspace example. Every entry's `path` must be set and
+# distinct when there is more than one repo. The seed job writes a
+# manifest to /workspace/.paddock/repos.json which harness pods find
+# via the PADDOCK_REPOS_PATH env var.
+apiVersion: paddock.dev/v1alpha1
+kind: Workspace
+metadata:
+  labels:
+    app.kubernetes.io/name: paddock
+    app.kubernetes.io/managed-by: kustomize
+  name: demo-multi
+  namespace: default
+spec:
+  storage:
+    size: 2Gi
+    accessMode: ReadWriteOnce
+  seed:
+    repos:
+      - url: https://github.com/kubernetes-sigs/kubebuilder.git
+        path: kubebuilder
+        branch: master
+        depth: 1
+      - url: https://github.com/kubernetes-sigs/controller-runtime.git
+        path: controller-runtime
+        depth: 1

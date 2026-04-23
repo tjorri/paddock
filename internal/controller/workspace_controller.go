@@ -105,7 +105,7 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	setCondition(&ws.Status.Conditions, pvcCond)
 
 	// 2. Handle seeding.
-	seedRequired := ws.Spec.Seed != nil && ws.Spec.Seed.Git != nil
+	seedRequired := ws.Spec.Seed != nil && len(ws.Spec.Seed.Repos) > 0
 	phase := paddockv1alpha1.WorkspacePhaseActive
 
 	switch {

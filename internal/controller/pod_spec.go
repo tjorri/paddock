@@ -30,15 +30,20 @@ import (
 // Standard paths and mount points — declared here so the adapter and
 // collector sidecars consume the exact same constants as the agent.
 const (
-	sharedVolumeName       = "paddock-shared"
-	sharedMountPath        = "/paddock"
-	promptVolumeName       = "paddock-prompt"
-	promptMountPath        = "/paddock/prompt"
-	promptFileName         = "prompt.txt"
-	workspaceVolumeName    = "workspace"
-	defaultWorkspaceMount  = "/workspace"
-	rawSubdir              = "/paddock/raw/out"
-	eventsSubdir           = "/paddock/events/events.jsonl"
+	sharedVolumeName      = "paddock-shared"
+	sharedMountPath       = "/paddock"
+	promptVolumeName      = "paddock-prompt"
+	promptMountPath       = "/paddock/prompt"
+	promptFileName        = "prompt.txt"
+	workspaceVolumeName   = "workspace"
+	defaultWorkspaceMount = "/workspace"
+	rawSubdir             = "/paddock/raw/out"
+	eventsSubdir          = "/paddock/events/events.jsonl"
+	// reposManifestRelPath is the path, relative to the workspace
+	// mount, where the seed Job writes the repo manifest. Kept in sync
+	// with seedManifestRelPath in workspace_seed.go.
+	reposManifestRelPath = ".paddock/repos.json"
+
 	agentContainerName     = "agent"
 	adapterContainerName   = "adapter"
 	collectorContainerName = "collector"
@@ -259,14 +264,16 @@ func buildPodVolumes(workspacePVC, promptSecret string) []corev1.Volume {
 // set, template credentials (envFrom Secret refs), run-level extraEnv,
 // and the resolved model.
 func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate) []corev1.EnvVar {
-	const paddockStdEnvCount = 7
+	const paddockStdEnvCount = 8
 	env := make([]corev1.EnvVar, 0, paddockStdEnvCount+len(template.Spec.Credentials)+len(run.Spec.ExtraEnv))
+	mount := effectiveWorkspaceMount(template)
 	env = append(env,
 		corev1.EnvVar{Name: "PADDOCK_PROMPT_PATH", Value: promptMountPath + "/" + promptFileName},
 		corev1.EnvVar{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
 		corev1.EnvVar{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
 		corev1.EnvVar{Name: "PADDOCK_RESULT_PATH", Value: resultFilePath(run, template)},
-		corev1.EnvVar{Name: "PADDOCK_WORKSPACE", Value: effectiveWorkspaceMount(template)},
+		corev1.EnvVar{Name: "PADDOCK_WORKSPACE", Value: mount},
+		corev1.EnvVar{Name: "PADDOCK_REPOS_PATH", Value: mount + "/" + reposManifestRelPath},
 		corev1.EnvVar{Name: "PADDOCK_RUN_NAME", Value: run.Name},
 		corev1.EnvVar{Name: "PADDOCK_MODEL", Value: effectiveModel(run, template)},
 	)
