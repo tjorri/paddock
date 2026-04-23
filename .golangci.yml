@@ -1,6 +1,11 @@
 version: "2"
 run:
   allow-parallel-runners: true
+  # Include files tagged //go:build e2e in every lint pass. Without
+  # this, test/e2e/*.go is skipped and drift there hides until a
+  # contributor runs `go test -tags=e2e` manually.
+  build-tags:
+    - e2e
 linters:
   default: none
   enable:
@@ -65,6 +70,12 @@ linters:
           - lll
           - dupl
         path: cmd/*
+      # test/* e2e scaffolding uses long kubectl/helm one-liners that
+      # don't split readably.
+      - linters:
+          - lll
+          - dupl
+        path: test/*
       # unparam flags test stub callbacks whose error return is
       # mandated by the function signature they're standing in for.
       # The error return is required by the interface contract; the

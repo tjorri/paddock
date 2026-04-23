@@ -44,11 +44,12 @@ if [ -n "$unformatted" ]; then
   exit 1
 fi
 
-# 2. go vet: repo-wide. Fast, and catches cross-file issues a
-#    file-scoped pass would miss. If this ever gets slow, scope to
+# 2. go vet: repo-wide, with the e2e build tag so //go:build e2e
+#    files get the same scrutiny. Fast, and catches cross-file issues
+#    a file-scoped pass would miss. If this ever gets slow, scope to
 #    changed packages via `go list`.
-bold "pre-commit: go vet ./..."
-if ! go vet ./...; then
+bold "pre-commit: go vet -tags=e2e ./..."
+if ! go vet -tags=e2e ./...; then
   exit 1
 fi
 

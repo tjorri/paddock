@@ -54,8 +54,8 @@ fmt: ## Run go fmt against code.
 	go fmt ./...
 
 .PHONY: vet
-vet: ## Run go vet against code.
-	go vet ./...
+vet: ## Run go vet against code (including e2e-tagged sources).
+	go vet -tags=e2e ./...
 
 .PHONY: test
 test: manifests generate fmt vet setup-envtest ## Run tests.
