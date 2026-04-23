@@ -711,9 +711,15 @@ func (r *HarnessRunReconciler) ensureJob(
 	return &existing, nil
 }
 
-// reconcileDelete drives graceful cancellation: delete the Job with
-// foreground propagation (pod gets SIGTERM), clear the workspace
-// binding, release the finalizer.
+// reconcileDelete drives graceful cancellation. Deletes the Job with
+// Background propagation — the Job object disappears immediately and
+// the kubelet then drives the Pod through SIGTERM + its configured
+// terminationGracePeriodSeconds. We use Background (not Foreground)
+// because envtest's integration environment has no garbage-collection
+// controller, and the PVC's RWO access mode already serialises the
+// successor run's Pod against the previous one, so we don't need GC
+// ordering. After the Job delete is in flight we clear the workspace
+// binding, mark the run Cancelled, and release the finalizer.
 func (r *HarnessRunReconciler) reconcileDelete(ctx context.Context, run *paddockv1alpha1.HarnessRun) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
