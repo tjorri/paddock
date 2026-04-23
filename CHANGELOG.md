@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.1.1](https://github.com/tjorri/paddock/compare/v0.1.0...v0.1.1) (2026-04-23)
+
+
+### Features
+
+* **controller:** graceful failure on prompt-resolution errors ([3739d19](https://github.com/tjorri/paddock/commit/3739d19c04171c4637c1d2d1d212cf455b821254))
+* **controller:** materialise prompts as Secrets, not ConfigMaps ([9cbed5e](https://github.com/tjorri/paddock/commit/9cbed5e706fb2d89dde1a7c621e072d1d1d3be1c))
+* **webhook:** cap inline prompt size at 256 KiB ([151f65b](https://github.com/tjorri/paddock/commit/151f65b963776d37ea962537e2f05bd736cc4d78))
+
+
+### Bug Fixes
+
+* **cli:** drop shell in logs reader pod to prevent injection ([a9ff4e2](https://github.com/tjorri/paddock/commit/a9ff4e2c27978ec8167f2299eae9ce8289c74b96))
+* **controller:** harden workspace seed Job for restricted PSS ([7428515](https://github.com/tjorri/paddock/commit/74285152f37fdbb0de2fa5a39abf1098e61ea0a3))
+
+
+### Documentation
+
+* sync spec with shipped reality ([137a81d](https://github.com/tjorri/paddock/commit/137a81d2406c66d8a1bee1bc49876ec832eb9930))
+
 ## 0.1.0 (2026-04-23)
 
 
