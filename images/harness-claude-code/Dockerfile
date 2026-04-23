@@ -7,7 +7,7 @@
 # stable across majors (see ADR-0001). Bump CLAUDE_VERSION + rerun
 # the adapter's fixture tests whenever this pin changes.
 
-ARG NODE_VERSION=22-alpine
+ARG NODE_VERSION=24-alpine
 ARG CLAUDE_VERSION=2.1.117
 
 FROM node:${NODE_VERSION}

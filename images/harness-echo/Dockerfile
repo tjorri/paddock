@@ -1,7 +1,7 @@
 # paddock-echo — deterministic harness image used by CI and e2e tests.
 # Not an LLM. Reads PADDOCK_PROMPT_PATH, emits a fixed sequence of raw
 # JSONL events to PADDOCK_RAW_PATH, writes a result.json, exits 0.
-FROM alpine:3.20
+FROM alpine:3.22
 
 RUN adduser -D -u 65532 paddock
 

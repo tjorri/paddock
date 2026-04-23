@@ -49,7 +49,7 @@ func newEchoClusterTemplate(name string) *paddockv1alpha1.ClusterHarnessTemplate
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: paddockv1alpha1.HarnessTemplateSpec{
 			Harness: "echo",
-			Image:   "alpine:3.20",
+			Image:   "alpine:3.22",
 			Command: []string{"/bin/sh", "-c", "echo $PADDOCK_PROMPT_PATH; sleep 0.1"},
 			Defaults: paddockv1alpha1.HarnessTemplateDefaults{
 				Timeout: &timeout,
