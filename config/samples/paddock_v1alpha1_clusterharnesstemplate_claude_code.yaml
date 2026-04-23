@@ -15,16 +15,17 @@ spec:
   eventAdapter:
     # Built locally via `make image-adapter-claude-code`.
     image: paddock-adapter-claude-code:dev
-  # Anthropic's API key — wired through the credentials machinery
-  # (same shape the broker will later satisfy with short-lived secrets).
-  # Pre-create the Secret in the run's namespace:
-  #   kubectl create secret generic anthropic-api -n <ns> --from-literal=key=sk-...
-  credentials:
-    - name: anthropic-api-key
-      envKey: ANTHROPIC_API_KEY
-      secretRef:
-        name: anthropic-api
-        key: key
+  # v0.3: templates declare capability requirements; namespaces grant
+  # them via BrokerPolicy (ADR-0014). Before submitting a run against
+  # this template, apply a BrokerPolicy in the target namespace:
+  # see config/samples/paddock_v1alpha1_brokerpolicy.yaml.
+  requires:
+    credentials:
+      - name: ANTHROPIC_API_KEY
+        purpose: llm
+    egress:
+      - host: api.anthropic.com
+        ports: [443]
   defaults:
     model: claude-sonnet-4-6
     timeout: 30m

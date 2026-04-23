@@ -59,7 +59,7 @@ spec:
                 HarnessTemplateSpec is the shared spec for ClusterHarnessTemplate and
                 namespaced HarnessTemplate. A namespaced HarnessTemplate may reference a
                 ClusterHarnessTemplate via BaseTemplateRef to inherit its pod shape; in
-                that case only Defaults, Credentials, and PodTemplateOverlay may be set.
+                that case only Defaults, Requires, and PodTemplateOverlay may be set.
                 See docs/adr/0003-template-override-semantics.md.
               properties:
                 args:
@@ -89,53 +89,6 @@ spec:
                     when BaseTemplateRef is not set. Locked when inheriting.
                   items:
                     type: string
-                  type: array
-                credentials:
-                  description: |-
-                    Credentials are Secret references wired into the agent container as
-                    env vars. Always overridable on namespaced templates.
-                  items:
-                    description: |-
-                      CredentialRef describes a Secret-backed credential wired into the
-                      agent container as an env var. The same shape the broker will later
-                      satisfy by synthesising short-lived Secrets — templates do not change
-                      when the broker arrives.
-                    properties:
-                      envKey:
-                        description: |-
-                          EnvKey is the env-var name under which the credential is exposed
-                          inside the agent container.
-                        type: string
-                      name:
-                        description: Name is an identifier for this credential (purely informational).
-                        type: string
-                      secretRef:
-                        description: SecretRef selects the Secret key that supplies the credential value.
-                        properties:
-                          key:
-                            description: The key of the secret to select from.  Must be a valid secret key.
-                            type: string
-                          name:
-                            default: ""
-                            description: |-
-                              Name of the referent.
-                              This field is effectively required, but due to backwards compatibility is
-                              allowed to be empty. Instances of this type with an empty value here are
-                              almost certainly wrong.
-                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                            type: string
-                          optional:
-                            description: Specify whether the Secret or its key must be defined
-                            type: boolean
-                        required:
-                          - key
-                        type: object
-                        x-kubernetes-map-type: atomic
-                    required:
-                      - envKey
-                      - name
-                      - secretRef
-                    type: object
                   type: array
                 defaults:
                   description: |-
@@ -8333,6 +8286,75 @@ spec:
                       type: object
                   type: object
                   x-kubernetes-preserve-unknown-fields: true
+                requires:
+                  description: |-
+                    Requires declares the capabilities the agent will exercise at
+                    runtime: credentials it expects to be injected, and upstream
+                    destinations it will connect to. A HarnessRun against this template
+                    is admitted only if one or more BrokerPolicies in the run's
+                    namespace grant a superset of Requires. See ADR-0014 and spec 0002
+                    §8. Always overridable on namespaced templates.
+                  properties:
+                    credentials:
+                      description: |-
+                        Credentials are the credentials the agent expects to be injected
+                        as env vars. Name is the env-var key inside the agent container;
+                        Purpose constrains which provider kinds a BrokerPolicy may use to
+                        back it. Templates never name a provider directly — that is the
+                        operator's choice via BrokerPolicy.
+                      items:
+                        description: |-
+                          CredentialRequirement names one credential a template needs at
+                          runtime.
+                        properties:
+                          name:
+                            description: |-
+                              Name is the env-var key the agent reads. The broker-issued value
+                              is exposed under this name inside the agent container.
+                            maxLength: 253
+                            type: string
+                          purpose:
+                            default: generic
+                            description: |-
+                              Purpose classifies the credential for policy matching. Known
+                              values: "llm" (backed by AnthropicAPI / OpenAIAPI / Static);
+                              "gitforge" (backed by GitHubApp / PATPool); "generic" (backed by
+                              any provider — default, least constrained).
+                            enum:
+                              - llm
+                              - gitforge
+                              - generic
+                            type: string
+                        required:
+                          - name
+                        type: object
+                      type: array
+                    egress:
+                      description: |-
+                        Egress lists the upstream destinations the agent will open
+                        connections to. A leading "*." on Host permits any subdomain.
+                      items:
+                        description: EgressRequirement names one upstream destination a template needs.
+                        properties:
+                          host:
+                            description: |-
+                              Host is a destination hostname. A leading "*." permits any
+                              subdomain (e.g. "*.anthropic.com"). Case-insensitive.
+                            type: string
+                          ports:
+                            description: |-
+                              Ports lists the TCP ports this destination uses. Empty or [0]
+                              means any port; otherwise the run's proxy will only permit
+                              connections on these ports.
+                            items:
+                              format: int32
+                              type: integer
+                            type: array
+                        required:
+                          - host
+                        type: object
+                      type: array
+                  type: object
                 workspace:
                   description: |-
                     Workspace declares the template's workspace requirement. Locked when

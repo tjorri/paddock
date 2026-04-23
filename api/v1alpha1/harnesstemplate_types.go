@@ -24,7 +24,7 @@ import (
 // HarnessTemplateSpec is the shared spec for ClusterHarnessTemplate and
 // namespaced HarnessTemplate. A namespaced HarnessTemplate may reference a
 // ClusterHarnessTemplate via BaseTemplateRef to inherit its pod shape; in
-// that case only Defaults, Credentials, and PodTemplateOverlay may be set.
+// that case only Defaults, Requires, and PodTemplateOverlay may be set.
 // See docs/adr/0003-template-override-semantics.md.
 type HarnessTemplateSpec struct {
 	// BaseTemplateRef, when set on a namespaced HarnessTemplate, inherits
@@ -70,10 +70,14 @@ type HarnessTemplateSpec struct {
 	// +optional
 	EventAdapter *EventAdapterSpec `json:"eventAdapter,omitempty"`
 
-	// Credentials are Secret references wired into the agent container as
-	// env vars. Always overridable on namespaced templates.
+	// Requires declares the capabilities the agent will exercise at
+	// runtime: credentials it expects to be injected, and upstream
+	// destinations it will connect to. A HarnessRun against this template
+	// is admitted only if one or more BrokerPolicies in the run's
+	// namespace grant a superset of Requires. See ADR-0014 and spec 0002
+	// §8. Always overridable on namespaced templates.
 	// +optional
-	Credentials []CredentialRef `json:"credentials,omitempty"`
+	Requires RequireSpec `json:"requires,omitempty"`
 
 	// Workspace declares the template's workspace requirement. Locked when
 	// inheriting.
@@ -123,23 +127,65 @@ type EventAdapterSpec struct {
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
 }
 
-// CredentialRef describes a Secret-backed credential wired into the
-// agent container as an env var. The same shape the broker will later
-// satisfy by synthesising short-lived Secrets — templates do not change
-// when the broker arrives.
-type CredentialRef struct {
-	// Name is an identifier for this credential (purely informational).
+// RequireSpec declares the capabilities a template's agent exercises.
+// Templates state needs; BrokerPolicies grant them; admission intersects.
+// See ADR-0014.
+type RequireSpec struct {
+	// Credentials are the credentials the agent expects to be injected
+	// as env vars. Name is the env-var key inside the agent container;
+	// Purpose constrains which provider kinds a BrokerPolicy may use to
+	// back it. Templates never name a provider directly — that is the
+	// operator's choice via BrokerPolicy.
+	// +optional
+	Credentials []CredentialRequirement `json:"credentials,omitempty"`
+
+	// Egress lists the upstream destinations the agent will open
+	// connections to. A leading "*." on Host permits any subdomain.
+	// +optional
+	Egress []EgressRequirement `json:"egress,omitempty"`
+}
+
+// CredentialRequirement names one credential a template needs at
+// runtime.
+type CredentialRequirement struct {
+	// Name is the env-var key the agent reads. The broker-issued value
+	// is exposed under this name inside the agent container.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 
-	// SecretRef selects the Secret key that supplies the credential value.
-	// +kubebuilder:validation:Required
-	SecretRef corev1.SecretKeySelector `json:"secretRef"`
+	// Purpose classifies the credential for policy matching. Known
+	// values: "llm" (backed by AnthropicAPI / OpenAIAPI / Static);
+	// "gitforge" (backed by GitHubApp / PATPool); "generic" (backed by
+	// any provider — default, least constrained).
+	// +kubebuilder:default=generic
+	// +kubebuilder:validation:Enum=llm;gitforge;generic
+	// +optional
+	Purpose CredentialPurpose `json:"purpose,omitempty"`
+}
 
-	// EnvKey is the env-var name under which the credential is exposed
-	// inside the agent container.
+// CredentialPurpose classifies a credential for policy matching. See
+// ADR-0014 and ADR-0015.
+type CredentialPurpose string
+
+const (
+	CredentialPurposeLLM      CredentialPurpose = "llm"
+	CredentialPurposeGitForge CredentialPurpose = "gitforge"
+	CredentialPurposeGeneric  CredentialPurpose = "generic"
+)
+
+// EgressRequirement names one upstream destination a template needs.
+type EgressRequirement struct {
+	// Host is a destination hostname. A leading "*." permits any
+	// subdomain (e.g. "*.anthropic.com"). Case-insensitive.
 	// +kubebuilder:validation:Required
-	EnvKey string `json:"envKey"`
+	Host string `json:"host"`
+
+	// Ports lists the TCP ports this destination uses. Empty or [0]
+	// means any port; otherwise the run's proxy will only permit
+	// connections on these ports.
+	// +optional
+	Ports []int32 `json:"ports,omitempty"`
 }
 
 // WorkspaceRequirement describes whether and how a run uses a Workspace.

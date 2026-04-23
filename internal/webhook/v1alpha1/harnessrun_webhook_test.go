@@ -23,6 +23,8 @@ import (
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
@@ -151,5 +153,114 @@ var _ = Describe("HarnessRun Webhook", func() {
 		}
 		_, err := validator.ValidateUpdate(ctx, obj, obj.DeepCopy())
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rejects spec.extraEnv entries sourced from a Secret", func() {
+		obj := &paddockv1alpha1.HarnessRun{
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+				Prompt:      "hi",
+				ExtraEnv: []corev1.EnvVar{{
+					Name: "LEAK",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "leak"},
+							Key:                  "token",
+						},
+					},
+				}},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("broker"))
+	})
+
+	It("admits spec.extraEnv entries with literal values", func() {
+		obj := &paddockv1alpha1.HarnessRun{
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+				Prompt:      "hi",
+				ExtraEnv:    []corev1.EnvVar{{Name: "HELLO", Value: "world"}},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// The client-backed path resolves the referenced template and rejects
+	// runs whose template declares requires — M2 placeholder for the
+	// full BrokerPolicy intersection that arrives in M3 (ADR-0014).
+	Context("with a client-backed validator (M2: requires-rejects)", func() {
+		const ns = "harnessrun-webhook-m2"
+
+		BeforeEach(func() {
+			validator = HarnessRunCustomValidator{Client: k8sClient}
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: ns},
+			})).To(SatisfyAny(Succeed(), WithTransform(apierrors.IsAlreadyExists, BeTrue())))
+		})
+
+		It("rejects a run whose namespaced template declares requires", func() {
+			template := &paddockv1alpha1.HarnessTemplate{
+				ObjectMeta: metav1.ObjectMeta{Name: "needs-creds", Namespace: ns},
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Harness: "echo",
+					Image:   "paddock-echo:v1",
+					Command: []string{"/bin/echo"},
+					Requires: paddockv1alpha1.RequireSpec{
+						Credentials: []paddockv1alpha1.CredentialRequirement{{
+							Name: "TOKEN", Purpose: paddockv1alpha1.CredentialPurposeGeneric,
+						}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, template)).To(Succeed())
+
+			run := &paddockv1alpha1.HarnessRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "hello", Namespace: ns},
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					TemplateRef: paddockv1alpha1.TemplateRef{Name: "needs-creds"},
+					Prompt:      "hi",
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, run)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("requires"))
+		})
+
+		It("admits a run whose namespaced template has no requires", func() {
+			template := &paddockv1alpha1.HarnessTemplate{
+				ObjectMeta: metav1.ObjectMeta{Name: "no-creds", Namespace: ns},
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Harness: "echo",
+					Image:   "paddock-echo:v1",
+					Command: []string{"/bin/echo"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, template)).To(Succeed())
+
+			run := &paddockv1alpha1.HarnessRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "hello-noreq", Namespace: ns},
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					TemplateRef: paddockv1alpha1.TemplateRef{Name: "no-creds"},
+					Prompt:      "hi",
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, run)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("defers TemplateNotFound to the reconciler (admits the run)", func() {
+			run := &paddockv1alpha1.HarnessRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "nosuch", Namespace: ns},
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					TemplateRef: paddockv1alpha1.TemplateRef{Name: "does-not-exist"},
+					Prompt:      "hi",
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, run)
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 })

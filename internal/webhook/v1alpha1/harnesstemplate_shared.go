@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"fmt"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
@@ -87,21 +88,58 @@ func validateHarnessTemplateSpec(spec *paddockv1alpha1.HarnessTemplateSpec, isCl
 			"eventAdapter.image is required when eventAdapter is set"))
 	}
 
-	for i, cred := range spec.Credentials {
-		credPath := specPath.Child("credentials").Index(i)
-		if cred.Name == "" {
-			errs = append(errs, field.Required(credPath.Child("name"), ""))
-		}
-		if cred.EnvKey == "" {
-			errs = append(errs, field.Required(credPath.Child("envKey"), ""))
-		}
-		if cred.SecretRef.Name == "" {
-			errs = append(errs, field.Required(credPath.Child("secretRef").Child("name"), ""))
-		}
-	}
+	errs = append(errs, validateRequireSpec(specPath.Child("requires"), &spec.Requires)...)
 
 	if len(errs) == 0 {
 		return nil
 	}
 	return fmt.Errorf("%s", errs.ToAggregate().Error())
+}
+
+// validateRequireSpec checks a template's Requires block. Names must be
+// non-empty and unique; egress hosts are non-empty and wildcard-valid;
+// ports are in range.
+func validateRequireSpec(p *field.Path, req *paddockv1alpha1.RequireSpec) field.ErrorList {
+	var errs field.ErrorList
+
+	credsPath := p.Child("credentials")
+	seen := map[string]int{}
+	for i, c := range req.Credentials {
+		entry := credsPath.Index(i)
+		if c.Name == "" {
+			errs = append(errs, field.Required(entry.Child("name"), ""))
+			continue
+		}
+		if prev, ok := seen[c.Name]; ok {
+			errs = append(errs, field.Duplicate(entry.Child("name"),
+				fmt.Sprintf("name %q collides with credentials[%d].name", c.Name, prev)))
+			continue
+		}
+		seen[c.Name] = i
+	}
+
+	egressPath := p.Child("egress")
+	for i, e := range req.Egress {
+		entry := egressPath.Index(i)
+		host := strings.TrimSpace(e.Host)
+		if host == "" {
+			errs = append(errs, field.Required(entry.Child("host"), ""))
+			continue
+		}
+		if strings.HasPrefix(host, "*.") && strings.Contains(host[2:], "*") {
+			errs = append(errs, field.Invalid(entry.Child("host"), e.Host,
+				"only a single leading '*.' wildcard is permitted"))
+		} else if !strings.HasPrefix(host, "*.") && strings.Contains(host, "*") {
+			errs = append(errs, field.Invalid(entry.Child("host"), e.Host,
+				"wildcard '*' is only permitted as a leading '*.' segment"))
+		}
+		for j, port := range e.Ports {
+			if port < 0 || port > 65535 {
+				errs = append(errs, field.Invalid(entry.Child("ports").Index(j),
+					port, "port must be 0 (any) or in [1, 65535]"))
+			}
+		}
+	}
+
+	return errs
 }

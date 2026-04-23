@@ -21,21 +21,26 @@ import (
 	"fmt"
 	"reflect"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/policy"
 )
 
 var harnessrunlog = logf.Log.WithName("harnessrun-resource")
 
 // SetupHarnessRunWebhookWithManager registers the validating webhook for
-// HarnessRun with the manager.
+// HarnessRun with the manager. The validator gets the manager's client so
+// it can resolve the referenced template and intersect its requires with
+// in-namespace BrokerPolicies (ADR-0014).
 func SetupHarnessRunWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr, &paddockv1alpha1.HarnessRun{}).
-		WithValidator(&HarnessRunCustomValidator{}).
+		WithValidator(&HarnessRunCustomValidator{Client: mgr.GetClient()}).
 		Complete()
 }
 
@@ -45,17 +50,33 @@ func SetupHarnessRunWebhookWithManager(mgr ctrl.Manager) error {
 //
 //   - exactly one of spec.prompt or spec.promptFrom;
 //   - spec.templateRef.name non-empty;
-//   - spec immutable after creation.
-type HarnessRunCustomValidator struct{}
+//   - spec.extraEnv values do not source from Secrets (v0.3: credentials
+//     flow through the broker; see ADR-0015);
+//   - spec immutable after creation;
+//   - (v0.3, M2 placeholder) the referenced template must not declare a
+//     non-empty requires block until the broker lands in M3. Admission
+//     against such templates is rejected with a clear diagnostic; the
+//     full BrokerPolicy intersection algorithm replaces this check in
+//     M3 (ADR-0014).
+//
+// Client is optional — test code constructs the validator without one,
+// which skips the cross-object requires check. Production installs
+// always wire the manager's client via SetupHarnessRunWebhookWithManager.
+type HarnessRunCustomValidator struct {
+	Client client.Client
+}
 
 var _ admission.Validator[*paddockv1alpha1.HarnessRun] = &HarnessRunCustomValidator{}
 
-func (v *HarnessRunCustomValidator) ValidateCreate(_ context.Context, run *paddockv1alpha1.HarnessRun) (admission.Warnings, error) {
+func (v *HarnessRunCustomValidator) ValidateCreate(ctx context.Context, run *paddockv1alpha1.HarnessRun) (admission.Warnings, error) {
 	harnessrunlog.V(1).Info("validating HarnessRun create", "name", run.GetName())
-	return nil, validateHarnessRunSpec(&run.Spec)
+	if err := validateHarnessRunSpec(&run.Spec); err != nil {
+		return nil, err
+	}
+	return nil, v.validateAgainstTemplate(ctx, run)
 }
 
-func (v *HarnessRunCustomValidator) ValidateUpdate(_ context.Context, oldRun, newRun *paddockv1alpha1.HarnessRun) (admission.Warnings, error) {
+func (v *HarnessRunCustomValidator) ValidateUpdate(ctx context.Context, oldRun, newRun *paddockv1alpha1.HarnessRun) (admission.Warnings, error) {
 	harnessrunlog.V(1).Info("validating HarnessRun update", "name", newRun.GetName())
 
 	if !reflect.DeepEqual(oldRun.Spec, newRun.Spec) {
@@ -63,11 +84,41 @@ func (v *HarnessRunCustomValidator) ValidateUpdate(_ context.Context, oldRun, ne
 	}
 	// Still run spec validation so a formerly-valid object can't drift
 	// through changes to types or defaults.
-	return nil, validateHarnessRunSpec(&newRun.Spec)
+	if err := validateHarnessRunSpec(&newRun.Spec); err != nil {
+		return nil, err
+	}
+	return nil, v.validateAgainstTemplate(ctx, newRun)
 }
 
 func (v *HarnessRunCustomValidator) ValidateDelete(_ context.Context, _ *paddockv1alpha1.HarnessRun) (admission.Warnings, error) {
 	return nil, nil
+}
+
+// validateAgainstTemplate resolves the run's template and rejects the
+// run if the template declares any requires. Returns nil when the
+// validator has no client (tests) or the template is not yet present
+// (the reconciler will produce a clearer TemplateNotFound error).
+func (v *HarnessRunCustomValidator) validateAgainstTemplate(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
+	if v.Client == nil {
+		return nil
+	}
+	spec, _, err := policy.ResolveTemplate(ctx, v.Client, run.Namespace, run.Spec.TemplateRef)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// Surface as a controller-side TemplateNotFound rather than an
+			// admission failure — matches v0.2 UX.
+			return nil
+		}
+		return fmt.Errorf("resolving template: %w", err)
+	}
+	if policy.RequiresEmpty(spec.Requires) {
+		return nil
+	}
+	return fmt.Errorf(
+		"template %q declares spec.requires but no BrokerPolicy in namespace %q backs it; "+
+			"the broker lands in v0.3 M3 — until then, templates with requires cannot be submitted "+
+			"(see docs/specs/0002-broker-proxy-v0.3.md)",
+		run.Spec.TemplateRef.Name, run.Namespace)
 }
 
 // MaxInlinePromptBytes caps spec.prompt at 256 KiB, well under the
@@ -112,6 +163,18 @@ func validateHarnessRunSpec(spec *paddockv1alpha1.HarnessRunSpec) error {
 		case !hasCM && !hasSec:
 			errs = append(errs, field.Required(specPath.Child("promptFrom"),
 				"one of configMapKeyRef or secretKeyRef must be set"))
+		}
+	}
+
+	// v0.3: spec.extraEnv may not source values from Secrets. The broker
+	// is the only path for credential injection — a SecretKeyRef here
+	// bypasses the audit trail. See spec 0002 §5.4.
+	for i, e := range spec.ExtraEnv {
+		if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+			errs = append(errs, field.Forbidden(
+				specPath.Child("extraEnv").Index(i).Child("valueFrom").Child("secretKeyRef"),
+				"secret-valued env vars must flow through the broker; "+
+					"declare the credential on the template's requires and grant it via a BrokerPolicy"))
 		}
 	}
 

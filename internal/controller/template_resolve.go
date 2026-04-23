@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/policy"
 )
 
 // resolvedTemplate is a flattened HarnessTemplateSpec — either a standalone
@@ -83,7 +84,7 @@ func resolveNamespacedTemplate(ctx context.Context, c client.Client, namespace, 
 		if err := c.Get(ctx, client.ObjectKey{Name: spec.BaseTemplateRef.Name}, &parent); err != nil {
 			return nil, fmt.Errorf("resolving baseTemplateRef %q: %w", spec.BaseTemplateRef.Name, err)
 		}
-		merged := mergeTemplates(parent.Spec, spec)
+		merged := policy.MergeTemplates(parent.Spec, spec)
 		return &resolvedTemplate{Spec: merged, SourceKind: "HarnessTemplate", SourceName: ht.Name}, nil
 	}
 	return &resolvedTemplate{Spec: spec, SourceKind: "HarnessTemplate", SourceName: ht.Name}, nil
@@ -95,54 +96,4 @@ func resolveClusterTemplate(ctx context.Context, c client.Client, name string) (
 		return nil, err
 	}
 	return &resolvedTemplate{Spec: *cht.Spec.DeepCopy(), SourceKind: "ClusterHarnessTemplate", SourceName: cht.Name}, nil
-}
-
-// mergeTemplates applies child overrides onto a parent's locked fields.
-// Locked (inherited verbatim from parent): Image, Command, Args,
-// EventAdapter, Workspace, Harness.
-// Overridable (child wins when set): Defaults, Credentials,
-// PodTemplateOverlay.
-// See docs/adr/0003-template-override-semantics.md.
-func mergeTemplates(parent, child paddockv1alpha1.HarnessTemplateSpec) paddockv1alpha1.HarnessTemplateSpec {
-	out := *parent.DeepCopy()
-
-	// Merge child defaults onto parent defaults (non-zero child fields win).
-	if child.Defaults.Model != "" {
-		out.Defaults.Model = child.Defaults.Model
-	}
-	if child.Defaults.Timeout != nil {
-		out.Defaults.Timeout = child.Defaults.Timeout.DeepCopy()
-	}
-	if child.Defaults.Resources != nil {
-		out.Defaults.Resources = child.Defaults.Resources.DeepCopy()
-	}
-	if child.Defaults.TerminationGracePeriodSeconds != nil {
-		v := *child.Defaults.TerminationGracePeriodSeconds
-		out.Defaults.TerminationGracePeriodSeconds = &v
-	}
-
-	// Credentials: union. Child credentials with the same name replace
-	// the parent's; otherwise appended.
-	if len(child.Credentials) > 0 {
-		byName := make(map[string]paddockv1alpha1.CredentialRef, len(out.Credentials))
-		for _, c := range out.Credentials {
-			byName[c.Name] = c
-		}
-		for _, c := range child.Credentials {
-			byName[c.Name] = c
-		}
-		merged := make([]paddockv1alpha1.CredentialRef, 0, len(byName))
-		for _, c := range byName {
-			merged = append(merged, c)
-		}
-		out.Credentials = merged
-	}
-
-	// PodTemplateOverlay: child wins when set (strategic merge is a v0.2
-	// enhancement; for now child fully overrides).
-	if child.PodTemplateOverlay != nil {
-		out.PodTemplateOverlay = child.PodTemplateOverlay.DeepCopy()
-	}
-
-	return out
 }

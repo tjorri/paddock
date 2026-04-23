@@ -129,6 +129,14 @@ const (
 	HarnessRunConditionJobCreated       = "JobCreated"
 	HarnessRunConditionPodReady         = "PodReady"
 	HarnessRunConditionCompleted        = "Completed"
+	// BrokerReady indicates the broker issued every credential the
+	// template's requires block declares. Wired in v0.3 M3 with the
+	// broker skeleton.
+	HarnessRunConditionBrokerReady = "BrokerReady"
+	// EgressConfigured indicates the proxy sidecar's CA bundle is
+	// mounted and the interception mode has been resolved (transparent
+	// or cooperative). Wired in v0.3 M4 with the proxy sidecar.
+	HarnessRunConditionEgressConfigured = "EgressConfigured"
 )
 
 // HarnessRunStatus reports the observed state of a HarnessRun.

@@ -18,7 +18,6 @@ package controller
 
 import (
 	"fmt"
-	"sort"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -261,11 +260,13 @@ func buildPodVolumes(workspacePVC, promptSecret string) []corev1.Volume {
 }
 
 // buildEnv assembles the agent container's env: the PADDOCK_* standard
-// set, template credentials (envFrom Secret refs), run-level extraEnv,
-// and the resolved model.
+// set and run-level extraEnv. v0.3 removed the template-credentials
+// code path: credentials flow through the broker now (ADR-0015); the
+// agent reads them from env vars the broker populates via the proxy
+// sidecar (see M3+ for the wiring).
 func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate) []corev1.EnvVar {
 	const paddockStdEnvCount = 8
-	env := make([]corev1.EnvVar, 0, paddockStdEnvCount+len(template.Spec.Credentials)+len(run.Spec.ExtraEnv))
+	env := make([]corev1.EnvVar, 0, paddockStdEnvCount+len(run.Spec.ExtraEnv))
 	mount := effectiveWorkspaceMount(template)
 	env = append(env,
 		corev1.EnvVar{Name: "PADDOCK_PROMPT_PATH", Value: promptMountPath + "/" + promptFileName},
@@ -277,20 +278,6 @@ func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate) []cor
 		corev1.EnvVar{Name: "PADDOCK_RUN_NAME", Value: run.Name},
 		corev1.EnvVar{Name: "PADDOCK_MODEL", Value: effectiveModel(run, template)},
 	)
-
-	// Credentials → env vars from Secret refs. Stable ordering so Jobs
-	// are byte-reproducible.
-	creds := append([]paddockv1alpha1.CredentialRef{}, template.Spec.Credentials...)
-	sort.Slice(creds, func(i, j int) bool { return creds[i].Name < creds[j].Name })
-	for _, cr := range creds {
-		ref := cr.SecretRef.DeepCopy()
-		env = append(env, corev1.EnvVar{
-			Name: cr.EnvKey,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: ref,
-			},
-		})
-	}
 
 	env = append(env, run.Spec.ExtraEnv...)
 	return env
