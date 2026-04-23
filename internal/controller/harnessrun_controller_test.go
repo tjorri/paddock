@@ -299,5 +299,136 @@ var _ = Describe("HarnessRun controller", func() {
 				g.Expect(c.Reason).To(Equal("TemplateNotFound"))
 			}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 		})
+
+		It("fails the run when baseTemplateRef points at a missing cluster template", func() {
+			ns := newTestNamespace()
+
+			ht := &paddockv1alpha1.HarnessTemplate{
+				ObjectMeta: metav1.ObjectMeta{Name: "child-tpl", Namespace: ns},
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					BaseTemplateRef: &paddockv1alpha1.LocalObjectReference{Name: "cluster-parent-does-not-exist"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ht)).To(Succeed())
+
+			ws := &paddockv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{Name: "ws-orphan-base", Namespace: ns},
+				Spec: paddockv1alpha1.WorkspaceSpec{
+					Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("1Gi")},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+
+			run := &paddockv1alpha1.HarnessRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "orphan-base", Namespace: ns},
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					TemplateRef:  paddockv1alpha1.TemplateRef{Name: "child-tpl", Kind: "HarnessTemplate"},
+					WorkspaceRef: "ws-orphan-base",
+					Prompt:       "hi",
+				},
+			}
+			Expect(k8sClient.Create(ctx, run)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				got := &paddockv1alpha1.HarnessRun{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "orphan-base", Namespace: ns}, got)).To(Succeed())
+				g.Expect(got.Status.Phase).To(Equal(paddockv1alpha1.HarnessRunPhaseFailed))
+				c := findCondition(got.Status.Conditions, paddockv1alpha1.HarnessRunConditionTemplateResolved)
+				g.Expect(c).NotTo(BeNil())
+				g.Expect(c.Reason).To(Equal("TemplateNotFound"))
+			}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+		})
+	})
+
+	Context("prompt resolution", func() {
+		It("fails the run when promptFrom.secretKeyRef targets a Secret that does not exist", func() {
+			ns := newTestNamespace()
+
+			tpl := newEchoClusterTemplate("echo-tpl-prompt-1")
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, tpl) })
+			Expect(k8sClient.Create(ctx, tpl)).To(Succeed())
+
+			ws := &paddockv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{Name: "ws-prompt-1", Namespace: ns},
+				Spec: paddockv1alpha1.WorkspaceSpec{
+					Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("1Gi")},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+			waitWorkspaceActive("ws-prompt-1", ns)
+
+			run := &paddockv1alpha1.HarnessRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "prompt-missing-secret", Namespace: ns},
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					TemplateRef:  paddockv1alpha1.TemplateRef{Name: "echo-tpl-prompt-1", Kind: "ClusterHarnessTemplate"},
+					WorkspaceRef: "ws-prompt-1",
+					PromptFrom: &paddockv1alpha1.PromptSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "does-not-exist"},
+							Key:                  "prompt",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, run)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				got := &paddockv1alpha1.HarnessRun{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "prompt-missing-secret", Namespace: ns}, got)).To(Succeed())
+				g.Expect(got.Status.Phase).To(Equal(paddockv1alpha1.HarnessRunPhaseFailed))
+				c := findCondition(got.Status.Conditions, paddockv1alpha1.HarnessRunConditionPromptResolved)
+				g.Expect(c).NotTo(BeNil())
+				g.Expect(c.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(c.Reason).To(Equal("PromptSourceNotFound"))
+			}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+		})
+
+		It("fails the run when promptFrom.secretKeyRef's key is absent from the Secret", func() {
+			ns := newTestNamespace()
+
+			tpl := newEchoClusterTemplate("echo-tpl-prompt-2")
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, tpl) })
+			Expect(k8sClient.Create(ctx, tpl)).To(Succeed())
+
+			sec := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "prompts", Namespace: ns},
+				Data:       map[string][]byte{"other": []byte("unrelated")},
+			}
+			Expect(k8sClient.Create(ctx, sec)).To(Succeed())
+
+			ws := &paddockv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{Name: "ws-prompt-2", Namespace: ns},
+				Spec: paddockv1alpha1.WorkspaceSpec{
+					Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("1Gi")},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+			waitWorkspaceActive("ws-prompt-2", ns)
+
+			run := &paddockv1alpha1.HarnessRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "prompt-missing-key", Namespace: ns},
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					TemplateRef:  paddockv1alpha1.TemplateRef{Name: "echo-tpl-prompt-2", Kind: "ClusterHarnessTemplate"},
+					WorkspaceRef: "ws-prompt-2",
+					PromptFrom: &paddockv1alpha1.PromptSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "prompts"},
+							Key:                  "refactor",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, run)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				got := &paddockv1alpha1.HarnessRun{}
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "prompt-missing-key", Namespace: ns}, got)).To(Succeed())
+				g.Expect(got.Status.Phase).To(Equal(paddockv1alpha1.HarnessRunPhaseFailed))
+				c := findCondition(got.Status.Conditions, paddockv1alpha1.HarnessRunConditionPromptResolved)
+				g.Expect(c).NotTo(BeNil())
+				g.Expect(c.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(c.Reason).To(Equal("PromptKeyMissing"))
+			}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+		})
 	})
 })

@@ -120,6 +120,7 @@ const (
 const (
 	HarnessRunConditionTemplateResolved = "TemplateResolved"
 	HarnessRunConditionWorkspaceBound   = "WorkspaceBound"
+	HarnessRunConditionPromptResolved   = "PromptResolved"
 	HarnessRunConditionJobCreated       = "JobCreated"
 	HarnessRunConditionPodReady         = "PodReady"
 	HarnessRunConditionCompleted        = "Completed"

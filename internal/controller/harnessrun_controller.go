@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -44,6 +45,15 @@ import (
 // Finalizer that lets the run cancel its Job and release the
 // Workspace.status.activeRunRef before its object is garbage-collected.
 const HarnessRunFinalizer = "paddock.dev/harnessrun-finalizer"
+
+// Typed sentinel errors from resolvePrompt. The reconciler uses these
+// to translate user-correctable failures (missing Secret, missing key)
+// into a terminal HarnessRun phase + PromptResolved=False condition
+// instead of looping on requeue.
+var (
+	errPromptSourceNotFound = errors.New("prompt source object not found")
+	errPromptKeyMissing     = errors.New("prompt source is missing the requested key")
+)
 
 // Default storage for auto-provisioned ephemeral workspaces.
 var (
@@ -191,8 +201,29 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// 4. Materialise prompt ConfigMap + output ConfigMap + collector RBAC.
 	if err := r.ensurePromptConfigMap(ctx, &run); err != nil {
+		// User-correctable prompt errors (missing Secret, missing key)
+		// fail the run with a clear PromptResolved=False condition
+		// rather than looping on requeue. Transient API errors still
+		// return and requeue.
+		switch {
+		case errors.Is(err, errPromptSourceNotFound):
+			r.fail(&run, paddockv1alpha1.HarnessRunConditionPromptResolved,
+				"PromptSourceNotFound", err.Error())
+			return r.commitStatus(ctx, &run, origStatus)
+		case errors.Is(err, errPromptKeyMissing):
+			r.fail(&run, paddockv1alpha1.HarnessRunConditionPromptResolved,
+				"PromptKeyMissing", err.Error())
+			return r.commitStatus(ctx, &run, origStatus)
+		}
 		return ctrl.Result{}, err
 	}
+	setCondition(&run.Status.Conditions, metav1.Condition{
+		Type:               paddockv1alpha1.HarnessRunConditionPromptResolved,
+		Status:             metav1.ConditionTrue,
+		Reason:             "Resolved",
+		Message:            "prompt materialised",
+		ObservedGeneration: run.Generation,
+	})
 	if err := r.ensureOutputConfigMap(ctx, &run); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -455,7 +486,10 @@ func (r *HarnessRunReconciler) ensurePromptConfigMap(ctx context.Context, run *p
 }
 
 // resolvePrompt returns the effective prompt string. Webhook guarantees
-// exactly one of spec.prompt / spec.promptFrom is set.
+// exactly one of spec.prompt / spec.promptFrom is set. NotFound /
+// missing-key errors are wrapped as errPromptSourceNotFound /
+// errPromptKeyMissing so callers can discriminate user-correctable
+// failures from transient API errors.
 func (r *HarnessRunReconciler) resolvePrompt(ctx context.Context, run *paddockv1alpha1.HarnessRun) (string, error) {
 	if run.Spec.Prompt != "" {
 		return run.Spec.Prompt, nil
@@ -469,22 +503,28 @@ func (r *HarnessRunReconciler) resolvePrompt(ctx context.Context, run *paddockv1
 		var cm corev1.ConfigMap
 		key := client.ObjectKey{Namespace: run.Namespace, Name: pf.ConfigMapKeyRef.Name}
 		if err := r.Get(ctx, key, &cm); err != nil {
+			if apierrors.IsNotFound(err) {
+				return "", fmt.Errorf("%w: ConfigMap %q", errPromptSourceNotFound, pf.ConfigMapKeyRef.Name)
+			}
 			return "", err
 		}
 		v, ok := cm.Data[pf.ConfigMapKeyRef.Key]
 		if !ok {
-			return "", fmt.Errorf("ConfigMap %s does not have key %q", pf.ConfigMapKeyRef.Name, pf.ConfigMapKeyRef.Key)
+			return "", fmt.Errorf("%w: ConfigMap %s key %q", errPromptKeyMissing, pf.ConfigMapKeyRef.Name, pf.ConfigMapKeyRef.Key)
 		}
 		return v, nil
 	case pf.SecretKeyRef != nil:
 		var sec corev1.Secret
 		key := client.ObjectKey{Namespace: run.Namespace, Name: pf.SecretKeyRef.Name}
 		if err := r.Get(ctx, key, &sec); err != nil {
+			if apierrors.IsNotFound(err) {
+				return "", fmt.Errorf("%w: Secret %q", errPromptSourceNotFound, pf.SecretKeyRef.Name)
+			}
 			return "", err
 		}
 		v, ok := sec.Data[pf.SecretKeyRef.Key]
 		if !ok {
-			return "", fmt.Errorf("secret %s does not have key %q", pf.SecretKeyRef.Name, pf.SecretKeyRef.Key)
+			return "", fmt.Errorf("%w: Secret %s key %q", errPromptKeyMissing, pf.SecretKeyRef.Name, pf.SecretKeyRef.Key)
 		}
 		return string(v), nil
 	}
