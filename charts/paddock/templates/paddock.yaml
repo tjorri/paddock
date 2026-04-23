@@ -744,6 +744,8 @@ spec:
             - --proxy-allow={{ .Values.proxyAllowList | default "" }}
             - --iptables-init-image={{ if .Values.iptablesInitImage.repository }}{{ .Values.iptablesInitImage.repository }}:{{ .Values.iptablesInitImage.tag | default .Chart.AppVersion }}{{ end }}
             - --networkpolicy-enforce={{ .Values.proxy.networkPolicy.enforce | default "auto" }}
+            - --broker-ca-secret-name=broker-serving-cert
+            - --broker-ca-secret-namespace=paddock-system
             - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
           command:
             - /manager

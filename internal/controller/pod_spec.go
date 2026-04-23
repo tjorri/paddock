@@ -73,6 +73,25 @@ const (
 	proxyHTTPSProxy    = "http://127.0.0.1:15001"
 	proxyCAVolumeName  = "paddock-proxy-tls"
 	proxyCAMountPath   = "/etc/paddock-proxy/tls"
+
+	// Proxy ↔ broker wiring. The proxy sidecar authenticates to the
+	// broker with a ProjectedServiceAccountToken (audience=paddock-broker)
+	// and verifies the broker's serving cert via a Secret-projected CA
+	// bundle. Both volumes are mounted read-only on the proxy container
+	// and never exposed to the agent.
+	brokerTokenVolumeName = "paddock-broker-token"
+	brokerTokenMountPath  = "/var/run/secrets/paddock-broker"
+	brokerTokenPath       = brokerTokenMountPath + "/token"
+	brokerCAVolumeName    = "paddock-broker-ca"
+	brokerCAMountPath     = "/etc/paddock-broker/ca"
+	brokerCAPath          = brokerCAMountPath + "/" + brokerCAKey
+	// brokerTokenAudience matches the broker's TokenReview audience
+	// (broker.TokenAudience). Declared here to keep cross-package
+	// dependencies minimal.
+	brokerTokenAudience = "paddock-broker"
+	// brokerTokenExpirationSeconds is the TTL the ProjectedSA volume
+	// renews at. 1h matches the default K8s cap.
+	brokerTokenExpirationSeconds int64 = 3600
 	// Dedicated UID for the proxy sidecar so iptables can RETURN
 	// proxy-owned traffic without looping. Matches cmd/iptables-init's
 	// defaultProxyUID. 1337 is the Istio convention — low enough
@@ -132,6 +151,17 @@ type podSpecInputs struct {
 	// iptablesInitImage is the init-container image used for transparent
 	// mode. Ignored when interceptionMode != transparent.
 	iptablesInitImage string
+
+	// brokerEndpoint, when non-empty, triggers the proxy sidecar to
+	// route egress decisions + SubstituteAuth through the broker
+	// instead of the static --allow list. When empty, the proxy
+	// continues to use proxyAllowList as in M4/M5.
+	brokerEndpoint string
+
+	// brokerCASecret names the per-run Secret holding ca.crt for the
+	// broker's serving cert. Populated by ensureBrokerCA when broker
+	// integration is enabled; empty otherwise.
+	brokerCASecret string
 }
 
 // buildJob renders the batchv1.Job for a HarnessRun. Assumes the caller
@@ -377,6 +407,37 @@ func buildPodVolumes(in podSpecInputs) []corev1.Volume {
 			},
 		})
 	}
+	if proxyEnabled(in) && in.brokerEndpoint != "" {
+		// ProjectedServiceAccountToken gives the proxy a short-lived
+		// credential scoped specifically to the broker. The kubelet
+		// rotates it on its own cadence (1/ExpirationSeconds by
+		// default); the proxy reads it fresh on every broker call.
+		expiry := brokerTokenExpirationSeconds
+		vols = append(vols,
+			corev1.Volume{
+				Name: brokerTokenVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					Projected: &corev1.ProjectedVolumeSource{
+						Sources: []corev1.VolumeProjection{{
+							ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+								Audience:          brokerTokenAudience,
+								ExpirationSeconds: &expiry,
+								Path:              "token",
+							},
+						}},
+					},
+				},
+			},
+			corev1.Volume{
+				Name: brokerCAVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: in.brokerCASecret,
+					},
+				},
+			},
+		)
+	}
 	return vols
 }
 
@@ -409,10 +470,26 @@ func buildProxyContainer(run *paddockv1alpha1.HarnessRun, in podSpecInputs) core
 		"--listen-address=" + listenAddr,
 		"--ca-dir=" + proxyCAMountPath,
 		"--run-name=" + run.Name,
+		"--run-namespace=" + run.Namespace,
 		"--mode=" + string(mode),
 	}
-	if in.proxyAllowList != "" {
+	if in.brokerEndpoint != "" {
+		args = append(args,
+			"--broker-endpoint="+in.brokerEndpoint,
+			"--broker-token-path="+brokerTokenPath,
+			"--broker-ca-path="+brokerCAPath,
+		)
+	} else if in.proxyAllowList != "" {
 		args = append(args, "--allow="+in.proxyAllowList)
+	}
+	mounts := []corev1.VolumeMount{
+		{Name: proxyCAVolumeName, MountPath: proxyCAMountPath, ReadOnly: true},
+	}
+	if in.brokerEndpoint != "" {
+		mounts = append(mounts,
+			corev1.VolumeMount{Name: brokerTokenVolumeName, MountPath: brokerTokenMountPath, ReadOnly: true},
+			corev1.VolumeMount{Name: brokerCAVolumeName, MountPath: brokerCAMountPath, ReadOnly: true},
+		)
 	}
 	uid := int64(proxyRunAsUID)
 	return corev1.Container{
@@ -428,9 +505,7 @@ func buildProxyContainer(run *paddockv1alpha1.HarnessRun, in podSpecInputs) core
 				},
 			},
 		},
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: proxyCAVolumeName, MountPath: proxyCAMountPath, ReadOnly: true},
-		},
+		VolumeMounts: mounts,
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU:    defaultProxyCPURequest,

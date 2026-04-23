@@ -37,13 +37,20 @@ type Validator interface {
 	ValidateEgress(ctx context.Context, host string, port int) (Decision, error)
 }
 
-// Decision captures a single egress verdict. Matches broker.ValidateEgress
-// gRPC response shape so M7 can drop in a BrokerValidator without
-// changing callers.
+// Decision captures a single egress verdict. Mirrors the broker's
+// ValidateEgress response shape so BrokerValidator's output goes
+// straight through.
 type Decision struct {
 	Allowed       bool
 	MatchedPolicy string
 	Reason        string
+
+	// SubstituteAuth declares that the MITM path must call the broker's
+	// SubstituteAuth endpoint per request and rewrite headers before
+	// forwarding upstream. False means the proxy either relays bytes
+	// (cooperative/transparent without substitution) or still MITMs for
+	// visibility but doesn't rewrite credentials.
+	SubstituteAuth bool
 }
 
 // StaticValidator accepts a caller-provided host:port allow-list. This

@@ -45,3 +45,16 @@ func (r *Registry) Lookup(name string) (Provider, bool) {
 	p, ok := r.byName[name]
 	return p, ok
 }
+
+// All returns every registered provider. Iteration order is
+// unspecified — callers that need determinism should sort by Name().
+// The broker's SubstituteAuth dispatch walks this list in whatever
+// order the registry produces; providers are expected to gate on the
+// bearer prefix they own so ordering doesn't affect the outcome.
+func (r *Registry) All() []Provider {
+	out := make([]Provider, 0, len(r.byName))
+	for _, p := range r.byName {
+		out = append(out, p)
+	}
+	return out
+}

@@ -66,6 +66,9 @@ func main() {
 		shutdownGrace    time.Duration
 		disableAudit     bool
 		upstreamCABundle string
+		brokerEndpoint   string
+		brokerTokenPath  string
+		brokerCAPath     string
 	)
 	flag.StringVar(&listenAddr, "listen-address", ":15001",
 		"Listen address. Cooperative mode: HTTP CONNECT proxy (agent sends HTTPS_PROXY requests here). "+
@@ -93,6 +96,14 @@ func main() {
 	flag.StringVar(&upstreamCABundle, "upstream-ca-bundle", "",
 		"Optional additional CA bundle path appended to the system roots for verifying upstream TLS. "+
 			"Required for tests that target self-signed upstreams; unset in production.")
+	flag.StringVar(&brokerEndpoint, "broker-endpoint", "",
+		"HTTPS URL of the paddock-broker. When set, egress validation and auth substitution flow "+
+			"through the broker (replacing --allow). Empty falls back to the static allow-list.")
+	flag.StringVar(&brokerTokenPath, "broker-token-path", "/var/run/secrets/paddock-broker/token",
+		"Path to a ProjectedServiceAccountToken with audience=paddock-broker. "+
+			"Read fresh on every broker call so token rotation takes effect mid-run.")
+	flag.StringVar(&brokerCAPath, "broker-ca-path", "/etc/paddock-broker/ca/ca.crt",
+		"CA bundle verifying the broker's serving cert. Written by cert-manager alongside broker-serving-cert.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -115,10 +126,27 @@ func main() {
 	}
 	setupLog.Info("loaded MITM CA", "ca-dir", caDir)
 
-	validator, err := proxy.NewStaticValidatorFromEnv(allowList)
-	if err != nil {
-		setupLog.Error(err, "parse --allow")
-		os.Exit(1)
+	var (
+		validator   proxy.Validator
+		substituter proxy.Substituter
+	)
+	if brokerEndpoint != "" {
+		bc, err := proxy.NewBrokerClient(brokerEndpoint, brokerTokenPath, brokerCAPath, runName, runNamespace)
+		if err != nil {
+			setupLog.Error(err, "build broker client")
+			os.Exit(1)
+		}
+		validator = bc
+		substituter = bc
+		setupLog.Info("broker integration enabled", "endpoint", brokerEndpoint)
+	} else {
+		sv, err := proxy.NewStaticValidatorFromEnv(allowList)
+		if err != nil {
+			setupLog.Error(err, "parse --allow")
+			os.Exit(1)
+		}
+		validator = sv
+		setupLog.Info("broker integration disabled; using static --allow list")
 	}
 
 	audit := buildAuditSink(disableAudit, runName, runNamespace)
@@ -132,6 +160,7 @@ func main() {
 	p := &proxy.Server{
 		CA:                ca,
 		Validator:         validator,
+		Substituter:       substituter,
 		Audit:             audit,
 		UpstreamTLSConfig: upstreamCfg,
 		Logger:            logger,

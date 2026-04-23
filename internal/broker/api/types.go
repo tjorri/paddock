@@ -40,9 +40,11 @@ const (
 
 // Path constants for the broker's HTTP routes.
 const (
-	PathIssue   = "/v1/issue"
-	PathHealthz = "/healthz"
-	PathReadyz  = "/readyz"
+	PathIssue          = "/v1/issue"
+	PathValidateEgress = "/v1/validate-egress"
+	PathSubstituteAuth = "/v1/substitute-auth"
+	PathHealthz        = "/healthz"
+	PathReadyz         = "/readyz"
 )
 
 // IssueRequest asks the broker to issue a value for one of the named
@@ -86,9 +88,62 @@ type ErrorResponse struct {
 	//   - "RunNotFound"          404
 	//   - "CredentialNotFound"   404 (template does not declare it)
 	//   - "PolicyMissing"        403 (no BrokerPolicy grants the cred)
+	//   - "BearerUnknown"        404 (SubstituteAuth could not match bearer)
 	//   - "ProviderFailure"      500
 	Code string `json:"code"`
 
 	// Message is a human-readable explanation.
 	Message string `json:"message"`
+}
+
+// ValidateEgressRequest is the proxy's per-connection policy question.
+// The broker intersects the run's matching BrokerPolicies' egress grants
+// against (host, port) and returns allow/deny. Used by the proxy on
+// every new CONNECT / transparent-mode TCP arrival.
+type ValidateEgressRequest struct {
+	// Host is the destination hostname (CONNECT target host or SNI).
+	Host string `json:"host"`
+	// Port is the destination TCP port.
+	Port int `json:"port"`
+}
+
+// ValidateEgressResponse carries the egress verdict. A non-nil
+// SubstituteAuth=true signals that the proxy must MITM and call
+// PathSubstituteAuth before forwarding — required for the AnthropicAPI
+// x-api-key swap.
+type ValidateEgressResponse struct {
+	Allowed        bool   `json:"allowed"`
+	MatchedPolicy  string `json:"matchedPolicy,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	SubstituteAuth bool   `json:"substituteAuth,omitempty"`
+}
+
+// SubstituteAuthRequest is the proxy's per-request credential swap call,
+// made once per MITM'd request whose matched egress grant declared
+// SubstituteAuth:true. The proxy sends the host + the incoming
+// Authorization / x-api-key headers; the broker returns the headers it
+// wants set/removed before the request is forwarded upstream.
+type SubstituteAuthRequest struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
+
+	// IncomingAuthorization is the agent-sent Authorization header
+	// value, if any. The broker looks it up by bearer to find the
+	// matching provider lease.
+	IncomingAuthorization string `json:"incomingAuthorization,omitempty"`
+
+	// IncomingXAPIKey is the agent-sent x-api-key header value, if any.
+	// Providers that issue opaque bearers via x-api-key (Anthropic-
+	// style) read this as an alternative to Authorization.
+	IncomingXAPIKey string `json:"incomingXApiKey,omitempty"`
+}
+
+// SubstituteAuthResponse tells the proxy what to do with the request
+// headers before forwarding upstream. SetHeaders overrides or adds
+// headers (case-insensitive per RFC 9110); RemoveHeaders drops headers
+// entirely (commonly used to strip the Paddock-issued bearer before
+// upstream ever sees it).
+type SubstituteAuthResponse struct {
+	SetHeaders    map[string]string `json:"setHeaders,omitempty"`
+	RemoveHeaders []string          `json:"removeHeaders,omitempty"`
 }

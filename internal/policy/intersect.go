@@ -198,6 +198,14 @@ func grantsCoverEgress(policies []*paddockv1alpha1.BrokerPolicy, host string, po
 // hostMatches reports whether a grant host (possibly with a leading
 // "*." wildcard) covers a requirement host. Case-insensitive.
 func hostMatches(grant, required string) bool {
+	return EgressHostMatches(grant, required)
+}
+
+// EgressHostMatches is the same grant→host matching rule admission
+// uses, exposed for runtime callers (broker ValidateEgress). Apex
+// does not match a "*." wildcard; case-insensitive; literal equality
+// always wins.
+func EgressHostMatches(grant, required string) bool {
 	g := strings.ToLower(grant)
 	r := strings.ToLower(required)
 	if g == r {

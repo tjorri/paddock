@@ -95,6 +95,8 @@ func main() {
 	var proxyAllowList string
 	var iptablesInitImage string
 	var networkPolicyEnforce string
+	var brokerCAName string
+	var brokerCANamespace string
 	flag.StringVar(&collectorImage, "collector-image", controller.DefaultCollectorImage,
 		"Image for the generic collector sidecar injected into every HarnessRun Pod.")
 	flag.IntVar(&ringMaxEvents, "recent-events-cap", 50,
@@ -121,6 +123,11 @@ func main() {
 	flag.StringVar(&iptablesInitImage, "iptables-init-image", "",
 		"Image for the transparent-mode NET_ADMIN init container (ADR-0013 §7.2). "+
 			"Empty disables transparent mode — every run resolves to cooperative.")
+	flag.StringVar(&brokerCAName, "broker-ca-secret-name", "broker-serving-cert",
+		"Name of the cert-manager-issued broker-serving-cert Secret the controller copies ca.crt from "+
+			"into per-run <run>-broker-ca Secrets for the proxy sidecar. Empty disables broker-backed proxy enforcement.")
+	flag.StringVar(&brokerCANamespace, "broker-ca-secret-namespace", "paddock-system",
+		"Namespace hosting the broker-serving-cert Secret.")
 	flag.StringVar(&networkPolicyEnforce, "networkpolicy-enforce", "auto",
 		"Per-run NetworkPolicy enforcement (ADR-0013 §7.4). 'on' always emits; "+
 			"'off' never does; 'auto' probes kube-system for a known NP-capable CNI "+
@@ -278,9 +285,14 @@ func main() {
 		IPTablesInitImage:        iptablesInitImage,
 		NetworkPolicyEnforce:     npEnforce,
 		NetworkPolicyAutoEnabled: npAuto,
+		BrokerEndpoint:           brokerEndpoint,
 		ProxyCASource: controller.ProxyCASource{
 			Name:      proxyCAName,
 			Namespace: proxyCANamespace,
+		},
+		BrokerCASource: controller.BrokerCASource{
+			Name:      brokerCAName,
+			Namespace: brokerCANamespace,
 		},
 	}
 	if brokerClient != nil {

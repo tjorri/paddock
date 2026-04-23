@@ -49,10 +49,19 @@ type Server struct {
 	// the projected ca-bundle Secret (ADR-0013 §7.3).
 	CA *MITMCertificateAuthority
 
-	// Validator decides allow/deny per (host, port). M4 passes a
-	// StaticValidator; M7 wires in a BrokerValidator that calls
-	// broker.ValidateEgress.
+	// Validator decides allow/deny per (host, port). M4 shipped a
+	// StaticValidator; M7 passes a BrokerClient that calls the broker's
+	// ValidateEgress endpoint so the same BrokerPolicy store the
+	// admission webhook consulted decides runtime flow too.
 	Validator Validator
+
+	// Substituter, when non-nil, rewrites outbound request headers when
+	// the matched egress grant declared SubstituteAuth=true. The MITM
+	// path drops to a request-by-request loop so headers can be swapped
+	// mid-connection (required for the AnthropicAPI x-api-key swap —
+	// ADR-0015 §"AnthropicAPIProvider"). nil falls back to
+	// bytes-both-ways shuttle, same as cooperative M4 behaviour.
+	Substituter Substituter
 
 	// Audit receives every denial (and, later, summarised allows). nil
 	// defaults to NoopAuditSink.
@@ -161,13 +170,20 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		clientConn = &prefixConn{Conn: clientConn, prefix: leftover}
 	}
 
-	s.mitm(ctx, clientConn, host, port, decision.MatchedPolicy)
+	s.mitm(ctx, clientConn, host, port, decision)
 }
 
 // mitm terminates TLS on the agent side, dials the upstream with TLS,
-// and shuttles bytes both ways. Audit allow-events land here on success
-// (M4: per-connection; ADR-0016 summarisation in a later milestone).
-func (s *Server) mitm(ctx context.Context, clientConn net.Conn, host string, port int, matchedPolicy string) {
+// and either:
+//   - shuttles bytes both ways (default, fastest path), or
+//   - runs the request-by-request loop via handleSubstituted when the
+//     matched policy's egress grant declared SubstituteAuth=true — the
+//     proxy then parses each HTTP request, swaps headers through the
+//     broker, and forwards.
+//
+// Audit allow-events land here on success (M4: per-connection;
+// ADR-0016 summarisation in a later milestone).
+func (s *Server) mitm(ctx context.Context, clientConn net.Conn, host string, port int, decision Decision) {
 	leaf, err := s.CA.ForgeFor(host)
 	if err != nil {
 		s.log().Error(err, "forge leaf", "host", host)
@@ -195,8 +211,15 @@ func (s *Server) mitm(ctx context.Context, clientConn net.Conn, host string, por
 	s.recordEgress(ctx, EgressEvent{
 		Host: host, Port: port,
 		Decision:      paddockv1alpha1.AuditDecisionGranted,
-		MatchedPolicy: matchedPolicy,
+		MatchedPolicy: decision.MatchedPolicy,
 	})
+
+	if decision.SubstituteAuth && s.Substituter != nil {
+		if err := handleSubstituted(ctx, clientTLS, upstreamConn, host, port, s.Substituter); err != nil {
+			s.log().V(1).Info("substitute-auth MITM ended", "host", host, "err", err)
+		}
+		return
+	}
 
 	// Full-duplex copy. Exit as soon as either direction closes — the
 	// proxy does not add buffering beyond the kernel socket buffers.

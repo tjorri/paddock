@@ -62,6 +62,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc(brokerapi.PathHealthz, s.handleHealthz)
 	mux.HandleFunc(brokerapi.PathReadyz, s.handleReadyz)
 	mux.HandleFunc(brokerapi.PathIssue, s.handleIssue)
+	mux.HandleFunc(brokerapi.PathValidateEgress, s.handleValidateEgress)
+	mux.HandleFunc(brokerapi.PathSubstituteAuth, s.handleSubstituteAuth)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -271,6 +273,178 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 		}
 	}
 	return result, audit, nil
+}
+
+// handleValidateEgress is the proxy's per-connection policy check.
+// The proxy hits this with run identity in X-Paddock-Run and the
+// destination in the body; the broker intersects matching BrokerPolicies'
+// egress grants against (host, port) and returns allow/deny.
+//
+// This endpoint is deliberately narrow — no template resolution, no
+// credential dispatch, just "does any policy grant this destination?".
+// Keeps the hot path cheap enough to call on every new upstream
+// connection without a proxy-side cache.
+func (s *Server) handleValidateEgress(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "BadRequest", "POST required")
+		return
+	}
+
+	caller, err := s.authenticate(ctx, r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized", err.Error())
+		return
+	}
+	runName, runNamespace, err := resolveRunIdentity(r, caller)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+
+	var req brokerapi.ValidateEgressRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("decoding body: %v", err))
+		return
+	}
+	if req.Host == "" {
+		writeError(w, http.StatusBadRequest, "BadRequest", "host is required")
+		return
+	}
+
+	// Resolve the run so we know which template's policies to check.
+	// Not-found runs short-circuit to deny — the proxy shouldn't be
+	// asking for a run that was deleted.
+	var run paddockv1alpha1.HarnessRun
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: runName, Namespace: runNamespace}, &run); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeJSON(w, http.StatusOK, brokerapi.ValidateEgressResponse{
+				Allowed: false,
+				Reason:  "run no longer exists",
+			})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "ProviderFailure", err.Error())
+		return
+	}
+
+	grant, policyName, err := matchEgressGrant(ctx, s.Client, runNamespace, run.Spec.TemplateRef.Name, req.Host, req.Port)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ProviderFailure", err.Error())
+		return
+	}
+	if grant == nil {
+		writeJSON(w, http.StatusOK, brokerapi.ValidateEgressResponse{
+			Allowed: false,
+			Reason:  fmt.Sprintf("no BrokerPolicy grants egress to %s:%d", req.Host, req.Port),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, brokerapi.ValidateEgressResponse{
+		Allowed:        true,
+		MatchedPolicy:  policyName,
+		SubstituteAuth: grant.SubstituteAuth,
+	})
+}
+
+// handleSubstituteAuth swaps a Paddock-issued bearer for upstream
+// credentials at MITM time. The proxy sends the incoming Authorization
+// / x-api-key values; the broker walks providers implementing
+// Substituter, returns the first match. On error (expired / unknown)
+// the proxy drops the connection — the agent sees a TLS error and
+// retries with the same bearer, which will fail again until admission
+// re-runs.
+func (s *Server) handleSubstituteAuth(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := log.FromContext(ctx)
+
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "BadRequest", "POST required")
+		return
+	}
+
+	caller, err := s.authenticate(ctx, r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized", err.Error())
+		return
+	}
+	runName, runNamespace, err := resolveRunIdentity(r, caller)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+
+	var req brokerapi.SubstituteAuthRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("decoding body: %v", err))
+		return
+	}
+	if req.IncomingAuthorization == "" && req.IncomingXAPIKey == "" {
+		writeError(w, http.StatusBadRequest, "BadRequest",
+			"request must carry incomingAuthorization or incomingXApiKey")
+		return
+	}
+
+	pReq := providers.SubstituteRequest{
+		RunName:   runName,
+		Namespace: runNamespace,
+		Host:      req.Host,
+		Port:      req.Port,
+	}
+
+	// Try x-api-key first (Anthropic agents put the bearer there); then
+	// Authorization (Bearer ...). First provider that claims the bearer
+	// answers definitively.
+	candidates := []string{req.IncomingXAPIKey, req.IncomingAuthorization}
+	for _, bearer := range candidates {
+		if bearer == "" {
+			continue
+		}
+		pReq.IncomingBearer = bearer
+		for _, prov := range s.Providers.All() {
+			sub, ok := prov.(providers.Substituter)
+			if !ok {
+				continue
+			}
+			result, err := sub.SubstituteAuth(ctx, pReq)
+			if !result.Matched {
+				continue
+			}
+			if err != nil {
+				logger.Info("SubstituteAuth denied", "run", runName, "provider", prov.Name(), "err", err)
+				writeError(w, http.StatusForbidden, "SubstituteFailed", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, brokerapi.SubstituteAuthResponse{
+				SetHeaders:    result.SetHeaders,
+				RemoveHeaders: result.RemoveHeaders,
+			})
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "BearerUnknown",
+		"no registered provider owns the supplied bearer")
+}
+
+// resolveRunIdentity extracts (runName, runNamespace) from request
+// headers, validating that non-controller callers only ask about runs
+// in their own namespace. Shared between handleIssue, handleValidateEgress
+// and handleSubstituteAuth.
+func resolveRunIdentity(r *http.Request, caller CallerIdentity) (string, string, error) {
+	runName := r.Header.Get(brokerapi.HeaderRun)
+	if runName == "" {
+		return "", "", fmt.Errorf("header %s is required", brokerapi.HeaderRun)
+	}
+	runNamespace := r.Header.Get(brokerapi.HeaderNamespace)
+	if runNamespace == "" {
+		runNamespace = caller.Namespace
+	}
+	if !caller.IsController && runNamespace != caller.Namespace {
+		return "", "", fmt.Errorf("caller in namespace %q cannot ask about runs in namespace %q",
+			caller.Namespace, runNamespace)
+	}
+	return runName, runNamespace, nil
 }
 
 func (s *Server) authenticate(ctx context.Context, r *http.Request) (CallerIdentity, error) {

@@ -87,3 +87,54 @@ func providerBacksPurpose(p providers.Provider, purpose paddockv1alpha1.Credenti
 	}
 	return false
 }
+
+// matchEgressGrant walks BrokerPolicies applying to the run's template
+// and returns the first egress grant that covers (host, port).
+// Multiple matching grants compose additively; on a collision the
+// first matching policy wins (deterministic by List order).
+//
+// A nil return means no policy grants the destination — the proxy's
+// ValidateEgress call then becomes a deny.
+func matchEgressGrant(
+	ctx context.Context,
+	c client.Client,
+	namespace, templateName, host string,
+	port int,
+) (grant *paddockv1alpha1.EgressGrant, policyName string, err error) {
+	var list paddockv1alpha1.BrokerPolicyList
+	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, "", err
+	}
+	for i := range list.Items {
+		bp := &list.Items[i]
+		if !policy.AppliesToTemplate(bp.Spec.AppliesToTemplates, templateName) {
+			continue
+		}
+		for j := range bp.Spec.Grants.Egress {
+			g := &bp.Spec.Grants.Egress[j]
+			if egressCovers(g, host, port) {
+				return g, bp.Name, nil
+			}
+		}
+	}
+	return nil, "", nil
+}
+
+// egressCovers mirrors policy.grantsCoverEgress for one grant — kept
+// as a thin wrapper so the broker can pass a *paddockv1alpha1.EgressGrant
+// directly (policy package operates on slices at admission time).
+func egressCovers(g *paddockv1alpha1.EgressGrant, host string, port int) bool {
+	if !policy.EgressHostMatches(g.Host, host) {
+		return false
+	}
+	if len(g.Ports) == 0 {
+		return true
+	}
+	p32 := int32(port) //nolint:gosec // CONNECT port is bounded [1,65535]
+	for _, allowed := range g.Ports {
+		if allowed == 0 || allowed == p32 {
+			return true
+		}
+	}
+	return false
+}

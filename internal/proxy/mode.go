@@ -95,19 +95,23 @@ func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	s.mitmTransparent(ctx, peek, sni, origIP, origPort, decision.MatchedPolicy)
+	s.mitmTransparent(ctx, peek, sni, origIP, origPort, decision)
 }
 
 // mitmTransparent terminates TLS on the agent side (leaf forged from
 // SNI), dials the upstream at the original IP:port, and proxies bytes.
-// Symmetric with Server.mitm but without the CONNECT 200-OK write.
+// Symmetric with Server.mitm but without the CONNECT 200-OK write —
+// transparent mode drops straight into TLS termination.
+//
+// Branches to the substitute-auth request loop when the matched
+// grant so declares, identical to the cooperative MITM path.
 func (s *Server) mitmTransparent(
 	ctx context.Context,
 	clientConn net.Conn,
 	sni string,
 	origIP net.IP,
 	origPort int,
-	matchedPolicy string,
+	decision Decision,
 ) {
 	leaf, err := s.CA.ForgeFor(sni)
 	if err != nil {
@@ -136,8 +140,15 @@ func (s *Server) mitmTransparent(
 	s.recordEgress(ctx, EgressEvent{
 		Host: sni, Port: origPort,
 		Decision:      paddockv1alpha1.AuditDecisionGranted,
-		MatchedPolicy: matchedPolicy,
+		MatchedPolicy: decision.MatchedPolicy,
 	})
+
+	if decision.SubstituteAuth && s.Substituter != nil {
+		if err := handleSubstituted(ctx, clientTLS, upstream, sni, origPort, s.Substituter); err != nil {
+			s.log().V(1).Info("substitute-auth MITM ended", "host", sni, "err", err)
+		}
+		return
+	}
 
 	errCh := make(chan error, 2)
 	go func() { _, err := copyNonBlocking(upstream, clientTLS); errCh <- err }()

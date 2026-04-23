@@ -88,3 +88,62 @@ type IssueResult struct {
 // given purpose. Broker callers should interpret this as a policy
 // mismatch, not a server-side failure.
 var ErrNotImplemented = errors.New("provider cannot back this credential purpose")
+
+// Substituter is an optional capability: providers that back
+// auth-substituting egress destinations (AnthropicAPI's x-api-key swap
+// in v0.3, OpenAI Authorization: Bearer swap planned for v0.4) implement
+// this interface.
+//
+// The broker's /v1/substitute-auth handler walks every provider that
+// implements Substituter and asks each one whether it owns the
+// incoming bearer; the first provider returning Matched=true answers
+// definitively (possibly with an error). See spec 0002 §6.2, §7.1.
+type Substituter interface {
+	// SubstituteAuth looks up the incoming bearer/api-key in this
+	// provider's lease store and, if owned, returns the headers the
+	// proxy should set + remove before forwarding upstream. Returns
+	// Matched=false when the bearer is not owned by this provider —
+	// callers then try the next Substituter.
+	SubstituteAuth(ctx context.Context, req SubstituteRequest) (SubstituteResult, error)
+}
+
+// SubstituteRequest is the per-request substitution input the broker
+// passes down from its /v1/substitute-auth handler.
+type SubstituteRequest struct {
+	// RunName and Namespace identify the calling run — enforced already
+	// by the broker handler via TokenReview; the provider uses them for
+	// audit + to scope any Secret reads.
+	RunName   string
+	Namespace string
+
+	// Host and Port are the upstream destination the agent was heading
+	// to. Providers can reject a mismatched host (e.g. anthropic provider
+	// returning Matched=false for non-api.anthropic.com hosts even when
+	// the bearer matches).
+	Host string
+	Port int
+
+	// IncomingBearer is the agent-sent credential the proxy pulled off
+	// the request. For Anthropic, agents present it as either the value
+	// of Authorization ("Bearer pdk-anthropic-…") or x-api-key
+	// ("pdk-anthropic-…"); the proxy strips the "Bearer " prefix before
+	// calling so the provider sees the raw bearer.
+	IncomingBearer string
+}
+
+// SubstituteResult is the provider's instruction to the proxy.
+type SubstituteResult struct {
+	// Matched is true when the provider owns IncomingBearer. When
+	// false, the broker keeps looking through its provider list.
+	Matched bool
+
+	// SetHeaders overrides or adds headers on the outbound request.
+	// Header names are canonicalised by net/http; providers may use any
+	// casing. Values are emitted as-is.
+	SetHeaders map[string]string
+
+	// RemoveHeaders drops headers entirely before the request is sent
+	// upstream. Use for stripping the Paddock-issued bearer the agent
+	// presented so upstream only ever sees the substituted credential.
+	RemoveHeaders []string
+}

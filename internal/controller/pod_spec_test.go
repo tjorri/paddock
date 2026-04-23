@@ -436,6 +436,80 @@ func TestBuildPodSpec_TransparentMode(t *testing.T) {
 	}
 }
 
+// TestBuildPodSpec_ProxyBrokerWiring verifies M7's broker-backed proxy
+// config: when --broker-endpoint is set, the proxy container gains
+// broker flags + token/CA volume mounts, and the pod-level volumes
+// include the projected SA-token and broker-ca Secret.
+func TestBuildPodSpec_ProxyBrokerWiring(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = "paddock-proxy:test"
+	in.proxyTLSSecret = "run-echo-proxy-tls"
+	in.brokerEndpoint = "https://paddock-broker.paddock-system.svc:8443"
+	in.brokerCASecret = "run-echo-broker-ca"
+	// Allow-list must be ignored in favour of broker-backed validation.
+	in.proxyAllowList = "api.anthropic.com:443"
+
+	ps := buildPodSpec(run, tpl, in)
+
+	// Proxy args should include broker flags, NOT --allow.
+	var proxy *corev1.Container
+	for i := range ps.InitContainers {
+		if ps.InitContainers[i].Name == proxyContainerName {
+			proxy = &ps.InitContainers[i]
+			break
+		}
+	}
+	if proxy == nil {
+		t.Fatalf("proxy sidecar missing")
+	}
+	argSet := map[string]bool{}
+	for _, a := range proxy.Args {
+		argSet[a] = true
+	}
+	mustHave := []string{
+		"--broker-endpoint=" + in.brokerEndpoint,
+		"--broker-token-path=" + brokerTokenPath,
+		"--broker-ca-path=" + brokerCAPath,
+		"--run-namespace=" + run.Namespace,
+	}
+	for _, a := range mustHave {
+		if !argSet[a] {
+			t.Errorf("proxy args missing %q; got %v", a, proxy.Args)
+		}
+	}
+	if argSet["--allow=api.anthropic.com:443"] {
+		t.Errorf("proxy still received --allow when broker-endpoint is set; got %v", proxy.Args)
+	}
+
+	// Volume mounts include broker-token + broker-ca.
+	mounts := mountSet(proxy.VolumeMounts)
+	for _, want := range []string{brokerTokenVolumeName, brokerCAVolumeName} {
+		if !mounts[want] {
+			t.Errorf("proxy missing volume mount %q; got %v", want, proxy.VolumeMounts)
+		}
+	}
+
+	// Pod-level volumes — projected SA token + broker-ca Secret.
+	vols := map[string]corev1.Volume{}
+	for _, v := range ps.Volumes {
+		vols[v.Name] = v
+	}
+	if v, ok := vols[brokerTokenVolumeName]; !ok || v.Projected == nil {
+		t.Errorf("broker-token volume missing or not projected; got %+v", v)
+	} else if len(v.Projected.Sources) != 1 || v.Projected.Sources[0].ServiceAccountToken == nil {
+		t.Errorf("broker-token projected source must contain ServiceAccountToken; got %+v", v.Projected.Sources)
+	} else if v.Projected.Sources[0].ServiceAccountToken.Audience != brokerTokenAudience {
+		t.Errorf("broker-token audience = %q, want %q",
+			v.Projected.Sources[0].ServiceAccountToken.Audience, brokerTokenAudience)
+	}
+	if v, ok := vols[brokerCAVolumeName]; !ok || v.Secret == nil || v.Secret.SecretName != in.brokerCASecret {
+		t.Errorf("broker-ca volume missing or points at wrong Secret; got %+v", v)
+	}
+}
+
 // TestBuildPodSpec_NoProxyWhenDisabled verifies the absence of proxy-
 // specific wiring when the manager has no proxy image configured.
 func TestBuildPodSpec_NoProxyWhenDisabled(t *testing.T) {

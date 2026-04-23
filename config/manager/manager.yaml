@@ -98,6 +98,11 @@ spec:
           # auto: probe kube-system for a known NP-capable CNI.
           # on: always emit; off: never emit.
           - --networkpolicy-enforce=auto
+          # Broker-CA copy source (M7). The reconciler copies ca.crt
+          # from this Secret into a per-run <run>-broker-ca Secret so
+          # the proxy sidecar can verify the broker's TLS cert.
+          - --broker-ca-secret-name=broker-serving-cert
+          - --broker-ca-secret-namespace=paddock-system
         image: controller:latest
         name: manager
         ports: []

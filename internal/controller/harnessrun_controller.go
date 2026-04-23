@@ -115,6 +115,19 @@ type HarnessRunReconciler struct {
 	// means "auto" resolves to on; false means off. Ignored when
 	// NetworkPolicyEnforce is on or off explicitly.
 	NetworkPolicyAutoEnabled bool
+
+	// BrokerEndpoint is the in-cluster broker URL the proxy sidecar
+	// calls for ValidateEgress + SubstituteAuth. Empty disables
+	// broker-backed proxy enforcement — the proxy then falls back to
+	// the static --proxy-allow list. Set from the same --broker-endpoint
+	// flag the reconciler uses for credential issuance.
+	BrokerEndpoint string
+
+	// BrokerCASource names the cert-manager-issued broker-serving-cert
+	// Secret whose ca.crt is copied into per-run broker-ca Secrets so
+	// the proxy can verify the broker's TLS. Zero Name disables the
+	// broker-CA copy regardless of BrokerEndpoint.
+	BrokerCASource BrokerCASource
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=harnessruns,verbs=get;list;watch;create;update;patch;delete
@@ -322,6 +335,28 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				Status:             metav1.ConditionFalse,
 				Reason:             "ProxyCAPending",
 				Message:            "waiting on cert-manager to populate the MITM CA Secret",
+				ObservedGeneration: run.Generation,
+			})
+			run.Status.Phase = paddockv1alpha1.HarnessRunPhasePending
+			if _, err := r.commitStatus(ctx, &run, origStatus); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+		// Broker-CA Secret copy — required when the proxy is to call
+		// broker.ValidateEgress + SubstituteAuth. No-op when broker
+		// integration is disabled at the manager level (proxy stays on
+		// the static --allow list).
+		caOK, err := r.ensureBrokerCA(ctx, &run)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !caOK {
+			setCondition(&run.Status.Conditions, metav1.Condition{
+				Type:               paddockv1alpha1.HarnessRunConditionEgressConfigured,
+				Status:             metav1.ConditionFalse,
+				Reason:             "BrokerCAPending",
+				Message:            "waiting on cert-manager to populate the broker-serving-cert Secret",
 				ObservedGeneration: run.Generation,
 			})
 			run.Status.Phase = paddockv1alpha1.HarnessRunPhasePending
@@ -906,6 +941,10 @@ func (r *HarnessRunReconciler) ensureJob(
 		in.interceptionMode = mode
 		if mode == paddockv1alpha1.InterceptionModeTransparent {
 			in.iptablesInitImage = r.IPTablesInitImage
+		}
+		if r.brokerProxyConfigured() {
+			in.brokerEndpoint = r.BrokerEndpoint
+			in.brokerCASecret = brokerCASecretName(run.Name)
 		}
 	}
 	desired := buildJob(run, tpl, run.Status.WorkspaceRef, in)
