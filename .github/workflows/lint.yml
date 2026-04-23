@@ -2,7 +2,28 @@ name: Lint
 
 on:
   push:
+    # Doc-only changes can't affect Go lint results. Skip to save
+    # ~3 min per README/ADR commit.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "charts/**"
+      - "config/samples/**"
+      - ".github/ISSUE_TEMPLATE/**"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "charts/**"
+      - "config/samples/**"
+      - ".github/ISSUE_TEMPLATE/**"
+
+# Cancel in-flight lint when a newer commit lands. Double-pushes
+# currently let two runs drag to completion; the older one's result
+# is stale anyway.
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:

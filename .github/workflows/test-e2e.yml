@@ -2,7 +2,23 @@ name: E2E Tests
 
 on:
   push:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "charts/**"
+      - "config/samples/**"
+      - ".github/ISSUE_TEMPLATE/**"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "charts/**"
+      - "config/samples/**"
+      - ".github/ISSUE_TEMPLATE/**"
+
+concurrency:
+  group: test-e2e-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test-e2e:
