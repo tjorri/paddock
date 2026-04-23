@@ -26,6 +26,14 @@ For the inner loop:
 make tilt-up                 # hot-reloads the manager on src changes
 ```
 
+Optional but recommended — install the git pre-commit hook once per clone:
+
+```sh
+make hooks-install           # gofmt staged files + go vet + golangci-lint on commit
+```
+
+The hook is a convenience, not a gate — bypass with `git commit --no-verify` when you really need to. CI runs the same checks, so nothing rotting past the hook sneaks through.
+
 ## Testing
 
 Three layers. Write at the cheapest layer that actually exercises the concern.

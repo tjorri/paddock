@@ -110,6 +110,23 @@ tilt-down: ## Tear down Tilt-managed resources.
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
 
+.PHONY: hooks-install
+hooks-install: ## Install the git pre-commit hook (gofmt + vet + lint).
+	@mkdir -p .git/hooks
+	@ln -sf ../../hack/pre-commit.sh .git/hooks/pre-commit
+	@chmod +x hack/pre-commit.sh
+	@echo "pre-commit hook installed → .git/hooks/pre-commit → hack/pre-commit.sh"
+	@echo "(bypass with 'git commit --no-verify' — CI still runs the same checks.)"
+
+.PHONY: hooks-uninstall
+hooks-uninstall: ## Remove the git pre-commit hook.
+	@rm -f .git/hooks/pre-commit
+	@echo "pre-commit hook removed"
+
+.PHONY: pre-commit
+pre-commit: ## Run the pre-commit checks manually (same as the hook).
+	hack/pre-commit.sh
+
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	"$(GOLANGCI_LINT)" run --fix
