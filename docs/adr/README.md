@@ -22,6 +22,11 @@ Do not use an ADR for routine implementation decisions that the code itself make
 - [ADR-0009 — Sidecar ordering guarantees](0009-sidecar-ordering.md)
 - [ADR-0010 — Pod Security Standards posture](0010-pod-security-standards.md)
 - [ADR-0011 — Prompt materialisation uses a Secret regardless of source](0011-prompt-materialisation-uses-secret.md)
+- [ADR-0012 — Broker runs as a separate Deployment in `paddock-system`](0012-broker-architecture.md)
+- [ADR-0013 — Egress proxy interception modes — transparent default, cooperative fallback](0013-proxy-interception-modes.md)
+- [ADR-0014 — Capability model — template declares, BrokerPolicy grants, admission intersects](0014-capability-model-and-admission.md)
+- [ADR-0015 — Broker Provider interface — Issue/Renew/Revoke, no direct Secret path](0015-provider-interface.md)
+- [ADR-0016 — AuditEvent retention — write-once CRD with TTL reaper, debounced writes](0016-auditevent-retention.md)
 
 ## Conventions
 
