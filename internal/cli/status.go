@@ -101,7 +101,7 @@ func printRunStatus(w io.Writer, run *paddockv1alpha1.HarnessRun) {
 
 func orNone(s string) string {
 	if s == "" {
-		return "<none>"
+		return noneSentinel
 	}
 	return s
 }
@@ -110,10 +110,10 @@ func timeOrNone(t interface{ IsZero() bool }) string {
 	// Tolerates either a *metav1.Time (possibly nil) or metav1.Time.
 	switch v := t.(type) {
 	case nil:
-		return "<none>"
+		return noneSentinel
 	default:
 		if v == nil || v.IsZero() {
-			return "<none>"
+			return noneSentinel
 		}
 	}
 	return fmt.Sprintf("%v", t)

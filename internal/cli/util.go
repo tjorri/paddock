@@ -24,6 +24,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// noneSentinel is the placeholder the CLI renders for empty values.
+// Centralised so the lint goconst check stays happy and downstream
+// grep/awk stays one-string-simple.
+const noneSentinel = "<none>"
+
 // readAll slurps a reader into a string.
 func readAll(r io.Reader) (string, error) {
 	b, err := io.ReadAll(r)
@@ -48,7 +53,7 @@ func findCondition(conds []metav1.Condition, t string) *metav1.Condition {
 // "2h", "4d").
 func age(t metav1.Time) string {
 	if t.IsZero() {
-		return "<none>"
+		return noneSentinel
 	}
 	d := time.Since(t.Time)
 	switch {

@@ -65,6 +65,9 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newCancelCmd(cfg))
 	root.AddCommand(newEventsCmd(cfg))
 	root.AddCommand(newLogsCmd(cfg))
+	root.AddCommand(newPolicyCmd(cfg))
+	root.AddCommand(newAuditCmd(cfg))
+	root.AddCommand(newDescribeCmd(cfg))
 	root.AddCommand(newVersionCmd())
 
 	root.SetErr(os.Stderr)
