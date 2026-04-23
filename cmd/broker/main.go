@@ -30,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -143,6 +144,7 @@ func main() {
 		&providers.StaticProvider{Client: cachedClient},
 		&providers.AnthropicAPIProvider{Client: cachedClient},
 		&providers.GitHubAppProvider{Client: cachedClient},
+		&providers.PATPoolProvider{Client: cachedClient},
 	)
 	if err != nil {
 		setupLog.Error(err, "unable to build provider registry")
@@ -185,6 +187,11 @@ func main() {
 	probeMux := http.NewServeMux()
 	probeMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	probeMux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	// Expose the prometheus default registry so the provider metrics
+	// registered via init() (patpool_*, future per-provider stats) are
+	// scrapable without a separate metrics server. Co-hosted on the
+	// probe port so it doesn't need a client cert.
+	probeMux.Handle("/metrics", promhttp.Handler())
 	probeSrv := &http.Server{
 		Addr:              probeAddr,
 		Handler:           probeMux,

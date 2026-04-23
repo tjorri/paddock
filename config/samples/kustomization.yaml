@@ -7,5 +7,6 @@ resources:
 - paddock_v1alpha1_brokerpolicy.yaml
 - paddock_v1alpha1_brokerpolicy_static.yaml
 - paddock_v1alpha1_brokerpolicy_githubapp.yaml
+- paddock_v1alpha1_brokerpolicy_patpool.yaml
 - paddock_v1alpha1_auditevent.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

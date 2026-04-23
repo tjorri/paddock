@@ -268,6 +268,17 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 	}
 	if err != nil {
 		audit.Reason = err.Error()
+		// Pool exhaustion is a transient, caller-actionable failure —
+		// the run's reconciler keeps BrokerReady=False and requeues
+		// until a lease frees up. Distinguish from the blanket
+		// ProviderFailure so the controller can pick an appropriate
+		// backoff.
+		if errors.Is(err, providers.ErrPoolExhausted) {
+			return providers.IssueResult{}, audit, &applicationError{
+				status: http.StatusServiceUnavailable, code: "PoolExhausted",
+				message: err.Error(),
+			}
+		}
 		return providers.IssueResult{}, audit, &applicationError{
 			status: http.StatusInternalServerError, code: "ProviderFailure",
 			message: err.Error(),

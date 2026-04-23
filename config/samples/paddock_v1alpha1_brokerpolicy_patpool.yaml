@@ -1,0 +1,51 @@
+# Example BrokerPolicy backing a gitforge credential with a PAT pool.
+#
+# RISK LEVEL: high. PATs are long-lived and broadly scoped; revocation
+# is manual. Use this provider for homelab installs and v0.2 → v0.3
+# migration paths only — production should prefer GitHubAppProvider.
+#
+# The pool Secret carries one PAT per line. Blank lines + '#' comments
+# are ignored so operators can annotate rotation dates inline.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: paddock-pat-pool
+  namespace: default
+type: Opaque
+stringData:
+  # Keep ordering stable — broker leases by index. Append entries;
+  # never insert in the middle.
+  pool: |
+    # rotated 2026-04-20 by alice
+    ghp_replaceme_alice
+    # rotated 2026-04-20 by bob
+    ghp_replaceme_bob
+---
+apiVersion: paddock.dev/v1alpha1
+kind: BrokerPolicy
+metadata:
+  name: allow-claude-code-patpool
+  namespace: default
+spec:
+  appliesToTemplates: ["claude-code"]
+  denyMode: block
+  brokerFailureMode: Closed
+  grants:
+    credentials:
+      - name: GITHUB_TOKEN
+        provider:
+          kind: PATPool
+          secretRef:
+            name: paddock-pat-pool
+            key: pool
+    gitRepos:
+      - owner: my-org
+        repo: backend-service
+        access: write
+    egress:
+      - host: github.com
+        ports: [443]
+        substituteAuth: true
+      - host: api.github.com
+        ports: [443]
+        substituteAuth: true
