@@ -68,6 +68,10 @@ spec:
           # rewrites this literal into a {{ .Values.collectorImage ... }}
           # template when generating the Helm chart.
           - --collector-image=paddock-collector:dev
+          # HarnessRun.status.recentEvents cap (ADR-0007). Literal here;
+          # hack/gen-helm-chart.sh substitutes it with .Values.recentEventsCap
+          # when rendering the Helm chart.
+          - --recent-events-cap=50
         image: controller:latest
         name: manager
         ports: []

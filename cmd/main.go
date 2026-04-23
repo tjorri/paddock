@@ -185,32 +185,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// nolint:goconst
+	// ENABLE_WEBHOOKS=false lets envtest-style runs skip webhook
+	// registration when they're driving reconcilers without a cert dir.
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1alpha1.SetupHarnessTemplateWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "HarnessTemplate")
-			os.Exit(1)
+		webhooks := []struct {
+			name  string
+			setup func(ctrl.Manager) error
+		}{
+			{"HarnessTemplate", webhookv1alpha1.SetupHarnessTemplateWebhookWithManager},
+			{"ClusterHarnessTemplate", webhookv1alpha1.SetupClusterHarnessTemplateWebhookWithManager},
+			{"HarnessRun", webhookv1alpha1.SetupHarnessRunWebhookWithManager},
+			{"Workspace", webhookv1alpha1.SetupWorkspaceWebhookWithManager},
 		}
-	}
-	// nolint:goconst
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1alpha1.SetupClusterHarnessTemplateWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "ClusterHarnessTemplate")
-			os.Exit(1)
-		}
-	}
-	// nolint:goconst
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1alpha1.SetupHarnessRunWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "HarnessRun")
-			os.Exit(1)
-		}
-	}
-	// nolint:goconst
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1alpha1.SetupWorkspaceWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "Workspace")
-			os.Exit(1)
+		for _, w := range webhooks {
+			if err := w.setup(mgr); err != nil {
+				setupLog.Error(err, "unable to create webhook", "webhook", w.name)
+				os.Exit(1)
+			}
 		}
 	}
 	if err := (&controller.WorkspaceReconciler{

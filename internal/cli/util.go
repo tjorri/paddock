@@ -18,6 +18,7 @@ package cli
 
 import (
 	"io"
+	"strconv"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -52,46 +53,19 @@ func age(t metav1.Time) string {
 	d := time.Since(t.Time)
 	switch {
 	case d < time.Minute:
-		return fmtSeconds(d)
+		return shortFmt(int(d.Seconds()), "s")
 	case d < time.Hour:
-		return fmtMinutes(d)
+		return shortFmt(int(d.Minutes()), "m")
 	case d < 24*time.Hour:
-		return fmtHours(d)
+		return shortFmt(int(d.Hours()), "h")
 	default:
-		return fmtDays(d)
+		return shortFmt(int(d.Hours()/24), "d")
 	}
 }
-
-func fmtSeconds(d time.Duration) string { return shortFmt(int(d.Seconds()), "s") }
-func fmtMinutes(d time.Duration) string { return shortFmt(int(d.Minutes()), "m") }
-func fmtHours(d time.Duration) string   { return shortFmt(int(d.Hours()), "h") }
-func fmtDays(d time.Duration) string    { return shortFmt(int(d.Hours()/24), "d") }
 
 func shortFmt(n int, unit string) string {
 	if n <= 0 {
 		return "0" + unit
 	}
-	return intToString(n) + unit
-}
-
-func intToString(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		b[i] = '-'
-	}
-	return string(b[i:])
+	return strconv.Itoa(n) + unit
 }

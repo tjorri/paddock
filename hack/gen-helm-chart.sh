@@ -72,14 +72,17 @@ for doc in "$tmp"/doc-*.yml "$tmp"/doc-*.yaml; do
       # Use '@' as the sed delimiter because the Helm template syntax
       # {{ tag | default … }} contains a bare pipe character.
       #
-      # Two image references get rewritten:
+      # Three substitutions get rewritten:
       #   - the manager container image (Deployment.spec.containers[0].image)
       #   - the --collector-image arg on the manager, which the
       #     controller forwards into every HarnessRun Pod's collector
       #     sidecar
+      #   - the --recent-events-cap arg, wired from .Values.recentEventsCap
+      #     (ADR-0007)
       sed \
         -e 's@image: paddock-manager:dev@image: {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}@g' \
         -e 's@- --collector-image=paddock-collector:dev@- --collector-image={{ .Values.collectorImage.repository }}:{{ .Values.collectorImage.tag | default .Chart.AppVersion }}@g' \
+        -e 's@- --recent-events-cap=50@- --recent-events-cap={{ .Values.recentEventsCap | default 50 }}@g' \
         "$doc" >>"$OUT_TEMPLATE"
       ;;
   esac

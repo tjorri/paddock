@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -126,5 +125,3 @@ func truncate(s string, n int) string {
 	}
 	return s[:n-1] + "…"
 }
-
-var _ = strings.Builder{} // keep strings import stable for future formatters

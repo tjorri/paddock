@@ -43,6 +43,5 @@ leaderElection:
   enabled: true
 
 # Cap on status.recentEvents entries when parsing collector snapshots
-# (ADR-0007). The chart does not currently wire this through to the
-# manager args; adjust via a patch if needed.
+# (ADR-0007). Wired through to the manager's --recent-events-cap flag.
 recentEventsCap: 50

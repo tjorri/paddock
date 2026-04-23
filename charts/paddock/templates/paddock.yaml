@@ -468,6 +468,7 @@ spec:
             - --leader-elect
             - --health-probe-bind-address=:8081
             - --collector-image={{ .Values.collectorImage.repository }}:{{ .Values.collectorImage.tag | default .Chart.AppVersion }}
+            - --recent-events-cap={{ .Values.recentEventsCap | default 50 }}
             - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
           command:
             - /manager
