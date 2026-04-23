@@ -42,7 +42,8 @@ const (
 	// reposManifestRelPath is the path, relative to the workspace
 	// mount, where the seed Job writes the repo manifest. Kept in sync
 	// with seedManifestRelPath in workspace_seed.go.
-	reposManifestRelPath   = ".paddock/repos.json"
+	reposManifestRelPath = ".paddock/repos.json"
+
 	agentContainerName     = "agent"
 	adapterContainerName   = "adapter"
 	collectorContainerName = "collector"

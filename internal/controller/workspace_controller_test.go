@@ -295,6 +295,47 @@ var _ = Describe("Workspace controller", func() {
 			Expect(envNames).To(ContainElement("GIT_ASKPASS"))
 			Expect(envNames).To(ContainElement("PADDOCK_CREDS_DIR"))
 		})
+
+		It("wires GIT_SSH_COMMAND when the repo URL is scp-style and credentials are set", func() {
+			ns := newTestNamespace()
+			ws := &paddockv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{Name: "ssh-creds", Namespace: ns},
+				Spec: paddockv1alpha1.WorkspaceSpec{
+					Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("1Gi")},
+					Seed: &paddockv1alpha1.WorkspaceSeed{
+						Repos: []paddockv1alpha1.WorkspaceGitSource{{
+							URL:                  "git@example.com:acme/private.git",
+							CredentialsSecretRef: &paddockv1alpha1.LocalObjectReference{Name: "git-ssh-creds"},
+						}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+
+			seedJob := &batchv1.Job{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "ssh-creds-seed", Namespace: ns}, seedJob)
+			}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+
+			Expect(seedJob.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+			initC := seedJob.Spec.Template.Spec.InitContainers[0]
+
+			By("using direct exec (Args) rather than a shell wrapper for SSH clones")
+			Expect(initC.Command).To(BeEmpty())
+			Expect(initC.Args).NotTo(BeEmpty())
+			Expect(initC.Args).To(ContainElement("git@example.com:acme/private.git"))
+
+			By("setting GIT_SSH_COMMAND with the mounted key and scratch known_hosts")
+			envByName := map[string]string{}
+			for _, e := range initC.Env {
+				envByName[e.Name] = e.Value
+			}
+			Expect(envByName).To(HaveKey("GIT_SSH_COMMAND"))
+			Expect(envByName["GIT_SSH_COMMAND"]).To(ContainSubstring("/paddock/creds/0/ssh-privatekey"))
+			Expect(envByName["GIT_SSH_COMMAND"]).To(ContainSubstring("/paddock/scratch/known_hosts"))
+			Expect(envByName).NotTo(HaveKey("GIT_ASKPASS"))
+			Expect(envByName).NotTo(HaveKey("PADDOCK_CREDS_DIR"))
+		})
 	})
 
 	Context("finalizer", func() {

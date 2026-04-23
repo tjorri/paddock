@@ -109,7 +109,10 @@ func seedJobForWorkspace(ws *paddockv1alpha1.Workspace, image string) *batchv1.J
 		{
 			// Writable tmpfs for HOME, .gitconfig, known_hosts, and any
 			// helper scripts we generate. Keeps the PVC clear of
-			// credential artefacts.
+			// credential artefacts. Shared across all seed init
+			// containers — safe because Kubernetes runs init containers
+			// sequentially, so each repo's askpass.sh and
+			// PADDOCK_CREDS_DIR are only live during its own clone.
 			Name:         "seed-scratch",
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}},
 		},
@@ -317,7 +320,12 @@ func isSSHURL(url string) bool {
 	if strings.HasPrefix(url, "ssh://") {
 		return true
 	}
-	// scp-style: user@host:path, no "://" before the colon.
+	// scp-style is git@host:path — it never carries a scheme
+	// separator. Bail before the scp-style check so a URL like
+	// https://user@host:port/repo isn't misread as SSH.
+	if strings.Contains(url, "://") {
+		return false
+	}
 	if at := strings.Index(url, "@"); at > 0 {
 		rest := url[at+1:]
 		if colon := strings.Index(rest, ":"); colon > 0 && !strings.Contains(rest[:colon], "/") {

@@ -144,6 +144,23 @@ var _ = Describe("Workspace Webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("collides"))
 	})
 
+	It("rejects duplicate repo paths that only collide after path.Clean", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "https://example.com/a.git", Path: "src"},
+						{URL: "https://example.com/b.git", Path: "./src"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("collides"))
+	})
+
 	It("rejects an absolute repo path", func() {
 		obj := &paddockv1alpha1.Workspace{
 			Spec: paddockv1alpha1.WorkspaceSpec{
