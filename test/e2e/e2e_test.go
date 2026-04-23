@@ -76,6 +76,18 @@ var _ = Describe("paddock v0.1 pipeline", Ordered, func() {
 		_, err = utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
 			"rollout", "status", "deploy/paddock-controller-manager", "--timeout=180s"))
 		Expect(err).NotTo(HaveOccurred())
+
+		// rollout status returns as soon as the Pod is Ready, but the
+		// Service → Endpoints update happens asynchronously. The first
+		// webhook-triggering apply after a fresh deploy can race and
+		// hit "connection refused" if the endpoint hasn't propagated
+		// yet. Poll until the webhook Service has at least one address.
+		By("waiting for the webhook Service to have endpoints")
+		Eventually(func() (string, error) {
+			return utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+				"get", "endpoints", "paddock-webhook-service",
+				"-o", "jsonpath={.subsets[0].addresses[0].ip}"))
+		}, 60*time.Second, time.Second).ShouldNot(BeEmpty())
 	})
 
 	AfterAll(func() {
