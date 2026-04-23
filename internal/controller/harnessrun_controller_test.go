@@ -101,10 +101,14 @@ var _ = Describe("HarnessRun controller", func() {
 				g.Expect(findCondition(got.Status.Conditions, paddockv1alpha1.HarnessRunConditionWorkspaceBound)).NotTo(BeNil())
 			}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
-			By("the prompt ConfigMap is materialised")
-			cm := &corev1.ConfigMap{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "run-a-prompt", Namespace: ns}, cm)).To(Succeed())
-			Expect(cm.Data).To(HaveKeyWithValue(promptFileName, "hello"))
+			By("the prompt Secret is materialised")
+			sec := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "run-a-prompt", Namespace: ns}, sec)).To(Succeed())
+			Expect(sec.Type).To(Equal(corev1.SecretTypeOpaque))
+			Expect(sec.Data).To(HaveKeyWithValue(promptFileName, []byte("hello")))
+			Expect(sec.OwnerReferences).To(HaveLen(1))
+			Expect(sec.OwnerReferences[0].Kind).To(Equal("HarnessRun"))
+			Expect(sec.OwnerReferences[0].Controller).To(HaveValue(BeTrue()))
 
 			By("the Job references the prompt ConfigMap and workspace PVC")
 			job := &batchv1.Job{}

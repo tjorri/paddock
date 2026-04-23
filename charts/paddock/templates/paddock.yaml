@@ -159,6 +159,7 @@ rules:
     resources:
       - configmaps
       - persistentvolumeclaims
+      - secrets
       - serviceaccounts
     verbs:
       - create
@@ -175,14 +176,6 @@ rules:
     verbs:
       - create
       - patch
-  - apiGroups:
-      - ""
-    resources:
-      - secrets
-    verbs:
-      - get
-      - list
-      - watch
   - apiGroups:
       - batch
     resources:

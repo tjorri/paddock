@@ -60,7 +60,7 @@ func echoRunFixture() *paddockv1alpha1.HarnessRun {
 func defaultInputs() podSpecInputs {
 	return podSpecInputs{
 		workspacePVC:    "ws-run-echo",
-		promptConfigMap: "run-echo-prompt",
+		promptSecret:    "run-echo-prompt",
 		outputConfigMap: "run-echo-out",
 		collectorImage:  "paddock-collector:dev",
 		serviceAccount:  "run-echo-collector",
@@ -119,8 +119,13 @@ func TestBuildPodSpec_EchoShape(t *testing.T) {
 	if byName[sharedVolumeName].EmptyDir == nil {
 		t.Errorf("%s must be emptyDir", sharedVolumeName)
 	}
-	if byName[promptVolumeName].ConfigMap == nil || byName[promptVolumeName].ConfigMap.Name != "run-echo-prompt" {
-		t.Errorf("%s ConfigMap ref = %+v, want run-echo-prompt", promptVolumeName, byName[promptVolumeName].ConfigMap)
+	// Prompt is mounted from a Secret (ADR-0011) — any drift back to
+	// ConfigMap would leak sensitive prompts to `configmaps get`.
+	if byName[promptVolumeName].ConfigMap != nil {
+		t.Errorf("%s must not be a ConfigMap volume — prompts materialise as Secrets", promptVolumeName)
+	}
+	if byName[promptVolumeName].Secret == nil || byName[promptVolumeName].Secret.SecretName != "run-echo-prompt" {
+		t.Errorf("%s Secret ref = %+v, want run-echo-prompt", promptVolumeName, byName[promptVolumeName].Secret)
 	}
 	if byName[workspaceVolumeName].PersistentVolumeClaim == nil ||
 		byName[workspaceVolumeName].PersistentVolumeClaim.ClaimName != "ws-run-echo" {

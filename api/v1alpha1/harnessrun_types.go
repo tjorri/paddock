@@ -41,10 +41,15 @@ type HarnessRunSpec struct {
 	// Prompt is the inline prompt supplied to the agent. Exactly one of
 	// Prompt or PromptFrom must be set (enforced by admission webhook).
 	// Capped at 256 KiB — use PromptFrom for anything larger.
+	//
+	// Regardless of source, the controller materialises the prompt into
+	// an owned Secret (<run>-prompt, SecretTypeOpaque, key "prompt.txt")
+	// and mounts it at /paddock/prompt/prompt.txt. See ADR-0011.
 	// +optional
 	Prompt string `json:"prompt,omitempty"`
 
-	// PromptFrom sources the prompt from a ConfigMap or Secret.
+	// PromptFrom sources the prompt from a ConfigMap or Secret. The
+	// resolved content is copied into an owned Secret (see Prompt).
 	// +optional
 	PromptFrom *PromptSource `json:"promptFrom,omitempty"`
 

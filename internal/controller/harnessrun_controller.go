@@ -86,7 +86,7 @@ type HarnessRunReconciler struct {
 // +kubebuilder:rbac:groups=paddock.dev,resources=workspaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
@@ -199,8 +199,8 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	})
 	run.Status.WorkspaceRef = ws.Name
 
-	// 4. Materialise prompt ConfigMap + output ConfigMap + collector RBAC.
-	if err := r.ensurePromptConfigMap(ctx, &run); err != nil {
+	// 4. Materialise prompt Secret + output ConfigMap + collector RBAC.
+	if err := r.ensurePromptSecret(ctx, &run); err != nil {
 		// User-correctable prompt errors (missing Secret, missing key)
 		// fail the run with a clear PromptResolved=False condition
 		// rather than looping on requeue. Transient API errors still
@@ -446,17 +446,21 @@ func (r *HarnessRunReconciler) clearWorkspaceBinding(ctx context.Context, ws *pa
 	return nil
 }
 
-// ensurePromptConfigMap creates or updates the owned prompt ConfigMap
-// using either spec.prompt (inline) or spec.promptFrom.
-func (r *HarnessRunReconciler) ensurePromptConfigMap(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
+// ensurePromptSecret creates or updates the owned prompt Secret using
+// either spec.prompt (inline) or spec.promptFrom. We materialise
+// prompts as Secrets regardless of the source because prompts can
+// carry sensitive data (API keys, PII, customer content, proprietary
+// context) and a ConfigMap makes that material available to anyone
+// with `configmaps get` on the namespace. See ADR-0011.
+func (r *HarnessRunReconciler) ensurePromptSecret(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
 	prompt, err := r.resolvePrompt(ctx, run)
 	if err != nil {
 		return err
 	}
 
-	desired := &corev1.ConfigMap{
+	desired := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      promptCMName(run),
+			Name:      promptSecretName(run),
 			Namespace: run.Namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":      "paddock",
@@ -464,13 +468,14 @@ func (r *HarnessRunReconciler) ensurePromptConfigMap(ctx context.Context, run *p
 				"paddock.dev/run":             run.Name,
 			},
 		},
-		Data: map[string]string{promptFileName: prompt},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{promptFileName: []byte(prompt)},
 	}
 	if err := controllerutil.SetControllerReference(run, desired, r.Scheme); err != nil {
 		return err
 	}
 
-	var existing corev1.ConfigMap
+	var existing corev1.Secret
 	err = r.Get(ctx, client.ObjectKey{Namespace: desired.Namespace, Name: desired.Name}, &existing)
 	switch {
 	case apierrors.IsNotFound(err):
@@ -726,7 +731,7 @@ func (r *HarnessRunReconciler) ensureJob(
 ) (*batchv1.Job, error) {
 	desired := buildJob(run, tpl, run.Status.WorkspaceRef, podSpecInputs{
 		workspacePVC:    pvcName,
-		promptConfigMap: promptCMName(run),
+		promptSecret:    promptSecretName(run),
 		outputConfigMap: outputCMName(run),
 		collectorImage:  r.CollectorImage,
 		serviceAccount:  collectorSAName(run),

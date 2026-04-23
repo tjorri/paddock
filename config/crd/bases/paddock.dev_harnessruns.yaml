@@ -230,6 +230,7 @@ spec:
                 description: |-
                   Prompt is the inline prompt supplied to the agent. Exactly one of
                   Prompt or PromptFrom must be set (enforced by admission webhook).
+                  Capped at 256 KiB — use PromptFrom for anything larger.
                 type: string
               promptFrom:
                 description: PromptFrom sources the prompt from a ConfigMap or Secret.

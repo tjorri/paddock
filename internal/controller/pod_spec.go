@@ -54,7 +54,7 @@ const DefaultCollectorImage = "paddock-collector:dev"
 // argument list as M7+ bolts on more knobs.
 type podSpecInputs struct {
 	workspacePVC    string
-	promptConfigMap string
+	promptSecret    string
 	outputConfigMap string
 	collectorImage  string
 	serviceAccount  string
@@ -133,7 +133,7 @@ func buildPodSpec(
 		TerminationGracePeriodSeconds: &grace,
 		InitContainers:                initContainers,
 		Containers:                    []corev1.Container{buildAgentContainer(run, template)},
-		Volumes:                       buildPodVolumes(in.workspacePVC, in.promptConfigMap),
+		Volumes:                       buildPodVolumes(in.workspacePVC, in.promptSecret),
 	}
 }
 
@@ -220,7 +220,7 @@ func buildCollectorContainer(
 	}
 }
 
-func buildPodVolumes(workspacePVC, promptConfigMap string) []corev1.Volume {
+func buildPodVolumes(workspacePVC, promptSecret string) []corev1.Volume {
 	return []corev1.Volume{
 		{
 			Name: sharedVolumeName,
@@ -230,9 +230,14 @@ func buildPodVolumes(workspacePVC, promptConfigMap string) []corev1.Volume {
 		},
 		{
 			Name: promptVolumeName,
+			// Secret, not ConfigMap: prompts may carry sensitive data
+			// and a ConfigMap exposes it to anyone with `configmaps get`
+			// on the namespace. Volume-mount semantics are identical;
+			// the agent still reads the file at the same path.
+			// See ADR-0011.
 			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: promptConfigMap},
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: promptSecret,
 					Items: []corev1.KeyToPath{
 						{Key: promptFileName, Path: promptFileName},
 					},
@@ -321,11 +326,11 @@ type durationSeconds float64
 func (d durationSeconds) Seconds() float64 { return float64(d) }
 
 // Helpers for deterministic naming of owned resources.
-func jobName(run *paddockv1alpha1.HarnessRun) string         { return run.Name }
-func promptCMName(run *paddockv1alpha1.HarnessRun) string    { return run.Name + "-prompt" }
-func outputCMName(run *paddockv1alpha1.HarnessRun) string    { return run.Name + "-out" }
-func collectorSAName(run *paddockv1alpha1.HarnessRun) string { return run.Name + "-collector" }
-func ephemeralWSName(run *paddockv1alpha1.HarnessRun) string { return run.Name + "-ws" }
+func jobName(run *paddockv1alpha1.HarnessRun) string          { return run.Name }
+func promptSecretName(run *paddockv1alpha1.HarnessRun) string { return run.Name + "-prompt" }
+func outputCMName(run *paddockv1alpha1.HarnessRun) string     { return run.Name + "-out" }
+func collectorSAName(run *paddockv1alpha1.HarnessRun) string  { return run.Name + "-collector" }
+func ephemeralWSName(run *paddockv1alpha1.HarnessRun) string  { return run.Name + "-ws" }
 
 // resultFilePath is the conventional location of result.json on the
 // workspace PVC. Published to both the agent (PADDOCK_RESULT_PATH
