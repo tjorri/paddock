@@ -1,9 +1,13 @@
 name: Lint
 
 on:
+  # Runs on: direct commits to main, and PRs (any branch). Same-repo
+  # feature branches without a PR don't CI by design — the PR trigger
+  # covers them as soon as a PR is opened, and running CI on every
+  # WIP push to a not-yet-PR'd branch is wasteful. Doc-only changes
+  # are skipped to save ~3 min per README/ADR commit.
   push:
-    # Doc-only changes can't affect Go lint results. Skip to save
-    # ~3 min per README/ADR commit.
+    branches: [main]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -17,6 +21,7 @@ on:
       - "charts/**"
       - "config/samples/**"
       - ".github/ISSUE_TEMPLATE/**"
+  workflow_dispatch:
 
 # Cancel in-flight lint when a newer commit lands. Double-pushes
 # currently let two runs drag to completion; the older one's result

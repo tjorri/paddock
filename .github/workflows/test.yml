@@ -1,7 +1,11 @@
 name: Tests
 
 on:
+  # Runs on: direct commits to main, and PRs (any branch).
+  # Same-repo feature branches without a PR don't CI — open a PR or
+  # use workflow_dispatch if you need CI there.
   push:
+    branches: [main]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -15,6 +19,7 @@ on:
       - "charts/**"
       - "config/samples/**"
       - ".github/ISSUE_TEMPLATE/**"
+  workflow_dispatch:
 
 concurrency:
   group: test-${{ github.ref }}
