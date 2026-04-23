@@ -92,11 +92,11 @@ var _ = Describe("Workspace controller", func() {
 				Spec: paddockv1alpha1.WorkspaceSpec{
 					Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("1Gi")},
 					Seed: &paddockv1alpha1.WorkspaceSeed{
-						Git: &paddockv1alpha1.WorkspaceGitSource{
+						Repos: []paddockv1alpha1.WorkspaceGitSource{{
 							URL:    "https://example.com/fake.git",
 							Branch: "main",
 							Depth:  1,
-						},
+						}},
 					},
 				},
 			}
@@ -111,11 +111,21 @@ var _ = Describe("Workspace controller", func() {
 				g.Expect(got.Status.SeedJobName).To(Equal("seeded-seed"))
 			}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
-			By("checking the seed Job command references the git URL")
+			By("checking the init container references the git URL")
+			Expect(seedJob.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+			initC := seedJob.Spec.Template.Spec.InitContainers[0]
+			Expect(initC.Name).To(Equal("repo-0"))
+			Expect(initC.Args).To(ContainElement("https://example.com/fake.git"))
+			Expect(initC.Args).To(ContainElement("--depth"))
+			Expect(initC.Args).To(ContainElement("--branch"))
+
+			By("the main container writes the repo manifest")
 			Expect(seedJob.Spec.Template.Spec.Containers).To(HaveLen(1))
-			Expect(seedJob.Spec.Template.Spec.Containers[0].Args).To(ContainElement("https://example.com/fake.git"))
-			Expect(seedJob.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--depth"))
-			Expect(seedJob.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--branch"))
+			mainC := seedJob.Spec.Template.Spec.Containers[0]
+			Expect(mainC.Name).To(Equal("manifest"))
+			Expect(mainC.Command).To(HaveLen(3))
+			Expect(mainC.Command[2]).To(ContainSubstring(".paddock/repos.json"))
+			Expect(mainC.Command[2]).To(ContainSubstring("https://example.com/fake.git"))
 
 			By("the seed Pod enforces a restricted-compatible SecurityContext")
 			podSec := seedJob.Spec.Template.Spec.SecurityContext
@@ -126,7 +136,7 @@ var _ = Describe("Workspace controller", func() {
 			Expect(podSec.SeccompProfile).NotTo(BeNil())
 			Expect(podSec.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
 
-			containerSec := seedJob.Spec.Template.Spec.Containers[0].SecurityContext
+			containerSec := initC.SecurityContext
 			Expect(containerSec).NotTo(BeNil())
 			Expect(containerSec.AllowPrivilegeEscalation).To(HaveValue(BeFalse()))
 			Expect(containerSec.Capabilities).NotTo(BeNil())
@@ -160,7 +170,9 @@ var _ = Describe("Workspace controller", func() {
 				Spec: paddockv1alpha1.WorkspaceSpec{
 					Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("1Gi")},
 					Seed: &paddockv1alpha1.WorkspaceSeed{
-						Git: &paddockv1alpha1.WorkspaceGitSource{URL: "https://example.com/broken.git"},
+						Repos: []paddockv1alpha1.WorkspaceGitSource{
+							{URL: "https://example.com/broken.git"},
+						},
 					},
 				},
 			}
@@ -191,6 +203,97 @@ var _ = Describe("Workspace controller", func() {
 				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 				g.Expect(cond.Reason).To(Equal("SeedJobFailed"))
 			}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+		})
+
+		It("emits one init container per repo plus a manifest container when multiple repos are declared", func() {
+			ns := newTestNamespace()
+			ws := &paddockv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{Name: "multi", Namespace: ns},
+				Spec: paddockv1alpha1.WorkspaceSpec{
+					Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("1Gi")},
+					Seed: &paddockv1alpha1.WorkspaceSeed{
+						Repos: []paddockv1alpha1.WorkspaceGitSource{
+							{URL: "https://example.com/frontend.git", Path: "frontend", Branch: "main"},
+							{URL: "https://example.com/backend.git", Path: "backend"},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+
+			seedJob := &batchv1.Job{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "multi-seed", Namespace: ns}, seedJob)
+			}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+
+			By("one init container per repo, targeting the declared paths")
+			inits := seedJob.Spec.Template.Spec.InitContainers
+			Expect(inits).To(HaveLen(2))
+			Expect(inits[0].Name).To(Equal("repo-0"))
+			Expect(inits[0].Args).To(ContainElement("https://example.com/frontend.git"))
+			Expect(inits[0].Args).To(ContainElement("/workspace/frontend"))
+			Expect(inits[0].Args).To(ContainElement("--branch"))
+			Expect(inits[1].Name).To(Equal("repo-1"))
+			Expect(inits[1].Args).To(ContainElement("https://example.com/backend.git"))
+			Expect(inits[1].Args).To(ContainElement("/workspace/backend"))
+
+			By("the main container writes a manifest listing both repos")
+			Expect(seedJob.Spec.Template.Spec.Containers).To(HaveLen(1))
+			mainC := seedJob.Spec.Template.Spec.Containers[0]
+			Expect(mainC.Command[2]).To(ContainSubstring(`"path": "frontend"`))
+			Expect(mainC.Command[2]).To(ContainSubstring(`"path": "backend"`))
+			Expect(mainC.Command[2]).To(ContainSubstring("https://example.com/frontend.git"))
+			Expect(mainC.Command[2]).To(ContainSubstring("https://example.com/backend.git"))
+		})
+
+		It("mounts the credentials Secret when CredentialsSecretRef is set", func() {
+			ns := newTestNamespace()
+			ws := &paddockv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{Name: "creds", Namespace: ns},
+				Spec: paddockv1alpha1.WorkspaceSpec{
+					Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("1Gi")},
+					Seed: &paddockv1alpha1.WorkspaceSeed{
+						Repos: []paddockv1alpha1.WorkspaceGitSource{{
+							URL:                  "https://example.com/private.git",
+							CredentialsSecretRef: &paddockv1alpha1.LocalObjectReference{Name: "git-creds"},
+						}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+
+			seedJob := &batchv1.Job{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "creds-seed", Namespace: ns}, seedJob)
+			}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+
+			var credVol *corev1.Volume
+			for i := range seedJob.Spec.Template.Spec.Volumes {
+				v := &seedJob.Spec.Template.Spec.Volumes[i]
+				if v.Secret != nil && v.Secret.SecretName == "git-creds" {
+					credVol = v
+					break
+				}
+			}
+			Expect(credVol).NotTo(BeNil(), "expected a Secret volume referencing git-creds")
+
+			Expect(seedJob.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+			initC := seedJob.Spec.Template.Spec.InitContainers[0]
+			var mountedAt string
+			for _, m := range initC.VolumeMounts {
+				if m.Name == credVol.Name {
+					mountedAt = m.MountPath
+				}
+			}
+			Expect(mountedAt).To(Equal("/paddock/creds/0"))
+			Expect(initC.Command).To(HaveLen(3))
+			Expect(initC.Command[2]).To(ContainSubstring("askpass.sh"))
+			envNames := make([]string, 0, len(initC.Env))
+			for _, e := range initC.Env {
+				envNames = append(envNames, e.Name)
+			}
+			Expect(envNames).To(ContainElement("GIT_ASKPASS"))
+			Expect(envNames).To(ContainElement("PADDOCK_CREDS_DIR"))
 		})
 	})
 

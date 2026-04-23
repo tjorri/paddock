@@ -65,19 +65,28 @@ type WorkspaceStorage struct {
 }
 
 // WorkspaceSeed describes how a Workspace is initialised before any run.
-// Exactly one seed source must be set (currently only Git; FromArchive
-// lands in v0.2).
+// When set, at least one Repos entry is required. FromArchive lands in v0.2.
 type WorkspaceSeed struct {
-	// Git clones a git repository into the workspace at /workspace.
+	// Repos clones one or more git repositories into the workspace. With
+	// a single entry an empty Path clones directly to the workspace
+	// mount root; with multiple entries every Path must be set to a
+	// distinct relative directory. See ADR-0006 for credential handling.
 	// +optional
-	Git *WorkspaceGitSource `json:"git,omitempty"`
+	Repos []WorkspaceGitSource `json:"repos,omitempty"`
 }
 
-// WorkspaceGitSource clones a git repository into the workspace.
+// WorkspaceGitSource clones one git repository into the workspace.
 type WorkspaceGitSource struct {
 	// URL is the clone URL (https or ssh).
 	// +kubebuilder:validation:Required
 	URL string `json:"url"`
+
+	// Path is the relative directory under the workspace mount where the
+	// repo is cloned. Empty means the workspace mount root (only allowed
+	// when this is the only repo). When multiple repos are declared,
+	// every Path must be set and unique.
+	// +optional
+	Path string `json:"path,omitempty"`
 
 	// Branch to clone. Defaults to the remote's HEAD.
 	// +optional
@@ -88,8 +97,10 @@ type WorkspaceGitSource struct {
 	// +optional
 	Depth int32 `json:"depth,omitempty"`
 
-	// CredentialsSecretRef, when set, supplies git credentials. The Secret
-	// may contain either username/password or ssh-privatekey. Mounted
+	// CredentialsSecretRef, when set, supplies git credentials to the
+	// seed Job for this repo. For https URLs the Secret must carry
+	// `username` and `password` keys (a personal access token goes in
+	// `password`). For ssh URLs it must carry `ssh-privatekey`. Mounted
 	// read-only into the seed Job only. See ADR-0006.
 	// +optional
 	CredentialsSecretRef *LocalObjectReference `json:"credentialsSecretRef,omitempty"`
