@@ -43,8 +43,8 @@ const (
 )
 
 var (
-	skipCertManagerInstall         = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
-	isCertManagerAlreadyInstalled  = false
+	skipCertManagerInstall        = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
+	isCertManagerAlreadyInstalled = false
 )
 
 // TestE2E runs the end-to-end suite. Expects Kind installed and a
