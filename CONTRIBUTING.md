@@ -87,9 +87,44 @@ make helm-chart
 
 and commit the result.
 
-## Release process (v0.1)
+## Release process
 
-Not automated yet — tagging + chart publication land in v0.2. For now, each milestone ships as a single Conventional Commit on `main`; the git log is the release notes.
+Releases are driven by [release-please](https://github.com/googleapis/release-please). The `.github/workflows/release-please.yml` workflow maintains a perpetually-open "Release PR" that accumulates the CHANGELOG entry and version bumps from Conventional Commits on `main`. When the Release PR is merged:
+
+1. release-please tags the release (`vX.Y.Z`) and creates a matching GitHub Release with the generated changelog as body.
+2. `.github/workflows/release.yml` fires on the `release: published` event and:
+   - Builds multi-arch images for all six components and pushes them to `ghcr.io/<owner>/paddock-*` with semver tags (`:v0.2.0`, `:0.2.0`, `:v0.2`, `:0.2`).
+   - Sed-substitutes `charts/paddock/values.yaml` so the published chart's image repositories resolve to `ghcr.io/<owner>/…` out of the box, then `helm package` + `helm push` to `oci://ghcr.io/<owner>/charts/paddock`.
+   - Renders `dist/install.yaml` with the versioned manager image pinned in and attaches it to the GitHub Release.
+   - Signs every image and the chart with [Cosign](https://github.com/sigstore/cosign) keyless (Sigstore + GitHub OIDC). Signatures live as sibling OCI artifacts; non-verifying consumers see no change.
+
+`.github/workflows/main-images.yml` publishes bleeding-edge images on every push to `main` with `:main` (moving) and `:main-<short-sha>` (immutable) tags. The chart is not published from `main` — shipping a chart that points at images not yet in the registry is a footgun.
+
+### Triggering a release
+
+Merge the Release PR on `main`. That's it. To force a specific version (e.g. for a major bump that release-please's heuristic wouldn't infer), include `Release-As: X.Y.Z` as a trailer in a commit on `main` before the Release PR merges.
+
+### Version-bump policy
+
+Pre-1.0 we keep releases cheap. The config is tuned so that:
+
+| Commit type | Pre-1.0 bump | Post-1.0 bump (standard semver) |
+|---|---|---|
+| `fix:` | patch (0.1.0 → 0.1.1) | patch |
+| `feat:` | patch (0.1.0 → 0.1.1) | minor |
+| `feat!:` / `BREAKING CHANGE:` | minor (0.1.0 → 0.2.0) | major |
+
+Release-please switches automatically to standard semver once `appVersion` crosses 1.0.0 — the pre-1.0 flags become no-ops.
+
+Rationale: while the CRDs + the pod-shape contracts are still moving, shipping a `feat:` behind a minor bump every week creates unnecessary "which 0.x am I on?" friction. Patch bumps for routine feats keep the changelog meaningful, and the minor channel stays reserved for changes worth a migration note. Post-1.0 we switch to strict semver — breaking changes cost a major bump and deserve real review.
+
+### One-time setup
+
+Release-please needs a fine-grained PAT scoped to this repo: **Contents** read+write, **Pull requests** read+write, **Metadata** read-only. Add it as a repository secret named `RELEASE_PLEASE_TOKEN`. The default `GITHUB_TOKEN` works for the PR flow but tags it creates don't fire downstream workflows — the PAT is the only way to get the release → release.yml handoff.
+
+### Image-version coupling
+
+The controller, its webhook, the collector, each adapter, and the harness images all version in lockstep — one tag, one release. The chart's `image.tag` and `collectorImage.tag` default to empty string and fall through to `Chart.AppVersion`, which release-please bumps alongside `version`. Practical consequence: you cannot ship `paddock-collector:v0.2.0` against a `paddock-manager:v0.1.0` via the chart defaults — for mixed-version installs (hotfixes, rollbacks), override `collectorImage.tag` explicitly.
 
 ## Code of conduct
 

@@ -1,0 +1,36 @@
+name: release-please
+
+# Maintains the perpetual "Release PR" against main. Every commit to
+# main triggers release-please to rebuild its changelog preview; when
+# someone merges that PR, release-please tags the release and emits
+# outputs for downstream workflows.
+#
+# Requires a repo secret `RELEASE_PLEASE_TOKEN` (fine-grained PAT with
+# contents:read+write, pull-requests:read+write, metadata:read). The
+# default GITHUB_TOKEN would work for the PR flow but tags it creates
+# don't fire downstream workflows (GitHub's anti-loop guard), which
+# would break the handoff to release.yml.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
