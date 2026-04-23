@@ -40,6 +40,7 @@ type HarnessRunSpec struct {
 
 	// Prompt is the inline prompt supplied to the agent. Exactly one of
 	// Prompt or PromptFrom must be set (enforced by admission webhook).
+	// Capped at 256 KiB — use PromptFrom for anything larger.
 	// +optional
 	Prompt string `json:"prompt,omitempty"`
 

@@ -84,6 +84,14 @@ func (v *HarnessRunCustomValidator) ValidateDelete(_ context.Context, _ runtime.
 	return nil, nil
 }
 
+// MaxInlinePromptBytes caps spec.prompt at 256 KiB, well under the
+// 1 MiB ConfigMap/Secret ceiling and leaving headroom for the
+// materialisation wrapper. promptFrom sources are not size-checked at
+// admission time — doing so would require cluster reads and make
+// validation non-static; oversized Secret/ConfigMap-sourced prompts
+// fail later at the reconciler's materialise step.
+const MaxInlinePromptBytes = 256 * 1024
+
 func validateHarnessRunSpec(spec *paddockv1alpha1.HarnessRunSpec) error {
 	specPath := field.NewPath("spec")
 	var errs field.ErrorList
@@ -101,6 +109,10 @@ func validateHarnessRunSpec(spec *paddockv1alpha1.HarnessRunSpec) error {
 	case !hasPrompt && !hasPromptFrom:
 		errs = append(errs, field.Required(specPath,
 			"one of prompt or promptFrom must be set"))
+	}
+
+	if hasPrompt && len(spec.Prompt) > MaxInlinePromptBytes {
+		errs = append(errs, field.TooLong(specPath.Child("prompt"), "", MaxInlinePromptBytes))
 	}
 
 	if hasPromptFrom {

@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -115,6 +117,29 @@ var _ = Describe("HarnessRun Webhook", func() {
 		_, err := validator.ValidateUpdate(ctx, oldObj, newObj)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("immutable"))
+	})
+
+	It("admits an inline prompt just under the 256 KiB cap", func() {
+		obj := &paddockv1alpha1.HarnessRun{
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+				Prompt:      strings.Repeat("a", 200*1024),
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rejects an inline prompt that exceeds the 256 KiB cap", func() {
+		obj := &paddockv1alpha1.HarnessRun{
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+				Prompt:      strings.Repeat("a", 300*1024),
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.prompt"))
 	})
 
 	It("admits an update that doesn't touch spec", func() {
