@@ -45,18 +45,20 @@ func findRequirement(creds []paddockv1alpha1.CredentialRequirement, name string)
 
 // matchPolicyGrant walks BrokerPolicies in the namespace, selects
 // those whose appliesToTemplates matches templateName, and returns
-// the first grant whose Name == credentialName. Returns (nil, "", nil)
-// when nothing matches. Multiple policies compose additively; on a
+// the first grant whose Name == credentialName together with the
+// matched policy (for its sibling gitRepos, which gitforge providers
+// scope their tokens against). Returns (nil, nil, "", nil) when
+// nothing matches. Multiple policies compose additively; on a
 // collision the first match wins (deterministic by name order; ties
 // broken by etcd ordering, which is stable per-namespace).
 //
 // This is a subset of the full ADR-0014 intersection — M3 only needs
 // credential lookup by name. The webhook's admission-time check
 // implements the complete algorithm in M3 commit 2.
-func matchPolicyGrant(ctx context.Context, c client.Client, namespace, templateName, credentialName string) (*paddockv1alpha1.CredentialGrant, string, error) {
+func matchPolicyGrant(ctx context.Context, c client.Client, namespace, templateName, credentialName string) (*paddockv1alpha1.CredentialGrant, *paddockv1alpha1.BrokerPolicy, string, error) {
 	var list paddockv1alpha1.BrokerPolicyList
 	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	for i := range list.Items {
 		bp := &list.Items[i]
@@ -66,11 +68,11 @@ func matchPolicyGrant(ctx context.Context, c client.Client, namespace, templateN
 		for j := range bp.Spec.Grants.Credentials {
 			g := &bp.Spec.Grants.Credentials[j]
 			if g.Name == credentialName {
-				return g, bp.Name, nil
+				return g, bp, bp.Name, nil
 			}
 		}
 	}
-	return nil, "", nil
+	return nil, nil, "", nil
 }
 
 // providerBacksPurpose reports whether p lists purpose in its

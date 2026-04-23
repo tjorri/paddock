@@ -66,6 +66,12 @@ type IssueRequest struct {
 
 	// Grant is the matched policy grant, including the provider config.
 	Grant paddockv1alpha1.CredentialGrant
+
+	// GitRepos is the full list of gitRepos on the matched
+	// BrokerPolicy.spec.grants. Populated so gitforge providers
+	// (GitHubApp, PATPool) can scope their issued tokens to the
+	// operator-declared repo set. Empty for non-gitforge grants.
+	GitRepos []paddockv1alpha1.GitRepoGrant
 }
 
 // IssueResult is what a provider returns on a successful Issue.

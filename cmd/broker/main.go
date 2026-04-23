@@ -142,6 +142,7 @@ func main() {
 	registry, err := providers.NewRegistry(
 		&providers.StaticProvider{Client: cachedClient},
 		&providers.AnthropicAPIProvider{Client: cachedClient},
+		&providers.GitHubAppProvider{Client: cachedClient},
 	)
 	if err != nil {
 		setupLog.Error(err, "unable to build provider registry")

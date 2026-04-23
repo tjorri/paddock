@@ -174,11 +174,10 @@ func (p *AnthropicAPIProvider) Issue(ctx context.Context, req IssueRequest) (Iss
 // (expired / revoked) — so the broker doesn't fall through to the next
 // provider and accidentally let the request out with the wrong swap.
 func (p *AnthropicAPIProvider) SubstituteAuth(ctx context.Context, req SubstituteRequest) (SubstituteResult, error) {
-	// Be lenient about the "Bearer " prefix — some agents send it on
-	// x-api-key too. Strip and normalise.
-	bearer := strings.TrimSpace(req.IncomingBearer)
-	bearer = strings.TrimPrefix(bearer, "Bearer ")
-	bearer = strings.TrimPrefix(bearer, "bearer ")
+	// Lenient extraction: handles "Bearer X", raw tokens, and the "Basic"
+	// shape git + the go-git library emit. Providers that wanted the
+	// unparsed value would bypass this helper — none do today.
+	bearer := ExtractBearer(req.IncomingBearer)
 	if !strings.HasPrefix(bearer, anthropicBearerPrefix) {
 		return SubstituteResult{Matched: false}, nil
 	}

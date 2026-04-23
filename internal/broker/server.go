@@ -197,7 +197,7 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 	}
 
 	// Intersect template.requires against in-namespace BrokerPolicies.
-	grant, policyName, err := matchPolicyGrant(ctx, s.Client, namespace, run.Spec.TemplateRef.Name, req.Name)
+	grant, matchedPolicy, policyName, err := matchPolicyGrant(ctx, s.Client, namespace, run.Spec.TemplateRef.Name, req.Name)
 	if err != nil {
 		return providers.IssueResult{}, nil, fmt.Errorf("listing BrokerPolicies: %w", err)
 	}
@@ -255,6 +255,7 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 		CredentialName: req.Name,
 		Purpose:        requirement.Purpose,
 		Grant:          *grant,
+		GitRepos:       matchedPolicy.Spec.Grants.GitRepos,
 	})
 	audit := &CredentialAudit{
 		RunName:        runName,
