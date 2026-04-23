@@ -117,6 +117,21 @@ var _ = Describe("Workspace controller", func() {
 			Expect(seedJob.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--depth"))
 			Expect(seedJob.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--branch"))
 
+			By("the seed Pod enforces a restricted-compatible SecurityContext")
+			podSec := seedJob.Spec.Template.Spec.SecurityContext
+			Expect(podSec).NotTo(BeNil())
+			Expect(podSec.RunAsNonRoot).To(HaveValue(BeTrue()))
+			Expect(podSec.RunAsUser).To(HaveValue(BeEquivalentTo(65532)))
+			Expect(podSec.FSGroup).To(HaveValue(BeEquivalentTo(65532)))
+			Expect(podSec.SeccompProfile).NotTo(BeNil())
+			Expect(podSec.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+			containerSec := seedJob.Spec.Template.Spec.Containers[0].SecurityContext
+			Expect(containerSec).NotTo(BeNil())
+			Expect(containerSec.AllowPrivilegeEscalation).To(HaveValue(BeFalse()))
+			Expect(containerSec.Capabilities).NotTo(BeNil())
+			Expect(containerSec.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")))
+
 			By("simulating the Job succeeding")
 			now := metav1.Now()
 			seedJob.Status.StartTime = &now

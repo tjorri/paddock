@@ -137,6 +137,13 @@ func buildPodSpec(
 	}
 }
 
+// TODO(security): agent / adapter / collector containers do not
+// currently set a SecurityContext. Agent images are user-supplied so
+// dropping caps here would break some harnesses; adapter + collector
+// are first-party and could be tightened (RunAsNonRoot, drop ALL caps,
+// no privilege escalation) matching the seed Job's posture in
+// workspace_seed.go. Scoped out for a future ADR — ADR-0010 covers the
+// overall PSS stance but not the sidecars explicitly.
 func buildAgentContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate) corev1.Container {
 	mountPath := effectiveWorkspaceMount(template)
 	return corev1.Container{

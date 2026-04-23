@@ -24,9 +24,14 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
+
+// Non-root UID/GID the seed Job pod runs as. 65532 is distroless/nonroot
+// and matches the UID used by every first-party Paddock image.
+const seedRunAsID int64 = 65532
 
 const (
 	// Default alpine/git image. Pinned; update via a PR rather than
@@ -102,13 +107,15 @@ func seedJobForWorkspace(ws *paddockv1alpha1.Workspace, image string) *batchv1.J
 					Labels: workspaceLabels(ws),
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					RestartPolicy:   corev1.RestartPolicyNever,
+					SecurityContext: seedPodSecurityContext(),
 					Containers: []corev1.Container{{
-						Name:         "git",
-						Image:        image,
-						Args:         args,
-						WorkingDir:   "/",
-						VolumeMounts: []corev1.VolumeMount{{Name: seedVolumeName, MountPath: seedMountPath}},
+						Name:            "git",
+						Image:           image,
+						Args:            args,
+						WorkingDir:      "/",
+						SecurityContext: seedContainerSecurityContext(),
+						VolumeMounts:    []corev1.VolumeMount{{Name: seedVolumeName, MountPath: seedMountPath}},
 					}},
 					Volumes: []corev1.Volume{{
 						Name: seedVolumeName,
@@ -121,6 +128,37 @@ func seedJobForWorkspace(ws *paddockv1alpha1.Workspace, image string) *batchv1.J
 				},
 			},
 		},
+	}
+}
+
+// seedPodSecurityContext returns the pod-level SecurityContext the seed
+// Job runs with. Satisfies the PSS `restricted` profile: non-root uid,
+// seccomp=RuntimeDefault, and an fsGroup that makes the PVC writable
+// by the git container. Without FSGroup, default PVCs are owned by
+// root:root and a non-root git would fail to clone into /workspace.
+//
+// ReadOnlyRootFilesystem is deliberately *not* set: alpine/git writes
+// to $HOME and /tmp during clone. Adding a tmpfs emptyDir for those is
+// a later tightening (tracked in ADR-0010 follow-ups).
+func seedPodSecurityContext() *corev1.PodSecurityContext {
+	return &corev1.PodSecurityContext{
+		RunAsNonRoot: ptr.To(true),
+		RunAsUser:    ptr.To(seedRunAsID),
+		RunAsGroup:   ptr.To(seedRunAsID),
+		FSGroup:      ptr.To(seedRunAsID),
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+}
+
+// seedContainerSecurityContext returns the container-level
+// SecurityContext: no capabilities, no privilege escalation. Same
+// posture `restricted` requires.
+func seedContainerSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 	}
 }
 
