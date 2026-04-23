@@ -221,9 +221,15 @@ spec:
                     Prompt is the inline prompt supplied to the agent. Exactly one of
                     Prompt or PromptFrom must be set (enforced by admission webhook).
                     Capped at 256 KiB — use PromptFrom for anything larger.
+
+                    Regardless of source, the controller materialises the prompt into
+                    an owned Secret (<run>-prompt, SecretTypeOpaque, key "prompt.txt")
+                    and mounts it at /paddock/prompt/prompt.txt. See ADR-0011.
                   type: string
                 promptFrom:
-                  description: PromptFrom sources the prompt from a ConfigMap or Secret.
+                  description: |-
+                    PromptFrom sources the prompt from a ConfigMap or Secret. The
+                    resolved content is copied into an owned Secret (see Prompt).
                   properties:
                     configMapKeyRef:
                       description: Selects a key from a ConfigMap.
