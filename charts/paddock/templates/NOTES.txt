@@ -7,7 +7,7 @@ Verify the controller rolled out:
 
 Apply the reference echo template + run:
 
-  kubectl apply -f https://raw.githubusercontent.com/paddock-dev/paddock/main/config/samples/paddock_v1alpha1_clusterharnesstemplate.yaml
+  kubectl apply -f https://raw.githubusercontent.com/tjorri/paddock/main/config/samples/paddock_v1alpha1_clusterharnesstemplate.yaml
   kubectl create ns paddock-demo
   cat <<EOF | kubectl apply -n paddock-demo -f -
   apiVersion: paddock.dev/v1alpha1
@@ -26,4 +26,4 @@ Watch it run:
   kubectl paddock events hello -n paddock-demo -f
   kubectl paddock status hello -n paddock-demo
 
-Full docs: https://github.com/paddock-dev/paddock
+Full docs: https://github.com/tjorri/paddock

@@ -113,7 +113,7 @@ Install the latest tagged release:
 
 ```sh
 helm install paddock \
-  oci://ghcr.io/paddock-dev/charts/paddock \
+  oci://ghcr.io/tjorri/charts/paddock \
   --version 0.1.0 \
   --namespace paddock-system --create-namespace
 ```
@@ -122,14 +122,14 @@ Or install a specific tagged release via the single-file manifest:
 
 ```sh
 kubectl apply --server-side=true --force-conflicts \
-  -f https://github.com/paddock-dev/paddock/releases/download/v0.1.0/install.yaml
+  -f https://github.com/tjorri/paddock/releases/download/v0.1.0/install.yaml
 ```
 
 Every image is Cosign-signed (keyless, Sigstore). Verification is optional — `docker pull` and `helm pull` work unchanged whether you verify or not:
 
 ```sh
-cosign verify ghcr.io/paddock-dev/paddock-manager:v0.1.0 \
-  --certificate-identity-regexp='^https://github\.com/paddock-dev/paddock/' \
+cosign verify ghcr.io/tjorri/paddock-manager:v0.1.0 \
+  --certificate-identity-regexp='^https://github\.com/tjorri/paddock/' \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 ```
 
@@ -140,8 +140,8 @@ The `:main` tag always points at the most recent commit on the `main` branch:
 ```sh
 helm install paddock ./charts/paddock \
   --namespace paddock-system --create-namespace \
-  --set image.repository=ghcr.io/paddock-dev/paddock-manager --set image.tag=main \
-  --set collectorImage.repository=ghcr.io/paddock-dev/paddock-collector --set collectorImage.tag=main
+  --set image.repository=ghcr.io/tjorri/paddock-manager --set image.tag=main \
+  --set collectorImage.repository=ghcr.io/tjorri/paddock-collector --set collectorImage.tag=main
 ```
 
 Pin to a specific main-branch commit via `:main-<sha>` (first seven chars of the commit SHA).

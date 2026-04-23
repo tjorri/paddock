@@ -39,7 +39,7 @@ kubectl -n paddock-system rollout status deploy/paddock-controller-manager
 ```sh
 helm install paddock ./charts/paddock \
   -n paddock-system --create-namespace \
-  --set image.repository=ghcr.io/paddock-dev/paddock \
+  --set image.repository=ghcr.io/tjorri/paddock-manager \
   --set image.tag=v0.1.0
 ```
 
