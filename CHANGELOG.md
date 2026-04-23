@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/tjorri/paddock/compare/v0.1.1...v0.2.0) (2026-04-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **workspace:** seed multiple git repos per Workspace ([#3](https://github.com/tjorri/paddock/issues/3))
+
+### Features
+
+* **workspace:** seed multiple git repos per Workspace ([#3](https://github.com/tjorri/paddock/issues/3)) ([8e48a55](https://github.com/tjorri/paddock/commit/8e48a55807f0362ad18b44ec3426843148f15865))
+
 ## [0.1.1](https://github.com/tjorri/paddock/compare/v0.1.0...v0.1.1) (2026-04-23)
 
 
