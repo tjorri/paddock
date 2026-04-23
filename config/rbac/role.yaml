@@ -69,6 +69,7 @@ rules:
 - apiGroups:
   - paddock.dev
   resources:
+  - brokerpolicies
   - clusterharnesstemplates
   - harnesstemplates
   verbs:

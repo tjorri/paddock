@@ -145,6 +145,7 @@ type HarnessRunReconciler struct {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=list;watch
+// +kubebuilder:rbac:groups=paddock.dev,resources=brokerpolicies,verbs=get;list;watch
 
 // Reconcile drives a HarnessRun through its lifecycle. See
 // docs/specs/0001-core-v0.1.md §3.3 for the state machine.
