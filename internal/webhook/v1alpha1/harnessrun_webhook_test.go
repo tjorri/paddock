@@ -188,10 +188,10 @@ var _ = Describe("HarnessRun Webhook", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// The client-backed path resolves the referenced template and rejects
-	// runs whose template declares requires — M2 placeholder for the
-	// full BrokerPolicy intersection that arrives in M3 (ADR-0014).
-	Context("with a client-backed validator (M2: requires-rejects)", func() {
+	// The client-backed path runs the ADR-0014 intersection: a run
+	// is admitted only when matching BrokerPolicies cover every
+	// template.requires entry.
+	Context("with a client-backed validator (M3: requires intersection)", func() {
 		const ns = "harnessrun-webhook-m2"
 
 		BeforeEach(func() {
@@ -261,6 +261,75 @@ var _ = Describe("HarnessRun Webhook", func() {
 			}
 			_, err := validator.ValidateCreate(ctx, run)
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("admits a run when a matching BrokerPolicy grants every requirement", func() {
+			template := &paddockv1alpha1.HarnessTemplate{
+				ObjectMeta: metav1.ObjectMeta{Name: "covered", Namespace: ns},
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Harness: "echo", Image: "paddock-echo:v1", Command: []string{"/bin/echo"},
+					Requires: paddockv1alpha1.RequireSpec{
+						Credentials: []paddockv1alpha1.CredentialRequirement{{
+							Name: "DEMO_TOKEN", Purpose: paddockv1alpha1.CredentialPurposeGeneric,
+						}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, template)).To(Succeed())
+
+			bp := &paddockv1alpha1.BrokerPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: "grants-demo", Namespace: ns},
+				Spec: paddockv1alpha1.BrokerPolicySpec{
+					AppliesToTemplates: []string{"covered"},
+					Grants: paddockv1alpha1.BrokerPolicyGrants{
+						Credentials: []paddockv1alpha1.CredentialGrant{{
+							Name: "DEMO_TOKEN",
+							Provider: paddockv1alpha1.ProviderConfig{
+								Kind:      "Static",
+								SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+							},
+						}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, bp)).To(Succeed())
+
+			run := &paddockv1alpha1.HarnessRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "granted", Namespace: ns},
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					TemplateRef: paddockv1alpha1.TemplateRef{Name: "covered"},
+					Prompt:      "hi",
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, run)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("surfaces a §8.1 diagnostic on reject", func() {
+			template := &paddockv1alpha1.HarnessTemplate{
+				ObjectMeta: metav1.ObjectMeta{Name: "needs-egress", Namespace: ns},
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Harness: "echo", Image: "paddock-echo:v1", Command: []string{"/bin/echo"},
+					Requires: paddockv1alpha1.RequireSpec{
+						Egress: []paddockv1alpha1.EgressRequirement{{
+							Host: "api.anthropic.com", Ports: []int32{443},
+						}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, template)).To(Succeed())
+
+			run := &paddockv1alpha1.HarnessRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "no-egress-grant", Namespace: ns},
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					TemplateRef: paddockv1alpha1.TemplateRef{Name: "needs-egress"},
+					Prompt:      "hi",
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, run)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("api.anthropic.com:443"))
+			Expect(err.Error()).To(ContainSubstring("Hint: kubectl paddock policy scaffold"))
 		})
 	})
 })

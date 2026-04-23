@@ -1,0 +1,222 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package policy_test
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/policy"
+)
+
+func buildClient(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := paddockv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	return fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
+}
+
+func policyWith(name string, appliesTo []string, creds []paddockv1alpha1.CredentialGrant, egress []paddockv1alpha1.EgressGrant) *paddockv1alpha1.BrokerPolicy {
+	return &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns"},
+		Spec: paddockv1alpha1.BrokerPolicySpec{
+			AppliesToTemplates: appliesTo,
+			Grants: paddockv1alpha1.BrokerPolicyGrants{
+				Credentials: creds,
+				Egress:      egress,
+			},
+		},
+	}
+}
+
+func TestIntersect_AdmitsWhenAllRequirementsGranted(t *testing.T) {
+	bp := policyWith("allow-claude", []string{"claude"},
+		[]paddockv1alpha1.CredentialGrant{{
+			Name: "ANTHROPIC_API_KEY",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "Static",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+			},
+		}},
+		[]paddockv1alpha1.EgressGrant{{Host: "api.anthropic.com", Ports: []int32{443}}},
+	)
+	c := buildClient(t, bp)
+
+	res, err := policy.Intersect(context.Background(), c, "ns", "claude", paddockv1alpha1.RequireSpec{
+		Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "ANTHROPIC_API_KEY", Purpose: paddockv1alpha1.CredentialPurposeLLM}},
+		Egress:      []paddockv1alpha1.EgressRequirement{{Host: "api.anthropic.com", Ports: []int32{443}}},
+	})
+	if err != nil {
+		t.Fatalf("Intersect: %v", err)
+	}
+	if !res.Admitted {
+		t.Fatalf("expected Admitted=true; missing creds=%v egress=%v", res.MissingCredentials, res.MissingEgress)
+	}
+	cov, ok := res.CoveredCredentials["ANTHROPIC_API_KEY"]
+	if !ok || cov.Policy != "allow-claude" || cov.Provider != "Static" {
+		t.Fatalf("coverage = %+v, want {allow-claude, Static}", cov)
+	}
+}
+
+func TestIntersect_EmptyNamespaceRejects(t *testing.T) {
+	c := buildClient(t)
+	res, err := policy.Intersect(context.Background(), c, "ns", "claude", paddockv1alpha1.RequireSpec{
+		Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "K", Purpose: paddockv1alpha1.CredentialPurposeLLM}},
+	})
+	if err != nil {
+		t.Fatalf("Intersect: %v", err)
+	}
+	if res.Admitted {
+		t.Fatalf("expected Admitted=false in empty namespace")
+	}
+	if len(res.MatchedPolicies) != 0 {
+		t.Fatalf("MatchedPolicies = %v, want empty", res.MatchedPolicies)
+	}
+	if len(res.MissingCredentials) != 1 {
+		t.Fatalf("MissingCredentials = %d, want 1", len(res.MissingCredentials))
+	}
+}
+
+func TestIntersect_PolicyDoesNotApplyToTemplate(t *testing.T) {
+	bp := policyWith("allow-other", []string{"other"},
+		[]paddockv1alpha1.CredentialGrant{{Name: "K", Provider: paddockv1alpha1.ProviderConfig{
+			Kind: "Static", SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+		}}},
+		nil,
+	)
+	c := buildClient(t, bp)
+
+	res, _ := policy.Intersect(context.Background(), c, "ns", "claude", paddockv1alpha1.RequireSpec{
+		Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "K"}},
+	})
+	if res.Admitted {
+		t.Fatalf("policy applied to wrong template shouldn't admit")
+	}
+	if len(res.MatchedPolicies) != 0 {
+		t.Fatalf("MatchedPolicies = %v, want empty", res.MatchedPolicies)
+	}
+}
+
+func TestIntersect_WildcardSelector(t *testing.T) {
+	bp := policyWith("allow-any", []string{"*"},
+		[]paddockv1alpha1.CredentialGrant{{Name: "K", Provider: paddockv1alpha1.ProviderConfig{
+			Kind: "Static", SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+		}}},
+		nil,
+	)
+	c := buildClient(t, bp)
+
+	res, _ := policy.Intersect(context.Background(), c, "ns", "whatever", paddockv1alpha1.RequireSpec{
+		Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "K"}},
+	})
+	if !res.Admitted {
+		t.Fatalf("wildcard selector should admit")
+	}
+}
+
+func TestIntersect_AdditiveUnion(t *testing.T) {
+	creds := policyWith("creds", []string{"claude"},
+		[]paddockv1alpha1.CredentialGrant{{Name: "K", Provider: paddockv1alpha1.ProviderConfig{
+			Kind: "Static", SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+		}}},
+		nil,
+	)
+	egress := policyWith("egress", []string{"claude"}, nil,
+		[]paddockv1alpha1.EgressGrant{{Host: "api.anthropic.com", Ports: []int32{443}}},
+	)
+	c := buildClient(t, creds, egress)
+
+	res, _ := policy.Intersect(context.Background(), c, "ns", "claude", paddockv1alpha1.RequireSpec{
+		Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "K"}},
+		Egress:      []paddockv1alpha1.EgressRequirement{{Host: "api.anthropic.com", Ports: []int32{443}}},
+	})
+	if !res.Admitted {
+		t.Fatalf("union of matching policies should cover; missing=%+v/%+v", res.MissingCredentials, res.MissingEgress)
+	}
+}
+
+func TestIntersect_WildcardEgressHost(t *testing.T) {
+	bp := policyWith("allow", []string{"claude"}, nil,
+		[]paddockv1alpha1.EgressGrant{{Host: "*.anthropic.com", Ports: []int32{443}}},
+	)
+	c := buildClient(t, bp)
+
+	res, _ := policy.Intersect(context.Background(), c, "ns", "claude", paddockv1alpha1.RequireSpec{
+		Egress: []paddockv1alpha1.EgressRequirement{{Host: "api.anthropic.com", Ports: []int32{443}}},
+	})
+	if !res.Admitted {
+		t.Fatalf("*.anthropic.com should cover api.anthropic.com; missing=%+v", res.MissingEgress)
+	}
+
+	// Apex domain is NOT covered by a *. prefix.
+	res2, _ := policy.Intersect(context.Background(), c, "ns", "claude", paddockv1alpha1.RequireSpec{
+		Egress: []paddockv1alpha1.EgressRequirement{{Host: "anthropic.com", Ports: []int32{443}}},
+	})
+	if res2.Admitted {
+		t.Fatalf("*.anthropic.com should NOT cover anthropic.com (apex)")
+	}
+}
+
+func TestIntersect_AnyPortGrant(t *testing.T) {
+	bp := policyWith("allow", []string{"claude"}, nil,
+		[]paddockv1alpha1.EgressGrant{{Host: "api.anthropic.com"}}, // empty Ports = any
+	)
+	c := buildClient(t, bp)
+
+	res, _ := policy.Intersect(context.Background(), c, "ns", "claude", paddockv1alpha1.RequireSpec{
+		Egress: []paddockv1alpha1.EgressRequirement{{Host: "api.anthropic.com", Ports: []int32{443, 8443}}},
+	})
+	if !res.Admitted {
+		t.Fatalf("empty-ports grant should cover any required port")
+	}
+}
+
+func TestIntersect_SpecificPortMismatch(t *testing.T) {
+	bp := policyWith("allow", []string{"claude"}, nil,
+		[]paddockv1alpha1.EgressGrant{{Host: "api.anthropic.com", Ports: []int32{443}}},
+	)
+	c := buildClient(t, bp)
+
+	res, _ := policy.Intersect(context.Background(), c, "ns", "claude", paddockv1alpha1.RequireSpec{
+		Egress: []paddockv1alpha1.EgressRequirement{{Host: "api.anthropic.com", Ports: []int32{8080}}},
+	})
+	if res.Admitted {
+		t.Fatalf("specific-port mismatch should not admit")
+	}
+}
+
+func TestDescribeShortfall_NoPolicies(t *testing.T) {
+	res := &policy.IntersectionResult{
+		Admitted:           false,
+		MissingCredentials: []policy.CredentialShortfall{{Name: "K", Purpose: paddockv1alpha1.CredentialPurposeLLM}},
+	}
+	out := policy.DescribeShortfall(res, "claude", "my-team")
+	for _, want := range []string{"claude", "my-team", "K", "llm", "(none)", "scaffold claude"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("DescribeShortfall missing %q:\n%s", want, out)
+		}
+	}
+}

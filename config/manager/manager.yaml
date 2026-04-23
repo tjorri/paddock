@@ -75,6 +75,13 @@ spec:
           # AuditEvent retention window (ADR-0016). Literal here; the
           # chart generator substitutes .Values.auditRetentionDays.
           - --audit-retention-days=30
+          # Broker endpoint + auth (M3). Empty endpoint disables broker
+          # integration (appropriate for envtest or installs without a
+          # broker); the chart generator wires the default to the
+          # in-cluster service when broker.enabled is true.
+          - --broker-endpoint=https://paddock-broker.paddock-system.svc:8443
+          - --broker-token-path=/var/run/secrets/paddock-broker/token
+          - --broker-ca-path=/etc/paddock-broker/ca/ca.crt
         image: controller:latest
         name: manager
         ports: []
@@ -105,7 +112,27 @@ spec:
           requests:
             cpu: 10m
             memory: 64Mi
-        volumeMounts: []
-      volumes: []
+        volumeMounts:
+          - name: broker-token
+            mountPath: /var/run/secrets/paddock-broker
+            readOnly: true
+          - name: broker-ca
+            mountPath: /etc/paddock-broker/ca
+            readOnly: true
+      volumes:
+        - name: broker-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: paddock-broker
+                  expirationSeconds: 3600
+        - name: broker-ca
+          secret:
+            secretName: broker-serving-cert
+            optional: true
+            items:
+              - key: ca.crt
+                path: ca.crt
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

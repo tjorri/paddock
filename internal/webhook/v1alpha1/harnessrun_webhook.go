@@ -94,8 +94,9 @@ func (v *HarnessRunCustomValidator) ValidateDelete(_ context.Context, _ *paddock
 	return nil, nil
 }
 
-// validateAgainstTemplate resolves the run's template and rejects the
-// run if the template declares any requires. Returns nil when the
+// validateAgainstTemplate resolves the run's template and runs the
+// ADR-0014 intersection: template.requires must be covered by the
+// union of matching BrokerPolicy grants. Returns nil when the
 // validator has no client (tests) or the template is not yet present
 // (the reconciler will produce a clearer TemplateNotFound error).
 func (v *HarnessRunCustomValidator) validateAgainstTemplate(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
@@ -105,8 +106,6 @@ func (v *HarnessRunCustomValidator) validateAgainstTemplate(ctx context.Context,
 	spec, _, err := policy.ResolveTemplate(ctx, v.Client, run.Namespace, run.Spec.TemplateRef)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			// Surface as a controller-side TemplateNotFound rather than an
-			// admission failure — matches v0.2 UX.
 			return nil
 		}
 		return fmt.Errorf("resolving template: %w", err)
@@ -114,11 +113,14 @@ func (v *HarnessRunCustomValidator) validateAgainstTemplate(ctx context.Context,
 	if policy.RequiresEmpty(spec.Requires) {
 		return nil
 	}
-	return fmt.Errorf(
-		"template %q declares spec.requires but no BrokerPolicy in namespace %q backs it; "+
-			"the broker lands in v0.3 M3 — until then, templates with requires cannot be submitted "+
-			"(see docs/specs/0002-broker-proxy-v0.3.md)",
-		run.Spec.TemplateRef.Name, run.Namespace)
+	result, err := policy.Intersect(ctx, v.Client, run.Namespace, run.Spec.TemplateRef.Name, spec.Requires)
+	if err != nil {
+		return fmt.Errorf("intersecting BrokerPolicies: %w", err)
+	}
+	if result.Admitted {
+		return nil
+	}
+	return fmt.Errorf("%s", policy.DescribeShortfall(result, run.Spec.TemplateRef.Name, run.Namespace))
 }
 
 // MaxInlinePromptBytes caps spec.prompt at 256 KiB, well under the

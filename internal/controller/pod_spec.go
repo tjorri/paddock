@@ -62,6 +62,12 @@ type podSpecInputs struct {
 	outputConfigMap string
 	collectorImage  string
 	serviceAccount  string
+
+	// brokerCredsSecret, when non-empty, names an owned Secret whose
+	// keys are injected as env vars into the agent container via
+	// envFrom. Populated by ensureBrokerCredentials when the
+	// template's requires.credentials is non-empty.
+	brokerCredsSecret string
 }
 
 // buildJob renders the batchv1.Job for a HarnessRun. Assumes the caller
@@ -136,7 +142,7 @@ func buildPodSpec(
 		RestartPolicy:                 corev1.RestartPolicyNever,
 		TerminationGracePeriodSeconds: &grace,
 		InitContainers:                initContainers,
-		Containers:                    []corev1.Container{buildAgentContainer(run, template)},
+		Containers:                    []corev1.Container{buildAgentContainer(run, template, in)},
 		Volumes:                       buildPodVolumes(in.workspacePVC, in.promptSecret),
 	}
 }
@@ -148,9 +154,9 @@ func buildPodSpec(
 // no privilege escalation) matching the seed Job's posture in
 // workspace_seed.go. Scoped out for a future ADR — ADR-0010 covers the
 // overall PSS stance but not the sidecars explicitly.
-func buildAgentContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate) corev1.Container {
+func buildAgentContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in podSpecInputs) corev1.Container {
 	mountPath := effectiveWorkspaceMount(template)
-	return corev1.Container{
+	c := corev1.Container{
 		Name:      agentContainerName,
 		Image:     template.Spec.Image,
 		Command:   template.Spec.Command,
@@ -163,6 +169,14 @@ func buildAgentContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemp
 			{Name: workspaceVolumeName, MountPath: mountPath},
 		},
 	}
+	if in.brokerCredsSecret != "" {
+		c.EnvFrom = []corev1.EnvFromSource{{
+			SecretRef: &corev1.SecretEnvSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: in.brokerCredsSecret},
+			},
+		}}
+	}
+	return c
 }
 
 // buildAdapterContainer constructs the per-harness event adapter as a

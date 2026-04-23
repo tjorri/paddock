@@ -716,6 +716,9 @@ spec:
             - --collector-image={{ .Values.collectorImage.repository }}:{{ .Values.collectorImage.tag | default .Chart.AppVersion }}
             - --recent-events-cap={{ .Values.recentEventsCap | default 50 }}
             - --audit-retention-days={{ .Values.auditRetentionDays | default 30 }}
+            - --broker-endpoint=https://paddock-broker.paddock-system.svc:8443
+            - --broker-token-path=/var/run/secrets/paddock-broker/token
+            - --broker-ca-path=/etc/paddock-broker/ca/ca.crt
             - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
           command:
             - /manager
@@ -751,6 +754,12 @@ spec:
                 - ALL
             readOnlyRootFilesystem: true
           volumeMounts:
+            - mountPath: /var/run/secrets/paddock-broker
+              name: broker-token
+              readOnly: true
+            - mountPath: /etc/paddock-broker/ca
+              name: broker-ca
+              readOnly: true
             - mountPath: /tmp/k8s-webhook-server/serving-certs
               name: webhook-certs
               readOnly: true
@@ -761,6 +770,20 @@ spec:
       serviceAccountName: paddock-controller-manager
       terminationGracePeriodSeconds: 10
       volumes:
+        - name: broker-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: paddock-broker
+                  expirationSeconds: 3600
+                  path: token
+        - name: broker-ca
+          secret:
+            items:
+              - key: ca.crt
+                path: ca.crt
+            optional: true
+            secretName: broker-serving-cert
         - name: webhook-certs
           secret:
             secretName: webhook-server-cert

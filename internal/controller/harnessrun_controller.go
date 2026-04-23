@@ -75,6 +75,12 @@ type HarnessRunReconciler struct {
 	// the controller trims the parsed list to this count as
 	// belt-and-braces against ConfigMap-side drift. 0 disables.
 	RingMaxEvents int
+
+	// BrokerClient, when non-nil, is used to issue per-run credentials
+	// for templates with non-empty spec.requires.credentials. nil means
+	// no broker is configured — runs against templates with requires
+	// are held with BrokerReady=False.
+	BrokerClient BrokerIssuer
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=harnessruns,verbs=get;list;watch;create;update;patch;delete
@@ -224,6 +230,45 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		Message:            "prompt materialised",
 		ObservedGeneration: run.Generation,
 	})
+
+	// 4a. Issue broker-backed credentials for any requires.credentials
+	// the template declares (ADR-0015). The broker has already answered
+	// admission-time policy questions; here we materialise values into
+	// an owned Secret the agent container consumes via envFrom.
+	credsOk, brFatalReason, brFatalMsg, brErr := r.ensureBrokerCredentials(ctx, &run, tpl)
+	if brErr != nil {
+		return ctrl.Result{}, brErr
+	}
+	if brFatalReason != "" {
+		r.fail(&run, paddockv1alpha1.HarnessRunConditionBrokerReady, brFatalReason, brFatalMsg)
+		return r.commitStatus(ctx, &run, origStatus)
+	}
+	if !credsOk {
+		setCondition(&run.Status.Conditions, metav1.Condition{
+			Type:               paddockv1alpha1.HarnessRunConditionBrokerReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "BrokerUnavailable",
+			Message:            "waiting on broker to issue credentials",
+			ObservedGeneration: run.Generation,
+		})
+		run.Status.Phase = paddockv1alpha1.HarnessRunPhasePending
+		if _, err := r.commitStatus(ctx, &run, origStatus); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+	brokerMsg := "no broker credentials required"
+	if len(tpl.Spec.Requires.Credentials) > 0 {
+		brokerMsg = fmt.Sprintf("broker issued %d credential(s)", len(tpl.Spec.Requires.Credentials))
+	}
+	setCondition(&run.Status.Conditions, metav1.Condition{
+		Type:               paddockv1alpha1.HarnessRunConditionBrokerReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "Issued",
+		Message:            brokerMsg,
+		ObservedGeneration: run.Generation,
+	})
+
 	if err := r.ensureOutputConfigMap(ctx, &run); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -729,13 +774,17 @@ func (r *HarnessRunReconciler) ensureJob(
 	tpl *resolvedTemplate,
 	pvcName string,
 ) (*batchv1.Job, error) {
-	desired := buildJob(run, tpl, run.Status.WorkspaceRef, podSpecInputs{
+	in := podSpecInputs{
 		workspacePVC:    pvcName,
 		promptSecret:    promptSecretName(run),
 		outputConfigMap: outputCMName(run),
 		collectorImage:  r.CollectorImage,
 		serviceAccount:  collectorSAName(run),
-	})
+	}
+	if len(tpl.Spec.Requires.Credentials) > 0 {
+		in.brokerCredsSecret = brokerCredsSecretName(run.Name)
+	}
+	desired := buildJob(run, tpl, run.Status.WorkspaceRef, in)
 	if err := controllerutil.SetControllerReference(run, desired, r.Scheme); err != nil {
 		return nil, err
 	}

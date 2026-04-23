@@ -84,12 +84,22 @@ func main() {
 	var collectorImage string
 	var ringMaxEvents int
 	var auditRetentionDays int
+	var brokerEndpoint string
+	var brokerTokenPath string
+	var brokerCAPath string
 	flag.StringVar(&collectorImage, "collector-image", controller.DefaultCollectorImage,
 		"Image for the generic collector sidecar injected into every HarnessRun Pod.")
 	flag.IntVar(&ringMaxEvents, "recent-events-cap", 50,
 		"Maximum entries retained in HarnessRun.status.recentEvents when parsing collector snapshots (ADR-0007).")
 	flag.IntVar(&auditRetentionDays, "audit-retention-days", 30,
 		"Days after which AuditEvents are reaped by the TTL reconciler (ADR-0016).")
+	flag.StringVar(&brokerEndpoint, "broker-endpoint", "",
+		"HTTPS URL of the paddock-broker service, e.g. https://paddock-broker.paddock-system.svc:8443. "+
+			"Empty disables broker integration — runs against templates declaring spec.requires will fail with BrokerReady=False.")
+	flag.StringVar(&brokerTokenPath, "broker-token-path", "/var/run/secrets/paddock-broker/token",
+		"Path to a ProjectedServiceAccountToken with audience=paddock-broker.")
+	flag.StringVar(&brokerCAPath, "broker-ca-path", "/etc/paddock-broker/ca/ca.crt",
+		"Path to the CA bundle that signed the broker's serving cert (cert-manager-issued).")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -217,12 +227,26 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Workspace")
 		os.Exit(1)
 	}
-	if err := (&controller.HarnessRunReconciler{
+	brokerClient, err := controller.NewBrokerHTTPClient(brokerEndpoint, brokerTokenPath, brokerCAPath)
+	if err != nil {
+		setupLog.Error(err, "unable to build broker client")
+		os.Exit(1)
+	}
+	if brokerClient == nil {
+		setupLog.Info("broker integration disabled (no --broker-endpoint); runs declaring spec.requires will fail BrokerReady")
+	} else {
+		setupLog.Info("broker integration enabled", "endpoint", brokerEndpoint)
+	}
+	hrReconciler := &controller.HarnessRunReconciler{
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
 		CollectorImage: collectorImage,
 		RingMaxEvents:  ringMaxEvents,
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if brokerClient != nil {
+		hrReconciler.BrokerClient = brokerClient
+	}
+	if err := hrReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HarnessRun")
 		os.Exit(1)
 	}
