@@ -114,6 +114,18 @@ jobs:
 
       - uses: sigstore/cosign-installer@v4.1.1
 
+      # cosign reads creds from ~/.docker/config.json when signing by
+      # digest against a registry. `helm registry login` (below) writes
+      # to Helm's own config, not Docker's — so without this step the
+      # Sign-with-Cosign step hits ghcr.io with no token and gets
+      # UNAUTHORIZED. The images job has the same login for the same
+      # reason.
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Stamp registry paths into values.yaml
         # The chart on disk uses short image names so local Kind
         # installs work without overrides. For the published chart
