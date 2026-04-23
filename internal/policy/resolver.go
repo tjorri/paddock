@@ -67,6 +67,19 @@ func RequiresEmpty(r paddockv1alpha1.RequireSpec) bool {
 	return len(r.Credentials) == 0 && len(r.Egress) == 0
 }
 
+// AppliesToTemplate reports whether a BrokerPolicy's
+// appliesToTemplates selector list matches the given template name.
+// A selector of "*" matches anything; otherwise an exact name match is
+// required. See ADR-0014.
+func AppliesToTemplate(selectors []string, templateName string) bool {
+	for _, sel := range selectors {
+		if sel == "*" || sel == templateName {
+			return true
+		}
+	}
+	return false
+}
+
 func getHarnessTemplate(ctx context.Context, c client.Client, namespace, name string) (*paddockv1alpha1.HarnessTemplateSpec, string, error) {
 	var ht paddockv1alpha1.HarnessTemplate
 	if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &ht); err != nil {

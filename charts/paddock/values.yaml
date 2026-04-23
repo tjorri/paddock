@@ -19,6 +19,14 @@ collectorImage:
   tag: ""
   pullPolicy: IfNotPresent
 
+# Broker (v0.3). Separate binary + image; issues credentials to runs
+# via the broker-issued model (ADR-0012). Runs in lockstep with the
+# manager, so the default tag mirrors `image.tag`.
+brokerImage:
+  repository: paddock-broker
+  tag: ""
+  pullPolicy: IfNotPresent
+
 # cert-manager must be installed in the cluster — the webhook Issuer
 # and Certificate are rendered unconditionally. Set certManager.skip
 # to true to render without cert-manager resources (advanced; BYO

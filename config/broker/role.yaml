@@ -1,0 +1,32 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: broker-role
+  labels:
+    app.kubernetes.io/name: paddock
+    app.kubernetes.io/component: broker
+    app.kubernetes.io/managed-by: kustomize
+rules:
+  # Validate caller tokens issued with audience=paddock-broker.
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  # Resolve the run + its template + applicable BrokerPolicies.
+  - apiGroups: ["paddock.dev"]
+    resources:
+      - harnessruns
+      - harnesstemplates
+      - clusterharnesstemplates
+      - brokerpolicies
+    verbs: ["get", "list", "watch"]
+  # Read Secrets that a BrokerPolicy's provider config references.
+  # Scoped cluster-wide because the broker doesn't know at install time
+  # which Secrets policies will reference; RBAC narrowing happens via
+  # BrokerPolicy itself (it must name the Secret to grant the cred).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+  # Emit AuditEvents for every decision.
+  - apiGroups: ["paddock.dev"]
+    resources: ["auditevents"]
+    verbs: ["create"]

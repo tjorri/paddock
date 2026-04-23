@@ -84,6 +84,7 @@ for doc in "$tmp"/doc-*.yml "$tmp"/doc-*.yaml; do
         -e 's@- --collector-image=paddock-collector:dev@- --collector-image={{ .Values.collectorImage.repository }}:{{ .Values.collectorImage.tag | default .Chart.AppVersion }}@g' \
         -e 's@- --recent-events-cap=50@- --recent-events-cap={{ .Values.recentEventsCap | default 50 }}@g' \
         -e 's@- --audit-retention-days=30@- --audit-retention-days={{ .Values.auditRetentionDays | default 30 }}@g' \
+        -e 's@image: paddock-broker:dev@image: {{ .Values.brokerImage.repository }}:{{ .Values.brokerImage.tag | default .Chart.AppVersion }}@g' \
         "$doc" >>"$OUT_TEMPLATE"
       ;;
   esac

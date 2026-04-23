@@ -1,0 +1,23 @@
+# cert-manager Certificate for the broker's TLS serving cert.
+# Issued by the same self-signed Issuer the webhook uses (config/certmanager/issuer.yaml).
+# The subject's commonName + dnsNames are patched via kustomize
+# replacements in config/default/kustomization.yaml.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: broker-serving-cert
+  namespace: system
+  labels:
+    app.kubernetes.io/name: paddock
+    app.kubernetes.io/component: broker
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  dnsNames:
+    - paddock-broker.paddock-system.svc
+    - paddock-broker.paddock-system.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: selfsigned-issuer
+  secretName: broker-serving-cert
+  duration: 8760h  # 1 year — operational simplicity; rotate via cert-manager's normal machinery
+  renewBefore: 720h  # 30 days
