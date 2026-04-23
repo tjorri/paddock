@@ -104,6 +104,17 @@ type HarnessRunReconciler struct {
 	// (ADR-0013 §7.2). Empty disables transparent mode entirely —
 	// every run resolves to cooperative regardless of PSA labels.
 	IPTablesInitImage string
+
+	// NetworkPolicyEnforce selects whether per-run NetworkPolicy
+	// objects are emitted (ADR-0013 §7.4). "auto" defers to the CNI
+	// probe result stored in NetworkPolicyAutoEnabled.
+	NetworkPolicyEnforce NetworkPolicyEnforceMode
+
+	// NetworkPolicyAutoEnabled is set at manager startup from
+	// DetectNetworkPolicyCNI when NetworkPolicyEnforce="auto". True
+	// means "auto" resolves to on; false means off. Ignored when
+	// NetworkPolicyEnforce is on or off explicitly.
+	NetworkPolicyAutoEnabled bool
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=harnessruns,verbs=get;list;watch;create;update;patch;delete
@@ -119,6 +130,8 @@ type HarnessRunReconciler struct {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list;watch
 
 // Reconcile drives a HarnessRun through its lifecycle. See
 // docs/specs/0001-core-v0.1.md §3.3 for the state machine.
@@ -348,6 +361,16 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	if err := r.ensureCollectorRBAC(ctx, &run); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// 4c. Per-run NetworkPolicy (ADR-0013 §7.4). Only emitted when the
+	// manager is configured to enforce (on or auto-detected); skipped
+	// silently on Kind/kindnet to avoid broken deploys for homelab
+	// operators. Failure to materialise the policy is a hard error —
+	// better to block the run than to start a Pod whose egress posture
+	// is weaker than declared.
+	if err := r.ensureRunNetworkPolicy(ctx, &run); err != nil {
 		return ctrl.Result{}, err
 	}
 

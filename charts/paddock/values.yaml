@@ -52,6 +52,18 @@ iptablesInitImage:
   tag: ""
   pullPolicy: IfNotPresent
 
+# Per-run NetworkPolicy enforcement (ADR-0013 §7.4). Defence-in-depth
+# on top of the proxy sidecar — blocks agent egress that somehow
+# bypasses iptables (raw sockets, privileged escapes). Values:
+#   on    Always emit a NetworkPolicy per run.
+#   off   Never emit.
+#   auto  Probe kube-system for a known NP-capable CNI (Calico,
+#         Cilium, Weave, kube-router, Antrea). Kind/kindnet resolves
+#         to off. Default — safe on any cluster.
+proxy:
+  networkPolicy:
+    enforce: auto
+
 # cert-manager must be installed in the cluster — the webhook Issuer
 # and Certificate are rendered unconditionally. Set certManager.skip
 # to true to render without cert-manager resources (advanced; BYO

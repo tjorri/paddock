@@ -94,6 +94,10 @@ spec:
           # injected when the run's namespace PSA admits NET_ADMIN.
           # Empty disables transparent mode entirely.
           - --iptables-init-image=paddock-iptables-init:dev
+          # Per-run NetworkPolicy enforcement (ADR-0013 §7.4).
+          # auto: probe kube-system for a known NP-capable CNI.
+          # on: always emit; off: never emit.
+          - --networkpolicy-enforce=auto
         image: controller:latest
         name: manager
         ports: []

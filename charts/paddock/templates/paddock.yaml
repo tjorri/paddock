@@ -293,9 +293,28 @@ rules:
       - create
       - patch
   - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - list
+      - watch
+  - apiGroups:
       - batch
     resources:
       - jobs
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
     verbs:
       - create
       - delete
@@ -724,6 +743,7 @@ spec:
             - --proxy-ca-secret-namespace=paddock-system
             - --proxy-allow={{ .Values.proxyAllowList | default "" }}
             - --iptables-init-image={{ if .Values.iptablesInitImage.repository }}{{ .Values.iptablesInitImage.repository }}:{{ .Values.iptablesInitImage.tag | default .Chart.AppVersion }}{{ end }}
+            - --networkpolicy-enforce={{ .Values.proxy.networkPolicy.enforce | default "auto" }}
             - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
           command:
             - /manager

@@ -17,8 +17,10 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"time"
 
@@ -92,6 +94,7 @@ func main() {
 	var proxyCANamespace string
 	var proxyAllowList string
 	var iptablesInitImage string
+	var networkPolicyEnforce string
 	flag.StringVar(&collectorImage, "collector-image", controller.DefaultCollectorImage,
 		"Image for the generic collector sidecar injected into every HarnessRun Pod.")
 	flag.IntVar(&ringMaxEvents, "recent-events-cap", 50,
@@ -118,6 +121,11 @@ func main() {
 	flag.StringVar(&iptablesInitImage, "iptables-init-image", "",
 		"Image for the transparent-mode NET_ADMIN init container (ADR-0013 §7.2). "+
 			"Empty disables transparent mode — every run resolves to cooperative.")
+	flag.StringVar(&networkPolicyEnforce, "networkpolicy-enforce", "auto",
+		"Per-run NetworkPolicy enforcement (ADR-0013 §7.4). 'on' always emits; "+
+			"'off' never does; 'auto' probes kube-system for a known NP-capable CNI "+
+			"(Calico / Cilium / Weave / kube-router / Antrea) and turns on when one is found. "+
+			"Kind/kindnet installs resolve to off.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -255,14 +263,21 @@ func main() {
 	} else {
 		setupLog.Info("broker integration enabled", "endpoint", brokerEndpoint)
 	}
+	npEnforce, npAuto, err := resolveNetworkPolicyEnforce(networkPolicyEnforce)
+	if err != nil {
+		setupLog.Error(err, "unable to resolve --networkpolicy-enforce")
+		os.Exit(1)
+	}
 	hrReconciler := &controller.HarnessRunReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		CollectorImage:    collectorImage,
-		RingMaxEvents:     ringMaxEvents,
-		ProxyImage:        proxyImage,
-		ProxyAllowList:    proxyAllowList,
-		IPTablesInitImage: iptablesInitImage,
+		Client:                   mgr.GetClient(),
+		Scheme:                   mgr.GetScheme(),
+		CollectorImage:           collectorImage,
+		RingMaxEvents:            ringMaxEvents,
+		ProxyImage:               proxyImage,
+		ProxyAllowList:           proxyAllowList,
+		IPTablesInitImage:        iptablesInitImage,
+		NetworkPolicyEnforce:     npEnforce,
+		NetworkPolicyAutoEnabled: npAuto,
 		ProxyCASource: controller.ProxyCASource{
 			Name:      proxyCAName,
 			Namespace: proxyCANamespace,
@@ -280,6 +295,17 @@ func main() {
 			"transparent-mode", iptablesInitImage != "",
 		)
 	}
+	if npEnforce == controller.NetworkPolicyEnforceAuto {
+		enabled, reason, probeErr := controller.DetectNetworkPolicyCNI(context.Background(), mgr.GetAPIReader())
+		if probeErr != nil {
+			setupLog.Error(probeErr, "CNI probe failed; defaulting NetworkPolicy enforcement to off")
+		}
+		hrReconciler.NetworkPolicyAutoEnabled = enabled
+		setupLog.Info("NetworkPolicy auto-detection complete", "enforced", enabled, "reason", reason)
+	}
+	setupLog.Info("NetworkPolicy enforcement", "mode", npEnforce,
+		"effective", hrReconciler.NetworkPolicyEnforce == controller.NetworkPolicyEnforceOn ||
+			(hrReconciler.NetworkPolicyEnforce == controller.NetworkPolicyEnforceAuto && hrReconciler.NetworkPolicyAutoEnabled))
 	if err := hrReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HarnessRun")
 		os.Exit(1)
@@ -307,5 +333,22 @@ func main() {
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
+	}
+}
+
+// resolveNetworkPolicyEnforce parses the --networkpolicy-enforce value
+// into the controller's enum. Returns (mode, autoEnabledDefault, err).
+// autoEnabledDefault is false; cmd/main.go overwrites it after running
+// the CNI probe.
+func resolveNetworkPolicyEnforce(raw string) (controller.NetworkPolicyEnforceMode, bool, error) {
+	switch raw {
+	case string(controller.NetworkPolicyEnforceOn):
+		return controller.NetworkPolicyEnforceOn, true, nil
+	case string(controller.NetworkPolicyEnforceOff):
+		return controller.NetworkPolicyEnforceOff, false, nil
+	case string(controller.NetworkPolicyEnforceAuto), "":
+		return controller.NetworkPolicyEnforceAuto, false, nil
+	default:
+		return "", false, fmt.Errorf("invalid --networkpolicy-enforce=%q (want auto|on|off)", raw)
 	}
 }
