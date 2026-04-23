@@ -18,12 +18,9 @@ package v1alpha1
 
 import (
 	"context"
-	"fmt"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
@@ -34,7 +31,7 @@ var harnesstemplatelog = logf.Log.WithName("harnesstemplate-resource")
 // SetupHarnessTemplateWebhookWithManager registers the validating webhook
 // for HarnessTemplate with the manager.
 func SetupHarnessTemplateWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&paddockv1alpha1.HarnessTemplate{}).
+	return ctrl.NewWebhookManagedBy(mgr, &paddockv1alpha1.HarnessTemplate{}).
 		WithValidator(&HarnessTemplateCustomValidator{}).
 		Complete()
 }
@@ -45,26 +42,18 @@ func SetupHarnessTemplateWebhookWithManager(mgr ctrl.Manager) error {
 // See docs/adr/0003-template-override-semantics.md for rules.
 type HarnessTemplateCustomValidator struct{}
 
-var _ webhook.CustomValidator = &HarnessTemplateCustomValidator{}
+var _ admission.Validator[*paddockv1alpha1.HarnessTemplate] = &HarnessTemplateCustomValidator{}
 
-func (v *HarnessTemplateCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
-	tpl, ok := obj.(*paddockv1alpha1.HarnessTemplate)
-	if !ok {
-		return nil, fmt.Errorf("expected a HarnessTemplate object but got %T", obj)
-	}
+func (v *HarnessTemplateCustomValidator) ValidateCreate(_ context.Context, tpl *paddockv1alpha1.HarnessTemplate) (admission.Warnings, error) {
 	harnesstemplatelog.V(1).Info("validating HarnessTemplate create", "name", tpl.GetName())
 	return nil, validateHarnessTemplateSpec(&tpl.Spec, false)
 }
 
-func (v *HarnessTemplateCustomValidator) ValidateUpdate(_ context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
-	tpl, ok := newObj.(*paddockv1alpha1.HarnessTemplate)
-	if !ok {
-		return nil, fmt.Errorf("expected a HarnessTemplate object but got %T", newObj)
-	}
-	harnesstemplatelog.V(1).Info("validating HarnessTemplate update", "name", tpl.GetName())
-	return nil, validateHarnessTemplateSpec(&tpl.Spec, false)
+func (v *HarnessTemplateCustomValidator) ValidateUpdate(_ context.Context, _, newTpl *paddockv1alpha1.HarnessTemplate) (admission.Warnings, error) {
+	harnesstemplatelog.V(1).Info("validating HarnessTemplate update", "name", newTpl.GetName())
+	return nil, validateHarnessTemplateSpec(&newTpl.Spec, false)
 }
 
-func (v *HarnessTemplateCustomValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
+func (v *HarnessTemplateCustomValidator) ValidateDelete(_ context.Context, _ *paddockv1alpha1.HarnessTemplate) (admission.Warnings, error) {
 	return nil, nil
 }

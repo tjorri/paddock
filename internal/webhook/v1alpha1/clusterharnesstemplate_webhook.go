@@ -18,12 +18,9 @@ package v1alpha1
 
 import (
 	"context"
-	"fmt"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
@@ -34,7 +31,7 @@ var clusterharnesstemplatelog = logf.Log.WithName("clusterharnesstemplate-resour
 // SetupClusterHarnessTemplateWebhookWithManager registers the validating
 // webhook for ClusterHarnessTemplate with the manager.
 func SetupClusterHarnessTemplateWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&paddockv1alpha1.ClusterHarnessTemplate{}).
+	return ctrl.NewWebhookManagedBy(mgr, &paddockv1alpha1.ClusterHarnessTemplate{}).
 		WithValidator(&ClusterHarnessTemplateCustomValidator{}).
 		Complete()
 }
@@ -46,26 +43,18 @@ func SetupClusterHarnessTemplateWebhookWithManager(mgr ctrl.Manager) error {
 // cannot inherit — see docs/adr/0003-template-override-semantics.md.
 type ClusterHarnessTemplateCustomValidator struct{}
 
-var _ webhook.CustomValidator = &ClusterHarnessTemplateCustomValidator{}
+var _ admission.Validator[*paddockv1alpha1.ClusterHarnessTemplate] = &ClusterHarnessTemplateCustomValidator{}
 
-func (v *ClusterHarnessTemplateCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
-	tpl, ok := obj.(*paddockv1alpha1.ClusterHarnessTemplate)
-	if !ok {
-		return nil, fmt.Errorf("expected a ClusterHarnessTemplate object but got %T", obj)
-	}
+func (v *ClusterHarnessTemplateCustomValidator) ValidateCreate(_ context.Context, tpl *paddockv1alpha1.ClusterHarnessTemplate) (admission.Warnings, error) {
 	clusterharnesstemplatelog.V(1).Info("validating ClusterHarnessTemplate create", "name", tpl.GetName())
 	return nil, validateHarnessTemplateSpec(&tpl.Spec, true)
 }
 
-func (v *ClusterHarnessTemplateCustomValidator) ValidateUpdate(_ context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
-	tpl, ok := newObj.(*paddockv1alpha1.ClusterHarnessTemplate)
-	if !ok {
-		return nil, fmt.Errorf("expected a ClusterHarnessTemplate object but got %T", newObj)
-	}
-	clusterharnesstemplatelog.V(1).Info("validating ClusterHarnessTemplate update", "name", tpl.GetName())
-	return nil, validateHarnessTemplateSpec(&tpl.Spec, true)
+func (v *ClusterHarnessTemplateCustomValidator) ValidateUpdate(_ context.Context, _, newTpl *paddockv1alpha1.ClusterHarnessTemplate) (admission.Warnings, error) {
+	clusterharnesstemplatelog.V(1).Info("validating ClusterHarnessTemplate update", "name", newTpl.GetName())
+	return nil, validateHarnessTemplateSpec(&newTpl.Spec, true)
 }
 
-func (v *ClusterHarnessTemplateCustomValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
+func (v *ClusterHarnessTemplateCustomValidator) ValidateDelete(_ context.Context, _ *paddockv1alpha1.ClusterHarnessTemplate) (admission.Warnings, error) {
 	return nil, nil
 }

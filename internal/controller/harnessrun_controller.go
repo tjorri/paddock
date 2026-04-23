@@ -899,7 +899,12 @@ func isTerminal(p paddockv1alpha1.HarnessRunPhase) bool {
 // watches.
 func (r *HarnessRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor("harnessrun-controller")
+		// TODO(events-api): migrate to mgr.GetEventRecorder + the new
+		// events.EventRecorder.Eventf(regarding, related, type, reason,
+		// action, note, args...) signature. Deprecated since CR 0.23
+		// but still works; a separate commit will port the ~8 Eventf
+		// call-sites rather than bundle it here.
+		r.Recorder = mgr.GetEventRecorderFor("harnessrun-controller") //nolint:staticcheck
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&paddockv1alpha1.HarnessRun{}).

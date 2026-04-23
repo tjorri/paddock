@@ -21,11 +21,9 @@ import (
 	"fmt"
 	"reflect"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
@@ -36,7 +34,7 @@ var harnessrunlog = logf.Log.WithName("harnessrun-resource")
 // SetupHarnessRunWebhookWithManager registers the validating webhook for
 // HarnessRun with the manager.
 func SetupHarnessRunWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&paddockv1alpha1.HarnessRun{}).
+	return ctrl.NewWebhookManagedBy(mgr, &paddockv1alpha1.HarnessRun{}).
 		WithValidator(&HarnessRunCustomValidator{}).
 		Complete()
 }
@@ -50,26 +48,14 @@ func SetupHarnessRunWebhookWithManager(mgr ctrl.Manager) error {
 //   - spec immutable after creation.
 type HarnessRunCustomValidator struct{}
 
-var _ webhook.CustomValidator = &HarnessRunCustomValidator{}
+var _ admission.Validator[*paddockv1alpha1.HarnessRun] = &HarnessRunCustomValidator{}
 
-func (v *HarnessRunCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
-	run, ok := obj.(*paddockv1alpha1.HarnessRun)
-	if !ok {
-		return nil, fmt.Errorf("expected a HarnessRun object but got %T", obj)
-	}
+func (v *HarnessRunCustomValidator) ValidateCreate(_ context.Context, run *paddockv1alpha1.HarnessRun) (admission.Warnings, error) {
 	harnessrunlog.V(1).Info("validating HarnessRun create", "name", run.GetName())
 	return nil, validateHarnessRunSpec(&run.Spec)
 }
 
-func (v *HarnessRunCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	oldRun, ok := oldObj.(*paddockv1alpha1.HarnessRun)
-	if !ok {
-		return nil, fmt.Errorf("expected a HarnessRun object for oldObj but got %T", oldObj)
-	}
-	newRun, ok := newObj.(*paddockv1alpha1.HarnessRun)
-	if !ok {
-		return nil, fmt.Errorf("expected a HarnessRun object for newObj but got %T", newObj)
-	}
+func (v *HarnessRunCustomValidator) ValidateUpdate(_ context.Context, oldRun, newRun *paddockv1alpha1.HarnessRun) (admission.Warnings, error) {
 	harnessrunlog.V(1).Info("validating HarnessRun update", "name", newRun.GetName())
 
 	if !reflect.DeepEqual(oldRun.Spec, newRun.Spec) {
@@ -80,7 +66,7 @@ func (v *HarnessRunCustomValidator) ValidateUpdate(_ context.Context, oldObj, ne
 	return nil, validateHarnessRunSpec(&newRun.Spec)
 }
 
-func (v *HarnessRunCustomValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
+func (v *HarnessRunCustomValidator) ValidateDelete(_ context.Context, _ *paddockv1alpha1.HarnessRun) (admission.Warnings, error) {
 	return nil, nil
 }
 

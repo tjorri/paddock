@@ -300,7 +300,10 @@ func setCondition(conds *[]metav1.Condition, c metav1.Condition) {
 // up watches for owned resources.
 func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorderFor("workspace-controller")
+		// TODO(events-api): migrate to mgr.GetEventRecorder + the new
+		// events.EventRecorder.Eventf signature. See the matching TODO
+		// in harnessrun_controller.go.
+		r.Recorder = mgr.GetEventRecorderFor("workspace-controller") //nolint:staticcheck
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&paddockv1alpha1.Workspace{}).

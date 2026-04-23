@@ -21,11 +21,9 @@ import (
 	"fmt"
 	"reflect"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
@@ -36,7 +34,7 @@ var workspacelog = logf.Log.WithName("workspace-resource")
 // SetupWorkspaceWebhookWithManager registers the validating webhook for
 // Workspace with the manager.
 func SetupWorkspaceWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&paddockv1alpha1.Workspace{}).
+	return ctrl.NewWebhookManagedBy(mgr, &paddockv1alpha1.Workspace{}).
 		WithValidator(&WorkspaceCustomValidator{}).
 		Complete()
 }
@@ -50,26 +48,14 @@ func SetupWorkspaceWebhookWithManager(mgr ctrl.Manager) error {
 //   - spec.storage and spec.seed are immutable after creation.
 type WorkspaceCustomValidator struct{}
 
-var _ webhook.CustomValidator = &WorkspaceCustomValidator{}
+var _ admission.Validator[*paddockv1alpha1.Workspace] = &WorkspaceCustomValidator{}
 
-func (v *WorkspaceCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
-	ws, ok := obj.(*paddockv1alpha1.Workspace)
-	if !ok {
-		return nil, fmt.Errorf("expected a Workspace object but got %T", obj)
-	}
+func (v *WorkspaceCustomValidator) ValidateCreate(_ context.Context, ws *paddockv1alpha1.Workspace) (admission.Warnings, error) {
 	workspacelog.V(1).Info("validating Workspace create", "name", ws.GetName())
 	return nil, validateWorkspaceSpec(&ws.Spec)
 }
 
-func (v *WorkspaceCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	oldWS, ok := oldObj.(*paddockv1alpha1.Workspace)
-	if !ok {
-		return nil, fmt.Errorf("expected a Workspace object for oldObj but got %T", oldObj)
-	}
-	newWS, ok := newObj.(*paddockv1alpha1.Workspace)
-	if !ok {
-		return nil, fmt.Errorf("expected a Workspace object for newObj but got %T", newObj)
-	}
+func (v *WorkspaceCustomValidator) ValidateUpdate(_ context.Context, oldWS, newWS *paddockv1alpha1.Workspace) (admission.Warnings, error) {
 	workspacelog.V(1).Info("validating Workspace update", "name", newWS.GetName())
 
 	if !reflect.DeepEqual(oldWS.Spec.Storage, newWS.Spec.Storage) {
@@ -81,7 +67,7 @@ func (v *WorkspaceCustomValidator) ValidateUpdate(_ context.Context, oldObj, new
 	return nil, validateWorkspaceSpec(&newWS.Spec)
 }
 
-func (v *WorkspaceCustomValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
+func (v *WorkspaceCustomValidator) ValidateDelete(_ context.Context, _ *paddockv1alpha1.Workspace) (admission.Warnings, error) {
 	return nil, nil
 }
 
