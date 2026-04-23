@@ -17,12 +17,13 @@ helm install paddock ./charts/paddock \
 
 ### Local dev (images built via `make images`)
 
-The locally-built images tag as `:dev`. The chart's default tag falls through to `Chart.AppVersion` (e.g. `0.1.0-dev`), which means a plain `helm install` on a Kind cluster hits `ImagePullBackOff` unless you override:
+The locally-built images tag as `:dev`. The chart's default tag falls through to `Chart.AppVersion`, which won't match `:dev`, so a plain `helm install` on a Kind cluster hits `ImagePullBackOff`. Override both tags (manager + collector):
 
 ```sh
 helm install paddock ./charts/paddock \
   --namespace paddock-system --create-namespace \
-  --set image.tag=dev
+  --set image.tag=dev \
+  --set collectorImage.tag=dev
 ```
 
 Skip this when installing from a published registry with matching tags.
@@ -44,9 +45,12 @@ helm install paddock ./charts/paddock \
 
 `image.tag` falls back to `Chart.AppVersion` when empty.
 
+## Versioning
+
+`image.tag` and `collectorImage.tag` default to empty string, which falls through to `Chart.AppVersion`. One tag, one release — manager and collector version in lockstep. Override both tags explicitly when you need a mixed-version install (e.g. a collector hotfix against an older manager).
+
 ## Known v0.1 caveats
 
-- **Collector-image is baked into the manager.** Overriding `collectorImage` in values doesn't yet re-thread through to the Deployment's `--collector-image` flag. If you need to run with a non-default collector, build a manager image with the matching `DefaultCollectorImage` constant instead. Targeted for v0.2.
 - **The run namespace's `Pod Security Standards` posture is the operator's call**, per [ADR-0010](../../docs/adr/0010-pod-security-standards.md). The chart only labels `paddock-system` itself (restricted).
 - **CRDs are installed once.** Helm's convention for `crds/` is that upgrades don't modify them. Major schema revisions arrive via a separate `kubectl apply --server-side=true --force-conflicts -f charts/paddock/crds/`.
 

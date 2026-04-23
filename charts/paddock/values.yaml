@@ -11,12 +11,13 @@ image:
   pullPolicy: IfNotPresent
 
 # Image the controller injects into every HarnessRun Pod as the
-# generic collector sidecar. Must be reachable from the cluster.
-# Setting this requires a matching --collector-image flag on the
-# manager Deployment, which is not yet templated — for v0.1, keep
-# this at the default and rely on DefaultCollectorImage baked into
-# the manager binary. Listed here for forward compatibility.
-collectorImage: paddock-collector:dev
+# generic collector sidecar. Versions in lockstep with the manager,
+# so the default tag mirrors `image.tag` (empty → Chart.AppVersion).
+# Override both when pulling from a private registry.
+collectorImage:
+  repository: paddock-collector
+  tag: ""
+  pullPolicy: IfNotPresent
 
 # cert-manager must be installed in the cluster — the webhook Issuer
 # and Certificate are rendered unconditionally. Set certManager.skip

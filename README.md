@@ -37,8 +37,12 @@ done
 Either via Helm:
 
 ```sh
-helm install paddock ./charts/paddock --namespace paddock-system --create-namespace \
-  --set image.tag=dev   # match locally-built images; drop this when installing from a registry
+# Local-built images tag as :dev; overrides match that for both
+# the manager and the collector. Drop both --set flags when
+# installing the published chart from ghcr.io.
+helm install paddock ./charts/paddock \
+  --namespace paddock-system --create-namespace \
+  --set image.tag=dev --set collectorImage.tag=dev
 ```
 
 Or via kustomize:
@@ -100,6 +104,47 @@ kubectl paddock events demo -n claude-demo
 ```sh
 make kind-down
 ```
+
+## Installing a published release
+
+CI publishes versioned images and the Helm chart to GitHub Container Registry (ghcr.io) as OCI artifacts on every tagged release. Every push to `main` also publishes bleeding-edge images under the `:main` tag (and an immutable `:main-<sha>` for pinning).
+
+Install the latest tagged release:
+
+```sh
+helm install paddock \
+  oci://ghcr.io/paddock-dev/charts/paddock \
+  --version 0.1.0 \
+  --namespace paddock-system --create-namespace
+```
+
+Or install a specific tagged release via the single-file manifest:
+
+```sh
+kubectl apply --server-side=true --force-conflicts \
+  -f https://github.com/paddock-dev/paddock/releases/download/v0.1.0/install.yaml
+```
+
+Every image is Cosign-signed (keyless, Sigstore). Verification is optional — `docker pull` and `helm pull` work unchanged whether you verify or not:
+
+```sh
+cosign verify ghcr.io/paddock-dev/paddock-manager:v0.1.0 \
+  --certificate-identity-regexp='^https://github\.com/paddock-dev/paddock/' \
+  --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
+```
+
+### Running the bleeding edge
+
+The `:main` tag always points at the most recent commit on the `main` branch:
+
+```sh
+helm install paddock ./charts/paddock \
+  --namespace paddock-system --create-namespace \
+  --set image.repository=ghcr.io/paddock-dev/paddock-manager --set image.tag=main \
+  --set collectorImage.repository=ghcr.io/paddock-dev/paddock-collector --set collectorImage.tag=main
+```
+
+Pin to a specific main-branch commit via `:main-<sha>` (first seven chars of the commit SHA).
 
 ## Concepts in 60 seconds
 

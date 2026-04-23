@@ -63,6 +63,11 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          # The collector image is a separate binary that ships alongside
+          # the manager; the two version in lockstep. hack/gen-helm-chart.sh
+          # rewrites this literal into a {{ .Values.collectorImage ... }}
+          # template when generating the Helm chart.
+          - --collector-image=paddock-collector:dev
         image: controller:latest
         name: manager
         ports: []
