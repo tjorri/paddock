@@ -42,6 +42,16 @@ proxyImage:
 # this static list with per-BrokerPolicy grants resolved at runtime.
 proxyAllowList: ""
 
+# Transparent-mode init container that installs iptables REDIRECT
+# rules in each run's Pod netns (ADR-0013 §7.2). Required for
+# hostile-co-tenant posture — the agent cannot bypass the proxy by
+# ignoring HTTPS_PROXY. Set .repository to "" to force every run to
+# cooperative mode regardless of BrokerPolicy.minInterceptionMode.
+iptablesInitImage:
+  repository: paddock-iptables-init
+  tag: ""
+  pullPolicy: IfNotPresent
+
 # cert-manager must be installed in the cluster — the webhook Issuer
 # and Certificate are rendered unconditionally. Set certManager.skip
 # to true to render without cert-manager resources (advanced; BYO

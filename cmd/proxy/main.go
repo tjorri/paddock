@@ -26,6 +26,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"flag"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -61,12 +62,14 @@ func main() {
 		runName          string
 		runNamespace     string
 		allowList        string
+		mode             string
 		shutdownGrace    time.Duration
 		disableAudit     bool
 		upstreamCABundle string
 	)
 	flag.StringVar(&listenAddr, "listen-address", ":15001",
-		"Plain-HTTP CONNECT listen address. Cooperative mode: agent reaches it via HTTPS_PROXY.")
+		"Listen address. Cooperative mode: HTTP CONNECT proxy (agent sends HTTPS_PROXY requests here). "+
+			"Transparent mode: raw TCP listener hit by iptables REDIRECT.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":15002",
 		"HTTP listen address for /healthz and /readyz.")
 	flag.StringVar(&caDir, "ca-dir", "/etc/paddock-proxy/tls",
@@ -76,9 +79,13 @@ func main() {
 	flag.StringVar(&runNamespace, "run-namespace", "",
 		"Namespace the run lives in. Required for audit emission; populated from POD_NAMESPACE env by default.")
 	flag.StringVar(&allowList, "allow", "",
-		"Static cooperative-mode egress allow-list: comma-separated host:port entries. "+
+		"Static egress allow-list: comma-separated host:port entries. "+
 			"Port '*' matches any. Host may lead with '*.' for a wildcard subdomain. Empty means deny-all. "+
 			"M7 replaces this with live broker.ValidateEgress calls.")
+	flag.StringVar(&mode, "mode", "cooperative",
+		"Interception mode. 'cooperative' listens for HTTP CONNECT; 'transparent' listens for raw TCP "+
+			"redirected by iptables and recovers the destination via SO_ORIGINAL_DST (Linux only). "+
+			"Selected at Pod-build time by the reconciler; the binary is otherwise identical.")
 	flag.DurationVar(&shutdownGrace, "shutdown-grace", 10*time.Second,
 		"Time to wait for in-flight connections to drain on SIGTERM.")
 	flag.BoolVar(&disableAudit, "disable-audit", false,
@@ -130,12 +137,6 @@ func main() {
 		Logger:            logger,
 	}
 
-	httpSrv := &http.Server{
-		Addr:              listenAddr,
-		Handler:           p,
-		ReadHeaderTimeout: 15 * time.Second,
-	}
-
 	probeMux := http.NewServeMux()
 	probeMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	probeMux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
@@ -147,14 +148,69 @@ func main() {
 
 	errCh := make(chan error, 2)
 	go func() {
-		setupLog.Info("proxy listening", "addr", listenAddr)
-		errCh <- httpSrv.ListenAndServe()
-	}()
-	go func() {
 		setupLog.Info("proxy probes listening", "addr", probeAddr)
 		errCh <- probeSrv.ListenAndServe()
 	}()
 
+	switch mode {
+	case "cooperative":
+		setupLog.Info("interception mode", "mode", mode, "listener", "HTTP CONNECT")
+		httpSrv := &http.Server{
+			Addr:              listenAddr,
+			Handler:           p,
+			ReadHeaderTimeout: 15 * time.Second,
+		}
+		go func() {
+			setupLog.Info("proxy listening", "addr", listenAddr)
+			errCh <- httpSrv.ListenAndServe()
+		}()
+		waitForShutdown(ctx, errCh, shutdownGrace, httpSrv, probeSrv)
+
+	case "transparent":
+		if !proxy.TransparentInterceptionSupported() {
+			setupLog.Error(nil, "--mode=transparent requires a Linux build")
+			os.Exit(1)
+		}
+		setupLog.Info("interception mode", "mode", mode, "listener", "raw TCP (SO_ORIGINAL_DST)")
+		ln, err := net.Listen("tcp", listenAddr)
+		if err != nil {
+			setupLog.Error(err, "transparent listen")
+			os.Exit(1)
+		}
+		go func() {
+			setupLog.Info("proxy listening", "addr", listenAddr)
+			errCh <- serveTransparent(ctx, ln, p)
+		}()
+		waitForShutdown(ctx, errCh, shutdownGrace, nil, probeSrv)
+		_ = ln.Close()
+
+	default:
+		setupLog.Error(nil, "unknown --mode", "mode", mode)
+		os.Exit(1)
+	}
+	setupLog.Info("proxy stopped")
+}
+
+// serveTransparent accepts connections on ln and hands each one to
+// Server.HandleTransparentConn in its own goroutine. Returns when the
+// listener is closed.
+func serveTransparent(ctx context.Context, ln net.Listener, s *proxy.Server) error {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return http.ErrServerClosed
+			}
+			return err
+		}
+		go s.HandleTransparentConn(ctx, conn)
+	}
+}
+
+// waitForShutdown blocks until either the context is cancelled or one
+// of the servers errors. Shutting down the HTTP server is best-effort;
+// transparent mode's listener is closed by the caller.
+func waitForShutdown(ctx context.Context, errCh <-chan error, grace time.Duration, httpSrv *http.Server, probeSrv *http.Server) {
 	select {
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -162,14 +218,14 @@ func main() {
 			os.Exit(1)
 		}
 	case <-ctx.Done():
-		setupLog.Info("shutdown signal received", "grace", shutdownGrace)
+		setupLog.Info("shutdown signal received", "grace", grace)
 	}
-
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownGrace)
-	defer cancelShutdown()
-	_ = httpSrv.Shutdown(shutdownCtx)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+	if httpSrv != nil {
+		_ = httpSrv.Shutdown(shutdownCtx)
+	}
 	_ = probeSrv.Shutdown(shutdownCtx)
-	setupLog.Info("proxy stopped")
 }
 
 // buildAuditSink constructs the AuditEvent writer or returns a no-op

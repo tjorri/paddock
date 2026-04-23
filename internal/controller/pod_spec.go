@@ -54,19 +54,30 @@ const (
 	// with seedManifestRelPath in workspace_seed.go.
 	reposManifestRelPath = ".paddock/repos.json"
 
-	agentContainerName     = "agent"
-	adapterContainerName   = "adapter"
-	collectorContainerName = "collector"
-	proxyContainerName     = "proxy"
-	defaultGracePeriodSecs = 60
+	agentContainerName        = "agent"
+	adapterContainerName      = "adapter"
+	collectorContainerName    = "collector"
+	proxyContainerName        = "proxy"
+	iptablesInitContainerName = "iptables-init"
+	defaultGracePeriodSecs    = 60
 
-	// Proxy sidecar (ADR-0013 §7). M4 is cooperative-mode only:
-	// HTTPS_PROXY=http://localhost:15001 in the agent's env; iptables
-	// interception lands in M5.
-	proxyListenAddr   = "127.0.0.1:15001"
-	proxyHTTPSProxy   = "http://127.0.0.1:15001"
-	proxyCAVolumeName = "paddock-proxy-tls"
-	proxyCAMountPath  = "/etc/paddock-proxy/tls"
+	// Proxy sidecar (ADR-0013 §7). Two modes:
+	//   - cooperative: agent sets HTTPS_PROXY=http://localhost:15001 and
+	//     the proxy listens as an HTTP CONNECT proxy.
+	//   - transparent: iptables-init installs NAT rules that redirect
+	//     agent TCP traffic on :80/:443 to the proxy, which recovers
+	//     the destination via SO_ORIGINAL_DST.
+	proxyListenPort    = 15001
+	proxyListenAddr    = "0.0.0.0:15001"
+	proxyLocalhostAddr = "127.0.0.1:15001"
+	proxyHTTPSProxy    = "http://127.0.0.1:15001"
+	proxyCAVolumeName  = "paddock-proxy-tls"
+	proxyCAMountPath   = "/etc/paddock-proxy/tls"
+	// Dedicated UID for the proxy sidecar so iptables can RETURN
+	// proxy-owned traffic without looping. Matches cmd/iptables-init's
+	// defaultProxyUID. 1337 is the Istio convention — low enough
+	// conflict risk against typical agent container UIDs.
+	proxyRunAsUID = 1337
 	// agentCABundleMountPath is where the agent sees the MITM CA
 	// bundle. Points at a single file (ca.crt key of the per-run
 	// Secret), which is what SSL_CERT_FILE and friends want.
@@ -81,6 +92,11 @@ const DefaultCollectorImage = "paddock-collector:dev"
 // DefaultProxyImage is used when the reconciler does not override it.
 // Overridable via --proxy-image. Zero string disables the sidecar.
 const DefaultProxyImage = "paddock-proxy:dev"
+
+// DefaultIPTablesInitImage is used when the reconciler does not
+// override it. Overridable via --iptables-init-image. Only injected
+// when the resolved interception mode is transparent.
+const DefaultIPTablesInitImage = "paddock-iptables-init:dev"
 
 // podSpecInputs bundles the per-run resolution results the PodSpec
 // builder needs. Keeps buildJob from growing a long positional
@@ -105,6 +121,17 @@ type podSpecInputs struct {
 	proxyImage     string
 	proxyTLSSecret string
 	proxyAllowList string
+
+	// interceptionMode selects how the agent's egress reaches the proxy.
+	// Resolved at reconcile time from namespace PSA + BrokerPolicy
+	// floors (ADR-0013). Empty is treated as cooperative so the pod
+	// builds even when the manager has no mode-resolver wired in (e.g.
+	// older tests). Only honoured when proxyImage is set.
+	interceptionMode paddockv1alpha1.InterceptionMode
+
+	// iptablesInitImage is the init-container image used for transparent
+	// mode. Ignored when interceptionMode != transparent.
+	iptablesInitImage string
 }
 
 // buildJob renders the batchv1.Job for a HarnessRun. Assumes the caller
@@ -168,7 +195,15 @@ func buildPodSpec(
 		collectorImage = DefaultCollectorImage
 	}
 
-	initContainers := make([]corev1.Container, 0, 3)
+	initContainers := make([]corev1.Container, 0, 4)
+
+	// iptables-init runs first — it must complete before the proxy
+	// sidecar starts so the agent's TCP traffic is caught by the
+	// REDIRECT chain from the first packet.
+	if proxyEnabled(in) && in.interceptionMode == paddockv1alpha1.InterceptionModeTransparent {
+		initContainers = append(initContainers, buildIPTablesInitContainer(in))
+	}
+
 	if template.Spec.EventAdapter != nil {
 		initContainers = append(initContainers, buildAdapterContainer(template))
 	}
@@ -346,19 +381,40 @@ func buildPodVolumes(in podSpecInputs) []corev1.Volume {
 }
 
 // buildProxyContainer constructs the egress-proxy sidecar (ADR-0013).
-// Same restart-policy contract as adapter + collector. Cooperative mode
-// in M4 — the iptables-init container that makes interception
-// transparent lands in M5.
+// Same restart-policy contract as adapter + collector.
+//
+// Listen address differs by mode:
+//   - cooperative: 127.0.0.1:15001 — only loopback, agent reaches it
+//     via HTTPS_PROXY.
+//   - transparent: 0.0.0.0:15001 — iptables REDIRECT hands us
+//     connections on this port regardless of original destination.
+//
+// The proxy runs as UID 1337 in transparent mode so the iptables-init
+// container's owner-UID RETURN rule can short-circuit proxy-originated
+// traffic. In cooperative mode the UID is flexible; we still set it to
+// 1337 for consistency.
 func buildProxyContainer(run *paddockv1alpha1.HarnessRun, in podSpecInputs) corev1.Container {
 	always := corev1.ContainerRestartPolicyAlways
+	mode := in.interceptionMode
+	if mode == "" {
+		mode = paddockv1alpha1.InterceptionModeCooperative
+	}
+
+	listenAddr := proxyLocalhostAddr
+	if mode == paddockv1alpha1.InterceptionModeTransparent {
+		listenAddr = proxyListenAddr
+	}
+
 	args := []string{
-		"--listen-address=" + proxyListenAddr,
+		"--listen-address=" + listenAddr,
 		"--ca-dir=" + proxyCAMountPath,
 		"--run-name=" + run.Name,
+		"--mode=" + string(mode),
 	}
 	if in.proxyAllowList != "" {
 		args = append(args, "--allow="+in.proxyAllowList)
 	}
+	uid := int64(proxyRunAsUID)
 	return corev1.Container{
 		Name:          proxyContainerName,
 		Image:         in.proxyImage,
@@ -385,10 +441,46 @@ func buildProxyContainer(run *paddockv1alpha1.HarnessRun, in podSpecInputs) core
 			},
 		},
 		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:                &uid,
+			RunAsGroup:               &uid,
 			AllowPrivilegeEscalation: ptrBool(false),
 			ReadOnlyRootFilesystem:   ptrBool(true),
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
+			},
+		},
+	}
+}
+
+// buildIPTablesInitContainer renders the NET_ADMIN init container that
+// installs the REDIRECT chain in the Pod netns. Runs before any
+// sidecar, exits 0 once rules are in place. See ADR-0013 §7.2.
+//
+// Runs as root — necessary to load the `iptable_nat` kernel module
+// handle and write into /proc/sys/net/... . CAP_NET_ADMIN alone is
+// sufficient on most modern kernels; we keep runAsUser:0 + drop all
+// other caps for a tight envelope.
+func buildIPTablesInitContainer(in podSpecInputs) corev1.Container {
+	img := in.iptablesInitImage
+	if img == "" {
+		img = DefaultIPTablesInitImage
+	}
+	uid := int64(0)
+	return corev1.Container{
+		Name:  iptablesInitContainerName,
+		Image: img,
+		Args: []string{
+			fmt.Sprintf("--proxy-uid=%d", proxyRunAsUID),
+			fmt.Sprintf("--proxy-port=%d", proxyListenPort),
+			"--ports=80,443",
+		},
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:                &uid,
+			AllowPrivilegeEscalation: ptrBool(false),
+			ReadOnlyRootFilesystem:   ptrBool(true),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+				Add:  []corev1.Capability{"NET_ADMIN", "NET_RAW"},
 			},
 		},
 	}
@@ -418,17 +510,22 @@ func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in po
 	)
 
 	if proxyEnabled(in) {
-		// Cooperative-mode egress enforcement (ADR-0013). M5 replaces
-		// the explicit HTTPS_PROXY env with iptables REDIRECT and
-		// drops the env vars to avoid agents that prefer env over
-		// interception path.
+		// Cooperative mode needs HTTPS_PROXY to steer the agent.
+		// Transparent mode deliberately omits it — the iptables
+		// REDIRECT catches sockets regardless, and agents that prefer
+		// HTTPS_PROXY over direct sockets would otherwise produce
+		// double-proxying chaos (ADR-0013 §7.2).
+		if in.interceptionMode != paddockv1alpha1.InterceptionModeTransparent {
+			env = append(env,
+				corev1.EnvVar{Name: "HTTPS_PROXY", Value: proxyHTTPSProxy},
+				corev1.EnvVar{Name: "HTTP_PROXY", Value: proxyHTTPSProxy},
+				corev1.EnvVar{Name: "NO_PROXY", Value: "127.0.0.1,localhost,kubernetes.default.svc"},
+			)
+		}
+		// CA-trust fan-out applies to both modes: the leaf cert the
+		// proxy forges is the same Paddock CA regardless of how the
+		// agent's traffic reaches the proxy.
 		env = append(env,
-			corev1.EnvVar{Name: "HTTPS_PROXY", Value: proxyHTTPSProxy},
-			corev1.EnvVar{Name: "HTTP_PROXY", Value: proxyHTTPSProxy},
-			corev1.EnvVar{Name: "NO_PROXY", Value: "127.0.0.1,localhost,kubernetes.default.svc"},
-			// CA-trust fan-out: every client we care about reads one
-			// of these. The file is mounted via subPath so it resolves
-			// to a concrete file path, not a symlinked directory.
 			corev1.EnvVar{Name: "SSL_CERT_FILE", Value: agentCABundleMountPath},
 			corev1.EnvVar{Name: "NODE_EXTRA_CA_CERTS", Value: agentCABundleMountPath},
 			corev1.EnvVar{Name: "REQUESTS_CA_BUNDLE", Value: agentCABundleMountPath},

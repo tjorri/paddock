@@ -90,6 +90,10 @@ spec:
           - --proxy-ca-secret-name=paddock-proxy-ca
           - --proxy-ca-secret-namespace=paddock-system
           - --proxy-allow=
+          # Transparent-mode init container (ADR-0013 §7.2). Only
+          # injected when the run's namespace PSA admits NET_ADMIN.
+          # Empty disables transparent mode entirely.
+          - --iptables-init-image=paddock-iptables-init:dev
         image: controller:latest
         name: manager
         ports: []

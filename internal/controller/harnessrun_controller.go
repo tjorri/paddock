@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/policy"
 )
 
 // Finalizer that lets the run cancel its Job and release the
@@ -97,6 +98,12 @@ type HarnessRunReconciler struct {
 	// --proxy-allow at manager startup. M7 replaces the static list
 	// with live broker.ValidateEgress calls.
 	ProxyAllowList string
+
+	// IPTablesInitImage is the image used for the NET_ADMIN init
+	// container that installs the transparent-mode REDIRECT chain
+	// (ADR-0013 §7.2). Empty disables transparent mode entirely —
+	// every run resolves to cooperative regardless of PSA labels.
+	IPTablesInitImage string
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=harnessruns,verbs=get;list;watch;create;update;patch;delete
@@ -310,11 +317,21 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			}
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
+		mode, mErr := r.resolveInterceptionMode(ctx, &run, tpl)
+		if mErr != nil {
+			return ctrl.Result{}, mErr
+		}
+		reason := "Cooperative"
+		msg := "MITM CA mounted; HTTPS_PROXY configured (cooperative mode)"
+		if mode == paddockv1alpha1.InterceptionModeTransparent {
+			reason = "Transparent"
+			msg = "MITM CA mounted; iptables REDIRECT installed (transparent mode)"
+		}
 		setCondition(&run.Status.Conditions, metav1.Condition{
 			Type:               paddockv1alpha1.HarnessRunConditionEgressConfigured,
 			Status:             metav1.ConditionTrue,
-			Reason:             "Cooperative",
-			Message:            "MITM CA mounted; HTTPS_PROXY configured (cooperative mode)",
+			Reason:             reason,
+			Message:            msg,
 			ObservedGeneration: run.Generation,
 		})
 	} else {
@@ -859,6 +876,14 @@ func (r *HarnessRunReconciler) ensureJob(
 		in.proxyImage = r.ProxyImage
 		in.proxyTLSSecret = proxyTLSSecretName(run.Name)
 		in.proxyAllowList = r.ProxyAllowList
+		mode, err := r.resolveInterceptionMode(ctx, run, tpl)
+		if err != nil {
+			return nil, err
+		}
+		in.interceptionMode = mode
+		if mode == paddockv1alpha1.InterceptionModeTransparent {
+			in.iptablesInitImage = r.IPTablesInitImage
+		}
 	}
 	desired := buildJob(run, tpl, run.Status.WorkspaceRef, in)
 	if err := controllerutil.SetControllerReference(run, desired, r.Scheme); err != nil {
@@ -973,6 +998,35 @@ func (r *HarnessRunReconciler) reconcileDelete(ctx context.Context, run *paddock
 // empty list is a valid deny-all policy, not a disable signal.
 func (r *HarnessRunReconciler) proxyConfigured() bool {
 	return r.ProxyImage != "" && r.ProxyCASource.Name != ""
+}
+
+// resolveInterceptionMode picks between transparent and cooperative
+// modes for this run (ADR-0013 §7.2). Transparent requires:
+//
+//  1. The manager was started with --iptables-init-image (otherwise
+//     no init container is available).
+//  2. The run's namespace PSA enforce label permits NET_ADMIN.
+//
+// Otherwise cooperative mode is used. The admission webhook has
+// already rejected any MinInterceptionMode violations; this path
+// simply picks the concrete mode to render into the Pod spec.
+func (r *HarnessRunReconciler) resolveInterceptionMode(
+	ctx context.Context,
+	run *paddockv1alpha1.HarnessRun,
+	tpl *resolvedTemplate,
+) (paddockv1alpha1.InterceptionMode, error) {
+	if r.IPTablesInitImage == "" {
+		return paddockv1alpha1.InterceptionModeCooperative, nil
+	}
+	matches, err := policy.ListMatchingPolicies(ctx, r.Client, run.Namespace, tpl.SourceName)
+	if err != nil {
+		return "", err
+	}
+	mode, _, err := policy.ResolveInterceptionMode(ctx, r.Client, run.Namespace, matches)
+	if err != nil {
+		return "", err
+	}
+	return mode, nil
 }
 
 // fail sets a terminal Failed phase with the given condition reason.

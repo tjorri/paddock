@@ -287,9 +287,10 @@ func TestBuildPodSpec_ProxySidecar(t *testing.T) {
 		argSet[a] = true
 	}
 	mustHave := []string{
-		"--listen-address=" + proxyListenAddr,
+		"--listen-address=" + proxyLocalhostAddr,
 		"--ca-dir=" + proxyCAMountPath,
 		"--run-name=" + run.Name,
+		"--mode=cooperative",
 		"--allow=" + in.proxyAllowList,
 	}
 	for _, a := range mustHave {
@@ -350,6 +351,87 @@ func TestBuildPodSpec_ProxySidecar(t *testing.T) {
 	for k, v := range wantEnv {
 		if env[k] != v {
 			t.Errorf("agent env[%q] = %q, want %q", k, env[k], v)
+		}
+	}
+}
+
+// TestBuildPodSpec_TransparentMode verifies M5's transparent-mode
+// wiring: iptables-init before sidecars, proxy runs as UID 1337 with
+// --mode=transparent, no HTTPS_PROXY env on the agent.
+func TestBuildPodSpec_TransparentMode(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = "paddock-proxy:test"
+	in.proxyTLSSecret = "run-echo-proxy-tls"
+	in.interceptionMode = paddockv1alpha1.InterceptionModeTransparent
+	in.iptablesInitImage = "paddock-iptables-init:test"
+
+	ps := buildPodSpec(run, tpl, in)
+
+	// Init containers: iptables-init (real init, no restartPolicy), then
+	// adapter, collector, proxy (all native sidecars).
+	if len(ps.InitContainers) != 4 {
+		t.Fatalf("initContainers = %d, want 4 (iptables-init + adapter + collector + proxy)", len(ps.InitContainers))
+	}
+	if ps.InitContainers[0].Name != iptablesInitContainerName {
+		t.Errorf("initContainers[0] = %q, want %q (must run first)", ps.InitContainers[0].Name, iptablesInitContainerName)
+	}
+	ipt := ps.InitContainers[0]
+	if ipt.RestartPolicy != nil {
+		t.Errorf("iptables-init must be a plain init container, not a native sidecar (restartPolicy=%v)", ipt.RestartPolicy)
+	}
+	if ipt.SecurityContext == nil || ipt.SecurityContext.Capabilities == nil {
+		t.Fatal("iptables-init missing securityContext capabilities")
+	}
+	hasNetAdmin := false
+	for _, cap := range ipt.SecurityContext.Capabilities.Add {
+		if cap == "NET_ADMIN" {
+			hasNetAdmin = true
+		}
+	}
+	if !hasNetAdmin {
+		t.Errorf("iptables-init must request NET_ADMIN capability; got Add=%v", ipt.SecurityContext.Capabilities.Add)
+	}
+
+	// Proxy has --mode=transparent and runs as UID 1337.
+	proxy := ps.InitContainers[3]
+	if proxy.Name != proxyContainerName {
+		t.Fatalf("initContainers[3] = %q, want %q", proxy.Name, proxyContainerName)
+	}
+	var hasTransparentMode, hasExternalListen bool
+	for _, a := range proxy.Args {
+		if a == "--mode=transparent" {
+			hasTransparentMode = true
+		}
+		if a == "--listen-address="+proxyListenAddr {
+			hasExternalListen = true
+		}
+	}
+	if !hasTransparentMode {
+		t.Errorf("proxy args missing --mode=transparent; got %v", proxy.Args)
+	}
+	if !hasExternalListen {
+		t.Errorf("proxy in transparent mode must listen on 0.0.0.0 so iptables REDIRECT hits it; got %v", proxy.Args)
+	}
+	if proxy.SecurityContext == nil || proxy.SecurityContext.RunAsUser == nil || *proxy.SecurityContext.RunAsUser != int64(proxyRunAsUID) {
+		t.Errorf("proxy must run as UID %d for iptables owner-RETURN; got %+v",
+			proxyRunAsUID, proxy.SecurityContext)
+	}
+
+	// Agent env must NOT carry HTTPS_PROXY in transparent mode.
+	env := envToMap(ps.Containers[0].Env)
+	for _, k := range []string{"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"} {
+		if _, ok := env[k]; ok {
+			t.Errorf("env[%q] must be unset in transparent mode (got %q); iptables REDIRECT catches sockets directly",
+				k, env[k])
+		}
+	}
+	// CA-trust envs still present in transparent mode.
+	for _, k := range []string{"SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO"} {
+		if env[k] != agentCABundleMountPath {
+			t.Errorf("agent env[%q] = %q, want %q", k, env[k], agentCABundleMountPath)
 		}
 	}
 }

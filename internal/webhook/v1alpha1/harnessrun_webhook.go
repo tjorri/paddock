@@ -117,10 +117,25 @@ func (v *HarnessRunCustomValidator) validateAgainstTemplate(ctx context.Context,
 	if err != nil {
 		return fmt.Errorf("intersecting BrokerPolicies: %w", err)
 	}
-	if result.Admitted {
-		return nil
+	if !result.Admitted {
+		return fmt.Errorf("%s", policy.DescribeShortfall(result, run.Spec.TemplateRef.Name, run.Namespace))
 	}
-	return fmt.Errorf("%s", policy.DescribeShortfall(result, run.Spec.TemplateRef.Name, run.Namespace))
+
+	// Intersection admitted; now check the interception-mode floor
+	// (ADR-0013 §26). A BrokerPolicy may refuse to back runs that would
+	// downgrade to cooperative mode due to PSA on the namespace.
+	matchingPolicies, err := policy.ListMatchingPolicies(ctx, v.Client, run.Namespace, run.Spec.TemplateRef.Name)
+	if err != nil {
+		return fmt.Errorf("listing matching BrokerPolicies: %w", err)
+	}
+	mode, floor, err := policy.ResolveInterceptionMode(ctx, v.Client, run.Namespace, matchingPolicies)
+	if err != nil {
+		return fmt.Errorf("resolving interception mode: %w", err)
+	}
+	if floor.Policy != "" {
+		return fmt.Errorf("%s", policy.DescribeModeFloorRejection(run.Namespace, mode, floor))
+	}
+	return nil
 }
 
 // MaxInlinePromptBytes caps spec.prompt at 256 KiB, well under the

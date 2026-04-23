@@ -74,14 +74,35 @@ type CoveredCredential struct {
 	Provider string
 }
 
+// ListMatchingPolicies returns the BrokerPolicies in namespace whose
+// appliesToTemplates selects templateName. Kept separate from Intersect
+// because the interception-mode floor check (ADR-0013 §26) consumes
+// the same list, and sharing the code prevents admission-path
+// discrepancies between "what policies matched for credentials" and
+// "what policies matched for mode floor".
+func ListMatchingPolicies(ctx context.Context, c client.Client, namespace, templateName string) ([]*paddockv1alpha1.BrokerPolicy, error) {
+	var policies paddockv1alpha1.BrokerPolicyList
+	if err := c.List(ctx, &policies, client.InNamespace(namespace)); err != nil {
+		return nil, err
+	}
+	var matching []*paddockv1alpha1.BrokerPolicy
+	for i := range policies.Items {
+		bp := &policies.Items[i]
+		if AppliesToTemplate(bp.Spec.AppliesToTemplates, templateName) {
+			matching = append(matching, bp)
+		}
+	}
+	return matching, nil
+}
+
 // Intersect lists BrokerPolicies in the given namespace, filters by
 // appliesToTemplates against templateName, unions their grants, and
 // compares against requires. Returns (result, nil) even when
 // !result.Admitted — callers use the shortfall lists to produce the
 // admission diagnostic.
 func Intersect(ctx context.Context, c client.Client, namespace, templateName string, requires paddockv1alpha1.RequireSpec) (*IntersectionResult, error) {
-	var policies paddockv1alpha1.BrokerPolicyList
-	if err := c.List(ctx, &policies, client.InNamespace(namespace)); err != nil {
+	matching, err := ListMatchingPolicies(ctx, c, namespace, templateName)
+	if err != nil {
 		return nil, err
 	}
 
@@ -89,14 +110,8 @@ func Intersect(ctx context.Context, c client.Client, namespace, templateName str
 		Admitted:           true,
 		CoveredCredentials: make(map[string]CoveredCredential),
 	}
-
-	var matching []*paddockv1alpha1.BrokerPolicy
-	for i := range policies.Items {
-		bp := &policies.Items[i]
-		if AppliesToTemplate(bp.Spec.AppliesToTemplates, templateName) {
-			matching = append(matching, bp)
-			result.MatchedPolicies = append(result.MatchedPolicies, bp.Name)
-		}
+	for _, bp := range matching {
+		result.MatchedPolicies = append(result.MatchedPolicies, bp.Name)
 	}
 
 	for _, cred := range requires.Credentials {

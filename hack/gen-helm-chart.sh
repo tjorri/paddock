@@ -87,6 +87,7 @@ for doc in "$tmp"/doc-*.yml "$tmp"/doc-*.yaml; do
         -e 's@image: paddock-broker:dev@image: {{ .Values.brokerImage.repository }}:{{ .Values.brokerImage.tag | default .Chart.AppVersion }}@g' \
         -e 's@- --proxy-image=paddock-proxy:dev@- --proxy-image={{ if .Values.proxyImage.repository }}{{ .Values.proxyImage.repository }}:{{ .Values.proxyImage.tag | default .Chart.AppVersion }}{{ end }}@g' \
         -e 's@- --proxy-allow=$@- --proxy-allow={{ .Values.proxyAllowList | default "" }}@g' \
+        -e 's@- --iptables-init-image=paddock-iptables-init:dev@- --iptables-init-image={{ if .Values.iptablesInitImage.repository }}{{ .Values.iptablesInitImage.repository }}:{{ .Values.iptablesInitImage.tag | default .Chart.AppVersion }}{{ end }}@g' \
         "$doc" >>"$OUT_TEMPLATE"
       ;;
   esac

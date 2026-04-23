@@ -91,6 +91,7 @@ func main() {
 	var proxyCAName string
 	var proxyCANamespace string
 	var proxyAllowList string
+	var iptablesInitImage string
 	flag.StringVar(&collectorImage, "collector-image", controller.DefaultCollectorImage,
 		"Image for the generic collector sidecar injected into every HarnessRun Pod.")
 	flag.IntVar(&ringMaxEvents, "recent-events-cap", 50,
@@ -114,6 +115,9 @@ func main() {
 	flag.StringVar(&proxyAllowList, "proxy-allow", "",
 		"Comma-separated host:port egress allow-list passed to every proxy sidecar via --allow. "+
 			"M7 replaces this with live broker.ValidateEgress.")
+	flag.StringVar(&iptablesInitImage, "iptables-init-image", "",
+		"Image for the transparent-mode NET_ADMIN init container (ADR-0013 §7.2). "+
+			"Empty disables transparent mode — every run resolves to cooperative.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -252,12 +256,13 @@ func main() {
 		setupLog.Info("broker integration enabled", "endpoint", brokerEndpoint)
 	}
 	hrReconciler := &controller.HarnessRunReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		CollectorImage: collectorImage,
-		RingMaxEvents:  ringMaxEvents,
-		ProxyImage:     proxyImage,
-		ProxyAllowList: proxyAllowList,
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		CollectorImage:    collectorImage,
+		RingMaxEvents:     ringMaxEvents,
+		ProxyImage:        proxyImage,
+		ProxyAllowList:    proxyAllowList,
+		IPTablesInitImage: iptablesInitImage,
 		ProxyCASource: controller.ProxyCASource{
 			Name:      proxyCAName,
 			Namespace: proxyCANamespace,
@@ -269,7 +274,11 @@ func main() {
 	if proxyImage == "" {
 		setupLog.Info("proxy sidecar disabled (no --proxy-image); runs will proceed with EgressConfigured=False")
 	} else {
-		setupLog.Info("proxy sidecar enabled", "image", proxyImage, "ca-secret", proxyCAName)
+		setupLog.Info("proxy sidecar enabled",
+			"image", proxyImage,
+			"ca-secret", proxyCAName,
+			"transparent-mode", iptablesInitImage != "",
+		)
 	}
 	if err := hrReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HarnessRun")

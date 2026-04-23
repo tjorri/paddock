@@ -723,6 +723,7 @@ spec:
             - --proxy-ca-secret-name=paddock-proxy-ca
             - --proxy-ca-secret-namespace=paddock-system
             - --proxy-allow={{ .Values.proxyAllowList | default "" }}
+            - --iptables-init-image={{ if .Values.iptablesInitImage.repository }}{{ .Values.iptablesInitImage.repository }}:{{ .Values.iptablesInitImage.tag | default .Chart.AppVersion }}{{ end }}
             - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
           command:
             - /manager
