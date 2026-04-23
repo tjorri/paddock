@@ -10,7 +10,7 @@ Thanks for being here. Paddock is early — v0.1 shipped the core CRDs, controll
 
 ## Dev setup
 
-Prerequisites: Go 1.25+, Docker, `kubectl`, Kind 0.25+, cert-manager handled by `make kind-up`, optional `tilt`, optional `helm`.
+Prerequisites: Go 1.26+, Docker, `kubectl`, Kind 0.25+, cert-manager handled by `make kind-up`, optional `tilt`, optional `helm`.
 
 ```sh
 make kind-up                 # local cluster + cert-manager

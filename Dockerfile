@@ -6,7 +6,7 @@
 # binary natively via GOOS/GOARCH, which is ~10x faster than running
 # `go build` under QEMU. The final distroless stage is left without
 # --platform so buildx pulls the correct per-arch base image.
-FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 

@@ -14,7 +14,7 @@ Three CRDs — `ClusterHarnessTemplate` / `HarnessTemplate` (the pod shape), `Ha
 
 ## Quickstart
 
-Prerequisites: Go 1.25+, Docker, `kubectl`, [Kind](https://kind.sigs.k8s.io/) 0.25+, and [Tilt](https://tilt.dev/) (for the inner loop). Kubernetes 1.29+ in the target cluster — Paddock uses native sidecars.
+Prerequisites: Go 1.26+, Docker, `kubectl`, [Kind](https://kind.sigs.k8s.io/) 0.25+, and [Tilt](https://tilt.dev/) (for the inner loop). Kubernetes 1.29+ in the target cluster — Paddock uses native sidecars.
 
 ### 1. Bring up a local cluster
 

@@ -5,7 +5,7 @@
 #
 # See the top-level Dockerfile for the rationale on --platform=
 # $BUILDPLATFORM + cache mounts — same pattern applies here.
-FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
