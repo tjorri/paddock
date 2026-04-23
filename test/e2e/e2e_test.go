@@ -20,7 +20,9 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -76,18 +78,12 @@ var _ = Describe("paddock v0.1 pipeline", Ordered, func() {
 		_, err = utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
 			"rollout", "status", "deploy/paddock-controller-manager", "--timeout=180s"))
 		Expect(err).NotTo(HaveOccurred())
-
-		// rollout status returns as soon as the Pod is Ready, but the
-		// Service → Endpoints update happens asynchronously. The first
-		// webhook-triggering apply after a fresh deploy can race and
-		// hit "connection refused" if the endpoint hasn't propagated
-		// yet. Poll until the webhook Service has at least one address.
-		By("waiting for the webhook Service to have endpoints")
-		Eventually(func() (string, error) {
-			return utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-				"get", "endpoints", "paddock-webhook-service",
-				"-o", "jsonpath={.subsets[0].addresses[0].ip}"))
-		}, 60*time.Second, time.Second).ShouldNot(BeEmpty())
+		// Note: rollout status returning Ready does NOT guarantee the
+		// webhook is reachable — the Endpoints object is populated
+		// before kube-proxy finishes programming the ClusterIP rules,
+		// so the first ~hundreds of milliseconds of "Ready" still fail
+		// webhook calls with "connection refused". applyFromYAML below
+		// handles that race with a targeted retry loop.
 	})
 
 	AfterAll(func() {
@@ -96,10 +92,15 @@ var _ = Describe("paddock v0.1 pipeline", Ordered, func() {
 		if os.Getenv("KEEP_E2E_RUN") == "1" {
 			return
 		}
-		_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", runNamespace, "--wait=false"))
-		_, _ = utils.Run(exec.Command("kubectl", "delete", "clusterharnesstemplate", clusterTemplateName, "--ignore-not-found=true"))
-		_, _ = utils.Run(exec.Command("make", "undeploy", "ignore-not-found=true"))
-		_, _ = utils.Run(exec.Command("make", "uninstall", "ignore-not-found=true"))
+		// Teardown is best-effort: kind delete cluster obliterates
+		// everything anyway. Wrap each step in a bounded context so a
+		// hung `kubectl delete` (e.g. a finalizer that won't clear)
+		// can't eat the 10-minute ginkgo suite budget and hide the
+		// preceding pass/fail result.
+		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", runNamespace, "--wait=false")
+		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", clusterTemplateName, "--ignore-not-found=true")
+		runWithTimeout(90*time.Second, "make", "undeploy", "ignore-not-found=true")
+		runWithTimeout(90*time.Second, "make", "uninstall", "ignore-not-found=true")
 	})
 
 	AfterEach(func() {
@@ -232,10 +233,67 @@ spec:
 	})
 })
 
-// applyFromYAML pipes the given YAML into `kubectl apply -f -`.
+// applyFromYAML pipes the given YAML into `kubectl apply -f -`,
+// retrying on transient webhook/apiserver errors for up to applyRetryBudget.
+//
+// Why retry: a freshly-rolled controller races with kube-proxy's
+// Service→Pod rule programming. The Deployment's rollout-status
+// returns Ready and the Endpoints object gets populated before
+// kube-proxy has actually programmed the ClusterIP forwarding, which
+// opens a ~hundreds-of-milliseconds window where the apiserver's
+// webhook call to paddock-webhook-service:443 gets "connection
+// refused". Retries close the window without swallowing real
+// validation failures — see isRetriableApplyErr.
 func applyFromYAML(yaml string) {
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(yaml)
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "kubectl apply failed for:\n%s", yaml)
+	const applyRetryBudget = 30 * time.Second
+	deadline := time.Now().Add(applyRetryBudget)
+	var lastErr error
+	for {
+		cmd := exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = strings.NewReader(yaml)
+		_, err := utils.Run(cmd)
+		if err == nil {
+			return
+		}
+		lastErr = err
+		if !isRetriableApplyErr(err) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	ExpectWithOffset(1, lastErr).NotTo(HaveOccurred(), "kubectl apply failed for:\n%s", yaml)
+}
+
+// isRetriableApplyErr returns true only for transient webhook/apiserver
+// conditions that typically resolve within a few seconds of a fresh
+// deploy. Deliberately does NOT match the generic "Internal error
+// occurred: failed calling webhook" prefix, which also fires for
+// permanent failures (cert issues, webhook-returned errors) that
+// retries can't fix.
+func isRetriableApplyErr(err error) bool {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "connection refused"):
+		return true
+	case strings.Contains(msg, "no endpoints available for service"):
+		return true
+	case strings.Contains(msg, "context deadline exceeded"):
+		return true
+	}
+	return false
+}
+
+// runWithTimeout runs a command via utils.Run under a context with
+// the given deadline. On timeout, SIGKILL is sent to the process and
+// a one-line note is written to GinkgoWriter. Output is discarded —
+// callers who need it should use utils.Run directly. Intended for
+// best-effort teardown steps that must not block.
+func runWithTimeout(timeout time.Duration, name string, args ...string) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_, err := utils.Run(exec.CommandContext(ctx, name, args...))
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		fmt.Fprintf(GinkgoWriter, "teardown timed out after %s: %s %s\n",
+			timeout, name, strings.Join(args, " "))
+	}
 }
