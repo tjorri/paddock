@@ -1,0 +1,22 @@
+# AuditEvents are not written by operators — the broker, proxy, and
+# admission webhook emit them. This sample exists only to document the
+# shape. See ADR-0016 and spec 0002 §9.
+apiVersion: paddock.dev/v1alpha1
+kind: AuditEvent
+metadata:
+  name: ae-egress-block-example
+  namespace: default
+  labels:
+    paddock.dev/run: demo
+    paddock.dev/decision: denied
+    paddock.dev/kind: egress-block
+spec:
+  runRef:
+    name: demo
+  decision: denied
+  kind: egress-block
+  timestamp: "2026-05-01T10:00:03Z"
+  destination:
+    host: evil.example.com
+    port: 443
+  reason: "no BrokerPolicy in namespace default grants egress to evil.example.com:443"

@@ -72,6 +72,9 @@ spec:
           # hack/gen-helm-chart.sh substitutes it with .Values.recentEventsCap
           # when rendering the Helm chart.
           - --recent-events-cap=50
+          # AuditEvent retention window (ADR-0016). Literal here; the
+          # chart generator substitutes .Values.auditRetentionDays.
+          - --audit-retention-days=30
         image: controller:latest
         name: manager
         ports: []

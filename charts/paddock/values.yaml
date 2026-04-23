@@ -45,3 +45,8 @@ leaderElection:
 # Cap on status.recentEvents entries when parsing collector snapshots
 # (ADR-0007). Wired through to the manager's --recent-events-cap flag.
 recentEventsCap: 50
+
+# Days after which AuditEvents are reaped by the TTL reconciler
+# (ADR-0016). Wired through to --audit-retention-days. Lower this if
+# etcd pressure is a concern before reaching for external export.
+auditRetentionDays: 30

@@ -10,6 +10,46 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-paddock-dev-v1alpha1-auditevent
+  failurePolicy: Fail
+  name: vauditevent-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - paddock.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - auditevents
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-paddock-dev-v1alpha1-brokerpolicy
+  failurePolicy: Fail
+  name: vbrokerpolicy-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - paddock.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - brokerpolicies
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-paddock-dev-v1alpha1-clusterharnesstemplate
   failurePolicy: Fail
   name: vclusterharnesstemplate-v1alpha1.kb.io

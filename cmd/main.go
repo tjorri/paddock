@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -82,10 +83,13 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	var collectorImage string
 	var ringMaxEvents int
+	var auditRetentionDays int
 	flag.StringVar(&collectorImage, "collector-image", controller.DefaultCollectorImage,
 		"Image for the generic collector sidecar injected into every HarnessRun Pod.")
 	flag.IntVar(&ringMaxEvents, "recent-events-cap", 50,
 		"Maximum entries retained in HarnessRun.status.recentEvents when parsing collector snapshots (ADR-0007).")
+	flag.IntVar(&auditRetentionDays, "audit-retention-days", 30,
+		"Days after which AuditEvents are reaped by the TTL reconciler (ADR-0016).")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -196,6 +200,8 @@ func main() {
 			{"ClusterHarnessTemplate", webhookv1alpha1.SetupClusterHarnessTemplateWebhookWithManager},
 			{"HarnessRun", webhookv1alpha1.SetupHarnessRunWebhookWithManager},
 			{"Workspace", webhookv1alpha1.SetupWorkspaceWebhookWithManager},
+			{"BrokerPolicy", webhookv1alpha1.SetupBrokerPolicyWebhookWithManager},
+			{"AuditEvent", webhookv1alpha1.SetupAuditEventWebhookWithManager},
 		}
 		for _, w := range webhooks {
 			if err := w.setup(mgr); err != nil {
@@ -218,6 +224,14 @@ func main() {
 		RingMaxEvents:  ringMaxEvents,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HarnessRun")
+		os.Exit(1)
+	}
+	if err := (&controller.AuditEventReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Retention: time.Duration(auditRetentionDays) * 24 * time.Hour,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AuditEvent")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

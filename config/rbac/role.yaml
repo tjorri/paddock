@@ -41,6 +41,15 @@ rules:
 - apiGroups:
   - paddock.dev
   resources:
+  - auditevents
+  verbs:
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - paddock.dev
+  resources:
   - clusterharnesstemplates
   - harnesstemplates
   verbs:

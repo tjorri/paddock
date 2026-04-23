@@ -7,6 +7,58 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: paddock
+  name: paddock-clusterharnesstemplate-editor-role
+rules:
+  - apiGroups:
+      - paddock.dev
+    resources:
+      - clusterharnesstemplates
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - paddock.dev
+    resources:
+      - clusterharnesstemplates/status
+    verbs:
+      - get
+---
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: paddock
+  name: paddock-clusterharnesstemplate-viewer-role
+rules:
+  - apiGroups:
+      - paddock.dev
+    resources:
+      - clusterharnesstemplates
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - paddock.dev
+    resources:
+      - clusterharnesstemplates/status
+    verbs:
+      - get
+---
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: paddock
   name: paddock-harnessrun-admin-role
 rules:
   - apiGroups:
@@ -187,6 +239,15 @@ rules:
       - list
       - patch
       - update
+      - watch
+  - apiGroups:
+      - paddock.dev
+    resources:
+      - auditevents
+    verbs:
+      - delete
+      - get
+      - list
       - watch
   - apiGroups:
       - paddock.dev
@@ -462,6 +523,7 @@ spec:
             - --health-probe-bind-address=:8081
             - --collector-image={{ .Values.collectorImage.repository }}:{{ .Values.collectorImage.tag | default .Chart.AppVersion }}
             - --recent-events-cap={{ .Values.recentEventsCap | default 50 }}
+            - --audit-retention-days={{ .Values.auditRetentionDays | default 30 }}
             - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
           command:
             - /manager
@@ -567,6 +629,46 @@ metadata:
     cert-manager.io/inject-ca-from: paddock-system/paddock-serving-cert
   name: paddock-validating-webhook-configuration
 webhooks:
+  - admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: paddock-webhook-service
+        namespace: paddock-system
+        path: /validate-paddock-dev-v1alpha1-auditevent
+    failurePolicy: Fail
+    name: vauditevent-v1alpha1.kb.io
+    rules:
+      - apiGroups:
+          - paddock.dev
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - auditevents
+    sideEffects: None
+  - admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: paddock-webhook-service
+        namespace: paddock-system
+        path: /validate-paddock-dev-v1alpha1-brokerpolicy
+    failurePolicy: Fail
+    name: vbrokerpolicy-v1alpha1.kb.io
+    rules:
+      - apiGroups:
+          - paddock.dev
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - brokerpolicies
+    sideEffects: None
   - admissionReviewVersions:
       - v1
     clientConfig:
@@ -715,58 +817,6 @@ rules:
       - clusterharnesstemplates
     verbs:
       - '*'
-  - apiGroups:
-      - paddock.dev
-    resources:
-      - clusterharnesstemplates/status
-    verbs:
-      - get
----
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  labels:
-    app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: paddock
-  name: paddock-clusterharnesstemplate-editor-role
-rules:
-  - apiGroups:
-      - paddock.dev
-    resources:
-      - clusterharnesstemplates
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
-  - apiGroups:
-      - paddock.dev
-    resources:
-      - clusterharnesstemplates/status
-    verbs:
-      - get
----
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  labels:
-    app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: paddock
-  name: paddock-clusterharnesstemplate-viewer-role
-rules:
-  - apiGroups:
-      - paddock.dev
-    resources:
-      - clusterharnesstemplates
-    verbs:
-      - get
-      - list
-      - watch
   - apiGroups:
       - paddock.dev
     resources:

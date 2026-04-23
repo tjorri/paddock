@@ -6,6 +6,8 @@ resources:
 - bases/paddock.dev_clusterharnesstemplates.yaml
 - bases/paddock.dev_harnessruns.yaml
 - bases/paddock.dev_workspaces.yaml
+- bases/paddock.dev_brokerpolicies.yaml
+- bases/paddock.dev_auditevents.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

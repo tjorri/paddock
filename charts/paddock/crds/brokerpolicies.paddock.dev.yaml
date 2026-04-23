@@ -1,0 +1,314 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: brokerpolicies.paddock.dev
+spec:
+  group: paddock.dev
+  names:
+    kind: BrokerPolicy
+    listKind: BrokerPolicyList
+    plural: brokerpolicies
+    shortNames:
+      - bp
+    singular: brokerpolicy
+  scope: Namespaced
+  versions:
+    - additionalPrinterColumns:
+        - jsonPath: .spec.appliesToTemplates
+          name: Templates
+          type: string
+        - jsonPath: .spec.denyMode
+          name: Deny-Mode
+          type: string
+        - jsonPath: .metadata.creationTimestamp
+          name: Age
+          type: date
+      name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: |-
+            BrokerPolicy declares the capabilities the broker will back for one
+            or more templates in a namespace. Without at least one BrokerPolicy
+            granting its required capabilities, a HarnessRun is rejected at
+            admission. See ADR-0014 and spec 0002 §8.
+          properties:
+            apiVersion:
+              description: |-
+                APIVersion defines the versioned schema of this representation of an object.
+                Servers should convert recognized schemas to the latest internal value, and
+                may reject unrecognized values.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+              type: string
+            kind:
+              description: |-
+                Kind is a string value representing the REST resource this object represents.
+                Servers may infer this from the endpoint the client submits requests to.
+                Cannot be updated.
+                In CamelCase.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: |-
+                BrokerPolicySpec declares, for one namespace, which capabilities the
+                broker is willing to back for a set of templates. A HarnessRun against
+                template T in namespace N is admitted iff the union of matching
+                BrokerPolicy grants in N is a superset of T.spec.requires. See
+                ADR-0014 and spec 0002 §8.
+              properties:
+                appliesToTemplates:
+                  description: |-
+                    AppliesToTemplates is a list of template name globs this policy
+                    will back. "*" matches any template name; explicit names tighten
+                    the operator-consent story. At least one entry is required.
+                  items:
+                    type: string
+                  minItems: 1
+                  type: array
+                brokerFailureMode:
+                  default: Closed
+                  description: |-
+                    BrokerFailureMode selects behaviour when the broker is unreachable.
+                    "Closed" (default) holds runs in Pending with BrokerReady=False;
+                    "DegradedOpen" is opt-in for homelab installs without broker HA.
+                  enum:
+                    - Closed
+                    - DegradedOpen
+                  type: string
+                denyMode:
+                  default: block
+                  description: |-
+                    DenyMode governs what the proxy does on a denied egress request.
+                    "block" drops the connection; "warn" allows the connection and
+                    records an AuditEvent with decision=warned. Only valid pre-prod.
+                  enum:
+                    - block
+                    - warn
+                  type: string
+                grants:
+                  description: Grants enumerates the capabilities this policy is willing to back.
+                  properties:
+                    credentials:
+                      description: |-
+                        Credentials supplies a Provider + configuration for each logical
+                        credential name this policy is willing to back.
+                      items:
+                        description: |-
+                          CredentialGrant supplies a provider + configuration for one logical
+                          credential name declared by templates' requires.credentials[*].name.
+                        properties:
+                          name:
+                            description: Name matches a template's requires.credentials[*].name.
+                            type: string
+                          provider:
+                            description: |-
+                              Provider selects the backing issuer and its configuration. See
+                              ADR-0015 for the interface.
+                            properties:
+                              appId:
+                                description: AppID is the GitHub App numeric ID (GitHubApp only).
+                                type: string
+                              installationId:
+                                description: InstallationID is the GitHub App installation ID (GitHubApp only).
+                                type: string
+                              kind:
+                                description: |-
+                                  Kind names the provider implementation. Known values in v0.3:
+                                  Static, AnthropicAPI, GitHubApp, PATPool. Adding a new provider
+                                  is a broker code change, not a CRD change.
+                                enum:
+                                  - Static
+                                  - AnthropicAPI
+                                  - GitHubApp
+                                  - PATPool
+                                type: string
+                              rotationSeconds:
+                                description: |-
+                                  RotationSeconds optionally overrides the provider's default TTL.
+                                  Ignored by providers whose lease semantics are externally fixed
+                                  (e.g. GitHubApp installation tokens are always 1h).
+                                format: int32
+                                minimum: 60
+                                type: integer
+                              secretRef:
+                                description: |-
+                                  SecretRef identifies the Secret backing this provider. Required
+                                  for Static (key supplies the value), AnthropicAPI (key holds the
+                                  upstream API key), GitHubApp (key holds the private key PEM),
+                                  PATPool (key holds a newline-delimited pool).
+                                properties:
+                                  key:
+                                    description: Key within the Secret's data.
+                                    type: string
+                                  name:
+                                    description: Name of the Secret.
+                                    type: string
+                                required:
+                                  - key
+                                  - name
+                                type: object
+                            required:
+                              - kind
+                            type: object
+                        required:
+                          - name
+                          - provider
+                        type: object
+                      type: array
+                    egress:
+                      description: |-
+                        Egress lists upstream destinations this policy permits. Host may
+                        include a leading "*." wildcard (e.g. "*.anthropic.com"). Port 0
+                        means any port; otherwise the tuple matches exactly.
+                      items:
+                        description: EgressGrant permits an upstream destination.
+                        properties:
+                          host:
+                            description: |-
+                              Host is a destination hostname. A leading "*." permits any
+                              subdomain (e.g. "*.anthropic.com"). Case-insensitive.
+                            type: string
+                          ports:
+                            description: |-
+                              Ports lists TCP ports permitted for this host. Empty or [0] means
+                              any port.
+                            items:
+                              format: int32
+                              type: integer
+                            type: array
+                          substituteAuth:
+                            description: |-
+                              SubstituteAuth, when true, declares that the proxy should MITM
+                              connections to this destination and call the broker's
+                              SubstituteAuth endpoint before forwarding. Required for
+                              AnthropicAPIProvider's x-api-key swap. When false (default) the
+                              proxy acts as a transparent TCP relay after the ValidateEgress
+                              check — no TLS decryption.
+                            type: boolean
+                        required:
+                          - host
+                        type: object
+                      type: array
+                    gitRepos:
+                      description: |-
+                        GitRepos lists repository tuples the broker will mint gitforge
+                        tokens for. Matched against the installation's actually-installed
+                        repo list at issuance time (double-gate).
+                      items:
+                        description: |-
+                          GitRepoGrant permits the broker to mint a gitforge token scoped to
+                          this repository at the declared access level.
+                        properties:
+                          access:
+                            default: read
+                            description: Access selects the scope granted to the issued token.
+                            enum:
+                              - read
+                              - write
+                            type: string
+                          owner:
+                            description: Owner is the repo owner (user or org).
+                            type: string
+                          repo:
+                            description: Repo is the repository name.
+                            type: string
+                        required:
+                          - owner
+                          - repo
+                        type: object
+                      type: array
+                  type: object
+                minInterceptionMode:
+                  description: |-
+                    MinInterceptionMode rejects — rather than downgrades — a run that
+                    would resolve to a weaker interception mode than this value.
+                    "transparent" requires that the namespace admits NET_ADMIN on init
+                    containers. Unset means no floor. See ADR-0013.
+                  enum:
+                    - transparent
+                    - cooperative
+                  type: string
+              required:
+                - appliesToTemplates
+                - grants
+              type: object
+            status:
+              description: BrokerPolicyStatus reports the observed state of a BrokerPolicy.
+              properties:
+                conditions:
+                  description: |-
+                    Conditions report typed lifecycle signals. Known types:
+                    Ready (all referenced Secrets resolvable and providers loadable).
+                  items:
+                    description: Condition contains details for one aspect of the current state of this API Resource.
+                    properties:
+                      lastTransitionTime:
+                        description: |-
+                          lastTransitionTime is the last time the condition transitioned from one status to another.
+                          This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                        format: date-time
+                        type: string
+                      message:
+                        description: |-
+                          message is a human readable message indicating details about the transition.
+                          This may be an empty string.
+                        maxLength: 32768
+                        type: string
+                      observedGeneration:
+                        description: |-
+                          observedGeneration represents the .metadata.generation that the condition was set based upon.
+                          For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                          with respect to the current state of the instance.
+                        format: int64
+                        minimum: 0
+                        type: integer
+                      reason:
+                        description: |-
+                          reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                          Producers of specific condition types may define expected values and meanings for this field,
+                          and whether the values are considered a guaranteed API.
+                          The value should be a CamelCase string.
+                          This field may not be empty.
+                        maxLength: 1024
+                        minLength: 1
+                        pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                        type: string
+                      status:
+                        description: status of the condition, one of True, False, Unknown.
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                        type: string
+                      type:
+                        description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                        maxLength: 316
+                        pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                        type: string
+                    required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                    type: object
+                  type: array
+                  x-kubernetes-list-map-keys:
+                    - type
+                  x-kubernetes-list-type: map
+                observedGeneration:
+                  description: ObservedGeneration is the spec generation last reconciled.
+                  format: int64
+                  type: integer
+              type: object
+          required:
+            - spec
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: {}

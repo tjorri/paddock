@@ -1,0 +1,17 @@
+# Example BrokerPolicy using StaticProvider — the v0.2 "just read this
+# Secret" shape preserved behind the broker's audit path. See ADR-0015.
+apiVersion: paddock.dev/v1alpha1
+kind: BrokerPolicy
+metadata:
+  name: allow-echo-static
+  namespace: default
+spec:
+  appliesToTemplates: ["echo"]
+  grants:
+    credentials:
+      - name: DEMO_TOKEN
+        provider:
+          kind: Static
+          secretRef:
+            name: demo-token
+            key: token
