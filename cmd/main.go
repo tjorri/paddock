@@ -87,6 +87,10 @@ func main() {
 	var brokerEndpoint string
 	var brokerTokenPath string
 	var brokerCAPath string
+	var proxyImage string
+	var proxyCAName string
+	var proxyCANamespace string
+	var proxyAllowList string
 	flag.StringVar(&collectorImage, "collector-image", controller.DefaultCollectorImage,
 		"Image for the generic collector sidecar injected into every HarnessRun Pod.")
 	flag.IntVar(&ringMaxEvents, "recent-events-cap", 50,
@@ -100,6 +104,16 @@ func main() {
 		"Path to a ProjectedServiceAccountToken with audience=paddock-broker.")
 	flag.StringVar(&brokerCAPath, "broker-ca-path", "/etc/paddock-broker/ca/ca.crt",
 		"Path to the CA bundle that signed the broker's serving cert (cert-manager-issued).")
+	flag.StringVar(&proxyImage, "proxy-image", "",
+		"Image for the per-run egress proxy sidecar (ADR-0013). Empty disables the sidecar; EgressConfigured "+
+			"condition stays False with reason=ProxyNotConfigured.")
+	flag.StringVar(&proxyCAName, "proxy-ca-secret-name", "paddock-proxy-ca",
+		"Name of the cert-manager-issued MITM CA keypair Secret the controller copies into per-run proxy-tls Secrets.")
+	flag.StringVar(&proxyCANamespace, "proxy-ca-secret-namespace", "paddock-system",
+		"Namespace hosting the proxy CA Secret. Empty Name disables proxy integration regardless of --proxy-image.")
+	flag.StringVar(&proxyAllowList, "proxy-allow", "",
+		"Comma-separated host:port egress allow-list passed to every proxy sidecar via --allow. "+
+			"M7 replaces this with live broker.ValidateEgress.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -242,9 +256,20 @@ func main() {
 		Scheme:         mgr.GetScheme(),
 		CollectorImage: collectorImage,
 		RingMaxEvents:  ringMaxEvents,
+		ProxyImage:     proxyImage,
+		ProxyAllowList: proxyAllowList,
+		ProxyCASource: controller.ProxyCASource{
+			Name:      proxyCAName,
+			Namespace: proxyCANamespace,
+		},
 	}
 	if brokerClient != nil {
 		hrReconciler.BrokerClient = brokerClient
+	}
+	if proxyImage == "" {
+		setupLog.Info("proxy sidecar disabled (no --proxy-image); runs will proceed with EgressConfigured=False")
+	} else {
+		setupLog.Info("proxy sidecar enabled", "image", proxyImage, "ca-secret", proxyCAName)
 	}
 	if err := hrReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HarnessRun")

@@ -102,9 +102,28 @@ var _ = Describe("HarnessRun output pipeline", func() {
 
 			role := &rbacv1.Role{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "run-out-1-collector", Namespace: ns}, role)).To(Succeed())
-			Expect(role.Rules).To(HaveLen(1))
-			Expect(role.Rules[0].ResourceNames).To(ConsistOf("run-out-1-out"))
-			Expect(role.Rules[0].Verbs).To(ConsistOf("get", "update", "patch"))
+			// Two rules: the collector's scoped ConfigMap access and the
+			// proxy sidecar's create-AuditEvents verb (ADR-0013 §9). The
+			// SA is shared across both sidecars.
+			Expect(role.Rules).To(HaveLen(2))
+			var cmRule, auditRule *rbacv1.PolicyRule
+			for i := range role.Rules {
+				r := &role.Rules[i]
+				for _, res := range r.Resources {
+					if res == "configmaps" {
+						cmRule = r
+					}
+					if res == "auditevents" {
+						auditRule = r
+					}
+				}
+			}
+			Expect(cmRule).NotTo(BeNil(), "collector configmap rule missing")
+			Expect(cmRule.ResourceNames).To(ConsistOf("run-out-1-out"))
+			Expect(cmRule.Verbs).To(ConsistOf("get", "update", "patch"))
+			Expect(auditRule).NotTo(BeNil(), "proxy auditevents rule missing")
+			Expect(auditRule.APIGroups).To(ConsistOf("paddock.dev"))
+			Expect(auditRule.Verbs).To(ConsistOf("create"))
 
 			rb := &rbacv1.RoleBinding{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "run-out-1-collector", Namespace: ns}, rb)).To(Succeed())

@@ -82,6 +82,14 @@ spec:
           - --broker-endpoint=https://paddock-broker.paddock-system.svc:8443
           - --broker-token-path=/var/run/secrets/paddock-broker/token
           - --broker-ca-path=/etc/paddock-broker/ca/ca.crt
+          # Proxy sidecar wiring (M4, ADR-0013). The chart generator
+          # rewrites --proxy-image into a .Values.proxyImage template;
+          # --proxy-ca-secret-name/-namespace point at the cert-manager-
+          # issued Secret in paddock-system.
+          - --proxy-image=paddock-proxy:dev
+          - --proxy-ca-secret-name=paddock-proxy-ca
+          - --proxy-ca-secret-namespace=paddock-system
+          - --proxy-allow=
         image: controller:latest
         name: manager
         ports: []

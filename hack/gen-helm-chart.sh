@@ -85,6 +85,8 @@ for doc in "$tmp"/doc-*.yml "$tmp"/doc-*.yaml; do
         -e 's@- --recent-events-cap=50@- --recent-events-cap={{ .Values.recentEventsCap | default 50 }}@g' \
         -e 's@- --audit-retention-days=30@- --audit-retention-days={{ .Values.auditRetentionDays | default 30 }}@g' \
         -e 's@image: paddock-broker:dev@image: {{ .Values.brokerImage.repository }}:{{ .Values.brokerImage.tag | default .Chart.AppVersion }}@g' \
+        -e 's@- --proxy-image=paddock-proxy:dev@- --proxy-image={{ if .Values.proxyImage.repository }}{{ .Values.proxyImage.repository }}:{{ .Values.proxyImage.tag | default .Chart.AppVersion }}{{ end }}@g' \
+        -e 's@- --proxy-allow=$@- --proxy-allow={{ .Values.proxyAllowList | default "" }}@g' \
         "$doc" >>"$OUT_TEMPLATE"
       ;;
   esac

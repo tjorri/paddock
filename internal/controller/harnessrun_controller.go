@@ -81,6 +81,22 @@ type HarnessRunReconciler struct {
 	// no broker is configured — runs against templates with requires
 	// are held with BrokerReady=False.
 	BrokerClient BrokerIssuer
+
+	// ProxyImage is the image used for the per-run egress proxy
+	// sidecar. When empty, no proxy sidecar is injected and
+	// EgressConfigured stays False with reason=ProxyNotConfigured.
+	ProxyImage string
+
+	// ProxyCASource names the cert-manager-issued MITM CA Secret in
+	// paddock-system. Copied into a per-run Secret so the proxy can
+	// mount it (ADR-0013 §7.3). Zero Name disables proxy integration.
+	ProxyCASource ProxyCASource
+
+	// ProxyAllowList is a static comma-separated host:port allow-list
+	// passed to every run's proxy sidecar via --allow. Populated from
+	// --proxy-allow at manager startup. M7 replaces the static list
+	// with live broker.ValidateEgress calls.
+	ProxyAllowList string
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=harnessruns,verbs=get;list;watch;create;update;patch;delete
@@ -268,6 +284,48 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		Message:            brokerMsg,
 		ObservedGeneration: run.Generation,
 	})
+
+	// 4b. Materialise the per-run proxy-tls Secret and flip
+	// EgressConfigured (ADR-0013 §7.3). When proxy integration is
+	// disabled at the manager level, EgressConfigured lands as False
+	// with a clear reason — the Pod still proceeds (the broker has
+	// already been the gate on credential flow) but the agent has no
+	// MITM proxy in front of it.
+	if r.proxyConfigured() {
+		ok, err := r.ensureProxyTLS(ctx, &run)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !ok {
+			setCondition(&run.Status.Conditions, metav1.Condition{
+				Type:               paddockv1alpha1.HarnessRunConditionEgressConfigured,
+				Status:             metav1.ConditionFalse,
+				Reason:             "ProxyCAPending",
+				Message:            "waiting on cert-manager to populate the MITM CA Secret",
+				ObservedGeneration: run.Generation,
+			})
+			run.Status.Phase = paddockv1alpha1.HarnessRunPhasePending
+			if _, err := r.commitStatus(ctx, &run, origStatus); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+		setCondition(&run.Status.Conditions, metav1.Condition{
+			Type:               paddockv1alpha1.HarnessRunConditionEgressConfigured,
+			Status:             metav1.ConditionTrue,
+			Reason:             "Cooperative",
+			Message:            "MITM CA mounted; HTTPS_PROXY configured (cooperative mode)",
+			ObservedGeneration: run.Generation,
+		})
+	} else {
+		setCondition(&run.Status.Conditions, metav1.Condition{
+			Type:               paddockv1alpha1.HarnessRunConditionEgressConfigured,
+			Status:             metav1.ConditionFalse,
+			Reason:             "ProxyNotConfigured",
+			Message:            "controller has no --proxy-image + --proxy-ca-source; egress is unproxied",
+			ObservedGeneration: run.Generation,
+		})
+	}
 
 	if err := r.ensureOutputConfigMap(ctx, &run); err != nil {
 		return ctrl.Result{}, err
@@ -639,16 +697,29 @@ func (r *HarnessRunReconciler) ensureCollectorRBAC(ctx context.Context, run *pad
 			Namespace: run.Namespace,
 			Labels:    sa.Labels,
 		},
-		Rules: []rbacv1.PolicyRule{
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
+		if err := controllerutil.SetControllerReference(run, role, r.Scheme); err != nil {
+			return err
+		}
+		role.Rules = []rbacv1.PolicyRule{
 			{
 				APIGroups:     []string{""},
 				Resources:     []string{"configmaps"},
 				ResourceNames: []string{outputCMName(run)},
 				Verbs:         []string{"get", "update", "patch"},
 			},
-		},
-	}
-	if err := r.createIfMissing(ctx, role, run); err != nil {
+			// Proxy sidecar audit path (ADR-0013 §9). The proxy shares
+			// this SA; without create-auditevents it falls back to
+			// logging without a security trail.
+			{
+				APIGroups: []string{"paddock.dev"},
+				Resources: []string{"auditevents"},
+				Verbs:     []string{"create"},
+			},
+		}
+		return nil
+	}); err != nil {
 		return fmt.Errorf("role: %w", err)
 	}
 
@@ -784,6 +855,11 @@ func (r *HarnessRunReconciler) ensureJob(
 	if len(tpl.Spec.Requires.Credentials) > 0 {
 		in.brokerCredsSecret = brokerCredsSecretName(run.Name)
 	}
+	if r.proxyConfigured() {
+		in.proxyImage = r.ProxyImage
+		in.proxyTLSSecret = proxyTLSSecretName(run.Name)
+		in.proxyAllowList = r.ProxyAllowList
+	}
 	desired := buildJob(run, tpl, run.Status.WorkspaceRef, in)
 	if err := controllerutil.SetControllerReference(run, desired, r.Scheme); err != nil {
 		return nil, err
@@ -889,6 +965,14 @@ func (r *HarnessRunReconciler) reconcileDelete(ctx context.Context, run *paddock
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+// proxyConfigured reports whether the manager has the three knobs
+// required to inject the proxy sidecar: image, CA-source Secret, and
+// optional allow-list. The allow-list is omitted from the check — an
+// empty list is a valid deny-all policy, not a disable signal.
+func (r *HarnessRunReconciler) proxyConfigured() bool {
+	return r.ProxyImage != "" && r.ProxyCASource.Name != ""
 }
 
 // fail sets a terminal Failed phase with the given condition reason.

@@ -252,6 +252,131 @@ func TestBuildPodSpec_DefaultCollectorImageWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestBuildPodSpec_ProxySidecar verifies M4's cooperative-mode wiring:
+// a third native sidecar, the per-run TLS Secret as a volume, CA bundle
+// mounted into the agent via subPath, and the HTTPS_PROXY + CA-trust
+// env vars that the spec §7.3 calls for.
+func TestBuildPodSpec_ProxySidecar(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = "paddock-proxy:test"
+	in.proxyTLSSecret = "run-echo-proxy-tls"
+	in.proxyAllowList = "api.anthropic.com:443"
+
+	ps := buildPodSpec(run, tpl, in)
+
+	// Native sidecars: adapter, collector, proxy (in that order).
+	if len(ps.InitContainers) != 3 {
+		t.Fatalf("initContainers = %d, want 3 (adapter + collector + proxy)", len(ps.InitContainers))
+	}
+	proxy := ps.InitContainers[2]
+	if proxy.Name != proxyContainerName {
+		t.Errorf("initContainers[2] = %q, want %q", proxy.Name, proxyContainerName)
+	}
+	if proxy.Image != "paddock-proxy:test" {
+		t.Errorf("proxy image = %q, want paddock-proxy:test", proxy.Image)
+	}
+	if proxy.RestartPolicy == nil || *proxy.RestartPolicy != corev1.ContainerRestartPolicyAlways {
+		t.Errorf("proxy sidecar must be a native sidecar (restartPolicy=Always)")
+	}
+	// Proxy args should include run-name, ca-dir and the allow list.
+	argSet := map[string]bool{}
+	for _, a := range proxy.Args {
+		argSet[a] = true
+	}
+	mustHave := []string{
+		"--listen-address=" + proxyListenAddr,
+		"--ca-dir=" + proxyCAMountPath,
+		"--run-name=" + run.Name,
+		"--allow=" + in.proxyAllowList,
+	}
+	for _, a := range mustHave {
+		if !argSet[a] {
+			t.Errorf("proxy args missing %q; got %v", a, proxy.Args)
+		}
+	}
+
+	// ca-bundle volume present.
+	var tlsVol *corev1.Volume
+	for i := range ps.Volumes {
+		if ps.Volumes[i].Name == proxyCAVolumeName {
+			tlsVol = &ps.Volumes[i]
+			break
+		}
+	}
+	if tlsVol == nil {
+		t.Fatalf("expected proxy-tls volume %q on pod", proxyCAVolumeName)
+	}
+	if tlsVol.Secret == nil || tlsVol.Secret.SecretName != "run-echo-proxy-tls" {
+		t.Errorf("proxy-tls volume must reference per-run Secret; got %+v", tlsVol.Secret)
+	}
+
+	// Agent mounts the CA via subPath.
+	agent := ps.Containers[0]
+	var caMount *corev1.VolumeMount
+	for i := range agent.VolumeMounts {
+		if agent.VolumeMounts[i].Name == proxyCAVolumeName {
+			caMount = &agent.VolumeMounts[i]
+			break
+		}
+	}
+	if caMount == nil {
+		t.Fatalf("agent missing CA-bundle mount")
+	}
+	if caMount.MountPath != agentCABundleMountPath {
+		t.Errorf("agent CA mount path = %q, want %q", caMount.MountPath, agentCABundleMountPath)
+	}
+	if caMount.SubPath != agentCABundleSubPath {
+		t.Errorf("agent CA mount SubPath = %q, want %q — file-mount is required to avoid a dir of symlinks",
+			caMount.SubPath, agentCABundleSubPath)
+	}
+	if !caMount.ReadOnly {
+		t.Error("agent CA mount must be read-only")
+	}
+
+	// Env vars on the agent: HTTPS_PROXY + NO_PROXY + 4× CA-trust envs.
+	env := envToMap(agent.Env)
+	wantEnv := map[string]string{
+		"HTTPS_PROXY":         proxyHTTPSProxy,
+		"HTTP_PROXY":          proxyHTTPSProxy,
+		"NO_PROXY":            "127.0.0.1,localhost,kubernetes.default.svc",
+		"SSL_CERT_FILE":       agentCABundleMountPath,
+		"NODE_EXTRA_CA_CERTS": agentCABundleMountPath,
+		"REQUESTS_CA_BUNDLE":  agentCABundleMountPath,
+		"GIT_SSL_CAINFO":      agentCABundleMountPath,
+	}
+	for k, v := range wantEnv {
+		if env[k] != v {
+			t.Errorf("agent env[%q] = %q, want %q", k, env[k], v)
+		}
+	}
+}
+
+// TestBuildPodSpec_NoProxyWhenDisabled verifies the absence of proxy-
+// specific wiring when the manager has no proxy image configured.
+func TestBuildPodSpec_NoProxyWhenDisabled(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+	ps := buildPodSpec(run, tpl, defaultInputs())
+
+	if len(ps.InitContainers) != 2 {
+		t.Fatalf("expected 2 init containers without proxy; got %d", len(ps.InitContainers))
+	}
+	for _, v := range ps.Volumes {
+		if v.Name == proxyCAVolumeName {
+			t.Fatalf("ca-bundle volume leaked into a non-proxy pod spec")
+		}
+	}
+	env := envToMap(ps.Containers[0].Env)
+	for _, k := range []string{"HTTPS_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"} {
+		if _, ok := env[k]; ok {
+			t.Errorf("env[%q] must be unset when proxy is disabled; got %q", k, env[k])
+		}
+	}
+}
+
 func mountSet(mounts []corev1.VolumeMount) map[string]bool {
 	out := map[string]bool{}
 	for _, m := range mounts {

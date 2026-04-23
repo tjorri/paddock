@@ -27,6 +27,21 @@ brokerImage:
   tag: ""
   pullPolicy: IfNotPresent
 
+# Egress proxy (v0.3, M4+). Per-run sidecar that terminates TLS with a
+# run-scoped MITM CA and blocks unsanctioned destinations (ADR-0013).
+# Wired as a controller-manager flag; the reconciler injects the sidecar
+# into every run's Pod. Set .repository to "" to disable — runs will
+# complete without a proxy and EgressConfigured=False.
+proxyImage:
+  repository: paddock-proxy
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Cooperative-mode egress allow-list applied to every run's proxy
+# sidecar via --allow. Empty means deny-all (fail-closed). M7 replaces
+# this static list with per-BrokerPolicy grants resolved at runtime.
+proxyAllowList: ""
+
 # cert-manager must be installed in the cluster — the webhook Issuer
 # and Certificate are rendered unconditionally. Set certManager.skip
 # to true to render without cert-manager resources (advanced; BYO

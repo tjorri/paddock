@@ -169,6 +169,7 @@ COLLECTOR_IMG ?= paddock-collector:dev
 CLAUDE_CODE_IMG ?= paddock-claude-code:dev
 ADAPTER_CLAUDE_CODE_IMG ?= paddock-adapter-claude-code:dev
 BROKER_IMG ?= paddock-broker:dev
+PROXY_IMG ?= paddock-proxy:dev
 
 .PHONY: image-echo
 image-echo: ## Build the paddock-echo harness image.
@@ -194,8 +195,12 @@ image-adapter-claude-code: ## Build the paddock-adapter-claude-code sidecar imag
 image-broker: ## Build the paddock-broker image.
 	$(CONTAINER_TOOL) build -t $(BROKER_IMG) -f images/broker/Dockerfile .
 
+.PHONY: image-proxy
+image-proxy: ## Build the paddock-proxy sidecar image.
+	$(CONTAINER_TOOL) build -t $(PROXY_IMG) -f images/proxy/Dockerfile .
+
 .PHONY: images
-images: image-echo image-adapter-echo image-collector image-claude-code image-adapter-claude-code image-broker ## Build all reference images.
+images: image-echo image-adapter-echo image-collector image-claude-code image-adapter-claude-code image-broker image-proxy ## Build all reference images.
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:

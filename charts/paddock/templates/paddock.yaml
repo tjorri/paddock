@@ -719,6 +719,10 @@ spec:
             - --broker-endpoint=https://paddock-broker.paddock-system.svc:8443
             - --broker-token-path=/var/run/secrets/paddock-broker/token
             - --broker-ca-path=/etc/paddock-broker/ca/ca.crt
+            - --proxy-image={{ if .Values.proxyImage.repository }}{{ .Values.proxyImage.repository }}:{{ .Values.proxyImage.tag | default .Chart.AppVersion }}{{ end }}
+            - --proxy-ca-secret-name=paddock-proxy-ca
+            - --proxy-ca-secret-namespace=paddock-system
+            - --proxy-allow={{ .Values.proxyAllowList | default "" }}
             - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
           command:
             - /manager
@@ -826,6 +830,33 @@ spec:
     kind: Issuer
     name: paddock-selfsigned-issuer
   secretName: metrics-server-cert
+---
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/component: proxy-ca
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: paddock
+  name: paddock-proxy-ca
+  namespace: paddock-system
+spec:
+  commonName: paddock-proxy-ca
+  duration: 8760h
+  isCA: true
+  issuerRef:
+    kind: Issuer
+    name: paddock-selfsigned-issuer
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  renewBefore: 720h
+  secretName: paddock-proxy-ca
+  usages:
+    - digital signature
+    - key encipherment
+    - cert sign
 ---
 ---
 apiVersion: cert-manager.io/v1

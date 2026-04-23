@@ -1,0 +1,36 @@
+# cert-manager Certificate for the MITM CA the per-run proxy sidecar
+# forges leaves against. Lives in paddock-system; the controller copies
+# the resulting Secret (keypair) into a per-run Secret in the tenant
+# namespace so the proxy can mount it. See ADR-0013 §7.3.
+#
+# isCA: true is required — the proxy uses this keypair as the signing
+# parent for leaf certs synthesised at MITM time.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: proxy-ca
+  namespace: system
+  # Note: kustomize applies namePrefix to metadata.name (so the Certificate
+  # becomes "paddock-proxy-ca"), but not to spec.secretName — the backing
+  # Secret is literally "paddock-proxy-ca" because we set secretName below
+  # to match what the controller will reference.
+  labels:
+    app.kubernetes.io/name: paddock
+    app.kubernetes.io/component: proxy-ca
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  isCA: true
+  commonName: paddock-proxy-ca
+  secretName: paddock-proxy-ca
+  duration: 8760h      # 1 year
+  renewBefore: 720h    # 30 days
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    kind: Issuer
+    name: selfsigned-issuer
+  usages:
+    - digital signature
+    - key encipherment
+    - cert sign
