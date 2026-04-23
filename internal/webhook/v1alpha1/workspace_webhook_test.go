@@ -193,6 +193,82 @@ var _ = Describe("Workspace Webhook", func() {
 		Expect(err.Error()).To(ContainSubstring(".."))
 	})
 
+	It("admits a broker-backed seed repo", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{{
+						URL: "https://github.com/org/repo.git",
+						BrokerCredentialRef: &paddockv1alpha1.BrokerCredentialReference{
+							Name: "hr-1-broker-creds", Key: "GITHUB_TOKEN",
+						},
+					}},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rejects a repo that sets both CredentialsSecretRef and BrokerCredentialRef", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{{
+						URL:                  "https://github.com/org/repo.git",
+						CredentialsSecretRef: &paddockv1alpha1.LocalObjectReference{Name: "legacy"},
+						BrokerCredentialRef: &paddockv1alpha1.BrokerCredentialReference{
+							Name: "hr-1-broker-creds", Key: "GITHUB_TOKEN",
+						},
+					}},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("credentialsSecretRef"))
+	})
+
+	It("rejects BrokerCredentialRef on an ssh URL", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{{
+						URL: "git@github.com:org/repo.git",
+						BrokerCredentialRef: &paddockv1alpha1.BrokerCredentialReference{
+							Name: "hr-1-broker-creds", Key: "GITHUB_TOKEN",
+						},
+					}},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("https"))
+	})
+
+	It("rejects BrokerCredentialRef with an empty key", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{{
+						URL: "https://github.com/org/repo.git",
+						BrokerCredentialRef: &paddockv1alpha1.BrokerCredentialReference{
+							Name: "hr-1-broker-creds",
+						},
+					}},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("key"))
+	})
+
 	It("rejects updates that change storage (immutable)", func() {
 		oldObj := &paddockv1alpha1.Workspace{
 			Spec: paddockv1alpha1.WorkspaceSpec{

@@ -52,6 +52,18 @@ type WorkspaceReconciler struct {
 	// SeedImage overrides the default alpine/git image. Primarily for
 	// tests; production uses defaultSeedImage.
 	SeedImage string
+
+	// Proxy / broker configuration mirrored from the HarnessRun
+	// reconciler. Set at manager startup. Non-empty values opt the
+	// seed Pod into broker-backed git credentials: when a repo in
+	// spec.seed.repos declares brokerCredentialRef, the seed Pod
+	// gains a proxy sidecar that MITM-swaps the Paddock bearer for
+	// the real upstream token. Empty fields mean seeds stay on the
+	// v0.2 credentialsSecretRef path (fallback).
+	ProxyImage     string
+	BrokerEndpoint string
+	ProxyCASource  ProxyCASource
+	BrokerCASource BrokerCASource
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=workspaces,verbs=get;list;watch;create;update;patch;delete
@@ -120,7 +132,100 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		})
 
 	default:
-		job, err := r.ensureSeedJob(ctx, &ws)
+		// Broker-backed seeds require the per-run <run>-broker-creds
+		// Secret to exist before the clone runs. When missing, stall
+		// the seed with a clear condition and requeue — the
+		// HarnessRun reconciler materialises the Secret on the run's
+		// reconcile path, so the Workspace picks it up on the next
+		// pass.
+		brokerRepos := brokerSeedRepos(&ws)
+		inputs := seedJobInputs{}
+		if len(brokerRepos) > 0 {
+			if !r.workspaceProxyConfigured() {
+				setCondition(&ws.Status.Conditions, metav1.Condition{
+					Type:               paddockv1alpha1.WorkspaceConditionSeeded,
+					Status:             metav1.ConditionFalse,
+					Reason:             "BrokerProxyNotConfigured",
+					Message:            "manager lacks --broker-endpoint / --proxy-image / --proxy-ca-secret / --broker-ca-secret; broker-backed seed repos cannot run",
+					ObservedGeneration: ws.Generation,
+				})
+				ws.Status.Phase = paddockv1alpha1.WorkspacePhaseFailed
+				recordPhaseTransition(string(origStatus.Phase), string(ws.Status.Phase))
+				if !reflect.DeepEqual(origStatus, &ws.Status) {
+					if err := r.Status().Update(ctx, &ws); err != nil && !apierrors.IsConflict(err) {
+						return ctrl.Result{}, err
+					}
+				}
+				return ctrl.Result{}, nil
+			}
+			if missing, err := r.seedBrokerCredsReady(ctx, &ws); err != nil {
+				return ctrl.Result{}, err
+			} else if missing != nil {
+				setCondition(&ws.Status.Conditions, metav1.Condition{
+					Type:               paddockv1alpha1.WorkspaceConditionSeeded,
+					Status:             metav1.ConditionFalse,
+					Reason:             "BrokerCredsPending",
+					Message:            fmt.Sprintf("broker-creds Secret %s/%s key %q not yet populated", ws.Namespace, missing.Name, missing.Key),
+					ObservedGeneration: ws.Generation,
+				})
+				ws.Status.Phase = paddockv1alpha1.WorkspacePhaseSeeding
+				recordPhaseTransition(string(origStatus.Phase), string(ws.Status.Phase))
+				if !reflect.DeepEqual(origStatus, &ws.Status) {
+					if err := r.Status().Update(ctx, &ws); err != nil && !apierrors.IsConflict(err) {
+						return ctrl.Result{}, err
+					}
+				}
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			}
+			// Materialise the proxy-tls + broker-ca Secrets. Both
+			// are copied from paddock-system every reconcile so a CA
+			// rotation upstream flows through to the seed Pod on the
+			// next run.
+			if ok, err := r.ensureSeedProxyTLS(ctx, &ws); err != nil {
+				return ctrl.Result{}, err
+			} else if !ok {
+				setCondition(&ws.Status.Conditions, metav1.Condition{
+					Type:               paddockv1alpha1.WorkspaceConditionSeeded,
+					Status:             metav1.ConditionFalse,
+					Reason:             "ProxyCAPending",
+					Message:            "cert-manager has not yet populated the paddock-proxy-ca Secret",
+					ObservedGeneration: ws.Generation,
+				})
+				ws.Status.Phase = paddockv1alpha1.WorkspacePhaseSeeding
+				if !reflect.DeepEqual(origStatus, &ws.Status) {
+					if err := r.Status().Update(ctx, &ws); err != nil && !apierrors.IsConflict(err) {
+						return ctrl.Result{}, err
+					}
+				}
+				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			}
+			if ok, err := r.ensureSeedBrokerCA(ctx, &ws); err != nil {
+				return ctrl.Result{}, err
+			} else if !ok {
+				setCondition(&ws.Status.Conditions, metav1.Condition{
+					Type:               paddockv1alpha1.WorkspaceConditionSeeded,
+					Status:             metav1.ConditionFalse,
+					Reason:             "BrokerCAPending",
+					Message:            "cert-manager has not yet populated the broker-serving-cert Secret",
+					ObservedGeneration: ws.Generation,
+				})
+				ws.Status.Phase = paddockv1alpha1.WorkspacePhaseSeeding
+				if !reflect.DeepEqual(origStatus, &ws.Status) {
+					if err := r.Status().Update(ctx, &ws); err != nil && !apierrors.IsConflict(err) {
+						return ctrl.Result{}, err
+					}
+				}
+				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			}
+			inputs = seedJobInputs{
+				proxyImage:     r.ProxyImage,
+				proxyTLSSecret: workspaceProxyTLSSecretName(ws.Name),
+				brokerEndpoint: r.BrokerEndpoint,
+				brokerCASecret: workspaceBrokerCASecretName(ws.Name),
+			}
+		}
+
+		job, err := r.ensureSeedJob(ctx, &ws, inputs)
 		if err != nil {
 			logger.Error(err, "ensuring seed Job failed")
 			return ctrl.Result{}, err
@@ -253,8 +358,8 @@ func (r *WorkspaceReconciler) ensurePVC(ctx context.Context, ws *paddockv1alpha1
 	return &existing, nil
 }
 
-func (r *WorkspaceReconciler) ensureSeedJob(ctx context.Context, ws *paddockv1alpha1.Workspace) (*batchv1.Job, error) {
-	desired := seedJobForWorkspace(ws, r.SeedImage)
+func (r *WorkspaceReconciler) ensureSeedJob(ctx context.Context, ws *paddockv1alpha1.Workspace, inputs seedJobInputs) (*batchv1.Job, error) {
+	desired := seedJobForWorkspace(ws, r.SeedImage, inputs)
 	if err := controllerutil.SetControllerReference(ws, desired, r.Scheme); err != nil {
 		return nil, err
 	}

@@ -112,6 +112,30 @@ func validateWorkspaceRepos(reposPath *field.Path, repos []paddockv1alpha1.Works
 			errs = append(errs, field.Required(entryPath.Child("url"), ""))
 		}
 
+		// Credentials come from either a static Secret (v0.2) or the
+		// broker (v0.3). Setting both is ambiguous; the seed Pod can't
+		// honour two credential sources for one clone.
+		if repo.CredentialsSecretRef != nil && repo.BrokerCredentialRef != nil {
+			errs = append(errs, field.Invalid(entryPath.Child("brokerCredentialRef"),
+				repo.BrokerCredentialRef,
+				"must not be set together with credentialsSecretRef"))
+		}
+		if repo.BrokerCredentialRef != nil {
+			if repo.BrokerCredentialRef.Name == "" {
+				errs = append(errs, field.Required(entryPath.Child("brokerCredentialRef").Child("name"), ""))
+			}
+			if repo.BrokerCredentialRef.Key == "" {
+				errs = append(errs, field.Required(entryPath.Child("brokerCredentialRef").Child("key"), ""))
+			}
+			if isSSHURLLocal(repo.URL) {
+				// The proxy substitution path is HTTPS-only; ssh URLs
+				// can't be MITM'd. Reject at admission.
+				errs = append(errs, field.Invalid(entryPath.Child("brokerCredentialRef"),
+					repo.BrokerCredentialRef,
+					"broker-backed credentials are only valid for https URLs; use credentialsSecretRef for ssh"))
+			}
+		}
+
 		trimmed := strings.TrimSpace(repo.Path)
 		if multi && trimmed == "" {
 			errs = append(errs, field.Required(entryPath.Child("path"),
@@ -134,6 +158,25 @@ func validateWorkspaceRepos(reposPath *field.Path, repos []paddockv1alpha1.Works
 		seenPaths[cleaned] = i
 	}
 	return errs
+}
+
+// isSSHURLLocal mirrors controller.isSSHURL. Kept in the webhook
+// package so admission can reject broker-backed creds on ssh URLs
+// without importing the controller package (cycle).
+func isSSHURLLocal(url string) bool {
+	if strings.HasPrefix(url, "ssh://") {
+		return true
+	}
+	if strings.Contains(url, "://") {
+		return false
+	}
+	if at := strings.Index(url, "@"); at > 0 {
+		rest := url[at+1:]
+		if colon := strings.Index(rest, ":"); colon > 0 && !strings.Contains(rest[:colon], "/") {
+			return true
+		}
+	}
+	return false
 }
 
 func validateRepoPath(p *field.Path, raw string) *field.Error {

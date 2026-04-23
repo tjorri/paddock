@@ -97,6 +97,21 @@ type WorkspaceGitSource struct {
 	// +optional
 	Depth int32 `json:"depth,omitempty"`
 
+	// BrokerCredentialRef, when set, routes git credentials through
+	// the broker (ADR-0015) instead of a static Secret. The referenced
+	// Secret must exist before the seed Job runs — typically the
+	// <run>-broker-creds Secret the HarnessRun reconciler materialises
+	// from broker.Issue responses. Data[Key] must be a Paddock-issued
+	// bearer (pdk-github-… or pdk-patpool-…). The seed Pod gains a
+	// proxy sidecar so MITM substitution swaps the bearer for the real
+	// upstream token at git-HTTPS time — upstream git forges never
+	// see the Paddock-issued value.
+	//
+	// Mutually exclusive with CredentialsSecretRef. Only valid on
+	// https URLs (ssh URLs use key-based auth via CredentialsSecretRef).
+	// +optional
+	BrokerCredentialRef *BrokerCredentialReference `json:"brokerCredentialRef,omitempty"`
+
 	// CredentialsSecretRef, when set, supplies git credentials to the
 	// seed Job for this repo. For https URLs the Secret must carry
 	// `username` and `password` keys (a personal access token goes in
@@ -104,6 +119,20 @@ type WorkspaceGitSource struct {
 	// read-only into the seed Job only. See ADR-0006.
 	// +optional
 	CredentialsSecretRef *LocalObjectReference `json:"credentialsSecretRef,omitempty"`
+}
+
+// BrokerCredentialReference names a Secret key inside the broker-issued
+// credentials Secret (<run>-broker-creds). The value must be a
+// Paddock bearer the proxy sidecar knows how to substitute.
+type BrokerCredentialReference struct {
+	// Name of the broker-creds Secret (convention: <run>-broker-creds).
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Key inside Secret.Data. Matches the credential name declared on
+	// the template's spec.requires.credentials.
+	// +kubebuilder:validation:Required
+	Key string `json:"key"`
 }
 
 // WorkspacePhase is the lifecycle phase of a Workspace.

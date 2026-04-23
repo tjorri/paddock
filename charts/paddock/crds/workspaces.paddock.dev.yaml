@@ -85,6 +85,33 @@ spec:
                           branch:
                             description: Branch to clone. Defaults to the remote's HEAD.
                             type: string
+                          brokerCredentialRef:
+                            description: |-
+                              BrokerCredentialRef, when set, routes git credentials through
+                              the broker (ADR-0015) instead of a static Secret. The referenced
+                              Secret must exist before the seed Job runs — typically the
+                              <run>-broker-creds Secret the HarnessRun reconciler materialises
+                              from broker.Issue responses. Data[Key] must be a Paddock-issued
+                              bearer (pdk-github-… or pdk-patpool-…). The seed Pod gains a
+                              proxy sidecar so MITM substitution swaps the bearer for the real
+                              upstream token at git-HTTPS time — upstream git forges never
+                              see the Paddock-issued value.
+
+                              Mutually exclusive with CredentialsSecretRef. Only valid on
+                              https URLs (ssh URLs use key-based auth via CredentialsSecretRef).
+                            properties:
+                              key:
+                                description: |-
+                                  Key inside Secret.Data. Matches the credential name declared on
+                                  the template's spec.requires.credentials.
+                                type: string
+                              name:
+                                description: 'Name of the broker-creds Secret (convention: <run>-broker-creds).'
+                                type: string
+                            required:
+                              - key
+                              - name
+                            type: object
                           credentialsSecretRef:
                             description: |-
                               CredentialsSecretRef, when set, supplies git credentials to the

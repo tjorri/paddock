@@ -254,8 +254,18 @@ func main() {
 		}
 	}
 	if err := (&controller.WorkspaceReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		ProxyImage:     proxyImage,
+		BrokerEndpoint: brokerEndpoint,
+		ProxyCASource: controller.ProxyCASource{
+			Name:      proxyCAName,
+			Namespace: proxyCANamespace,
+		},
+		BrokerCASource: controller.BrokerCASource{
+			Name:      brokerCAName,
+			Namespace: brokerCANamespace,
+		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Workspace")
 		os.Exit(1)
