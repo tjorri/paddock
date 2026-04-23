@@ -198,9 +198,12 @@ func newReaderPod(name, ns, pvcName, image, filePath string) *corev1.Pod {
 				},
 			},
 			Containers: []corev1.Container{{
-				Name:    "reader",
-				Image:   image,
-				Command: []string{"sh", "-c", fmt.Sprintf("cat %q", filePath)},
+				Name:  "reader",
+				Image: image,
+				// No shell: pass the path as a separate argv element so it
+				// can't be interpreted as a command, and use `--` to stop
+				// flag parsing for paths beginning with `-`.
+				Command: []string{"cat", "--", filePath},
 				SecurityContext: &corev1.SecurityContext{
 					AllowPrivilegeEscalation: &allow,
 					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
