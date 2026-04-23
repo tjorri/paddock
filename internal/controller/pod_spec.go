@@ -259,15 +259,17 @@ func buildPodVolumes(workspacePVC, promptSecret string) []corev1.Volume {
 // set, template credentials (envFrom Secret refs), run-level extraEnv,
 // and the resolved model.
 func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate) []corev1.EnvVar {
-	env := []corev1.EnvVar{
-		{Name: "PADDOCK_PROMPT_PATH", Value: promptMountPath + "/" + promptFileName},
-		{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
-		{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
-		{Name: "PADDOCK_RESULT_PATH", Value: resultFilePath(run, template)},
-		{Name: "PADDOCK_WORKSPACE", Value: effectiveWorkspaceMount(template)},
-		{Name: "PADDOCK_RUN_NAME", Value: run.Name},
-		{Name: "PADDOCK_MODEL", Value: effectiveModel(run, template)},
-	}
+	const paddockStdEnvCount = 7
+	env := make([]corev1.EnvVar, 0, paddockStdEnvCount+len(template.Spec.Credentials)+len(run.Spec.ExtraEnv))
+	env = append(env,
+		corev1.EnvVar{Name: "PADDOCK_PROMPT_PATH", Value: promptMountPath + "/" + promptFileName},
+		corev1.EnvVar{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
+		corev1.EnvVar{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
+		corev1.EnvVar{Name: "PADDOCK_RESULT_PATH", Value: resultFilePath(run, template)},
+		corev1.EnvVar{Name: "PADDOCK_WORKSPACE", Value: effectiveWorkspaceMount(template)},
+		corev1.EnvVar{Name: "PADDOCK_RUN_NAME", Value: run.Name},
+		corev1.EnvVar{Name: "PADDOCK_MODEL", Value: effectiveModel(run, template)},
+	)
 
 	// Credentials → env vars from Secret refs. Stable ordering so Jobs
 	// are byte-reproducible.
