@@ -1,7 +1,7 @@
 # Example BrokerPolicy granting a claude-code-style template the
 # capabilities it declares via spec.requires.
 #
-# See ADR-0014 (capability model) and spec 0002 §8.
+# See ADR-0014 (capability model) and spec 0003 §3.
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
 metadata:
@@ -9,8 +9,6 @@ metadata:
   namespace: default
 spec:
   appliesToTemplates: ["claude-code"]
-  denyMode: block
-  brokerFailureMode: Closed
   grants:
     credentials:
       - name: ANTHROPIC_API_KEY
@@ -22,5 +20,4 @@ spec:
     egress:
       - host: api.anthropic.com
         ports: [443]
-        substituteAuth: true
     gitRepos: []

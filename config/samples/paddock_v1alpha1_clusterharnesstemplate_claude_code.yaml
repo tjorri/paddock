@@ -22,7 +22,6 @@ spec:
   requires:
     credentials:
       - name: ANTHROPIC_API_KEY
-        purpose: llm
     egress:
       - host: api.anthropic.com
         ports: [443]

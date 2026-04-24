@@ -1,4 +1,4 @@
-# Example BrokerPolicy backing a gitforge credential with a PAT pool.
+# Example BrokerPolicy backing a git credential with a PAT pool.
 #
 # RISK LEVEL: high. PATs are long-lived and broadly scoped; revocation
 # is manual. Use this provider for homelab installs and v0.2 → v0.3
@@ -28,8 +28,6 @@ metadata:
   namespace: default
 spec:
   appliesToTemplates: ["claude-code"]
-  denyMode: block
-  brokerFailureMode: Closed
   grants:
     credentials:
       - name: GITHUB_TOKEN
@@ -42,10 +40,11 @@ spec:
       - owner: my-org
         repo: backend-service
         access: write
+    # The PATPool provider injects the leased PAT on its built-in
+    # github.com / api.github.com host set, so upstream never sees the
+    # Paddock bearer.
     egress:
       - host: github.com
         ports: [443]
-        substituteAuth: true
       - host: api.github.com
         ports: [443]
-        substituteAuth: true
