@@ -149,14 +149,20 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		Expect(msg).To(ContainSubstring("PolicyMissing"))
 	})
 
-	It("returns a transient error on an unexpected broker failure", func() {
+	It("swallows transient broker-unreachable failures so the caller sets BrokerUnavailable", func() {
 		fb := &fakeBroker{errs: map[string]error{"K": fmt.Errorf("connection refused")}}
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("transient")
 
-		_, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("connection refused"))
+		// Transient errors return (ok=false, fatalReason="", err=nil)
+		// so the reconciler's !credsOk branch sets BrokerReady=False
+		// with Reason=BrokerUnavailable + phase=Pending instead of
+		// entering an error-requeue loop that leaves the condition
+		// stale (spec §15.6).
+		ok, reason, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeFalse())
+		Expect(reason).To(BeEmpty())
 	})
 
 	It("deletes a stale broker-creds Secret when requires goes empty", func() {

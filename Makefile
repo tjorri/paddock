@@ -171,6 +171,7 @@ ADAPTER_CLAUDE_CODE_IMG ?= paddock-adapter-claude-code:dev
 BROKER_IMG ?= paddock-broker:dev
 PROXY_IMG ?= paddock-proxy:dev
 IPTABLES_INIT_IMG ?= paddock-iptables-init:dev
+E2E_EGRESS_IMG ?= paddock-e2e-egress:dev
 
 .PHONY: image-echo
 image-echo: ## Build the paddock-echo harness image.
@@ -203,6 +204,10 @@ image-proxy: ## Build the paddock-proxy sidecar image.
 .PHONY: image-iptables-init
 image-iptables-init: ## Build the paddock-iptables-init image (NET_ADMIN init container).
 	$(CONTAINER_TOOL) build -t $(IPTABLES_INIT_IMG) -f images/iptables-init/Dockerfile .
+
+.PHONY: image-e2e-egress
+image-e2e-egress: ## Build the paddock-e2e-egress harness (e2e-only probe tool).
+	$(CONTAINER_TOOL) build -t $(E2E_EGRESS_IMG) images/harness-e2e-egress
 
 .PHONY: images
 images: image-echo image-adapter-echo image-collector image-claude-code image-adapter-claude-code image-broker image-proxy image-iptables-init ## Build all reference images.

@@ -31,15 +31,20 @@ import (
 	"paddock.dev/paddock/test/utils"
 )
 
-// Image tags used by the e2e suite. All four are built fresh at the
-// start of the run and loaded into the target Kind cluster. Keeping
-// the ":dev" tag keeps the shipped ClusterHarnessTemplate sample
-// usable unmodified as the e2e fixture.
+// Image tags used by the e2e suite. All are built fresh at the start
+// of the run and loaded into the target Kind cluster. The ":dev" tag
+// matches the literals hard-coded in config/manager/manager.yaml +
+// config/broker/deployment.yaml so `make deploy` wires the cluster
+// together without a kustomize image override.
 const (
-	managerImage     = "paddock-manager:dev"
-	echoImage        = "paddock-echo:dev"
-	adapterEchoImage = "paddock-adapter-echo:dev"
-	collectorImage   = "paddock-collector:dev"
+	managerImage      = "paddock-manager:dev"
+	echoImage         = "paddock-echo:dev"
+	adapterEchoImage  = "paddock-adapter-echo:dev"
+	collectorImage    = "paddock-collector:dev"
+	brokerImage       = "paddock-broker:dev"
+	proxyImage        = "paddock-proxy:dev"
+	iptablesInitImage = "paddock-iptables-init:dev"
+	e2eEgressImage    = "paddock-e2e-egress:dev"
 )
 
 var (
@@ -64,6 +69,12 @@ var _ = BeforeSuite(func() {
 	buildAndLoad(echoImage, []string{"image-echo"})
 	buildAndLoad(adapterEchoImage, []string{"image-adapter-echo"})
 	buildAndLoad(collectorImage, []string{"image-collector"})
+
+	By("building and loading broker + proxy + iptables-init + e2e-egress (v0.3)")
+	buildAndLoad(brokerImage, []string{"image-broker"})
+	buildAndLoad(proxyImage, []string{"image-proxy"})
+	buildAndLoad(iptablesInitImage, []string{"image-iptables-init"})
+	buildAndLoad(e2eEgressImage, []string{"image-e2e-egress"})
 
 	if !skipCertManagerInstall {
 		By("checking if cert-manager is already installed")

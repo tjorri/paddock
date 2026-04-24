@@ -51,6 +51,21 @@ const (
 	multiRepoBURL  = "https://github.com/octocat/Spoon-Knife.git"
 	multiRepoAPath = "hello"
 	multiRepoBPath = "spoon"
+
+	// v0.3 broker/proxy scenarios (spec 0002 §15.5-7). Each lives in
+	// its own namespace so the AuditEvent queries don't cross-contaminate
+	// and the scenarios can run independently.
+	v3BrokerDeploy         = "paddock-broker"
+	v3EgressNamespace      = "paddock-v3-egress-e2e"
+	v3EgressTemplate       = "e2e-egress"
+	v3EgressRunName        = "egress-1"
+	v3BrokerDownNamespace  = "paddock-v3-broker-down-e2e"
+	v3BrokerDownTemplate   = "e2e-broker-down"
+	v3BrokerDownRunName    = "broker-down-1"
+	v3BrokerDownSecretName = "broker-down-secret"
+	v3PolicyDelNamespace   = "paddock-v3-policy-delete-e2e"
+	v3PolicyDelPolicyName  = "transient-policy"
+	v3PolicyDelRunName     = "policy-delete-1"
 )
 
 // paddockEvent mirrors the serialised PaddockEvent — the e2e package
@@ -65,17 +80,53 @@ type paddockEvent struct {
 }
 
 type harnessRunStatus struct {
-	Phase        string         `json:"phase"`
-	JobName      string         `json:"jobName"`
-	WorkspaceRef string         `json:"workspaceRef"`
-	RecentEvents []paddockEvent `json:"recentEvents"`
+	Phase        string                `json:"phase"`
+	JobName      string                `json:"jobName"`
+	WorkspaceRef string                `json:"workspaceRef"`
+	RecentEvents []paddockEvent        `json:"recentEvents"`
+	Conditions   []harnessRunCondition `json:"conditions"`
 	Outputs      *struct {
 		Summary      string `json:"summary"`
 		FilesChanged int    `json:"filesChanged"`
 	} `json:"outputs"`
 }
 
-var _ = Describe("paddock v0.1 pipeline", Ordered, func() {
+type harnessRunCondition struct {
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
+// auditEvent mirrors the trimmed subset of the AuditEvent CRD the v0.3
+// scenarios care about. Parsed from `kubectl get auditevents -o json`
+// output so the e2e package doesn't need a typed client.
+type auditEventList struct {
+	Items []auditEvent `json:"items"`
+}
+
+type auditEvent struct {
+	Metadata struct {
+		Name              string `json:"name"`
+		Namespace         string `json:"namespace"`
+		CreationTimestamp string `json:"creationTimestamp"`
+	} `json:"metadata"`
+	Spec struct {
+		Decision  string `json:"decision"`
+		Kind      string `json:"kind"`
+		Timestamp string `json:"timestamp"`
+		Reason    string `json:"reason"`
+		RunRef    *struct {
+			Name string `json:"name"`
+		} `json:"runRef,omitempty"`
+		Destination *struct {
+			Host string `json:"host"`
+			Port int    `json:"port"`
+		} `json:"destination,omitempty"`
+	} `json:"spec"`
+}
+
+var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 	BeforeAll(func() {
 		By("installing CRDs")
 		_, err := utils.Run(exec.Command("make", "install"))
@@ -110,7 +161,12 @@ var _ = Describe("paddock v0.1 pipeline", Ordered, func() {
 		// preceding pass/fail result.
 		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", runNamespace, "--wait=false")
 		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", multiNamespace, "--wait=false")
+		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", v3EgressNamespace, "--wait=false")
+		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", v3BrokerDownNamespace, "--wait=false")
+		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", v3PolicyDelNamespace, "--wait=false")
 		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", clusterTemplateName, "--ignore-not-found=true")
+		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3EgressTemplate, "--ignore-not-found=true")
+		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3BrokerDownTemplate, "--ignore-not-found=true")
 		runWithTimeout(90*time.Second, "make", "undeploy", "ignore-not-found=true")
 		runWithTimeout(90*time.Second, "make", "uninstall", "ignore-not-found=true")
 	})
@@ -127,14 +183,38 @@ var _ = Describe("paddock v0.1 pipeline", Ordered, func() {
 			"logs", "-l", "control-plane=controller-manager", "--tail=200")); err == nil {
 			fmt.Fprintln(GinkgoWriter, "--- controller logs ---\n"+logs)
 		}
-		By("dumping run namespace events")
-		if evts, err := utils.Run(exec.Command("kubectl", "-n", runNamespace,
-			"get", "events", "--sort-by=.lastTimestamp")); err == nil {
-			fmt.Fprintln(GinkgoWriter, "--- events ---\n"+evts)
+		By("dumping broker logs")
+		if logs, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+			"logs", "-l", "app.kubernetes.io/component=broker", "--tail=200")); err == nil && strings.TrimSpace(logs) != "" {
+			fmt.Fprintln(GinkgoWriter, "--- broker logs ---\n"+logs)
 		}
-		By("dumping run pods")
-		if pods, err := utils.Run(exec.Command("kubectl", "-n", runNamespace, "get", "pods", "-o", "wide")); err == nil {
-			fmt.Fprintln(GinkgoWriter, "--- pods ---\n"+pods)
+		// v0.3 per-run logs: proxy sidecar + iptables-init init container.
+		// Dumped from every v0.3 scenario namespace because a failure can
+		// occur in whichever scenario owns the current spec.
+		for _, ns := range []string{runNamespace, v3EgressNamespace, v3BrokerDownNamespace, v3PolicyDelNamespace} {
+			By("dumping run namespace events: " + ns)
+			if evts, err := utils.Run(exec.Command("kubectl", "-n", ns,
+				"get", "events", "--sort-by=.lastTimestamp")); err == nil && strings.TrimSpace(evts) != "" {
+				fmt.Fprintln(GinkgoWriter, "--- events ("+ns+") ---\n"+evts)
+			}
+			if pods, err := utils.Run(exec.Command("kubectl", "-n", ns, "get", "pods", "-o", "wide")); err == nil && strings.TrimSpace(pods) != "" {
+				fmt.Fprintln(GinkgoWriter, "--- pods ("+ns+") ---\n"+pods)
+			}
+			// Per-container logs — Ignore errors so namespaces not used
+			// by this spec silently skip.
+			for _, c := range []string{"proxy", "iptables-init", "agent", "adapter", "collector"} {
+				out, err := utils.Run(exec.Command("kubectl", "-n", ns,
+					"logs", "-l", "paddock.dev/run", "-c", c, "--tail=100"))
+				if err == nil && strings.TrimSpace(out) != "" {
+					fmt.Fprintln(GinkgoWriter, "--- "+c+" logs ("+ns+") ---\n"+out)
+				}
+			}
+			// AuditEvents aid v0.3 diagnosis: shows what the proxy
+			// decided about each connection.
+			if out, err := utils.Run(exec.Command("kubectl", "-n", ns,
+				"get", "auditevents", "--sort-by=.spec.timestamp")); err == nil && strings.TrimSpace(out) != "" {
+				fmt.Fprintln(GinkgoWriter, "--- auditevents ("+ns+") ---\n"+out)
+			}
 		}
 	})
 
@@ -354,7 +434,338 @@ spec:
 			Expect(logs).To(ContainSubstring("===SPOON==="))
 		})
 	})
+
+	// v0.3 M12 scenarios (spec 0002 §15.5-§15.7). Each scenario owns
+	// its own namespace; the shared BeforeAll (install + deploy) has
+	// wired the proxy sidecar, broker, cert-manager Issuer, and per-run
+	// MITM CA already, so the scenarios only add the tenant objects
+	// (BrokerPolicy, ClusterHarnessTemplate, HarnessRun).
+	Context("v0.3 hostile prompt egress-block", func() {
+		It("records an egress-block AuditEvent when the agent hits an ungranted destination", func() {
+			By("creating the egress-scenario namespace")
+			_, err := utils.Run(exec.Command("kubectl", "create", "ns", v3EgressNamespace))
+			Expect(err).NotTo(HaveOccurred())
+
+			By("registering the e2e-egress ClusterHarnessTemplate (empty requires)")
+			// Empty requires means every namespace admits the template
+			// without a matching BrokerPolicy; admission is a fast path,
+			// enforcement is at the proxy.
+			applyFromYAML(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: ClusterHarnessTemplate
+metadata:
+  name: %s
+spec:
+  harness: e2e-egress
+  image: %s
+  command: ["/usr/local/bin/paddock-e2e-egress"]
+  eventAdapter:
+    image: %s
+  defaults:
+    timeout: 120s
+  workspace:
+    required: true
+    mountPath: /workspace
+`, v3EgressTemplate, e2eEgressImage, adapterEchoImage))
+
+			By("submitting a HarnessRun whose probe target is evil.com")
+			applyFromYAML(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  templateRef:
+    name: %s
+    kind: ClusterHarnessTemplate
+  prompt: "e2e egress-block"
+  extraEnv:
+    - name: PADDOCK_E2E_EGRESS_TARGETS
+      value: "https://evil.com"
+`, v3EgressRunName, v3EgressNamespace, v3EgressTemplate))
+
+			By("waiting for the run to Succeed (probe failure is swallowed by the harness)")
+			Eventually(func(g Gomega) {
+				phase, err := utils.Run(exec.Command("kubectl", "-n", v3EgressNamespace,
+					"get", "harnessrun", v3EgressRunName, "-o", "jsonpath={.status.phase}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(phase)).To(Equal("Succeeded"),
+					"run still in phase %q", strings.TrimSpace(phase))
+			}, 3*time.Minute, 3*time.Second).Should(Succeed())
+
+			By("confirming an egress-block AuditEvent landed for evil.com:443")
+			events := listAuditEvents(v3EgressNamespace)
+			var blocked *auditEvent
+			for i := range events {
+				e := events[i]
+				if e.Spec.Kind == "egress-block" && e.Spec.Destination != nil &&
+					e.Spec.Destination.Host == "evil.com" && e.Spec.Destination.Port == 443 {
+					blocked = &events[i]
+					break
+				}
+			}
+			Expect(blocked).NotTo(BeNil(),
+				"expected AuditEvent with kind=egress-block destination=evil.com:443; got %+v", events)
+			Expect(blocked.Spec.Decision).To(Equal("denied"))
+			Expect(blocked.Spec.RunRef).NotTo(BeNil())
+			Expect(blocked.Spec.RunRef.Name).To(Equal(v3EgressRunName))
+		})
+	})
+
+	Context("v0.3 broker scaled to zero fails closed", func() {
+		It("holds the run in Pending with BrokerReady=False and resumes when the broker is back", func() {
+			By("creating the broker-down-scenario namespace + static-credential Secret")
+			_, err := utils.Run(exec.Command("kubectl", "create", "ns", v3BrokerDownNamespace))
+			Expect(err).NotTo(HaveOccurred())
+			_, err = utils.Run(exec.Command("kubectl", "-n", v3BrokerDownNamespace,
+				"create", "secret", "generic", v3BrokerDownSecretName,
+				"--from-literal=DEMO_TOKEN=brokerdown-e2e"))
+			Expect(err).NotTo(HaveOccurred())
+
+			By("registering a template that requires a broker-issued credential")
+			applyFromYAML(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: ClusterHarnessTemplate
+metadata:
+  name: %s
+spec:
+  harness: echo
+  image: %s
+  command: ["/usr/local/bin/paddock-echo"]
+  eventAdapter:
+    image: %s
+  requires:
+    credentials:
+      - name: DEMO_TOKEN
+        purpose: generic
+  defaults:
+    timeout: 60s
+  workspace:
+    required: true
+    mountPath: /workspace
+`, v3BrokerDownTemplate, echoImage, adapterEchoImage))
+
+			By("applying a BrokerPolicy granting DEMO_TOKEN via StaticProvider")
+			applyFromYAML(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: BrokerPolicy
+metadata:
+  name: allow-broker-down
+  namespace: %s
+spec:
+  appliesToTemplates: ["%s"]
+  denyMode: block
+  brokerFailureMode: Closed
+  grants:
+    credentials:
+      - name: DEMO_TOKEN
+        provider:
+          kind: Static
+          secretRef:
+            name: %s
+            key: DEMO_TOKEN
+`, v3BrokerDownNamespace, v3BrokerDownTemplate, v3BrokerDownSecretName))
+
+			By("scaling the broker Deployment to 0 before submitting the run")
+			_, err = utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+				"scale", "deploy", v3BrokerDeploy, "--replicas=0"))
+			Expect(err).NotTo(HaveOccurred())
+			// Wait until every broker Pod is gone — not just NotReady —
+			// so kube-proxy has pulled the Endpoints entries and the
+			// reconciler's first Issue RPC can't slip through against a
+			// terminating pod.
+			Eventually(func(g Gomega) {
+				pods, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+					"get", "pods", "-l", "app.kubernetes.io/component=broker",
+					"-o", "jsonpath={.items[*].metadata.name}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(pods)).To(BeEmpty(),
+					"broker pods still present: %q", strings.TrimSpace(pods))
+			}, 60*time.Second, 2*time.Second).Should(Succeed())
+
+			// Re-scale the broker back to 1 via a defer so that the spec
+			// cleans up after itself even if the subsequent assertions
+			// bail — the broker is shared state across scenarios.
+			defer func() {
+				if _, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+					"scale", "deploy", v3BrokerDeploy, "--replicas=1")); err != nil {
+					fmt.Fprintf(GinkgoWriter, "defer broker re-scale failed: %v\n", err)
+				}
+			}()
+
+			By("submitting a HarnessRun and expecting Pending/BrokerUnavailable")
+			applyFromYAML(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  templateRef:
+    name: %s
+    kind: ClusterHarnessTemplate
+  prompt: "e2e broker-down"
+`, v3BrokerDownRunName, v3BrokerDownNamespace, v3BrokerDownTemplate))
+
+			Eventually(func(g Gomega) {
+				var status harnessRunStatus
+				out, err := utils.Run(exec.Command("kubectl", "-n", v3BrokerDownNamespace,
+					"get", "harnessrun", v3BrokerDownRunName, "-o", "jsonpath={.status}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).NotTo(BeEmpty())
+				g.Expect(json.Unmarshal([]byte(out), &status)).To(Succeed())
+				g.Expect(status.Phase).To(Equal("Pending"),
+					"want Pending while broker is scaled to zero; got %q", status.Phase)
+				ready := findCondition(status.Conditions, "BrokerReady")
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Status).To(Equal("False"))
+				g.Expect(ready.Reason).To(Equal("BrokerUnavailable"),
+					"BrokerReady.reason=%q (message=%q)", ready.Reason, ready.Message)
+			}, 90*time.Second, 3*time.Second).Should(Succeed())
+
+			By("re-scaling the broker to 1 and waiting for rollout")
+			_, err = utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+				"scale", "deploy", v3BrokerDeploy, "--replicas=1"))
+			Expect(err).NotTo(HaveOccurred())
+			_, err = utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+				"rollout", "status", "deploy/"+v3BrokerDeploy, "--timeout=120s"))
+			Expect(err).NotTo(HaveOccurred())
+
+			By("expecting the run to reach Succeeded once the broker is back")
+			Eventually(func(g Gomega) {
+				phase, err := utils.Run(exec.Command("kubectl", "-n", v3BrokerDownNamespace,
+					"get", "harnessrun", v3BrokerDownRunName, "-o", "jsonpath={.status.phase}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(phase)).To(Equal("Succeeded"),
+					"run still in phase %q after broker returned", strings.TrimSpace(phase))
+			}, 3*time.Minute, 3*time.Second).Should(Succeed())
+		})
+	})
+
+	Context("v0.3 BrokerPolicy deleted mid-run", func() {
+		It("keeps blocking new upstream connections after the policy is deleted", func() {
+			By("creating the policy-delete-scenario namespace")
+			_, err := utils.Run(exec.Command("kubectl", "create", "ns", v3PolicyDelNamespace))
+			Expect(err).NotTo(HaveOccurred())
+
+			By("registering a BrokerPolicy (empty grants) so admission has something to match and deletion is meaningful")
+			// The policy grants nothing — evil.com stays denied both
+			// before and after deletion. The test doesn't assert a
+			// behaviour change; it asserts enforcement continues after
+			// the policy object disappears (spec §8.2: "new connections
+			// blocked within ~10s").
+			applyFromYAML(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: BrokerPolicy
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  appliesToTemplates: ["%s"]
+  denyMode: block
+`, v3PolicyDelPolicyName, v3PolicyDelNamespace, v3EgressTemplate))
+
+			By("submitting a HarnessRun that loop-probes evil.com while holding the Pod for 45s")
+			applyFromYAML(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  templateRef:
+    name: %s
+    kind: ClusterHarnessTemplate
+  prompt: "e2e policy-delete"
+  extraEnv:
+    - name: PADDOCK_E2E_EGRESS_LOOP
+      value: "https://evil.com"
+    - name: PADDOCK_E2E_HOLD_SECONDS
+      value: "45"
+    - name: PADDOCK_E2E_LOOP_SECONDS
+      value: "3"
+`, v3PolicyDelRunName, v3PolicyDelNamespace, v3EgressTemplate))
+
+			By("waiting for at least one egress-block AuditEvent (pre-delete baseline)")
+			Eventually(func(g Gomega) {
+				events := listAuditEvents(v3PolicyDelNamespace)
+				var count int
+				for _, e := range events {
+					if e.Spec.Kind == "egress-block" {
+						count++
+					}
+				}
+				g.Expect(count).To(BeNumerically(">=", 1),
+					"pre-delete: want >=1 egress-block, got %d", count)
+			}, 60*time.Second, 3*time.Second).Should(Succeed())
+
+			By("deleting the BrokerPolicy and noting the cutoff time")
+			deleteAt := time.Now().UTC()
+			_, err = utils.Run(exec.Command("kubectl", "-n", v3PolicyDelNamespace,
+				"delete", "brokerpolicy", v3PolicyDelPolicyName))
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for a fresh egress-block AuditEvent created AFTER the delete")
+			// Spec §8.2 quotes ~10s for cache refresh; bump to 30s to
+			// absorb kubelet scheduling + loop cadence + kubectl
+			// round-trips without being flaky.
+			Eventually(func(g Gomega) {
+				events := listAuditEvents(v3PolicyDelNamespace)
+				var freshest time.Time
+				for _, e := range events {
+					if e.Spec.Kind != "egress-block" {
+						continue
+					}
+					ts, parseErr := time.Parse(time.RFC3339, e.Metadata.CreationTimestamp)
+					if parseErr != nil {
+						continue
+					}
+					if ts.After(freshest) {
+						freshest = ts
+					}
+				}
+				g.Expect(freshest.After(deleteAt)).To(BeTrue(),
+					"freshest egress-block (%s) is not after the policy delete (%s)",
+					freshest.Format(time.RFC3339), deleteAt.Format(time.RFC3339))
+			}, 30*time.Second, 3*time.Second).Should(Succeed())
+
+			By("waiting for the run to complete on its own")
+			Eventually(func(g Gomega) {
+				phase, err := utils.Run(exec.Command("kubectl", "-n", v3PolicyDelNamespace,
+					"get", "harnessrun", v3PolicyDelRunName, "-o", "jsonpath={.status.phase}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				p := strings.TrimSpace(phase)
+				g.Expect(p).To(BeElementOf("Succeeded", "Failed"),
+					"run still in phase %q", p)
+			}, 3*time.Minute, 3*time.Second).Should(Succeed())
+		})
+	})
 })
+
+// listAuditEvents returns the AuditEvents currently present in the
+// namespace, decoded from `kubectl get -o json`. Unconditional Expect
+// on failure keeps the assertion stacks short in scenario code.
+func listAuditEvents(ns string) []auditEvent {
+	out, err := utils.Run(exec.Command("kubectl", "-n", ns, "get", "auditevents", "-o", "json"))
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "listing auditevents in %s", ns)
+	var list auditEventList
+	ExpectWithOffset(1, json.Unmarshal([]byte(out), &list)).To(Succeed(),
+		"decoding auditevents list in %s", ns)
+	return list.Items
+}
+
+// findCondition returns a pointer to the first condition of the given
+// type, or nil if none is present. Used by the broker-down scenario to
+// inspect BrokerReady.
+func findCondition(conds []harnessRunCondition, conditionType string) *harnessRunCondition {
+	for i := range conds {
+		if conds[i].Type == conditionType {
+			return &conds[i]
+		}
+	}
+	return nil
+}
 
 // applyFromYAML pipes the given YAML into `kubectl apply -f -`,
 // retrying on transient webhook/apiserver errors for up to applyRetryBudget.

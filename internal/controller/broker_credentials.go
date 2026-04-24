@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
@@ -41,9 +42,13 @@ func brokerCredsSecretName(runName string) string {
 // container consumes this via envFrom (see pod_spec.go). Returns:
 //
 //   - ok=true when the Secret is populated (or not needed).
-//   - ok=false on transient failures — caller should requeue.
-//   - a non-nil fatalReason when a user-actionable failure occurred
-//     (e.g. PolicyMissing); caller should mark the run failed.
+//   - ok=false, fatalReason="" on transient broker-unreachable failures;
+//     caller flips BrokerReady=False with Reason=BrokerUnavailable and
+//     requeues. The underlying err is logged but not surfaced so the
+//     condition stays in sync with reality (spec §15.6).
+//   - ok=false, fatalReason non-empty on user-actionable failures
+//     (e.g. BrokerDenied / BrokerNotConfigured); caller should mark the
+//     run failed.
 func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run *paddockv1alpha1.HarnessRun, tpl *resolvedTemplate) (ok bool, fatalReason, fatalMessage string, err error) {
 	reqs := tpl.Spec.Requires.Credentials
 	if len(reqs) == 0 {
@@ -66,6 +71,7 @@ func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run 
 	sorted := append([]paddockv1alpha1.CredentialRequirement{}, reqs...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
+	logger := log.FromContext(ctx)
 	data := make(map[string][]byte, len(sorted))
 	for _, c := range sorted {
 		resp, iErr := r.BrokerClient.Issue(ctx, run.Name, run.Namespace, c.Name)
@@ -73,8 +79,15 @@ func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run 
 			if IsBrokerCodeFatal(iErr) {
 				return false, "BrokerDenied", iErr.Error(), nil
 			}
-			// Transient — return the err for requeue.
-			return false, "", "", fmt.Errorf("broker.Issue(%s): %w", c.Name, iErr)
+			// Transient — broker unreachable or an unexpected HTTP
+			// error. Let the reconciler set BrokerReady=False with
+			// Reason=BrokerUnavailable + Pending phase, and retry on
+			// the next requeue. Logging here preserves the diagnostic
+			// without dragging the reconciler into an error loop that
+			// would bypass the condition update.
+			logger.Info("broker issue failed (transient)",
+				"credential", c.Name, "err", iErr.Error())
+			return false, "", "", nil
 		}
 		data[c.Name] = []byte(resp.Value)
 	}
