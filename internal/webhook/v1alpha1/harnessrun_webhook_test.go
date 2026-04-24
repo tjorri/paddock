@@ -17,7 +17,9 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -371,5 +373,75 @@ var _ = Describe("HarnessRun Webhook", func() {
 			Expect(err.Error()).To(ContainSubstring("api.anthropic.com:443"))
 			Expect(err.Error()).To(ContainSubstring("Hint: kubectl paddock policy scaffold"))
 		})
+	})
+
+	It("rejects a HarnessRun whose only matching BrokerPolicy has an expired discovery window", func() {
+		// Use a unique namespace so this spec is isolated from the
+		// client-backed Context above.
+		ns := fmt.Sprintf("harnessrun-webhook-expired-%d", time.Now().UnixNano())
+		Expect(k8sClient.Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: ns},
+		})).To(Succeed())
+
+		validator = HarnessRunCustomValidator{Client: k8sClient}
+
+		// Template with one credential and one egress requirement.
+		tpl := &paddockv1alpha1.HarnessTemplate{
+			ObjectMeta: metav1.ObjectMeta{Name: "claude-code", Namespace: ns},
+			Spec: paddockv1alpha1.HarnessTemplateSpec{
+				Harness: "claude-code",
+				Image:   "ghcr.io/example/claude-code:v0.3.0",
+				Command: []string{"/run"},
+				Requires: paddockv1alpha1.RequireSpec{
+					Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "ANTHROPIC_API_KEY"}},
+					Egress:      []paddockv1alpha1.EgressRequirement{{Host: "api.anthropic.com", Ports: []int32{443}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, tpl)).To(Succeed())
+
+		// BrokerPolicy with grants AND a near-future egressDiscovery window.
+		// The BrokerPolicy webhook requires expiresAt to be in the future,
+		// so we set it 2 seconds out and sleep until it has elapsed.
+		// FilterUnexpired reads spec.egressDiscovery.expiresAt directly, so
+		// once now > expiresAt the policy is dropped from the matching set
+		// and the run is rejected.
+		bp := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "expired-bp", Namespace: ns},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"claude-code"},
+				EgressDiscovery: &paddockv1alpha1.EgressDiscoverySpec{
+					Accepted:  true,
+					Reason:    "Bootstrapping allowlist for new metrics-scraper harness",
+					ExpiresAt: metav1.NewTime(time.Now().Add(2 * time.Second)),
+				},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Credentials: []paddockv1alpha1.CredentialGrant{
+						{Name: "ANTHROPIC_API_KEY", Provider: paddockv1alpha1.ProviderConfig{
+							Kind:      "AnthropicAPI",
+							SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "k", Key: "api-key"},
+						}},
+					},
+					Egress: []paddockv1alpha1.EgressGrant{{Host: "api.anthropic.com", Ports: []int32{443}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, bp)).To(Succeed())
+
+		// Wait for the discovery window to expire — FilterUnexpired
+		// reads spec.egressDiscovery.expiresAt directly, so admission
+		// will drop the policy once now > expiresAt.
+		time.Sleep(3 * time.Second)
+
+		run := &paddockv1alpha1.HarnessRun{
+			ObjectMeta: metav1.ObjectMeta{Name: "expired-policy-run", Namespace: ns},
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: "claude-code", Kind: "HarnessTemplate"},
+				Prompt:      "hello",
+			},
+		}
+		err := k8sClient.Create(ctx, run)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("expired"))
 	})
 })
