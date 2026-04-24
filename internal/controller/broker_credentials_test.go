@@ -35,8 +35,9 @@ import (
 
 // fakeBroker is an in-memory BrokerIssuer for reconciler tests.
 type fakeBroker struct {
-	values map[string]string // credential name → value
-	errs   map[string]error  // credential name → fatal error
+	values map[string]string                  // credential name → value
+	errs   map[string]error                   // credential name → fatal error
+	meta   map[string]brokerapi.IssueResponse // credential name → per-credential metadata (Provider / DeliveryMode / Hosts / InContainerReason). Optional; when absent the response falls back to the Static/empty defaults.
 	calls  int
 }
 
@@ -49,12 +50,21 @@ func (f *fakeBroker) Issue(_ context.Context, _ string, _ string, credentialName
 	if !ok {
 		return nil, &BrokerError{Status: 404, Code: "CredentialNotFound", Message: credentialName}
 	}
-	return &brokerapi.IssueResponse{
+	resp := brokerapi.IssueResponse{
 		Value:     v,
 		LeaseID:   "lease-" + credentialName,
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 		Provider:  "Static",
-	}, nil
+	}
+	if m, ok := f.meta[credentialName]; ok {
+		if m.Provider != "" {
+			resp.Provider = m.Provider
+		}
+		resp.DeliveryMode = m.DeliveryMode
+		resp.Hosts = m.Hosts
+		resp.InContainerReason = m.InContainerReason
+	}
+	return &resp, nil
 }
 
 var _ = Describe("ensureBrokerCredentials", func() {
@@ -97,16 +107,17 @@ var _ = Describe("ensureBrokerCredentials", func() {
 	It("no-ops when the template has no requires.credentials", func() {
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		run := newRun("no-reqs")
-		ok, reason, _, err := r.ensureBrokerCredentials(ctx, run, tpl())
+		ok, credStatus, reason, _, err := r.ensureBrokerCredentials(ctx, run, tpl())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 		Expect(reason).To(BeEmpty())
+		Expect(credStatus).To(BeEmpty())
 	})
 
 	It("returns BrokerNotConfigured when BrokerClient is nil", func() {
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		run := newRun("no-broker")
-		ok, reason, _, err := r.ensureBrokerCredentials(ctx, run, tpl("TOKEN"))
+		ok, _, reason, _, err := r.ensureBrokerCredentials(ctx, run, tpl("TOKEN"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeFalse())
 		Expect(reason).To(Equal("BrokerNotConfigured"))
@@ -120,7 +131,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("happy")
 
-		ok, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("TOKEN_A", "TOKEN_B"))
+		ok, _, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("TOKEN_A", "TOKEN_B"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 		Expect(fb.calls).To(Equal(2))
@@ -135,6 +146,50 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		Expect(got.OwnerReferences[0].Name).To(Equal(run.Name))
 	})
 
+	It("returns per-credential delivery metadata alongside the Secret", func() {
+		fb := &fakeBroker{
+			values: map[string]string{
+				"ANTHROPIC_API_KEY":    "sk-ant-test",
+				"SLACK_SIGNING_SECRET": "slack-signing",
+			},
+			meta: map[string]brokerapi.IssueResponse{
+				"ANTHROPIC_API_KEY": {
+					Provider:     "AnthropicAPI",
+					DeliveryMode: "ProxyInjected",
+					Hosts:        []string{"api.anthropic.com"},
+				},
+				"SLACK_SIGNING_SECRET": {
+					Provider:          "UserSuppliedSecret",
+					DeliveryMode:      "InContainer",
+					InContainerReason: "Agent HMAC-signs Slack webhook payloads locally; no outbound header to substitute.",
+				},
+			},
+		}
+		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
+		run := newRun("cred-meta")
+
+		ok, credStatus, reason, _, err := r.ensureBrokerCredentials(
+			ctx, run, tpl("ANTHROPIC_API_KEY", "SLACK_SIGNING_SECRET"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(reason).To(BeEmpty())
+		Expect(credStatus).To(HaveLen(2))
+
+		byName := map[string]paddockv1alpha1.CredentialStatus{}
+		for _, c := range credStatus {
+			byName[c.Name] = c
+		}
+		Expect(byName["ANTHROPIC_API_KEY"].Provider).To(Equal("AnthropicAPI"))
+		Expect(byName["ANTHROPIC_API_KEY"].DeliveryMode).To(Equal(paddockv1alpha1.DeliveryModeProxyInjected))
+		Expect(byName["ANTHROPIC_API_KEY"].Hosts).To(Equal([]string{"api.anthropic.com"}))
+		Expect(byName["ANTHROPIC_API_KEY"].InContainerReason).To(BeEmpty())
+
+		Expect(byName["SLACK_SIGNING_SECRET"].Provider).To(Equal("UserSuppliedSecret"))
+		Expect(byName["SLACK_SIGNING_SECRET"].DeliveryMode).To(Equal(paddockv1alpha1.DeliveryModeInContainer))
+		Expect(byName["SLACK_SIGNING_SECRET"].Hosts).To(BeEmpty())
+		Expect(byName["SLACK_SIGNING_SECRET"].InContainerReason).To(ContainSubstring("HMAC"))
+	})
+
 	It("returns a fatal reason on a PolicyMissing broker error", func() {
 		fb := &fakeBroker{errs: map[string]error{
 			"K": &BrokerError{Status: 403, Code: "PolicyMissing", Message: "no grant"},
@@ -142,7 +197,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("denied")
 
-		ok, reason, msg, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		ok, _, reason, msg, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeFalse())
 		Expect(reason).To(Equal("BrokerDenied"))
@@ -159,7 +214,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		// with Reason=BrokerUnavailable + phase=Pending instead of
 		// entering an error-requeue loop that leaves the condition
 		// stale (spec §15.6).
-		ok, reason, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		ok, _, reason, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeFalse())
 		Expect(reason).To(BeEmpty())
@@ -170,12 +225,12 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("stale")
 
-		ok, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("OLD"))
+		ok, _, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("OLD"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 
 		// Now reconcile with no requires (e.g. template edited).
-		ok, _, _, err = r.ensureBrokerCredentials(ctx, run, tpl())
+		ok, _, _, _, err = r.ensureBrokerCredentials(ctx, run, tpl())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 

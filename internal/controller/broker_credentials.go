@@ -39,45 +39,53 @@ func brokerCredsSecretName(runName string) string {
 
 // ensureBrokerCredentials materialises every requires.credentials entry
 // into data keys of an owned Secret named <run>-broker-creds. The agent
-// container consumes this via envFrom (see pod_spec.go). Returns:
+// container consumes this via envFrom (see pod_spec.go). Also returns
+// per-credential delivery metadata (provider / delivery mode / hosts /
+// in-container reason) harvested from each broker Issue response so the
+// reconciler can populate run.status.credentials and emit per-credential
+// events. Returns:
 //
-//   - ok=true when the Secret is populated (or not needed).
+//   - ok=true when the Secret is populated (or not needed). credStatus
+//     is then a slice of one entry per issued credential, ordered by
+//     name.
 //   - ok=false, fatalReason="" on transient broker-unreachable failures;
 //     caller flips BrokerReady=False with Reason=BrokerUnavailable and
 //     requeues. The underlying err is logged but not surfaced so the
-//     condition stays in sync with reality (spec §15.6).
+//     condition stays in sync with reality (spec §15.6). credStatus is
+//     nil (or partial — caller treats it as not yet authoritative).
 //   - ok=false, fatalReason non-empty on user-actionable failures
 //     (e.g. BrokerDenied / BrokerNotConfigured); caller should mark the
-//     run failed.
-func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run *paddockv1alpha1.HarnessRun, tpl *resolvedTemplate) (ok bool, fatalReason, fatalMessage string, err error) {
+//     run failed. credStatus is nil.
+func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run *paddockv1alpha1.HarnessRun, tpl *resolvedTemplate) (ok bool, credStatus []paddockv1alpha1.CredentialStatus, fatalReason, fatalMessage string, err error) {
 	reqs := tpl.Spec.Requires.Credentials
 	if len(reqs) == 0 {
 		// Template declares no credentials — delete any stale Secret
 		// from a prior run that did declare them.
 		if err := r.deleteBrokerCredsSecret(ctx, run); err != nil {
-			return false, "", "", err
+			return false, nil, "", "", err
 		}
-		return true, "", "", nil
+		return true, nil, "", "", nil
 	}
 
 	if r.BrokerClient == nil {
-		return false, "BrokerNotConfigured",
+		return false, nil, "BrokerNotConfigured",
 			"controller has no --broker-endpoint configured; runs against templates with spec.requires cannot proceed",
 			nil
 	}
 
 	// Issue each credential. Process in a stable order for reproducible
-	// Secret contents.
+	// Secret contents (and a stable status.credentials ordering).
 	sorted := append([]paddockv1alpha1.CredentialRequirement{}, reqs...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
 	logger := log.FromContext(ctx)
 	data := make(map[string][]byte, len(sorted))
+	credStatus = make([]paddockv1alpha1.CredentialStatus, 0, len(sorted))
 	for _, c := range sorted {
 		resp, iErr := r.BrokerClient.Issue(ctx, run.Name, run.Namespace, c.Name)
 		if iErr != nil {
 			if IsBrokerCodeFatal(iErr) {
-				return false, "BrokerDenied", iErr.Error(), nil
+				return false, nil, "BrokerDenied", iErr.Error(), nil
 			}
 			// Transient — broker unreachable or an unexpected HTTP
 			// error. Let the reconciler set BrokerReady=False with
@@ -87,9 +95,16 @@ func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run 
 			// would bypass the condition update.
 			logger.Info("broker issue failed (transient)",
 				"credential", c.Name, "err", iErr.Error())
-			return false, "", "", nil
+			return false, nil, "", "", nil
 		}
 		data[c.Name] = []byte(resp.Value)
+		credStatus = append(credStatus, paddockv1alpha1.CredentialStatus{
+			Name:              c.Name,
+			Provider:          resp.Provider,
+			DeliveryMode:      paddockv1alpha1.DeliveryModeName(resp.DeliveryMode),
+			Hosts:             resp.Hosts,
+			InContainerReason: resp.InContainerReason,
+		})
 	}
 
 	// Upsert the Secret, owner-referenced to the run so cascade-delete
@@ -109,10 +124,10 @@ func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run 
 		return nil
 	})
 	if err != nil {
-		return false, "", "", fmt.Errorf("upserting broker-creds secret: %w", err)
+		return false, nil, "", "", fmt.Errorf("upserting broker-creds secret: %w", err)
 	}
 	_ = op
-	return true, "", "", nil
+	return true, credStatus, "", "", nil
 }
 
 func (r *HarnessRunReconciler) deleteBrokerCredsSecret(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {

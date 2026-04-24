@@ -293,7 +293,7 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// the template declares (ADR-0015). The broker has already answered
 	// admission-time policy questions; here we materialise values into
 	// an owned Secret the agent container consumes via envFrom.
-	credsOk, brFatalReason, brFatalMsg, brErr := r.ensureBrokerCredentials(ctx, &run, tpl)
+	credsOk, credStatus, brFatalReason, brFatalMsg, brErr := r.ensureBrokerCredentials(ctx, &run, tpl)
 	if brErr != nil {
 		return ctrl.Result{}, brErr
 	}
@@ -315,6 +315,44 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
+	// Persist per-credential delivery metadata + summary condition.
+	// status.credentials is overwritten on every successful pass so it
+	// always reflects the latest broker response. Events are emitted
+	// unconditionally — the EventRecorder dedupes by reason/message so
+	// a steady-state reconcile loop won't spam the event stream.
+	run.Status.Credentials = credStatus
+	nProxy, nInContainer := 0, 0
+	for _, c := range credStatus {
+		switch c.DeliveryMode {
+		case paddockv1alpha1.DeliveryModeProxyInjected:
+			nProxy++
+		case paddockv1alpha1.DeliveryModeInContainer:
+			nInContainer++
+		}
+	}
+	setCondition(&run.Status.Conditions, metav1.Condition{
+		Type:   paddockv1alpha1.HarnessRunConditionBrokerCredentialsReady,
+		Status: metav1.ConditionTrue,
+		Reason: "AllIssued",
+		Message: fmt.Sprintf("%d credentials issued: %d proxy-injected, %d in-container",
+			len(credStatus), nProxy, nInContainer),
+		ObservedGeneration: run.Generation,
+	})
+	for _, c := range credStatus {
+		switch c.DeliveryMode {
+		case paddockv1alpha1.DeliveryModeProxyInjected:
+			r.Recorder.Eventf(&run, corev1.EventTypeNormal, "CredentialIssued",
+				"name=%s mode=ProxyInjected provider=%s", c.Name, c.Provider)
+		case paddockv1alpha1.DeliveryModeInContainer:
+			reason := c.InContainerReason
+			if len(reason) > 60 {
+				reason = reason[:60] + "..."
+			}
+			r.Recorder.Eventf(&run, corev1.EventTypeNormal, "InContainerCredentialDelivered",
+				"name=%s reason=%q", c.Name, reason)
+		}
+	}
+
 	brokerMsg := "no broker credentials required"
 	if len(tpl.Spec.Requires.Credentials) > 0 {
 		brokerMsg = fmt.Sprintf("broker issued %d credential(s)", len(tpl.Spec.Requires.Credentials))
