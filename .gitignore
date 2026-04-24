@@ -41,3 +41,6 @@ go.work.sum
 
 # kubebuilder build-installer output
 /dist/
+
+# Git worktrees (isolated implementation workspaces)
+/.worktrees/
