@@ -412,13 +412,29 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			}
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
-		mode, mErr := r.resolveInterceptionMode(ctx, &run, tpl)
+		decision, mErr := r.resolveInterceptionMode(ctx, &run, tpl)
 		if mErr != nil {
 			return ctrl.Result{}, mErr
 		}
+		if decision.Unavailable {
+			r.Recorder.Eventf(&run, corev1.EventTypeWarning, "InterceptionUnavailable", "%s", decision.Reason)
+			setCondition(&run.Status.Conditions, metav1.Condition{
+				Type:               paddockv1alpha1.HarnessRunConditionInterceptionUnavailable,
+				Status:             metav1.ConditionTrue,
+				Reason:             "PSABlocksTransparent",
+				Message:            decision.Reason,
+				ObservedGeneration: run.Generation,
+			})
+			r.fail(&run, paddockv1alpha1.HarnessRunConditionEgressConfigured,
+				"InterceptionUnavailable", decision.Reason)
+			if _, err := r.commitStatus(ctx, &run, origStatus); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
 		reason := "Cooperative"
 		msg := "MITM CA mounted; HTTPS_PROXY configured (cooperative mode)"
-		if mode == paddockv1alpha1.InterceptionModeTransparent {
+		if decision.Mode == paddockv1alpha1.InterceptionModeTransparent {
 			reason = "Transparent"
 			msg = "MITM CA mounted; iptables REDIRECT installed (transparent mode)"
 		}
@@ -981,12 +997,18 @@ func (r *HarnessRunReconciler) ensureJob(
 		in.proxyImage = r.ProxyImage
 		in.proxyTLSSecret = proxyTLSSecretName(run.Name)
 		in.proxyAllowList = r.ProxyAllowList
-		mode, err := r.resolveInterceptionMode(ctx, run, tpl)
+		decision, err := r.resolveInterceptionMode(ctx, run, tpl)
 		if err != nil {
 			return nil, err
 		}
-		in.interceptionMode = mode
-		if mode == paddockv1alpha1.InterceptionModeTransparent {
+		if decision.Unavailable {
+			// The reconcile CA-ready path above already emitted the
+			// event and marked the run Failed. Defensive guard: refuse
+			// to build a Job in this state.
+			return nil, fmt.Errorf("interception unavailable: %s", decision.Reason)
+		}
+		in.interceptionMode = decision.Mode
+		if decision.Mode == paddockv1alpha1.InterceptionModeTransparent {
 			in.iptablesInitImage = r.IPTablesInitImage
 		}
 		if r.brokerProxyConfigured() {
@@ -1110,32 +1132,43 @@ func (r *HarnessRunReconciler) proxyConfigured() bool {
 }
 
 // resolveInterceptionMode picks between transparent and cooperative
-// modes for this run (ADR-0013 §7.2). Transparent requires:
+// modes for this run (ADR-0013 §7.2 + spec 0003 §3.7). Combines:
 //
-//  1. The manager was started with --iptables-init-image (otherwise
-//     no init container is available).
-//  2. The run's namespace PSA enforce label permits NET_ADMIN.
+//  1. The matching BrokerPolicies' spec.interception (default: transparent).
+//  2. The run's namespace PSA enforce label (transparent needs NET_ADMIN).
+//  3. Whether the manager was started with --iptables-init-image.
 //
-// Otherwise cooperative mode is used. BrokerPolicy no longer exposes
-// a minInterceptionMode floor; a Plan-B replacement may reintroduce
-// an explicit spec.interception knob in a future release.
+// Returns an InterceptionDecision; when Unavailable is true the caller
+// must fail the run closed rather than downgrade to cooperative.
 func (r *HarnessRunReconciler) resolveInterceptionMode(
 	ctx context.Context,
 	run *paddockv1alpha1.HarnessRun,
 	tpl *resolvedTemplate,
-) (paddockv1alpha1.InterceptionMode, error) {
-	if r.IPTablesInitImage == "" {
-		return paddockv1alpha1.InterceptionModeCooperative, nil
-	}
+) (policy.InterceptionDecision, error) {
 	matches, err := policy.ListMatchingPolicies(ctx, r.Client, run.Namespace, tpl.SourceName)
 	if err != nil {
-		return "", err
+		return policy.InterceptionDecision{}, err
 	}
-	mode, err := policy.ResolveInterceptionMode(ctx, r.Client, run.Namespace, matches)
+	decision, err := policy.ResolveInterceptionMode(ctx, r.Client, run.Namespace, matches)
 	if err != nil {
-		return "", err
+		return policy.InterceptionDecision{}, err
 	}
-	return mode, nil
+	// Manager misconfiguration: the policy resolver is happy to hand us
+	// transparent, but we have no init-container image to do it with.
+	// Fail closed with a distinct reason so the admin can spot the
+	// operator flag as the cause (not PSA).
+	if !decision.Unavailable &&
+		decision.Mode == paddockv1alpha1.InterceptionModeTransparent &&
+		r.IPTablesInitImage == "" {
+		return policy.InterceptionDecision{
+			Unavailable: true,
+			Reason: "controller-manager was started without --iptables-init-image; " +
+				"transparent interception is unavailable in this cluster. Either " +
+				"deploy the iptables-init image or set " +
+				"spec.interception.cooperativeAccepted on the BrokerPolicy.",
+		}, nil
+	}
+	return decision, nil
 }
 
 // fail sets a terminal Failed phase with the given condition reason.

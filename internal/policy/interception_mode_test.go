@@ -40,17 +40,65 @@ func newTestScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-func TestResolveInterceptionMode_PSA(t *testing.T) {
-	cases := []struct {
-		name     string
-		psaLabel string
-		want     paddockv1alpha1.InterceptionMode
-	}{
-		{"no label", "", paddockv1alpha1.InterceptionModeTransparent},
-		{"privileged", PSALevelPrivileged, paddockv1alpha1.InterceptionModeTransparent},
-		{"baseline blocks NET_ADMIN", PSALevelBaseline, paddockv1alpha1.InterceptionModeCooperative},
-		{"restricted blocks NET_ADMIN", PSALevelRestricted, paddockv1alpha1.InterceptionModeCooperative},
+func transparentPolicy(name string) *paddockv1alpha1.BrokerPolicy {
+	return &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: paddockv1alpha1.BrokerPolicySpec{
+			AppliesToTemplates: []string{"*"},
+			Interception: &paddockv1alpha1.InterceptionSpec{
+				Transparent: &paddockv1alpha1.TransparentInterception{},
+			},
+		},
 	}
+}
+
+func cooperativePolicy(name string) *paddockv1alpha1.BrokerPolicy {
+	return &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: paddockv1alpha1.BrokerPolicySpec{
+			AppliesToTemplates: []string{"*"},
+			Interception: &paddockv1alpha1.InterceptionSpec{
+				CooperativeAccepted: &paddockv1alpha1.CooperativeAcceptedInterception{
+					Accepted: true,
+					Reason:   "Cluster PSA=restricted; node-level proxy not available yet",
+				},
+			},
+		},
+	}
+}
+
+func unsetPolicy(name string) *paddockv1alpha1.BrokerPolicy {
+	return &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: paddockv1alpha1.BrokerPolicySpec{
+			AppliesToTemplates: []string{"*"},
+		},
+	}
+}
+
+// Each row: the policy list + the namespace PSA label → expected decision.
+func TestResolveInterceptionMode_Decision(t *testing.T) {
+	cases := []struct {
+		name        string
+		psaLabel    string
+		policies    []*paddockv1alpha1.BrokerPolicy
+		wantMode    paddockv1alpha1.InterceptionMode
+		wantUnavail bool
+	}{
+		{name: "no policy, PSA permits → transparent", psaLabel: "", policies: nil, wantMode: paddockv1alpha1.InterceptionModeTransparent},
+		{name: "policy transparent, PSA permits → transparent", psaLabel: PSALevelPrivileged, policies: []*paddockv1alpha1.BrokerPolicy{transparentPolicy("t")}, wantMode: paddockv1alpha1.InterceptionModeTransparent},
+		{name: "policy cooperativeAccepted, PSA permits → cooperative", psaLabel: PSALevelPrivileged, policies: []*paddockv1alpha1.BrokerPolicy{cooperativePolicy("c")}, wantMode: paddockv1alpha1.InterceptionModeCooperative},
+		{name: "policy unset (default=transparent), PSA permits → transparent", psaLabel: "", policies: []*paddockv1alpha1.BrokerPolicy{unsetPolicy("u")}, wantMode: paddockv1alpha1.InterceptionModeTransparent},
+
+		{name: "no policy, PSA blocks → unavailable (default transparent)", psaLabel: PSALevelRestricted, policies: nil, wantUnavail: true},
+		{name: "policy transparent, PSA blocks → unavailable", psaLabel: PSALevelBaseline, policies: []*paddockv1alpha1.BrokerPolicy{transparentPolicy("t")}, wantUnavail: true},
+		{name: "policy cooperativeAccepted, PSA blocks → cooperative", psaLabel: PSALevelRestricted, policies: []*paddockv1alpha1.BrokerPolicy{cooperativePolicy("c")}, wantMode: paddockv1alpha1.InterceptionModeCooperative},
+
+		{name: "two cooperativeAccepted policies, PSA blocks → cooperative", psaLabel: PSALevelRestricted, policies: []*paddockv1alpha1.BrokerPolicy{cooperativePolicy("c1"), cooperativePolicy("c2")}, wantMode: paddockv1alpha1.InterceptionModeCooperative},
+		{name: "mixed: one transparent, one cooperativeAccepted, PSA permits → transparent", psaLabel: PSALevelPrivileged, policies: []*paddockv1alpha1.BrokerPolicy{transparentPolicy("t"), cooperativePolicy("c")}, wantMode: paddockv1alpha1.InterceptionModeTransparent},
+		{name: "mixed: one unset, one cooperativeAccepted, PSA blocks → unavailable", psaLabel: PSALevelRestricted, policies: []*paddockv1alpha1.BrokerPolicy{unsetPolicy("u"), cooperativePolicy("c")}, wantUnavail: true},
+	}
+
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
@@ -61,12 +109,22 @@ func TestResolveInterceptionMode_PSA(t *testing.T) {
 				WithScheme(newTestScheme(t)).
 				WithObjects(ns).
 				Build()
-			mode, err := ResolveInterceptionMode(context.Background(), cli, "test", nil)
+
+			got, err := ResolveInterceptionMode(context.Background(), cli, "test", c.policies)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if mode != c.want {
-				t.Errorf("mode = %q, want %q", mode, c.want)
+			if got.Unavailable != c.wantUnavail {
+				t.Fatalf("Unavailable = %v, want %v (Reason=%q)", got.Unavailable, c.wantUnavail, got.Reason)
+			}
+			if c.wantUnavail {
+				if got.Reason == "" {
+					t.Errorf("Unavailable decision must carry a Reason; got empty")
+				}
+				return
+			}
+			if got.Mode != c.wantMode {
+				t.Errorf("Mode = %q, want %q", got.Mode, c.wantMode)
 			}
 		})
 	}
