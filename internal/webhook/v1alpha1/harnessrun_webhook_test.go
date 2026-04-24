@@ -321,6 +321,12 @@ var _ = Describe("HarnessRun Webhook", func() {
 							Provider: paddockv1alpha1.ProviderConfig{
 								Kind:      "UserSuppliedSecret",
 								SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+								DeliveryMode: &paddockv1alpha1.DeliveryMode{
+									InContainer: &paddockv1alpha1.InContainerDelivery{
+										Accepted: true,
+										Reason:   "Test fixture — agent reads the value directly",
+									},
+								},
 							},
 						}},
 					},

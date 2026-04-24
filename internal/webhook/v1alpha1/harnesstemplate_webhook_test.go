@@ -129,7 +129,7 @@ var _ = Describe("HarnessTemplate Webhook", func() {
 					Command: []string{"/usr/local/bin/paddock-claude-code"},
 					Requires: paddockv1alpha1.RequireSpec{
 						Credentials: []paddockv1alpha1.CredentialRequirement{
-							{Name: "ANTHROPIC_API_KEY", Purpose: paddockv1alpha1.CredentialPurposeLLM},
+							{Name: "ANTHROPIC_API_KEY"},
 						},
 						Egress: []paddockv1alpha1.EgressRequirement{
 							{Host: "api.anthropic.com", Ports: []int32{443}},
@@ -167,7 +167,7 @@ var _ = Describe("HarnessTemplate Webhook", func() {
 					Image:   "paddock-echo:v1",
 					Command: []string{"/bin/echo"},
 					Requires: paddockv1alpha1.RequireSpec{
-						Credentials: []paddockv1alpha1.CredentialRequirement{{Purpose: paddockv1alpha1.CredentialPurposeLLM}},
+						Credentials: []paddockv1alpha1.CredentialRequirement{{}},
 					},
 				},
 			}
