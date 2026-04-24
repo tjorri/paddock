@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -154,19 +155,62 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		if os.Getenv("KEEP_E2E_RUN") == "1" {
 			return
 		}
-		// Teardown is best-effort: kind delete cluster obliterates
-		// everything anyway. Wrap each step in a bounded context so a
-		// hung `kubectl delete` (e.g. a finalizer that won't clear)
-		// can't eat the 10-minute ginkgo suite budget and hide the
-		// preceding pass/fail result.
-		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", runNamespace, "--wait=false")
-		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", multiNamespace, "--wait=false")
-		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", v3EgressNamespace, "--wait=false")
-		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", v3BrokerDownNamespace, "--wait=false")
-		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", v3PolicyDelNamespace, "--wait=false")
+		// Teardown order matters: the controller-manager owns two
+		// finalizers (paddock.dev/harnessrun-finalizer and
+		// paddock.dev/workspace-finalizer). If `make undeploy` scales
+		// the controller to zero before it finishes reconciling the
+		// namespace-delete cascade, leftover HarnessRun/Workspace
+		// objects keep their finalizers forever → namespace pins in
+		// Terminating → CRD delete in `kustomize delete` blocks →
+		// undeploy hangs until its runWithTimeout fires.
+		//
+		// Fix: drain tenant state first (namespaces must fully
+		// disappear while the controller is still alive), THEN
+		// undeploy. Force-clearing finalizers is the fallback — it
+		// only fires when the controller genuinely failed to
+		// converge, and emits a loud warning so a regression in the
+		// finalizer loop can't hide behind a green teardown.
+		testNamespaces := []string{
+			runNamespace, multiNamespace,
+			v3EgressNamespace, v3BrokerDownNamespace, v3PolicyDelNamespace,
+		}
+
+		// 1. Kick every namespace's reconcile-delete chain in
+		//    parallel. --wait=false so we can drive our own wait
+		//    loop below and keep the parallelism.
+		for _, ns := range testNamespaces {
+			runWithTimeout(10*time.Second, "kubectl", "delete", "ns", ns,
+				"--wait=false", "--ignore-not-found=true")
+		}
+
+		// 2. Wait for each namespace to fully terminate. Budget per
+		//    ns covers HarnessRun Job delete + Workspace PVC cascade
+		//    with slack. 120s is generous for CI's 2-vCPU runners
+		//    (controller reconcile latency + the Workspace finalizer's
+		//    15s requeue-on-activeRunRef cadence can easily add up to
+		//    45-60s of drain time); still well below Ginkgo's 11-min
+		//    suite timeout. Fallback on timeout → force-clear + warn.
+		for _, ns := range testNamespaces {
+			if waitForNamespaceGone(ns, 120*time.Second) {
+				continue
+			}
+			fmt.Fprintf(GinkgoWriter,
+				"WARNING: namespace %s stuck in Terminating after 120s; "+
+					"controller-side finalizer drain likely broken — force-clearing\n", ns)
+			forceClearFinalizers(ns)
+			// One more short wait so subsequent steps aren't racing
+			// a half-gone namespace; fall through regardless.
+			waitForNamespaceGone(ns, 20*time.Second)
+		}
+
+		// 3. Non-finalizer cluster-scoped resources.
 		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", clusterTemplateName, "--ignore-not-found=true")
 		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3EgressTemplate, "--ignore-not-found=true")
 		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3BrokerDownTemplate, "--ignore-not-found=true")
+
+		// 4. Now safe to kill the controller — no tenant CR needs
+		//    its finalizer reconciled. 90s runWithTimeout remains as
+		//    belt-and-suspenders for any future surprise.
 		runWithTimeout(90*time.Second, "make", "undeploy", "ignore-not-found=true")
 		runWithTimeout(90*time.Second, "make", "uninstall", "ignore-not-found=true")
 	})
@@ -584,15 +628,14 @@ spec:
 					"broker pods still present: %q", strings.TrimSpace(pods))
 			}, 60*time.Second, 2*time.Second).Should(Succeed())
 
-			// Re-scale the broker back to 1 via a defer so that the spec
-			// cleans up after itself even if the subsequent assertions
-			// bail — the broker is shared state across scenarios.
-			defer func() {
-				if _, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-					"scale", "deploy", v3BrokerDeploy, "--replicas=1")); err != nil {
-					fmt.Fprintf(GinkgoWriter, "defer broker re-scale failed: %v\n", err)
-				}
-			}()
+			// Restore broker on exit no matter how the It body returns.
+			// DeferCleanup runs after the It completes (success, Fail,
+			// or panic) and integrates with Ginkgo's reporter, unlike
+			// defer which silently logs on a writer that a SIGKILL
+			// could truncate. restoreBroker asserts loudly — a visible
+			// red here beats a broken broker cascading into Scenario C
+			// and being mis-attributed as a Scenario C flake.
+			DeferCleanup(restoreBroker)
 
 			By("submitting a HarnessRun and expecting Pending/BrokerUnavailable")
 			applyFromYAML(fmt.Sprintf(`
@@ -624,13 +667,8 @@ spec:
 					"BrokerReady.reason=%q (message=%q)", ready.Reason, ready.Message)
 			}, 90*time.Second, 3*time.Second).Should(Succeed())
 
-			By("re-scaling the broker to 1 and waiting for rollout")
-			_, err = utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-				"scale", "deploy", v3BrokerDeploy, "--replicas=1"))
-			Expect(err).NotTo(HaveOccurred())
-			_, err = utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-				"rollout", "status", "deploy/"+v3BrokerDeploy, "--timeout=120s"))
-			Expect(err).NotTo(HaveOccurred())
+			By("re-scaling the broker to 1 and waiting for it to accept traffic")
+			restoreBroker()
 
 			By("expecting the run to reach Succeeded once the broker is back")
 			Eventually(func(g Gomega) {
@@ -645,6 +683,9 @@ spec:
 
 	Context("v0.3 BrokerPolicy deleted mid-run", func() {
 		It("keeps blocking new upstream connections after the policy is deleted", func() {
+			By("confirming Scenario B left the broker serving (pre-check)")
+			requireBrokerHealthy()
+
 			By("creating the policy-delete-scenario namespace")
 			_, err := utils.Run(exec.Command("kubectl", "create", "ns", v3PolicyDelNamespace))
 			Expect(err).NotTo(HaveOccurred())
@@ -655,6 +696,13 @@ spec:
 			// behaviour change; it asserts enforcement continues after
 			// the policy object disappears (spec §8.2: "new connections
 			// blocked within ~10s").
+			//
+			// `grants:` must be present: the CRD schema lists it as a
+			// required field on .spec (see
+			// config/crd/bases/paddock.dev_brokerpolicies.yaml).
+			// Server-side structural validation rejects the object
+			// pre-webhook if the key is absent, so supply an empty
+			// credentials array to satisfy the schema.
 			applyFromYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
@@ -664,6 +712,8 @@ metadata:
 spec:
   appliesToTemplates: ["%s"]
   denyMode: block
+  grants:
+    credentials: []
 `, v3PolicyDelPolicyName, v3PolicyDelNamespace, v3EgressTemplate))
 
 			By("submitting a HarnessRun that loop-probes evil.com while holding the Pod for 45s")
@@ -767,6 +817,51 @@ func findCondition(conds []harnessRunCondition, conditionType string) *harnessRu
 	return nil
 }
 
+// restoreBroker re-scales the paddock-broker Deployment to 1, waits
+// for the rollout, and probes its Endpoints until it's actually
+// serving traffic. Idempotent — safe to call from the scenario body
+// AND from DeferCleanup.
+//
+// All failures are reported with Ginkgo's Fail so restoration problems
+// surface as a clean red instead of silently poisoning the next
+// scenario (the Ordered Describe shares broker state across all specs).
+// The Endpoints probe is symmetric with the pre-check that waits for
+// the pods to disappear during scale-to-zero.
+func restoreBroker() {
+	if _, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+		"scale", "deploy", v3BrokerDeploy, "--replicas=1")); err != nil {
+		Fail(fmt.Sprintf("restoreBroker: scale --replicas=1 failed: %v", err))
+	}
+	if _, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+		"rollout", "status", "deploy/"+v3BrokerDeploy, "--timeout=120s")); err != nil {
+		Fail(fmt.Sprintf("restoreBroker: rollout status failed: %v", err))
+	}
+	Eventually(func(g Gomega) {
+		addrs, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+			"get", "endpoints", v3BrokerDeploy,
+			"-o", "jsonpath={.subsets[*].addresses[*].ip}"))
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(addrs)).NotTo(BeEmpty(),
+			"broker Endpoints has no ready addresses: %q", strings.TrimSpace(addrs))
+	}, 30*time.Second, 2*time.Second).Should(Succeed(),
+		"restoreBroker: broker Endpoints never populated after scale-up")
+}
+
+// requireBrokerHealthy is a cheap pre-check for scenarios that follow
+// Scenario B in the Ordered Describe — if Scenario B's restoreBroker
+// regressed, we want the failure attributed to this assertion rather
+// than masqueraded as a Scenario C flake.
+func requireBrokerHealthy() {
+	EventuallyWithOffset(1, func(g Gomega) {
+		addrs, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+			"get", "endpoints", v3BrokerDeploy,
+			"-o", "jsonpath={.subsets[*].addresses[*].ip}"))
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(addrs)).NotTo(BeEmpty(),
+			"broker Endpoints empty — did Scenario B's restoreBroker misfire?")
+	}, 30*time.Second, 2*time.Second).Should(Succeed())
+}
+
 // applyFromYAML pipes the given YAML into `kubectl apply -f -`,
 // retrying on transient webhook/apiserver errors for up to applyRetryBudget.
 //
@@ -782,7 +877,9 @@ func applyFromYAML(yaml string) {
 	const applyRetryBudget = 30 * time.Second
 	deadline := time.Now().Add(applyRetryBudget)
 	var lastErr error
+	attempt := 0
 	for {
+		attempt++
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(yaml)
 		_, err := utils.Run(cmd)
@@ -790,6 +887,15 @@ func applyFromYAML(yaml string) {
 			return
 		}
 		lastErr = err
+		// Eager diagnostic: print the kubectl stderr + the YAML body
+		// to GinkgoWriter BEFORE we decide whether to retry. If Go's
+		// test-timeout kills the process later (as it did on CI run
+		// 24875514481), the Ginkgo spec-failure summary never lands in
+		// the log — but streamed `-v` output does. Without this, a
+		// mid-teardown kill leaves operators with no cause.
+		fmt.Fprintf(GinkgoWriter,
+			"kubectl apply attempt %d failed (retriable=%t): %v\nYAML:\n%s\n",
+			attempt, isRetriableApplyErr(err), err, yaml)
 		if !isRetriableApplyErr(err) || time.Now().After(deadline) {
 			break
 		}
@@ -817,15 +923,88 @@ func isRetriableApplyErr(err error) bool {
 	return false
 }
 
+// waitForNamespaceGone polls `kubectl get ns <ns>` until the API
+// server returns NotFound or the budget expires. Returns true on
+// disappearance, false on timeout. Each poll call is bounded by
+// runWithTimeout so a totally unresponsive apiserver can't stall
+// AfterAll past its own deadline.
+//
+// Used by the teardown sequence to wait for the controller's
+// finalizer drain to finish BEFORE `make undeploy` scales it to zero
+// — the alternative (kubectl delete ns --wait with one --timeout per
+// call) serialises the work; this keeps namespace deletions running
+// in parallel and just watches from the outside.
+func waitForNamespaceGone(ns string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := utils.Run(exec.CommandContext(ctx, "kubectl", "get", "ns", ns))
+		cancel()
+		if err != nil && strings.Contains(err.Error(), "not found") {
+			return true
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return false
+}
+
+// forceClearFinalizers is the last-resort fallback for AfterAll —
+// fires only when waitForNamespaceGone times out, which means the
+// controller's reconcile-delete loop failed to converge. Null-patches
+// .metadata.finalizers on every HarnessRun and Workspace in ns so the
+// namespace terminator can finish. Safe in test teardown only — the
+// follow-on `kind delete cluster` reclaims any owned resources the
+// finalizer cleanup would have handled (Job, PVC, Secret).
+//
+// When this runs it's a signal that a controller-side change broke
+// finalizer convergence — the calling AfterAll branch emits a loud
+// warning so the regression doesn't hide behind a green teardown.
+func forceClearFinalizers(ns string) {
+	for _, kind := range []string{"harnessruns", "workspaces"} {
+		out, err := utils.Run(exec.Command("kubectl", "-n", ns, "get", kind,
+			"-o", "jsonpath={.items[*].metadata.name}", "--ignore-not-found"))
+		if err != nil {
+			continue
+		}
+		for _, name := range strings.Fields(strings.TrimSpace(out)) {
+			runWithTimeout(10*time.Second, "kubectl", "-n", ns, "patch", kind, name,
+				"--type=merge", "-p", `{"metadata":{"finalizers":null}}`)
+		}
+	}
+}
+
 // runWithTimeout runs a command via utils.Run under a context with
-// the given deadline. On timeout, SIGKILL is sent to the process and
-// a one-line note is written to GinkgoWriter. Output is discarded —
-// callers who need it should use utils.Run directly. Intended for
-// best-effort teardown steps that must not block.
+// the given deadline. On timeout the ENTIRE process group gets
+// SIGKILL, and pipe I/O is force-closed within WaitDelay. A one-line
+// note lands on GinkgoWriter. Output is discarded — callers who need
+// it should use utils.Run directly. Intended for best-effort teardown
+// steps that must not block the suite.
+//
+// Why the process-group gymnastics: `exec.CommandContext`'s default
+// cancel signals only the top-level process. When we call `make
+// undeploy`, `make` spawns `kustomize build | kubectl delete`, and
+// those children inherit stdout/stderr fds. SIGKILL on `make` leaves
+// them running with the pipes open, and `os/exec.(*Cmd).Wait()`
+// blocks forever in `awaitGoroutines` draining the pipe readers.
+// CI run 24880620880 hung AfterAll on exactly this and hit Ginkgo's
+// 11-min suite timeout. Setpgid + pgid-SIGKILL kills the whole tree;
+// WaitDelay caps the pipe-drain wait as a belt-and-suspenders so Wait
+// can never block past `timeout + WaitDelay`.
 func runWithTimeout(timeout time.Duration, name string, args ...string) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	_, err := utils.Run(exec.CommandContext(ctx, name, args...))
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		// Negative pid signals the process group created by Setpgid,
+		// not just the leader — kills make + every inherited child.
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 5 * time.Second
+	_, err := utils.Run(cmd)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		fmt.Fprintf(GinkgoWriter, "teardown timed out after %s: %s %s\n",
 			timeout, name, strings.Join(args, " "))
