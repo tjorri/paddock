@@ -39,9 +39,16 @@ resources:
 patches:
 # [METRICS] The following patch will enable the metrics endpoint using HTTPS and the port :8443.
 # More info: https://book.kubebuilder.io/reference/metrics
+#
+# Target only the controller-manager by name. Without the name filter
+# the default kubebuilder scaffolding applies the patch to every
+# Deployment in the build, which breaks sibling binaries (the broker,
+# proxy images, etc.) that don't support --metrics-bind-address and
+# exit on unknown flags.
 - path: manager_metrics_patch.yaml
   target:
     kind: Deployment
+    name: controller-manager
 
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.
@@ -52,9 +59,13 @@ patches:
 
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml
+# Name filter: see comment on the metrics patch above — the default
+# target:{kind: Deployment} would append --webhook-cert-path + the
+# certs volume to every Deployment, crashing the broker.
 - path: manager_webhook_patch.yaml
   target:
     kind: Deployment
+    name: controller-manager
 
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER' prefix.
 # Uncomment the following replacements to add the cert-manager CA injection annotations

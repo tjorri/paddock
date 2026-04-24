@@ -647,11 +647,9 @@ spec:
     spec:
       containers:
         - args:
-            - --metrics-bind-address=:8443
             - --listen-address=:8443
             - --health-probe-bind-address=:8081
             - --cert-dir=/etc/paddock-broker/tls
-            - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
           command:
             - /broker
           image: {{ .Values.brokerImage.repository }}:{{ .Values.brokerImage.tag | default .Chart.AppVersion }}
@@ -668,9 +666,6 @@ spec:
               protocol: TCP
             - containerPort: 8081
               name: probes
-              protocol: TCP
-            - containerPort: 9443
-              name: webhook-server
               protocol: TCP
           readinessProbe:
             httpGet:
@@ -695,9 +690,6 @@ spec:
             - mountPath: /etc/paddock-broker/tls
               name: tls-cert
               readOnly: true
-            - mountPath: /tmp/k8s-webhook-server/serving-certs
-              name: webhook-certs
-              readOnly: true
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -709,9 +701,6 @@ spec:
           secret:
             defaultMode: 272
             secretName: broker-serving-cert
-        - name: webhook-certs
-          secret:
-            secretName: webhook-server-cert
 ---
 ---
 apiVersion: apps/v1
