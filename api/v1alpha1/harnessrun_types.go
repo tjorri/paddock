@@ -137,6 +137,10 @@ const (
 	// mounted and the interception mode has been resolved (transparent
 	// or cooperative). Wired in v0.3 M4 with the proxy sidecar.
 	HarnessRunConditionEgressConfigured = "EgressConfigured"
+	// BrokerCredentialsReady summarises whether all requires.credentials
+	// were issued, and on True carries a short message like
+	// "3 credentials issued: 2 proxy-injected, 1 in-container".
+	HarnessRunConditionBrokerCredentialsReady = "BrokerCredentialsReady"
 )
 
 // HarnessRunStatus reports the observed state of a HarnessRun.
@@ -183,6 +187,16 @@ type HarnessRunStatus struct {
 	// Outputs are structured outputs reported by the harness on exit.
 	// +optional
 	Outputs *HarnessRunOutputs `json:"outputs,omitempty"`
+
+	// Credentials reports, per requires.credentials[*].name, which
+	// provider backed it and how the value was delivered. Populated by
+	// the controller after a successful Issue call to the broker. Lets
+	// the user verify at runtime that the actual delivery matches the
+	// policy's declaration.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Credentials []CredentialStatus `json:"credentials,omitempty"`
 }
 
 // PaddockEvent is a structured event emitted by an adapter sidecar and
@@ -241,6 +255,40 @@ type HarnessRunOutputs struct {
 	Artifacts []string `json:"artifacts,omitempty"`
 }
 
+// CredentialStatus describes one issued credential from the run's
+// perspective.
+type CredentialStatus struct {
+	// Name matches the template's requires.credentials[*].name.
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// Provider is the backing provider kind (e.g. "UserSuppliedSecret",
+	// "AnthropicAPI"). Copied from the matched grant.
+	Provider string `json:"provider"`
+
+	// DeliveryMode is "ProxyInjected" or "InContainer".
+	// +kubebuilder:validation:Enum=ProxyInjected;InContainer
+	DeliveryMode DeliveryModeName `json:"deliveryMode"`
+
+	// Hosts lists the destination hostnames this credential substitutes
+	// on, for ProxyInjected delivery. Empty for InContainer.
+	// +optional
+	Hosts []string `json:"hosts,omitempty"`
+
+	// InContainerReason mirrors the policy grant's
+	// deliveryMode.inContainer.reason when DeliveryMode is InContainer.
+	// +optional
+	InContainerReason string `json:"inContainerReason,omitempty"`
+}
+
+// DeliveryModeName names one of the two status-reported delivery modes.
+type DeliveryModeName string
+
+const (
+	DeliveryModeProxyInjected DeliveryModeName = "ProxyInjected"
+	DeliveryModeInContainer   DeliveryModeName = "InContainer"
+)
+
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Namespaced,shortName=hr
 // +kubebuilder:subresource:status
@@ -248,6 +296,7 @@ type HarnessRunOutputs struct {
 // +kubebuilder:printcolumn:name="Template",type=string,JSONPath=`.spec.templateRef.name`
 // +kubebuilder:printcolumn:name="Workspace",type=string,JSONPath=`.status.workspaceRef`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:printcolumn:name="Credentials",type=string,JSONPath=`.status.conditions[?(@.type=="BrokerCredentialsReady")].message`
 
 // HarnessRun is a single invocation of a harness. It materialises into a
 // batch/v1 Job with an agent container, an optional adapter sidecar, and

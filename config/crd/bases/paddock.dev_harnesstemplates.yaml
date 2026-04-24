@@ -8691,32 +8691,18 @@ spec:
                   credentials:
                     description: |-
                       Credentials are the credentials the agent expects to be injected
-                      as env vars. Name is the env-var key inside the agent container;
-                      Purpose constrains which provider kinds a BrokerPolicy may use to
-                      back it. Templates never name a provider directly — that is the
+                      as env vars. Name is the env-var key inside the agent container.
+                      Templates never name a provider directly — that is the
                       operator's choice via BrokerPolicy.
                     items:
-                      description: |-
-                        CredentialRequirement names one credential a template needs at
-                        runtime.
+                      description: CredentialRequirement names one credential a template
+                        needs at runtime.
                       properties:
                         name:
                           description: |-
                             Name is the env-var key the agent reads. The broker-issued value
                             is exposed under this name inside the agent container.
                           maxLength: 253
-                          type: string
-                        purpose:
-                          default: generic
-                          description: |-
-                            Purpose classifies the credential for policy matching. Known
-                            values: "llm" (backed by AnthropicAPI / OpenAIAPI / Static);
-                            "gitforge" (backed by GitHubApp / PATPool); "generic" (backed by
-                            any provider — default, least constrained).
-                          enum:
-                          - llm
-                          - gitforge
-                          - generic
                           type: string
                       required:
                       - name

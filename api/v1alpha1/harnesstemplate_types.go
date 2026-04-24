@@ -132,9 +132,8 @@ type EventAdapterSpec struct {
 // See ADR-0014.
 type RequireSpec struct {
 	// Credentials are the credentials the agent expects to be injected
-	// as env vars. Name is the env-var key inside the agent container;
-	// Purpose constrains which provider kinds a BrokerPolicy may use to
-	// back it. Templates never name a provider directly — that is the
+	// as env vars. Name is the env-var key inside the agent container.
+	// Templates never name a provider directly — that is the
 	// operator's choice via BrokerPolicy.
 	// +optional
 	Credentials []CredentialRequirement `json:"credentials,omitempty"`
@@ -145,34 +144,14 @@ type RequireSpec struct {
 	Egress []EgressRequirement `json:"egress,omitempty"`
 }
 
-// CredentialRequirement names one credential a template needs at
-// runtime.
+// CredentialRequirement names one credential a template needs at runtime.
 type CredentialRequirement struct {
 	// Name is the env-var key the agent reads. The broker-issued value
 	// is exposed under this name inside the agent container.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
-
-	// Purpose classifies the credential for policy matching. Known
-	// values: "llm" (backed by AnthropicAPI / OpenAIAPI / Static);
-	// "gitforge" (backed by GitHubApp / PATPool); "generic" (backed by
-	// any provider — default, least constrained).
-	// +kubebuilder:default=generic
-	// +kubebuilder:validation:Enum=llm;gitforge;generic
-	// +optional
-	Purpose CredentialPurpose `json:"purpose,omitempty"`
 }
-
-// CredentialPurpose classifies a credential for policy matching. See
-// ADR-0014 and ADR-0015.
-type CredentialPurpose string
-
-const (
-	CredentialPurposeLLM      CredentialPurpose = "llm"
-	CredentialPurposeGitForge CredentialPurpose = "gitforge"
-	CredentialPurposeGeneric  CredentialPurpose = "generic"
-)
 
 // EgressRequirement names one upstream destination a template needs.
 type EgressRequirement struct {
