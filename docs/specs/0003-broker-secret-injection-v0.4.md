@@ -251,7 +251,7 @@ A team running a Claude Code harness that:
 - Writes to a Slack incoming webhook by signing the payload locally (agent-side signature — genuinely needs the raw secret).
 
 ```yaml
-apiVersion: paddock.dev/v1alpha2
+apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
 metadata:
   name: claude-code-team-policy
@@ -322,7 +322,7 @@ Pre-v1, one-shot breaking change. No compat shims.
 | `spec.brokerFailureMode: DegradedOpen`                 | Field removed. Broker unavailability always fails closed.                    |
 | `spec.minInterceptionMode: …`                          | Replaced by `spec.interception.transparent` / `interception.cooperativeAccepted`. |
 
-CRD version bumps from `v1alpha1` to `v1alpha2`. Existing `BrokerPolicy` objects require an edit to re-apply; the conversion is mechanical and admission errors guide the user.
+The CRD stays on `v1alpha1`. Paddock is pre-v1 with no deployed state to preserve, so we evolve the existing version in place rather than introducing `v1alpha2` and its conversion-webhook / coexistence story. Upgraders re-author their YAML; admission errors guide the changes.
 
 No automated migration tooling in v0.4 (consistent with v0.3's stance on v0.2→v0.3). A short migration section is added to the chart README.
 
