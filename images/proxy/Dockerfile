@@ -17,6 +17,10 @@ COPY go.sum go.sum
 COPY api/ api/
 COPY cmd/proxy/ cmd/proxy/
 COPY internal/proxy/ internal/proxy/
+# internal/proxy/broker_client.go imports the broker's wire types
+# (paddock.dev/paddock/internal/broker/api) to share request/response
+# schemas with the broker binary without a separate contract package.
+COPY internal/broker/api/ internal/broker/api/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
