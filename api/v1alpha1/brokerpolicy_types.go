@@ -33,6 +33,16 @@ type BrokerPolicySpec struct {
 	// Grants enumerates the capabilities this policy is willing to back.
 	// +kubebuilder:validation:Required
 	Grants BrokerPolicyGrants `json:"grants"`
+
+	// Interception selects the egress-proxy interception mode for runs
+	// governed by this policy. Absent the field admission defaults to
+	// requiring transparent mode; a run whose namespace PSA forbids
+	// NET_ADMIN (baseline/restricted) then fails closed rather than
+	// silently falling back to cooperative. Set
+	// spec.interception.cooperativeAccepted to opt into the weaker mode
+	// with a written reason.
+	// +optional
+	Interception *InterceptionSpec `json:"interception,omitempty"`
 }
 
 // BrokerPolicyGrants enumerates the capabilities a BrokerPolicy backs.
@@ -191,18 +201,55 @@ const (
 	GitRepoAccessWrite GitRepoAccess = "write"
 )
 
-// InterceptionMode names one of the proxy interception strategies. Not
-// currently referenced by BrokerPolicySpec — the v0.3 minInterceptionMode
-// field was removed in v0.4. Kept here as the runtime-internal enum
-// values used by the controller when deciding transparent vs cooperative
-// per-run. A future release (Plan B) replaces this with an explicit
-// spec.interception union on BrokerPolicy.
+// InterceptionMode names one of the proxy interception strategies used
+// at runtime by the reconciler when assembling a HarnessRun's Pod. The
+// user-facing surface is spec.interception (below); this enum is the
+// resolver's internal tag.
 type InterceptionMode string
 
 const (
 	InterceptionModeTransparent InterceptionMode = "transparent"
 	InterceptionModeCooperative InterceptionMode = "cooperative"
 )
+
+// InterceptionSpec selects the egress-proxy interception mode for runs
+// governed by a BrokerPolicy. Exactly one sub-field must be set.
+//
+// transparent (iptables REDIRECT + SO_ORIGINAL_DST) cannot be bypassed
+// from inside the agent container and is the recommended default.
+// cooperativeAccepted (HTTPS_PROXY env) can be bypassed by a hostile
+// or buggy agent unsetting the env vars; it exists for clusters whose
+// Pod Security Admission policy forbids the CAP_NET_ADMIN the iptables
+// init container needs.
+type InterceptionSpec struct {
+	// +optional
+	Transparent *TransparentInterception `json:"transparent,omitempty"`
+	// +optional
+	CooperativeAccepted *CooperativeAcceptedInterception `json:"cooperativeAccepted,omitempty"`
+}
+
+// TransparentInterception is an empty marker that selects transparent
+// mode. No knobs are required; it exists as a distinct sub-field so
+// admission can enforce exactly-one-of semantics with cooperativeAccepted.
+type TransparentInterception struct{}
+
+// CooperativeAcceptedInterception opts the BrokerPolicy into cooperative
+// interception, which is weaker than transparent because an agent can
+// unset HTTPS_PROXY to bypass it. The user documents why that weakening
+// is acceptable in Reason.
+type CooperativeAcceptedInterception struct {
+	// Accepted must be true.
+	// +kubebuilder:validation:Required
+	Accepted bool `json:"accepted"`
+
+	// Reason explains why cooperative interception is necessary instead
+	// of transparent. Typical reasons include cluster PSA=restricted
+	// without a node-level DaemonSet proxy.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=20
+	// +kubebuilder:validation:MaxLength=500
+	Reason string `json:"reason"`
+}
 
 // BrokerPolicyStatus reports the observed state of a BrokerPolicy.
 type BrokerPolicyStatus struct {
