@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.3.0](https://github.com/tjorri/paddock/compare/v0.2.0...v0.3.0) (2026-04-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** replace template.credentials with requires block
+* **api:** add BrokerPolicy + AuditEvent CRDs with webhooks and TTL reaper
+
+### Features
+
+* **api:** add BrokerPolicy + AuditEvent CRDs with webhooks and TTL reaper ([99ca146](https://github.com/tjorri/paddock/commit/99ca1460954ed3851018dbe84bff20d6d9cc4891))
+* **api:** replace template.credentials with requires block ([279ad93](https://github.com/tjorri/paddock/commit/279ad936d514f792c23de585567a6a8ffa5dea82))
+* **broker,proxy:** AnthropicAPIProvider + MITM auth substitution ([93880b7](https://github.com/tjorri/paddock/commit/93880b760630cc251146098e7df4f690a0d1d015))
+* **broker:** deployable broker binary + StaticProvider + audit path ([0c45a68](https://github.com/tjorri/paddock/commit/0c45a68f7383d6b708210eead06c9ae95e0f7631))
+* **broker:** GitHubAppProvider with per-run token reuse ([84a02e6](https://github.com/tjorri/paddock/commit/84a02e63e94117fd73e4ce0ba0115ded1ff00b6d))
+* **broker:** PATPoolProvider — lease-from-pool gitforge credentials ([3d8c021](https://github.com/tjorri/paddock/commit/3d8c02198f273ec7ffd014fa518b8cba3df576ea))
+* **cli:** policy / audit / describe subcommands ([bb04682](https://github.com/tjorri/paddock/commit/bb0468252767a25ea01b5e4754dbb2101d74f196))
+* **controller:** wire admission intersection + broker credential issuance ([94d7847](https://github.com/tjorri/paddock/commit/94d7847b3db323eb9b5094db4b0d260875241b6b))
+* **proxy:** cooperative-mode egress proxy sidecar + run-scoped MITM CA ([6a22ea5](https://github.com/tjorri/paddock/commit/6a22ea5bb32686c1eb3cb9e93b56250481e1b4cd))
+* **proxy:** per-run NetworkPolicy layer with CNI auto-detection ([f09a40d](https://github.com/tjorri/paddock/commit/f09a40d649144a4c7450fb0ad3887cd0585dcb84))
+* **proxy:** transparent-mode interception via iptables-init ([c320a4f](https://github.com/tjorri/paddock/commit/c320a4f6e41e36cffdae6bfcc9c750c06c3fb5a6))
+* **workspace:** broker-backed seed credentials with proxy sidecar ([1ef5809](https://github.com/tjorri/paddock/commit/1ef58091d7bdc79935a656e51eff0ec479a3698e))
+
+
+### Bug Fixes
+
+* **broker:** drop the broken defaultMode on the TLS cert volume ([0637250](https://github.com/tjorri/paddock/commit/0637250d73086da18163247e0becaa7434b8bb59))
+* **kustomize:** scope metrics + webhook patches to the controller-manager Deployment ([174b104](https://github.com/tjorri/paddock/commit/174b104bdcdd44a96f87adddd0fbd6e1a588ea4c))
+* **proxy:** include internal/broker/api in the proxy image build context ([91c4d00](https://github.com/tjorri/paddock/commit/91c4d00fc731d69fe1228c2717640aa9c0591e8b))
+* **rbac:** grant the manager create on auditevents to satisfy escalation checks ([a8674e7](https://github.com/tjorri/paddock/commit/a8674e71735024c5eaa69909585e3679f299ed65))
+* **rbac:** grant the manager get/list/watch on namespaces ([1210422](https://github.com/tjorri/paddock/commit/1210422864c8eb9e915da5c9827bddf870e015d9))
+* **rbac:** grant the manager list/watch on brokerpolicies ([bccc7a0](https://github.com/tjorri/paddock/commit/bccc7a0e5a566606868f0861e4465261c4b7c41d))
+
+
+### Documentation
+
+* spec 0002 + ADRs 0012-0016 for v0.3 broker/proxy ([11dd84b](https://github.com/tjorri/paddock/commit/11dd84b5e8714a8c1a50f23596fe1651baf63f2e))
+* v0.3 refresh — README, CONTRIBUTING, chart README, ADR-0013 fix ([0254a96](https://github.com/tjorri/paddock/commit/0254a9633190effd72d2124a6b15bad463d04d7b))
+
 ## [0.2.0](https://github.com/tjorri/paddock/compare/v0.1.1...v0.2.0) (2026-04-23)
 
 
