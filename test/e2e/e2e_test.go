@@ -154,19 +154,58 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		if os.Getenv("KEEP_E2E_RUN") == "1" {
 			return
 		}
-		// Teardown is best-effort: kind delete cluster obliterates
-		// everything anyway. Wrap each step in a bounded context so a
-		// hung `kubectl delete` (e.g. a finalizer that won't clear)
-		// can't eat the 10-minute ginkgo suite budget and hide the
-		// preceding pass/fail result.
-		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", runNamespace, "--wait=false")
-		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", multiNamespace, "--wait=false")
-		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", v3EgressNamespace, "--wait=false")
-		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", v3BrokerDownNamespace, "--wait=false")
-		runWithTimeout(10*time.Second, "kubectl", "delete", "ns", v3PolicyDelNamespace, "--wait=false")
+		// Teardown order matters: the controller-manager owns two
+		// finalizers (paddock.dev/harnessrun-finalizer and
+		// paddock.dev/workspace-finalizer). If `make undeploy` scales
+		// the controller to zero before it finishes reconciling the
+		// namespace-delete cascade, leftover HarnessRun/Workspace
+		// objects keep their finalizers forever → namespace pins in
+		// Terminating → CRD delete in `kustomize delete` blocks →
+		// undeploy hangs until its runWithTimeout fires.
+		//
+		// Fix: drain tenant state first (namespaces must fully
+		// disappear while the controller is still alive), THEN
+		// undeploy. Force-clearing finalizers is the fallback — it
+		// only fires when the controller genuinely failed to
+		// converge, and emits a loud warning so a regression in the
+		// finalizer loop can't hide behind a green teardown.
+		testNamespaces := []string{
+			runNamespace, multiNamespace,
+			v3EgressNamespace, v3BrokerDownNamespace, v3PolicyDelNamespace,
+		}
+
+		// 1. Kick every namespace's reconcile-delete chain in
+		//    parallel. --wait=false so we can drive our own wait
+		//    loop below and keep the parallelism.
+		for _, ns := range testNamespaces {
+			runWithTimeout(10*time.Second, "kubectl", "delete", "ns", ns,
+				"--wait=false", "--ignore-not-found=true")
+		}
+
+		// 2. Wait for each namespace to fully terminate. Budget per
+		//    ns covers HarnessRun Job delete + Workspace PVC cascade
+		//    with slack. Fallback on timeout → force-clear + warn.
+		for _, ns := range testNamespaces {
+			if waitForNamespaceGone(ns, 60*time.Second) {
+				continue
+			}
+			fmt.Fprintf(GinkgoWriter,
+				"WARNING: namespace %s stuck in Terminating after 60s; "+
+					"controller-side finalizer drain likely broken — force-clearing\n", ns)
+			forceClearFinalizers(ns)
+			// One more short wait so subsequent steps aren't racing
+			// a half-gone namespace; fall through regardless.
+			waitForNamespaceGone(ns, 20*time.Second)
+		}
+
+		// 3. Non-finalizer cluster-scoped resources.
 		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", clusterTemplateName, "--ignore-not-found=true")
 		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3EgressTemplate, "--ignore-not-found=true")
 		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3BrokerDownTemplate, "--ignore-not-found=true")
+
+		// 4. Now safe to kill the controller — no tenant CR needs
+		//    its finalizer reconciled. 90s runWithTimeout remains as
+		//    belt-and-suspenders for any future surprise.
 		runWithTimeout(90*time.Second, "make", "undeploy", "ignore-not-found=true")
 		runWithTimeout(90*time.Second, "make", "uninstall", "ignore-not-found=true")
 	})
@@ -877,6 +916,56 @@ func isRetriableApplyErr(err error) bool {
 		return true
 	}
 	return false
+}
+
+// waitForNamespaceGone polls `kubectl get ns <ns>` until the API
+// server returns NotFound or the budget expires. Returns true on
+// disappearance, false on timeout. Each poll call is bounded by
+// runWithTimeout so a totally unresponsive apiserver can't stall
+// AfterAll past its own deadline.
+//
+// Used by the teardown sequence to wait for the controller's
+// finalizer drain to finish BEFORE `make undeploy` scales it to zero
+// — the alternative (kubectl delete ns --wait with one --timeout per
+// call) serialises the work; this keeps namespace deletions running
+// in parallel and just watches from the outside.
+func waitForNamespaceGone(ns string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := utils.Run(exec.CommandContext(ctx, "kubectl", "get", "ns", ns))
+		cancel()
+		if err != nil && strings.Contains(err.Error(), "not found") {
+			return true
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return false
+}
+
+// forceClearFinalizers is the last-resort fallback for AfterAll —
+// fires only when waitForNamespaceGone times out, which means the
+// controller's reconcile-delete loop failed to converge. Null-patches
+// .metadata.finalizers on every HarnessRun and Workspace in ns so the
+// namespace terminator can finish. Safe in test teardown only — the
+// follow-on `kind delete cluster` reclaims any owned resources the
+// finalizer cleanup would have handled (Job, PVC, Secret).
+//
+// When this runs it's a signal that a controller-side change broke
+// finalizer convergence — the calling AfterAll branch emits a loud
+// warning so the regression doesn't hide behind a green teardown.
+func forceClearFinalizers(ns string) {
+	for _, kind := range []string{"harnessruns", "workspaces"} {
+		out, err := utils.Run(exec.Command("kubectl", "-n", ns, "get", kind,
+			"-o", "jsonpath={.items[*].metadata.name}", "--ignore-not-found"))
+		if err != nil {
+			continue
+		}
+		for _, name := range strings.Fields(strings.TrimSpace(out)) {
+			runWithTimeout(10*time.Second, "kubectl", "-n", ns, "patch", kind, name,
+				"--type=merge", "-p", `{"metadata":{"finalizers":null}}`)
+		}
+	}
 }
 
 // runWithTimeout runs a command via utils.Run under a context with
