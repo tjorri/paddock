@@ -584,15 +584,14 @@ spec:
 					"broker pods still present: %q", strings.TrimSpace(pods))
 			}, 60*time.Second, 2*time.Second).Should(Succeed())
 
-			// Re-scale the broker back to 1 via a defer so that the spec
-			// cleans up after itself even if the subsequent assertions
-			// bail — the broker is shared state across scenarios.
-			defer func() {
-				if _, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-					"scale", "deploy", v3BrokerDeploy, "--replicas=1")); err != nil {
-					fmt.Fprintf(GinkgoWriter, "defer broker re-scale failed: %v\n", err)
-				}
-			}()
+			// Restore broker on exit no matter how the It body returns.
+			// DeferCleanup runs after the It completes (success, Fail,
+			// or panic) and integrates with Ginkgo's reporter, unlike
+			// defer which silently logs on a writer that a SIGKILL
+			// could truncate. restoreBroker asserts loudly — a visible
+			// red here beats a broken broker cascading into Scenario C
+			// and being mis-attributed as a Scenario C flake.
+			DeferCleanup(restoreBroker)
 
 			By("submitting a HarnessRun and expecting Pending/BrokerUnavailable")
 			applyFromYAML(fmt.Sprintf(`
@@ -624,13 +623,8 @@ spec:
 					"BrokerReady.reason=%q (message=%q)", ready.Reason, ready.Message)
 			}, 90*time.Second, 3*time.Second).Should(Succeed())
 
-			By("re-scaling the broker to 1 and waiting for rollout")
-			_, err = utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-				"scale", "deploy", v3BrokerDeploy, "--replicas=1"))
-			Expect(err).NotTo(HaveOccurred())
-			_, err = utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-				"rollout", "status", "deploy/"+v3BrokerDeploy, "--timeout=120s"))
-			Expect(err).NotTo(HaveOccurred())
+			By("re-scaling the broker to 1 and waiting for it to accept traffic")
+			restoreBroker()
 
 			By("expecting the run to reach Succeeded once the broker is back")
 			Eventually(func(g Gomega) {
@@ -645,6 +639,9 @@ spec:
 
 	Context("v0.3 BrokerPolicy deleted mid-run", func() {
 		It("keeps blocking new upstream connections after the policy is deleted", func() {
+			By("confirming Scenario B left the broker serving (pre-check)")
+			requireBrokerHealthy()
+
 			By("creating the policy-delete-scenario namespace")
 			_, err := utils.Run(exec.Command("kubectl", "create", "ns", v3PolicyDelNamespace))
 			Expect(err).NotTo(HaveOccurred())
@@ -655,6 +652,13 @@ spec:
 			// behaviour change; it asserts enforcement continues after
 			// the policy object disappears (spec §8.2: "new connections
 			// blocked within ~10s").
+			//
+			// `grants:` must be present: the CRD schema lists it as a
+			// required field on .spec (see
+			// config/crd/bases/paddock.dev_brokerpolicies.yaml).
+			// Server-side structural validation rejects the object
+			// pre-webhook if the key is absent, so supply an empty
+			// credentials array to satisfy the schema.
 			applyFromYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
@@ -664,6 +668,8 @@ metadata:
 spec:
   appliesToTemplates: ["%s"]
   denyMode: block
+  grants:
+    credentials: []
 `, v3PolicyDelPolicyName, v3PolicyDelNamespace, v3EgressTemplate))
 
 			By("submitting a HarnessRun that loop-probes evil.com while holding the Pod for 45s")
@@ -767,6 +773,51 @@ func findCondition(conds []harnessRunCondition, conditionType string) *harnessRu
 	return nil
 }
 
+// restoreBroker re-scales the paddock-broker Deployment to 1, waits
+// for the rollout, and probes its Endpoints until it's actually
+// serving traffic. Idempotent — safe to call from the scenario body
+// AND from DeferCleanup.
+//
+// All failures are reported with Ginkgo's Fail so restoration problems
+// surface as a clean red instead of silently poisoning the next
+// scenario (the Ordered Describe shares broker state across all specs).
+// The Endpoints probe is symmetric with the pre-check that waits for
+// the pods to disappear during scale-to-zero.
+func restoreBroker() {
+	if _, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+		"scale", "deploy", v3BrokerDeploy, "--replicas=1")); err != nil {
+		Fail(fmt.Sprintf("restoreBroker: scale --replicas=1 failed: %v", err))
+	}
+	if _, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+		"rollout", "status", "deploy/"+v3BrokerDeploy, "--timeout=120s")); err != nil {
+		Fail(fmt.Sprintf("restoreBroker: rollout status failed: %v", err))
+	}
+	Eventually(func(g Gomega) {
+		addrs, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+			"get", "endpoints", v3BrokerDeploy,
+			"-o", "jsonpath={.subsets[*].addresses[*].ip}"))
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(addrs)).NotTo(BeEmpty(),
+			"broker Endpoints has no ready addresses: %q", strings.TrimSpace(addrs))
+	}, 30*time.Second, 2*time.Second).Should(Succeed(),
+		"restoreBroker: broker Endpoints never populated after scale-up")
+}
+
+// requireBrokerHealthy is a cheap pre-check for scenarios that follow
+// Scenario B in the Ordered Describe — if Scenario B's restoreBroker
+// regressed, we want the failure attributed to this assertion rather
+// than masqueraded as a Scenario C flake.
+func requireBrokerHealthy() {
+	EventuallyWithOffset(1, func(g Gomega) {
+		addrs, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+			"get", "endpoints", v3BrokerDeploy,
+			"-o", "jsonpath={.subsets[*].addresses[*].ip}"))
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(strings.TrimSpace(addrs)).NotTo(BeEmpty(),
+			"broker Endpoints empty — did Scenario B's restoreBroker misfire?")
+	}, 30*time.Second, 2*time.Second).Should(Succeed())
+}
+
 // applyFromYAML pipes the given YAML into `kubectl apply -f -`,
 // retrying on transient webhook/apiserver errors for up to applyRetryBudget.
 //
@@ -782,7 +833,9 @@ func applyFromYAML(yaml string) {
 	const applyRetryBudget = 30 * time.Second
 	deadline := time.Now().Add(applyRetryBudget)
 	var lastErr error
+	attempt := 0
 	for {
+		attempt++
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(yaml)
 		_, err := utils.Run(cmd)
@@ -790,6 +843,15 @@ func applyFromYAML(yaml string) {
 			return
 		}
 		lastErr = err
+		// Eager diagnostic: print the kubectl stderr + the YAML body
+		// to GinkgoWriter BEFORE we decide whether to retry. If Go's
+		// test-timeout kills the process later (as it did on CI run
+		// 24875514481), the Ginkgo spec-failure summary never lands in
+		// the log — but streamed `-v` output does. Without this, a
+		// mid-teardown kill leaves operators with no cause.
+		fmt.Fprintf(GinkgoWriter,
+			"kubectl apply attempt %d failed (retriable=%t): %v\nYAML:\n%s\n",
+			attempt, isRetriableApplyErr(err), err, yaml)
 		if !isRetriableApplyErr(err) || time.Now().After(deadline) {
 			break
 		}

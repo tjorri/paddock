@@ -398,12 +398,22 @@ func seedInitContainer(idx int, repo paddockv1alpha1.WorkspaceGitSource, image s
 	case repo.CredentialsSecretRef != nil:
 		credVolName := fmt.Sprintf("repo-%d-creds", idx)
 		credMount := fmt.Sprintf("%s/%d", seedCredsRoot, idx)
+		// 0o440 (owner read + group read) keeps the Secret contents
+		// out of world-readable space while still letting the non-root
+		// seed containers (UID + GID 65532, with FSGroup 65532) read
+		// them. 0o400 happens to work here because fsGroup makes
+		// kubelet remap group bits to match owner bits, but that
+		// rescue is implicit — writing the mode we actually want is
+		// safer against future copy-pastes to pod specs without
+		// fsGroup (cf. the broker TLS cert incident where
+		// defaultMode: 0o420 + no fsGroup = non-root can't read the
+		// cert → every TLS handshake failed with internal_error).
 		volumes = append(volumes, corev1.Volume{
 			Name: credVolName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName:  repo.CredentialsSecretRef.Name,
-					DefaultMode: ptr.To[int32](0o400),
+					DefaultMode: ptr.To[int32](0o440),
 				},
 			},
 		})
