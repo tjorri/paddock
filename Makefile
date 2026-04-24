@@ -83,7 +83,14 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+	@# Timeout budget, aligned with the 20-min CI workflow cap:
+	@#   -timeout=12m       → Go's test binary deadline.
+	@#   -ginkgo.timeout=11m → Ginkgo fails the current spec + prints
+	@#                         the summary ~1 min before Go kills the
+	@#                         process, so CI logs always carry the
+	@#                         real failure reason (spec #24875514481
+	@#                         lost its summary to a Go-timeout panic).
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e -timeout=12m ./test/e2e/ -v -ginkgo.v -ginkgo.timeout=11m
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e

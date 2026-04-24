@@ -155,6 +155,40 @@ var _ = Describe("HarnessRun Webhook", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("admits any update on a terminating HarnessRun (finalizer-clearing path)", func() {
+		// A HarnessRun with DeletionTimestamp set is on the way out —
+		// the controller's reconcile-delete only needs to remove its
+		// finalizer. Running the policy intersection here denies that
+		// update once the BrokerPolicy is gone, pinning the run and
+		// its namespace forever (CI run 24880620880).
+		//
+		// To prove the terminating early-return takes precedence over
+		// later validation, construct a pair where EVERY subsequent
+		// check would reject: spec mutation (immutable-spec rule) +
+		// no prompt source (spec validation rule). With
+		// DeletionTimestamp set the validator must still return nil.
+		now := metav1.Now()
+		oldObj := &paddockv1alpha1.HarnessRun{
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+				Prompt:      "original",
+			},
+		}
+		newObj := &paddockv1alpha1.HarnessRun{
+			ObjectMeta: metav1.ObjectMeta{
+				DeletionTimestamp: &now,
+				Finalizers:        []string{}, // simulating finalizer clear
+			},
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+				// No Prompt — normally fails spec validation. Acts as
+				// a canary that the early-return really is early.
+			},
+		}
+		_, err := validator.ValidateUpdate(ctx, oldObj, newObj)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("rejects spec.extraEnv entries sourced from a Secret", func() {
 		obj := &paddockv1alpha1.HarnessRun{
 			Spec: paddockv1alpha1.HarnessRunSpec{

@@ -79,6 +79,20 @@ func (v *HarnessRunCustomValidator) ValidateCreate(ctx context.Context, run *pad
 func (v *HarnessRunCustomValidator) ValidateUpdate(ctx context.Context, oldRun, newRun *paddockv1alpha1.HarnessRun) (admission.Warnings, error) {
 	harnessrunlog.V(1).Info("validating HarnessRun update", "name", newRun.GetName())
 
+	// Terminating updates must be admitted unconditionally: the only
+	// non-status change the reconciler makes on a deleting HarnessRun
+	// is removing the `paddock.dev/harnessrun-finalizer`, and that
+	// update needs to survive even when the run's BrokerPolicy has
+	// already been deleted. Running the template→policy intersection
+	// here would deny finalizer clearance, pinning the run (and its
+	// namespace) in Terminating forever. Observed in CI run
+	// 24880620880 where AfterAll's kubectl delete ns cascaded the
+	// BrokerPolicy delete before the controller finished processing
+	// the HarnessRun finalizer.
+	if !newRun.DeletionTimestamp.IsZero() {
+		return nil, nil
+	}
+
 	if !reflect.DeepEqual(oldRun.Spec, newRun.Spec) {
 		return nil, fmt.Errorf("spec is immutable: submit a new HarnessRun to change configuration")
 	}
