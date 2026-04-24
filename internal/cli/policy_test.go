@@ -51,9 +51,9 @@ func buildCLIScheme(t *testing.T) *runtime.Scheme {
 }
 
 // claudeCodeTemplate builds an in-ns HarnessTemplate with the same
-// requires shape a real claude-code install would have — one llm
-// credential + one gitforge credential + two egress hosts. Used
-// across the CLI tests so the output shape stays realistic.
+// requires shape a real claude-code install would have — two declared
+// credentials + two egress hosts. Used across the CLI tests so the
+// output shape stays realistic.
 func claudeCodeTemplate(ns string) *paddockv1alpha1.HarnessTemplate {
 	return &paddockv1alpha1.HarnessTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "claude-code", Namespace: ns},
@@ -63,8 +63,8 @@ func claudeCodeTemplate(ns string) *paddockv1alpha1.HarnessTemplate {
 			Command: []string{"/run"},
 			Requires: paddockv1alpha1.RequireSpec{
 				Credentials: []paddockv1alpha1.CredentialRequirement{
-					{Name: "ANTHROPIC_API_KEY", Purpose: paddockv1alpha1.CredentialPurposeLLM},
-					{Name: "GITHUB_TOKEN", Purpose: paddockv1alpha1.CredentialPurposeGitForge},
+					{Name: "ANTHROPIC_API_KEY"},
+					{Name: "GITHUB_TOKEN"},
 				},
 				Egress: []paddockv1alpha1.EgressRequirement{
 					{Host: "api.anthropic.com", Ports: []int32{443}},
@@ -97,31 +97,20 @@ func TestPolicyScaffold_EmitsApplyableYAML(t *testing.T) {
 	if len(bp.Spec.Grants.Credentials) != 2 {
 		t.Fatalf("credential grants = %d, want 2", len(bp.Spec.Grants.Credentials))
 	}
-	// llm → AnthropicAPI, gitforge → GitHubApp.
+	// Without CredentialRequirement.Purpose, the scaffold defaults every
+	// grant to UserSuppliedSecret — operators pick the right provider
+	// kind at apply time.
 	byName := map[string]paddockv1alpha1.CredentialGrant{}
 	for _, g := range bp.Spec.Grants.Credentials {
 		byName[g.Name] = g
 	}
-	if byName["ANTHROPIC_API_KEY"].Provider.Kind != "AnthropicAPI" {
-		t.Errorf("ANTHROPIC_API_KEY.provider = %q, want AnthropicAPI", byName["ANTHROPIC_API_KEY"].Provider.Kind)
-	}
-	if byName["GITHUB_TOKEN"].Provider.Kind != "GitHubApp" {
-		t.Errorf("GITHUB_TOKEN.provider = %q, want GitHubApp", byName["GITHUB_TOKEN"].Provider.Kind)
+	for _, name := range []string{"ANTHROPIC_API_KEY", "GITHUB_TOKEN"} {
+		if byName[name].Provider.Kind != "UserSuppliedSecret" {
+			t.Errorf("%s.provider = %q, want UserSuppliedSecret", name, byName[name].Provider.Kind)
+		}
 	}
 	if len(bp.Spec.Grants.Egress) != 2 {
 		t.Errorf("egress grants = %d, want 2", len(bp.Spec.Grants.Egress))
-	}
-	// Anthropic egress should recommend SubstituteAuth since we have an
-	// llm cred; github egress should recommend it since we have a
-	// gitforge cred.
-	for _, e := range bp.Spec.Grants.Egress {
-		if !e.SubstituteAuth {
-			t.Errorf("egress %s should suggest substituteAuth=true", e.Host)
-		}
-	}
-	// gitforge credential => scaffold must leave a TODO gitRepos entry.
-	if len(bp.Spec.Grants.GitRepos) == 0 {
-		t.Errorf("expected a TODO gitRepos entry for gitforge credential")
 	}
 	// TODO markers should be present so operators know to fill in.
 	if !strings.Contains(got, "TODO") {
@@ -157,10 +146,9 @@ func TestPolicyList_OutputShape(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "allow-claude", Namespace: ns},
 		Spec: paddockv1alpha1.BrokerPolicySpec{
 			AppliesToTemplates: []string{"claude-code"},
-			DenyMode:           paddockv1alpha1.BrokerPolicyDenyModeBlock,
 			Grants: paddockv1alpha1.BrokerPolicyGrants{
 				Credentials: []paddockv1alpha1.CredentialGrant{
-					{Name: "X", Provider: paddockv1alpha1.ProviderConfig{Kind: "Static"}},
+					{Name: "X", Provider: paddockv1alpha1.ProviderConfig{Kind: "UserSuppliedSecret"}},
 				},
 				Egress: []paddockv1alpha1.EgressGrant{
 					{Host: "api.anthropic.com", Ports: []int32{443}},
@@ -175,8 +163,8 @@ func TestPolicyList_OutputShape(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 	got := buf.String()
-	wants := []string{"NAME", "TEMPLATES", "CREDENTIALS", "EGRESS", "GIT-REPOS", "DENY-MODE", "AGE",
-		"allow-claude", "claude-code", "block"}
+	wants := []string{"NAME", "TEMPLATES", "CREDENTIALS", "EGRESS", "GIT-REPOS", "AGE",
+		"allow-claude", "claude-code"}
 	for _, w := range wants {
 		if !strings.Contains(got, w) {
 			t.Errorf("list output missing %q; got:\n%s", w, got)

@@ -75,8 +75,8 @@ func newPolicyScaffoldCmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.provider, "provider", "",
-		"Default provider kind for credential grants (Static, AnthropicAPI, GitHubApp, PATPool). "+
-			"When unset, the scaffold picks a sensible default per purpose and leaves a TODO.")
+		"Default provider kind for credential grants (UserSuppliedSecret, AnthropicAPI, GitHubApp, PATPool). "+
+			"When unset, the scaffold defaults to UserSuppliedSecret and leaves a TODO.")
 	cmd.Flags().StringVar(&opts.name, "name", "",
 		"BrokerPolicy metadata.name. Defaults to allow-<template>.")
 	return cmd
@@ -130,15 +130,13 @@ func buildScaffoldPolicy(name, namespace, templateName string, req paddockv1alph
 		},
 		Spec: paddockv1alpha1.BrokerPolicySpec{
 			AppliesToTemplates: []string{templateName},
-			DenyMode:           paddockv1alpha1.BrokerPolicyDenyModeBlock,
-			BrokerFailureMode:  paddockv1alpha1.BrokerFailureModeClosed,
 		},
 	}
 
 	for _, c := range req.Credentials {
 		kind := providerOverride
 		if kind == "" {
-			kind = defaultProviderKindForPurpose(c.Purpose)
+			kind = "UserSuppliedSecret"
 		}
 		grant := paddockv1alpha1.CredentialGrant{
 			Name: c.Name,
@@ -163,36 +161,11 @@ func buildScaffoldPolicy(name, namespace, templateName string, req paddockv1alph
 			ports = []int32{443}
 		}
 		bp.Spec.Grants.Egress = append(bp.Spec.Grants.Egress, paddockv1alpha1.EgressGrant{
-			Host:           e.Host,
-			Ports:          ports,
-			SubstituteAuth: suggestSubstituteAuthFor(e.Host, req.Credentials),
+			Host:  e.Host,
+			Ports: ports,
 		})
 	}
-
-	// When the template declares gitforge credentials, leave a placeholder
-	// gitRepos entry so the operator knows where to add scope.
-	for _, c := range req.Credentials {
-		if c.Purpose == paddockv1alpha1.CredentialPurposeGitForge {
-			bp.Spec.Grants.GitRepos = []paddockv1alpha1.GitRepoGrant{{
-				Owner: "TODO-owner", Repo: "TODO-repo", Access: paddockv1alpha1.GitRepoAccessRead,
-			}}
-			break
-		}
-	}
 	return bp
-}
-
-// defaultProviderKindForPurpose picks the most likely provider for a
-// declared purpose. Operators override via --provider.
-func defaultProviderKindForPurpose(p paddockv1alpha1.CredentialPurpose) string {
-	switch p {
-	case paddockv1alpha1.CredentialPurposeLLM:
-		return "AnthropicAPI"
-	case paddockv1alpha1.CredentialPurposeGitForge:
-		return "GitHubApp"
-	default:
-		return "Static"
-	}
 }
 
 // defaultSecretKeyForProviderKind returns the Secret-data key each
@@ -208,29 +181,6 @@ func defaultSecretKeyForProviderKind(kind string) string {
 	default:
 		return "value"
 	}
-}
-
-// suggestSubstituteAuthFor recommends SubstituteAuth=true on egress
-// hosts that line up with a credential the MITM proxy knows how to
-// swap at request time. Conservative defaults — the operator can flip
-// it on for other hosts.
-func suggestSubstituteAuthFor(host string, creds []paddockv1alpha1.CredentialRequirement) bool {
-	host = strings.ToLower(host)
-	if strings.Contains(host, "anthropic.com") {
-		for _, c := range creds {
-			if c.Purpose == paddockv1alpha1.CredentialPurposeLLM {
-				return true
-			}
-		}
-	}
-	if strings.Contains(host, "github.com") || strings.Contains(host, "githubusercontent.com") {
-		for _, c := range creds {
-			if c.Purpose == paddockv1alpha1.CredentialPurposeGitForge {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // ---------- policy list ----------------------------------------------
@@ -255,21 +205,16 @@ func runPolicyList(ctx context.Context, c client.Client, ns string, out io.Write
 		return fmt.Errorf("listing BrokerPolicies in %s: %w", ns, err)
 	}
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tTEMPLATES\tCREDENTIALS\tEGRESS\tGIT-REPOS\tDENY-MODE\tAGE")
+	fmt.Fprintln(tw, "NAME\tTEMPLATES\tCREDENTIALS\tEGRESS\tGIT-REPOS\tAGE")
 	items := append([]paddockv1alpha1.BrokerPolicy{}, list.Items...)
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	for _, bp := range items {
-		deny := string(bp.Spec.DenyMode)
-		if deny == "" {
-			deny = string(paddockv1alpha1.BrokerPolicyDenyModeBlock)
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\t%s\n",
 			bp.Name,
 			strings.Join(bp.Spec.AppliesToTemplates, ","),
 			len(bp.Spec.Grants.Credentials),
 			len(bp.Spec.Grants.Egress),
 			len(bp.Spec.Grants.GitRepos),
-			deny,
 			age(bp.CreationTimestamp))
 	}
 	return tw.Flush()
@@ -346,11 +291,7 @@ func printPolicyCheck(out io.Writer, templateName, source, namespace string, res
 	if len(result.MissingCredentials) > 0 {
 		fmt.Fprintln(out, "Missing credentials:")
 		for _, s := range result.MissingCredentials {
-			purpose := s.Purpose
-			if purpose == "" {
-				purpose = paddockv1alpha1.CredentialPurposeGeneric
-			}
-			fmt.Fprintf(out, "  - %s (purpose: %s)\n", s.Name, purpose)
+			fmt.Fprintf(out, "  - %s\n", s.Name)
 		}
 	}
 	if len(result.MissingEgress) > 0 {
