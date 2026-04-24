@@ -69,7 +69,7 @@ func buildScheme(t *testing.T) *runtime.Scheme {
 
 // setup builds a Server wired to a fake client seeded with a run, its
 // template, a BrokerPolicy granting the named credential via
-// StaticProvider, and the backing Secret.
+// UserSuppliedSecretProvider (InContainer delivery), and the backing Secret.
 func setup(t *testing.T) (*broker.Server, client.Client) {
 	t.Helper()
 	const ns = "my-team"
@@ -102,8 +102,14 @@ func setup(t *testing.T) (*broker.Server, client.Client) {
 				Credentials: []paddockv1alpha1.CredentialGrant{{
 					Name: "DEMO_TOKEN",
 					Provider: paddockv1alpha1.ProviderConfig{
-						Kind:      "Static",
+						Kind:      "UserSuppliedSecret",
 						SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "demo", Key: "token"},
+						DeliveryMode: &paddockv1alpha1.DeliveryMode{
+							InContainer: &paddockv1alpha1.InContainerDelivery{
+								Accepted: true,
+								Reason:   "test fixture: direct secret delivery",
+							},
+						},
 					},
 				}},
 			},
@@ -119,7 +125,7 @@ func setup(t *testing.T) (*broker.Server, client.Client) {
 		WithObjects(tpl, run, bp, secret).
 		Build()
 
-	registry, err := providers.NewRegistry(&providers.StaticProvider{Client: c})
+	registry, err := providers.NewRegistry(&providers.UserSuppliedSecretProvider{Client: c})
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
@@ -163,8 +169,8 @@ func TestIssue_Success(t *testing.T) {
 	if got.Value != "super-secret" {
 		t.Fatalf("Value = %q, want super-secret", got.Value)
 	}
-	if got.Provider != "Static" {
-		t.Fatalf("Provider = %q, want Static", got.Provider)
+	if got.Provider != "UserSuppliedSecret" {
+		t.Fatalf("Provider = %q, want UserSuppliedSecret", got.Provider)
 	}
 
 	// AuditEvent with kind=credential-issued should have been written.

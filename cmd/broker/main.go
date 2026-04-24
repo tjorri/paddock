@@ -141,7 +141,7 @@ func main() {
 	}
 
 	registry, err := providers.NewRegistry(
-		&providers.StaticProvider{Client: cachedClient},
+		&providers.UserSuppliedSecretProvider{Client: cachedClient},
 		&providers.AnthropicAPIProvider{Client: cachedClient},
 		&providers.GitHubAppProvider{Client: cachedClient},
 		&providers.PATPoolProvider{Client: cachedClient},

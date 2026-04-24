@@ -34,7 +34,7 @@ import (
 	"paddock.dev/paddock/internal/broker/providers"
 )
 
-// setupAnthropic builds a broker wired to StaticProvider + AnthropicAPIProvider
+// setupAnthropic builds a broker wired to UserSuppliedSecretProvider + AnthropicAPIProvider
 // with an anthropic-api Secret, a BrokerPolicy granting the LLM credential,
 // and an egress grant for api.anthropic.com:443.
 func setupAnthropic(t *testing.T) (*broker.Server, *providers.AnthropicAPIProvider) {
@@ -91,7 +91,7 @@ func setupAnthropic(t *testing.T) (*broker.Server, *providers.AnthropicAPIProvid
 		WithObjects(tpl, run, bp, secret).Build()
 
 	ap := &providers.AnthropicAPIProvider{Client: c}
-	registry, err := providers.NewRegistry(&providers.StaticProvider{Client: c}, ap)
+	registry, err := providers.NewRegistry(&providers.UserSuppliedSecretProvider{Client: c}, ap)
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
