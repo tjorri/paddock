@@ -1,12 +1,12 @@
 # Example BrokerPolicy granting a claude-code-style template a
-# gitforge credential backed by a GitHub App.
+# git credential backed by a GitHub App.
 #
 # The operator installs a GitHub App (https://docs.github.com/apps) and
 # stores its private key in a Secret. The broker uses App ID + the
 # installation's numeric ID + the private key to mint short-lived
 # installation tokens scoped to the gitRepos list below.
 #
-# See ADR-0015 (Provider interface) and spec 0002 §6.3.
+# See ADR-0015 (Provider interface) and spec 0003 §3.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -28,8 +28,6 @@ metadata:
   namespace: default
 spec:
   appliesToTemplates: ["claude-code"]
-  denyMode: block
-  brokerFailureMode: Closed
   grants:
     credentials:
       - name: GITHUB_TOKEN
@@ -52,12 +50,11 @@ spec:
       - owner: my-org
         repo: shared-libs
         access: read
-    # git HTTPS to github.com flows through the proxy with
-    # substituteAuth=true so upstream never sees the Paddock bearer.
+    # git HTTPS to github.com flows through the proxy — the GitHubApp
+    # provider injects the minted installation token on its built-in
+    # host set, so upstream never sees the Paddock bearer.
     egress:
       - host: github.com
         ports: [443]
-        substituteAuth: true
       - host: api.github.com
         ports: [443]
-        substituteAuth: true

@@ -30,6 +30,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"paddock.dev/paddock/internal/broker/providers"
 )
 
 // substitutingValidator mirrors the shape the BrokerClient will have at
@@ -63,11 +65,11 @@ type recordingSubstituter struct {
 	seenHeaders http.Header
 }
 
-func (r *recordingSubstituter) SubstituteAuth(_ context.Context, _ string, _ int, headers http.Header) (SubstitutionResult, error) {
+func (r *recordingSubstituter) SubstituteAuth(_ context.Context, _ string, _ int, headers http.Header) (providers.SubstituteResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seenHeaders = headers.Clone()
-	return SubstitutionResult{
+	return providers.SubstituteResult{
 		SetHeaders:    map[string]string{"x-api-key": r.realKey},
 		RemoveHeaders: []string{"Authorization"},
 	}, nil
@@ -174,8 +176,8 @@ func TestProxy_SubstituteAuthErrorDropsConnection(t *testing.T) {
 	certPEM, keyPEM := generateTestCA(t)
 	ca, _ := NewMITMCertificateAuthority(certPEM, keyPEM)
 
-	failSub := subFunc(func(_ context.Context, _ string, _ int, _ http.Header) (SubstitutionResult, error) {
-		return SubstitutionResult{}, errors.New("simulated broker denial")
+	failSub := subFunc(func(_ context.Context, _ string, _ int, _ http.Header) (providers.SubstituteResult, error) {
+		return providers.SubstituteResult{}, errors.New("simulated broker denial")
 	})
 
 	srv := &Server{
@@ -203,9 +205,9 @@ func TestProxy_SubstituteAuthErrorDropsConnection(t *testing.T) {
 
 // subFunc is a one-liner adapter used by tests that supply a
 // one-shot Substituter implementation.
-type subFunc func(context.Context, string, int, http.Header) (SubstitutionResult, error)
+type subFunc func(context.Context, string, int, http.Header) (providers.SubstituteResult, error)
 
-func (f subFunc) SubstituteAuth(ctx context.Context, host string, port int, headers http.Header) (SubstitutionResult, error) {
+func (f subFunc) SubstituteAuth(ctx context.Context, host string, port int, headers http.Header) (providers.SubstituteResult, error) {
 	return f(ctx, host, port, headers)
 }
 
@@ -226,4 +228,37 @@ func (b *stringBody) Read(p []byte) (int, error) {
 	n := copy(p, b.s[b.i:])
 	b.i += n
 	return n, nil
+}
+
+func TestApplySubstitution_QueryParam(t *testing.T) {
+	req, _ := http.NewRequest("GET", "https://api.example.com/v1/thing?access_token=pdk-usersecret-abc&other=keep", nil)
+	res := providers.SubstituteResult{
+		Matched:       true,
+		SetQueryParam: map[string]string{"access_token": "real-token"},
+	}
+	applySubstitutionToRequest(req, res)
+	q := req.URL.Query()
+	if q.Get("access_token") != "real-token" {
+		t.Fatalf("access_token: got %q, want real-token", q.Get("access_token"))
+	}
+	if q.Get("other") != "keep" {
+		t.Fatalf("other: got %q, want keep", q.Get("other"))
+	}
+}
+
+func TestApplySubstitution_BasicAuth(t *testing.T) {
+	req, _ := http.NewRequest("GET", "https://api.example.com/repo.git", nil)
+	req.Header.Set("Authorization", "Bearer pdk-usersecret-abc")
+	res := providers.SubstituteResult{
+		Matched:      true,
+		SetBasicAuth: &providers.BasicAuth{Username: "oauth2", Password: "real-pat"},
+	}
+	applySubstitutionToRequest(req, res)
+	u, pw, ok := req.BasicAuth()
+	if !ok {
+		t.Fatal("expected BasicAuth to be set")
+	}
+	if u != "oauth2" || pw != "real-pat" {
+		t.Fatalf("BasicAuth: got (%q,%q), want (oauth2,real-pat)", u, pw)
+	}
 }

@@ -55,8 +55,7 @@ type IntersectionResult struct {
 
 // CredentialShortfall names a required credential that no policy granted.
 type CredentialShortfall struct {
-	Name    string
-	Purpose paddockv1alpha1.CredentialPurpose
+	Name string
 }
 
 // EgressShortfall names a (host, port) tuple no policy covered. Port
@@ -76,10 +75,9 @@ type CoveredCredential struct {
 
 // ListMatchingPolicies returns the BrokerPolicies in namespace whose
 // appliesToTemplates selects templateName. Kept separate from Intersect
-// because the interception-mode floor check (ADR-0013 §26) consumes
-// the same list, and sharing the code prevents admission-path
-// discrepancies between "what policies matched for credentials" and
-// "what policies matched for mode floor".
+// so runtime callers (e.g. the interception-mode resolver) can reuse
+// the same appliesToTemplates filter without re-running the full
+// requires intersection.
 func ListMatchingPolicies(ctx context.Context, c client.Client, namespace, templateName string) ([]*paddockv1alpha1.BrokerPolicy, error) {
 	var policies paddockv1alpha1.BrokerPolicyList
 	if err := c.List(ctx, &policies, client.InNamespace(namespace)); err != nil {
@@ -130,7 +128,7 @@ func Intersect(ctx context.Context, c client.Client, namespace, templateName str
 		if cov == nil {
 			result.Admitted = false
 			result.MissingCredentials = append(result.MissingCredentials, CredentialShortfall{
-				Name: cred.Name, Purpose: cred.Purpose,
+				Name: cred.Name,
 			})
 			continue
 		}
@@ -162,11 +160,7 @@ func DescribeShortfall(result *IntersectionResult, templateName, namespace strin
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "template %q requires capabilities not granted in namespace %q:\n", templateName, namespace)
 	for _, c := range result.MissingCredentials {
-		purpose := c.Purpose
-		if purpose == "" {
-			purpose = paddockv1alpha1.CredentialPurposeGeneric
-		}
-		fmt.Fprintf(&sb, "  - credential: %s (purpose: %s)\n", c.Name, purpose)
+		fmt.Fprintf(&sb, "  - credential: %s\n", c.Name)
 	}
 	for _, e := range result.MissingEgress {
 		if e.Port == 0 {

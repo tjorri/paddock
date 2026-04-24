@@ -109,13 +109,9 @@ func printTemplateDescription(out io.Writer, name, source, namespace string, spe
 		fmt.Fprintln(out, "Requires:")
 		if len(spec.Requires.Credentials) > 0 {
 			tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "  CREDENTIAL\tPURPOSE")
+			fmt.Fprintln(tw, "  CREDENTIAL")
 			for _, c := range spec.Requires.Credentials {
-				purpose := c.Purpose
-				if purpose == "" {
-					purpose = paddockv1alpha1.CredentialPurposeGeneric
-				}
-				fmt.Fprintf(tw, "  %s\t%s\n", c.Name, purpose)
+				fmt.Fprintf(tw, "  %s\n", c.Name)
 			}
 			tw.Flush()
 		}
@@ -147,11 +143,7 @@ func printTemplateDescription(out io.Writer, name, source, namespace string, spe
 		fmt.Fprintln(out, "Shortfall:")
 		if len(result.MissingCredentials) > 0 {
 			for _, s := range result.MissingCredentials {
-				purpose := s.Purpose
-				if purpose == "" {
-					purpose = paddockv1alpha1.CredentialPurposeGeneric
-				}
-				fmt.Fprintf(out, "  - missing credential %s (purpose: %s)\n", s.Name, purpose)
+				fmt.Fprintf(out, "  - missing credential %s\n", s.Name)
 			}
 		}
 		for _, s := range result.MissingEgress {

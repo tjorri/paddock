@@ -91,13 +91,6 @@ var (
 
 func (p *AnthropicAPIProvider) Name() string { return "AnthropicAPI" }
 
-// Purposes: AnthropicAPI backs LLM credentials only. Attempting to use
-// it for a gitforge/generic credential fails admission (the broker's
-// providerBacksPurpose check rejects the grant).
-func (p *AnthropicAPIProvider) Purposes() []paddockv1alpha1.CredentialPurpose {
-	return []paddockv1alpha1.CredentialPurpose{paddockv1alpha1.CredentialPurposeLLM}
-}
-
 // Issue verifies the backing Secret is readable, mints a fresh opaque
 // bearer, and records the lease. The agent receives Value; the real
 // API key never leaves the broker until SubstituteAuth.

@@ -34,9 +34,9 @@ import (
 	"paddock.dev/paddock/internal/broker/providers"
 )
 
-// setupAnthropic builds a broker wired to StaticProvider + AnthropicAPIProvider
+// setupAnthropic builds a broker wired to UserSuppliedSecretProvider + AnthropicAPIProvider
 // with an anthropic-api Secret, a BrokerPolicy granting the LLM credential,
-// and an egress grant for api.anthropic.com:443 with substituteAuth=true.
+// and an egress grant for api.anthropic.com:443.
 func setupAnthropic(t *testing.T) (*broker.Server, *providers.AnthropicAPIProvider) {
 	t.Helper()
 	const ns = "my-team"
@@ -49,7 +49,7 @@ func setupAnthropic(t *testing.T) (*broker.Server, *providers.AnthropicAPIProvid
 			Command: []string{"/run"},
 			Requires: paddockv1alpha1.RequireSpec{
 				Credentials: []paddockv1alpha1.CredentialRequirement{
-					{Name: "ANTHROPIC_API_KEY", Purpose: paddockv1alpha1.CredentialPurposeLLM},
+					{Name: "ANTHROPIC_API_KEY"},
 				},
 				Egress: []paddockv1alpha1.EgressRequirement{
 					{Host: "api.anthropic.com", Ports: []int32{443}},
@@ -77,7 +77,7 @@ func setupAnthropic(t *testing.T) (*broker.Server, *providers.AnthropicAPIProvid
 					},
 				}},
 				Egress: []paddockv1alpha1.EgressGrant{{
-					Host: "api.anthropic.com", Ports: []int32{443}, SubstituteAuth: true,
+					Host: "api.anthropic.com", Ports: []int32{443},
 				}},
 			},
 		},
@@ -91,7 +91,7 @@ func setupAnthropic(t *testing.T) (*broker.Server, *providers.AnthropicAPIProvid
 		WithObjects(tpl, run, bp, secret).Build()
 
 	ap := &providers.AnthropicAPIProvider{Client: c}
-	registry, err := providers.NewRegistry(&providers.StaticProvider{Client: c}, ap)
+	registry, err := providers.NewRegistry(&providers.UserSuppliedSecretProvider{Client: c}, ap)
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
@@ -133,9 +133,6 @@ func TestValidateEgress_Allow(t *testing.T) {
 	if got.MatchedPolicy != "allow-cc" {
 		t.Fatalf("MatchedPolicy = %q, want allow-cc", got.MatchedPolicy)
 	}
-	if !got.SubstituteAuth {
-		t.Fatalf("SubstituteAuth = false, want true")
-	}
 }
 
 func TestValidateEgress_Deny(t *testing.T) {
@@ -158,7 +155,6 @@ func TestSubstituteAuth_Success(t *testing.T) {
 	// Issue a bearer first.
 	issued, err := ap.Issue(context.Background(), providers.IssueRequest{
 		RunName: "cc-1", Namespace: "my-team", CredentialName: "ANTHROPIC_API_KEY",
-		Purpose: paddockv1alpha1.CredentialPurposeLLM,
 		Grant: paddockv1alpha1.CredentialGrant{
 			Name: "ANTHROPIC_API_KEY",
 			Provider: paddockv1alpha1.ProviderConfig{

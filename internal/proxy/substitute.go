@@ -24,6 +24,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"paddock.dev/paddock/internal/broker/providers"
 )
 
 // Substituter rewrites outbound request headers just before the proxy
@@ -34,17 +36,7 @@ import (
 // forward the agent's Paddock-issued bearer upstream (spec 0002 §7.1
 // "no credential reaches upstream except through the broker").
 type Substituter interface {
-	SubstituteAuth(ctx context.Context, host string, port int, headers http.Header) (SubstitutionResult, error)
-}
-
-// SubstitutionResult is the broker's instruction to the proxy for a
-// single request. SetHeaders overrides (case-insensitive); RemoveHeaders
-// drops headers outright. The proxy applies Remove before Set, so a
-// substitution can both clear an incoming Authorization and then add a
-// new x-api-key.
-type SubstitutionResult struct {
-	SetHeaders    map[string]string
-	RemoveHeaders []string
+	SubstituteAuth(ctx context.Context, host string, port int, headers http.Header) (providers.SubstituteResult, error)
 }
 
 // handleSubstituted terminates TLS with the client, and then for each
@@ -100,12 +92,7 @@ func handleSubstituted(
 			if err != nil {
 				return fmt.Errorf("substitute-auth: %w", err)
 			}
-			for _, h := range result.RemoveHeaders {
-				req.Header.Del(h)
-			}
-			for k, v := range result.SetHeaders {
-				req.Header.Set(k, v)
-			}
+			applySubstitutionToRequest(req, result)
 		}
 
 		// Forward. req.Write emits the request in wire form including
@@ -131,6 +118,31 @@ func handleSubstituted(
 		if req.Close || resp.Close || !keepAliveEnabled(req, resp) {
 			return nil
 		}
+	}
+}
+
+// applySubstitutionToRequest mutates req in place according to the
+// broker's SubstituteResult. RemoveHeaders is applied first so that
+// SetHeaders and SetBasicAuth can cleanly overwrite whatever the agent
+// presented. SetQueryParam rewrites URL query parameters before the
+// request is forwarded upstream.
+func applySubstitutionToRequest(req *http.Request, res providers.SubstituteResult) {
+	for _, h := range res.RemoveHeaders {
+		req.Header.Del(h)
+	}
+	for k, v := range res.SetHeaders {
+		req.Header.Set(k, v)
+	}
+	if len(res.SetQueryParam) > 0 {
+		q := req.URL.Query()
+		for k, v := range res.SetQueryParam {
+			q.Set(k, v)
+		}
+		req.URL.RawQuery = q.Encode()
+	}
+	if res.SetBasicAuth != nil {
+		req.Header.Del("Authorization")
+		req.SetBasicAuth(res.SetBasicAuth.Username, res.SetBasicAuth.Password)
 	}
 }
 

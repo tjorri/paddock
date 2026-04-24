@@ -54,7 +54,6 @@ type CredentialAudit struct {
 	RunName        string
 	Namespace      string
 	CredentialName string
-	Purpose        paddockv1alpha1.CredentialPurpose
 	Provider       string
 	MatchedPolicy  string
 	Reason         string
@@ -84,7 +83,6 @@ func (e CredentialAudit) buildEvent(decision paddockv1alpha1.AuditDecision, kind
 			Credential: &paddockv1alpha1.AuditCredentialRef{
 				Name:     e.CredentialName,
 				Provider: e.Provider,
-				Purpose:  string(e.Purpose),
 			},
 		},
 	}

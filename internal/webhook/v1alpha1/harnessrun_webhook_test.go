@@ -244,7 +244,7 @@ var _ = Describe("HarnessRun Webhook", func() {
 					Command: []string{"/bin/echo"},
 					Requires: paddockv1alpha1.RequireSpec{
 						Credentials: []paddockv1alpha1.CredentialRequirement{{
-							Name: "TOKEN", Purpose: paddockv1alpha1.CredentialPurposeGeneric,
+							Name: "TOKEN",
 						}},
 					},
 				},
@@ -304,7 +304,7 @@ var _ = Describe("HarnessRun Webhook", func() {
 					Harness: "echo", Image: "paddock-echo:v1", Command: []string{"/bin/echo"},
 					Requires: paddockv1alpha1.RequireSpec{
 						Credentials: []paddockv1alpha1.CredentialRequirement{{
-							Name: "DEMO_TOKEN", Purpose: paddockv1alpha1.CredentialPurposeGeneric,
+							Name: "DEMO_TOKEN",
 						}},
 					},
 				},
@@ -319,8 +319,14 @@ var _ = Describe("HarnessRun Webhook", func() {
 						Credentials: []paddockv1alpha1.CredentialGrant{{
 							Name: "DEMO_TOKEN",
 							Provider: paddockv1alpha1.ProviderConfig{
-								Kind:      "Static",
+								Kind:      "UserSuppliedSecret",
 								SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+								DeliveryMode: &paddockv1alpha1.DeliveryMode{
+									InContainer: &paddockv1alpha1.InContainerDelivery{
+										Accepted: true,
+										Reason:   "Test fixture — agent reads the value directly",
+									},
+								},
 							},
 						}},
 					},

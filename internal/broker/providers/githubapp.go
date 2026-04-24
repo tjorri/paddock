@@ -144,13 +144,6 @@ var (
 
 func (p *GitHubAppProvider) Name() string { return "GitHubApp" }
 
-// Purposes: GitHubAppProvider only backs gitforge credentials. The
-// admission algorithm rejects any grant that uses this provider for a
-// non-gitforge requirement.
-func (p *GitHubAppProvider) Purposes() []paddockv1alpha1.CredentialPurpose {
-	return []paddockv1alpha1.CredentialPurpose{paddockv1alpha1.CredentialPurposeGitForge}
-}
-
 // Issue validates the provider configuration, mints a fresh opaque
 // bearer, records the lease, and returns the bearer to the caller.
 // The actual installation-token fetch is deferred to the first

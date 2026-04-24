@@ -69,7 +69,7 @@ func buildScheme(t *testing.T) *runtime.Scheme {
 
 // setup builds a Server wired to a fake client seeded with a run, its
 // template, a BrokerPolicy granting the named credential via
-// StaticProvider, and the backing Secret.
+// UserSuppliedSecretProvider (InContainer delivery), and the backing Secret.
 func setup(t *testing.T) (*broker.Server, client.Client) {
 	t.Helper()
 	const ns = "my-team"
@@ -82,7 +82,7 @@ func setup(t *testing.T) (*broker.Server, client.Client) {
 			Command: []string{"/bin/echo"},
 			Requires: paddockv1alpha1.RequireSpec{
 				Credentials: []paddockv1alpha1.CredentialRequirement{
-					{Name: "DEMO_TOKEN", Purpose: paddockv1alpha1.CredentialPurposeGeneric},
+					{Name: "DEMO_TOKEN"},
 				},
 			},
 		},
@@ -102,8 +102,14 @@ func setup(t *testing.T) (*broker.Server, client.Client) {
 				Credentials: []paddockv1alpha1.CredentialGrant{{
 					Name: "DEMO_TOKEN",
 					Provider: paddockv1alpha1.ProviderConfig{
-						Kind:      "Static",
+						Kind:      "UserSuppliedSecret",
 						SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "demo", Key: "token"},
+						DeliveryMode: &paddockv1alpha1.DeliveryMode{
+							InContainer: &paddockv1alpha1.InContainerDelivery{
+								Accepted: true,
+								Reason:   "test fixture: direct secret delivery",
+							},
+						},
 					},
 				}},
 			},
@@ -119,7 +125,7 @@ func setup(t *testing.T) (*broker.Server, client.Client) {
 		WithObjects(tpl, run, bp, secret).
 		Build()
 
-	registry, err := providers.NewRegistry(&providers.StaticProvider{Client: c})
+	registry, err := providers.NewRegistry(&providers.UserSuppliedSecretProvider{Client: c})
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
@@ -163,8 +169,18 @@ func TestIssue_Success(t *testing.T) {
 	if got.Value != "super-secret" {
 		t.Fatalf("Value = %q, want super-secret", got.Value)
 	}
-	if got.Provider != "Static" {
-		t.Fatalf("Provider = %q, want Static", got.Provider)
+	if got.Provider != "UserSuppliedSecret" {
+		t.Fatalf("Provider = %q, want UserSuppliedSecret", got.Provider)
+	}
+	// The setup fixture uses UserSuppliedSecret + InContainer delivery.
+	if got.DeliveryMode != "InContainer" {
+		t.Fatalf("DeliveryMode = %q, want InContainer", got.DeliveryMode)
+	}
+	if len(got.Hosts) != 0 {
+		t.Fatalf("Hosts = %v, want empty for InContainer", got.Hosts)
+	}
+	if got.InContainerReason != "test fixture: direct secret delivery" {
+		t.Fatalf("InContainerReason = %q", got.InContainerReason)
 	}
 
 	// AuditEvent with kind=credential-issued should have been written.
@@ -177,6 +193,131 @@ func TestIssue_Success(t *testing.T) {
 	}
 	if aes.Items[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialIssued {
 		t.Fatalf("audit kind = %q, want credential-issued", aes.Items[0].Spec.Kind)
+	}
+}
+
+// TestIssue_Success_ProxyInjectedHosts swaps the setup fixture's grant
+// for a UserSuppliedSecret+ProxyInjected grant and asserts the response
+// carries the ProxyInjected delivery mode plus the grant's host list.
+func TestIssue_Success_ProxyInjectedHosts(t *testing.T) {
+	srv, c := setup(t)
+
+	// Replace the in-cluster BrokerPolicy's credential grant with a
+	// ProxyInjected delivery over a specific host list.
+	var bp paddockv1alpha1.BrokerPolicy
+	if err := c.Get(context.Background(),
+		client.ObjectKey{Name: "allow-echo", Namespace: "my-team"}, &bp); err != nil {
+		t.Fatalf("get bp: %v", err)
+	}
+	bp.Spec.Grants.Credentials[0].Provider.DeliveryMode = &paddockv1alpha1.DeliveryMode{
+		ProxyInjected: &paddockv1alpha1.ProxyInjectedDelivery{
+			Hosts:  []string{"api.example.com"},
+			Header: &paddockv1alpha1.HeaderSubstitution{Name: "Authorization", ValuePrefix: "Bearer "},
+		},
+	}
+	if err := c.Update(context.Background(), &bp); err != nil {
+		t.Fatalf("update bp: %v", err)
+	}
+
+	body, _ := json.Marshal(brokerapi.IssueRequest{Name: "DEMO_TOKEN"})
+	rr := post(t, srv, "hello", "", "token-abc", string(body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got brokerapi.IssueResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.DeliveryMode != "ProxyInjected" {
+		t.Fatalf("DeliveryMode = %q, want ProxyInjected", got.DeliveryMode)
+	}
+	if len(got.Hosts) != 1 || got.Hosts[0] != "api.example.com" {
+		t.Fatalf("Hosts = %v, want [api.example.com]", got.Hosts)
+	}
+	if got.InContainerReason != "" {
+		t.Fatalf("InContainerReason = %q, want empty", got.InContainerReason)
+	}
+}
+
+// TestIssue_Success_AnthropicAPI asserts the response carries the
+// built-in AnthropicAPI defaults (ProxyInjected + [api.anthropic.com])
+// when the grant doesn't override Hosts.
+func TestIssue_Success_AnthropicAPI(t *testing.T) {
+	const ns = "my-team"
+
+	tpl := &paddockv1alpha1.HarnessTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessTemplateSpec{
+			Harness: "echo",
+			Image:   "paddock-echo:v1",
+			Command: []string{"/bin/echo"},
+			Requires: paddockv1alpha1.RequireSpec{
+				Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "ANTHROPIC"}},
+			},
+		},
+	}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hello", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Prompt:      "hi",
+		},
+	}
+	bp := &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "allow-anthropic", Namespace: ns},
+		Spec: paddockv1alpha1.BrokerPolicySpec{
+			AppliesToTemplates: []string{"echo"},
+			Grants: paddockv1alpha1.BrokerPolicyGrants{
+				Credentials: []paddockv1alpha1.CredentialGrant{{
+					Name: "ANTHROPIC",
+					Provider: paddockv1alpha1.ProviderConfig{
+						Kind:      "AnthropicAPI",
+						SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "anthropic", Key: "apiKey"},
+					},
+				}},
+			},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "anthropic", Namespace: ns, ResourceVersion: "1"},
+		Data:       map[string][]byte{"apiKey": []byte("sk-real-key")},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(buildScheme(t)).
+		WithObjects(tpl, run, bp, secret).
+		Build()
+	registry, err := providers.NewRegistry(&providers.AnthropicAPIProvider{Client: c})
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	srv := &broker.Server{
+		Client:    c,
+		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
+		Providers: registry,
+		Audit:     &broker.AuditWriter{Client: c},
+	}
+
+	body, _ := json.Marshal(brokerapi.IssueRequest{Name: "ANTHROPIC"})
+	rr := post(t, srv, "hello", "", "token-abc", string(body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got brokerapi.IssueResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Provider != "AnthropicAPI" {
+		t.Fatalf("Provider = %q, want AnthropicAPI", got.Provider)
+	}
+	if got.DeliveryMode != "ProxyInjected" {
+		t.Fatalf("DeliveryMode = %q, want ProxyInjected", got.DeliveryMode)
+	}
+	if len(got.Hosts) != 1 || got.Hosts[0] != "api.anthropic.com" {
+		t.Fatalf("Hosts = %v, want [api.anthropic.com]", got.Hosts)
+	}
+	if got.InContainerReason != "" {
+		t.Fatalf("InContainerReason = %q, want empty", got.InContainerReason)
 	}
 }
 

@@ -28,6 +28,7 @@ import (
 type recorder struct {
 	mu    sync.Mutex
 	calls []map[string]string
+	times []time.Time
 	fail  int // number of initial failures to return
 }
 
@@ -39,6 +40,7 @@ func (r *recorder) write(_ context.Context, data map[string]string) error {
 		return errors.New("synthetic failure")
 	}
 	r.calls = append(r.calls, maps.Clone(data))
+	r.times = append(r.times, time.Now())
 	return nil
 }
 
@@ -57,9 +59,50 @@ func (r *recorder) lastCall() map[string]string {
 	return r.calls[len(r.calls)-1]
 }
 
+// waitForCalls blocks until r has recorded at least `want` successful
+// writes or `timeout` elapses. Polls at a short interval so tests
+// converge as soon as the publisher fires.
+func (r *recorder) waitForCalls(t *testing.T, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if r.callCount() >= want {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("timed out after %v waiting for %d writes, got %d", timeout, want, r.callCount())
+}
+
+// expectNoAdditionalCalls asserts no new writes arrive within `window`.
+// Used for negative invariants — e.g. "Set with an unchanged value
+// must not trigger a write". The window should be comfortably larger
+// than any legitimate publisher timer so scheduler jitter can't mask a
+// regression.
+func (r *recorder) expectNoAdditionalCalls(t *testing.T, baseline int, window time.Duration) {
+	t.Helper()
+	time.Sleep(window)
+	if got := r.callCount(); got != baseline {
+		t.Fatalf("expected writes to stay at %d for %v, got %d", baseline, window, got)
+	}
+}
+
+// writeGap returns the elapsed time between the i-th and j-th successful
+// writes (0-indexed). Fails the test if either index is out of range.
+func (r *recorder) writeGap(t *testing.T, i, j int) time.Duration {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if i >= len(r.times) || j >= len(r.times) {
+		t.Fatalf("writeGap: want indices %d,%d but have %d writes", i, j, len(r.times))
+	}
+	return r.times[j].Sub(r.times[i])
+}
+
 func TestPublisher_DebounceBatches(t *testing.T) {
 	rec := &recorder{}
-	p := NewPublisher(rec.write, 50*time.Millisecond)
+	debounce := 50 * time.Millisecond
+	p := NewPublisher(rec.write, debounce)
 	defer p.Close()
 
 	// Rapid-fire three Sets — they should coalesce into a single write.
@@ -67,12 +110,11 @@ func TestPublisher_DebounceBatches(t *testing.T) {
 	p.Set("a", "2")
 	p.Set("b", "3")
 
-	// Wait long enough for the debounce to fire.
-	time.Sleep(150 * time.Millisecond)
+	rec.waitForCalls(t, 1, time.Second)
+	// Generous margin past the debounce to catch any extra write a
+	// buggy scheduler might emit.
+	rec.expectNoAdditionalCalls(t, 1, 3*debounce)
 
-	if got := rec.callCount(); got != 1 {
-		t.Fatalf("writes = %d, want 1 (debounce should batch)", got)
-	}
 	want := map[string]string{"a": "2", "b": "3"}
 	if last := rec.lastCall(); !mapsEqual(last, want) {
 		t.Fatalf("last call = %v, want %v", last, want)
@@ -81,42 +123,41 @@ func TestPublisher_DebounceBatches(t *testing.T) {
 
 func TestPublisher_RespectsMinInterval(t *testing.T) {
 	rec := &recorder{}
-	p := NewPublisher(rec.write, 80*time.Millisecond)
+	minInterval := 80 * time.Millisecond
+	p := NewPublisher(rec.write, minInterval)
 	defer p.Close()
 
+	// First write settles after the debounce window.
 	p.Set("k", "v1")
-	time.Sleep(130 * time.Millisecond) // one write settled
-	if rec.callCount() != 1 {
-		t.Fatalf("expected 1 write after first debounce, got %d", rec.callCount())
-	}
+	rec.waitForCalls(t, 1, time.Second)
 
-	// Follow-up changes must wait out another minInterval.
+	// A follow-up Set should produce a second write — but not before
+	// another minInterval has elapsed since the first. Assert on the
+	// observed gap between successive writes rather than racing against
+	// the publisher's scheduling; the gap is the actual invariant and
+	// it survives arbitrary scheduler jitter.
 	p.Set("k", "v2")
-	if rec.callCount() != 1 {
-		t.Fatalf("second write fired too eagerly: %d", rec.callCount())
-	}
-	time.Sleep(130 * time.Millisecond)
-	if rec.callCount() != 2 {
-		t.Fatalf("expected 2 writes, got %d", rec.callCount())
+	rec.waitForCalls(t, 2, time.Second)
+
+	if gap := rec.writeGap(t, 0, 1); gap < minInterval {
+		t.Fatalf("second write fired %v after the first, but minInterval is %v", gap, minInterval)
 	}
 }
 
 func TestPublisher_NoopForUnchangedValue(t *testing.T) {
 	rec := &recorder{}
-	p := NewPublisher(rec.write, 30*time.Millisecond)
+	minInterval := 30 * time.Millisecond
+	p := NewPublisher(rec.write, minInterval)
 	defer p.Close()
 
 	p.Set("k", "v")
-	time.Sleep(80 * time.Millisecond)
-	if rec.callCount() != 1 {
-		t.Fatalf("expected 1 write, got %d", rec.callCount())
-	}
-	// Setting the same value is a no-op.
+	rec.waitForCalls(t, 1, time.Second)
+
+	// Setting the same value is a no-op: Set short-circuits before
+	// scheduling a timer, so no second write is ever queued. Wait a
+	// window comfortably longer than minInterval to confirm none fires.
 	p.Set("k", "v")
-	time.Sleep(80 * time.Millisecond)
-	if rec.callCount() != 1 {
-		t.Fatalf("unchanged Set triggered extra write: %d", rec.callCount())
-	}
+	rec.expectNoAdditionalCalls(t, 1, 3*minInterval)
 }
 
 func TestPublisher_FlushImmediate(t *testing.T) {
@@ -125,7 +166,7 @@ func TestPublisher_FlushImmediate(t *testing.T) {
 	defer p.Close()
 
 	p.Set("a", "1")
-	// Don't wait for debounce — Flush should publish right away.
+	// Flush writes synchronously — no timing dependency.
 	if err := p.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
@@ -147,10 +188,9 @@ func TestPublisher_RetryOnFailure(t *testing.T) {
 	defer p.Close()
 
 	p.Set("k", "v")
-	time.Sleep(200 * time.Millisecond)
-	if rec.callCount() != 1 {
-		t.Fatalf("after failure+retry, calls = %d, want 1", rec.callCount())
-	}
+	// First attempt fails (synthetic). The publisher reschedules;
+	// eventually the retry records a successful write.
+	rec.waitForCalls(t, 1, time.Second)
 }
 
 func mapsEqual(a, b map[string]string) bool {

@@ -151,3 +151,7 @@ helm uninstall paddock -n paddock-system
 kubectl delete -f charts/paddock/crds/   # CRDs are not uninstalled by helm
 kubectl delete namespace paddock-system
 ```
+
+## Upgrading from v0.3
+
+v0.4 reworks the BrokerPolicy + HarnessTemplate CRDs. See [docs/migrations/v0.3-to-v0.4.md](../../docs/migrations/v0.3-to-v0.4.md) for the full migration.

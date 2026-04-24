@@ -38,23 +38,20 @@ const (
 )
 
 // ResolveInterceptionMode picks the egress-proxy interception mode for
-// a run in namespace ns. Inputs:
+// a run in namespace ns based on the namespace's PSA enforce label:
 //
-//   - PSA enforce label on the namespace:
 //   - "restricted" or "baseline" → cooperative (both reject NET_ADMIN)
 //   - "privileged" or unset → transparent
-//   - MinInterceptionMode floor from any matching BrokerPolicy: if the
-//     resolved mode is weaker than a policy's floor, the run is rejected
-//     at admission rather than silently downgraded (ADR-0013 §26).
 //
-// Returns the resolved mode plus the policy name that forced a rejection
-// (empty when mode is acceptable to every policy).
+// BrokerPolicy no longer carries a MinInterceptionMode floor; a Plan-B
+// replacement may reintroduce an explicit spec.interception knob in a
+// future release. Until then the runtime picks purely off PSA.
 func ResolveInterceptionMode(
 	ctx context.Context,
 	c client.Client,
 	ns string,
-	matchingPolicies []*paddockv1alpha1.BrokerPolicy,
-) (paddockv1alpha1.InterceptionMode, ModeFloor, error) {
+	_ []*paddockv1alpha1.BrokerPolicy,
+) (paddockv1alpha1.InterceptionMode, error) {
 	// Default to transparent — the stricter posture. Fall back to
 	// cooperative only when PSA forbids NET_ADMIN.
 	mode := paddockv1alpha1.InterceptionModeTransparent
@@ -62,7 +59,7 @@ func ResolveInterceptionMode(
 	var nsObj corev1.Namespace
 	if err := c.Get(ctx, types.NamespacedName{Name: ns}, &nsObj); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return "", ModeFloor{}, fmt.Errorf("reading namespace %s: %w", ns, err)
+			return "", fmt.Errorf("reading namespace %s: %w", ns, err)
 		}
 		// Namespace missing: the reconciler will fail later with a
 		// clearer error. Return transparent to let the admission path
@@ -72,32 +69,7 @@ func ResolveInterceptionMode(
 	if psaBlocksNetAdmin(nsObj.Labels[PSAEnforceLabel]) {
 		mode = paddockv1alpha1.InterceptionModeCooperative
 	}
-
-	floor := findMinimumFloor(matchingPolicies)
-	if floor.Policy != "" && !modeCovers(mode, floor.Mode) {
-		return mode, floor, nil
-	}
-	return mode, ModeFloor{}, nil
-}
-
-// ModeFloor records a BrokerPolicy that refuses to be downgraded below
-// a minimum interception mode. Non-empty Policy means the admission path
-// must reject.
-type ModeFloor struct {
-	Policy string
-	Mode   paddockv1alpha1.InterceptionMode
-}
-
-// DescribeModeFloorRejection formats an admission diagnostic for the
-// MinInterceptionMode downgrade case. Mirrors the ADR-0013 §Admission
-// example.
-func DescribeModeFloorRejection(ns string, resolved paddockv1alpha1.InterceptionMode, floor ModeFloor) string {
-	return fmt.Sprintf(
-		"namespace %q resolves to %s interception mode, but BrokerPolicy %q "+
-			"declares minInterceptionMode=%s. To admit this run, either relax "+
-			"the namespace's pod-security.kubernetes.io/enforce label (see ADR-0013) "+
-			"or drop minInterceptionMode on the policy.",
-		ns, resolved, floor.Policy, floor.Mode)
+	return mode, nil
 }
 
 // psaBlocksNetAdmin reports whether the given PSA enforce level rejects
@@ -116,40 +88,4 @@ func DescribeModeFloorRejection(ns string, resolved paddockv1alpha1.Interception
 // K8s PSA reality.
 func psaBlocksNetAdmin(level string) bool {
 	return level == PSALevelRestricted || level == PSALevelBaseline
-}
-
-// findMinimumFloor picks the strictest MinInterceptionMode across the
-// matching policies. Transparent is stricter than cooperative.
-func findMinimumFloor(policies []*paddockv1alpha1.BrokerPolicy) ModeFloor {
-	best := ModeFloor{}
-	for _, bp := range policies {
-		floor := bp.Spec.MinInterceptionMode
-		if floor == "" {
-			continue
-		}
-		if best.Policy == "" || modeStricter(floor, best.Mode) {
-			best = ModeFloor{Policy: bp.Name, Mode: floor}
-		}
-	}
-	return best
-}
-
-// modeCovers reports whether resolved mode satisfies the floor. i.e.
-// cooperative covers only cooperative; transparent covers both.
-func modeCovers(resolved, floor paddockv1alpha1.InterceptionMode) bool {
-	if resolved == floor {
-		return true
-	}
-	if floor == paddockv1alpha1.InterceptionModeCooperative {
-		// Any mode covers a cooperative floor.
-		return true
-	}
-	return false
-}
-
-// modeStricter reports whether a is strictly stronger than b.
-// transparent > cooperative.
-func modeStricter(a, b paddockv1alpha1.InterceptionMode) bool {
-	return a == paddockv1alpha1.InterceptionModeTransparent &&
-		b == paddockv1alpha1.InterceptionModeCooperative
 }

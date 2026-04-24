@@ -16,8 +16,9 @@ limitations under the License.
 
 // Package providers implements the broker's pluggable credential
 // backends. Each provider implements Provider; the broker picks one
-// per IssueRequest by intersecting the template's requires purpose
-// with the matched BrokerPolicy's provider.kind. See ADR-0015.
+// per IssueRequest by matching the credential name declared on the
+// HarnessTemplate to a BrokerPolicy grant and dispatching to the
+// provider named by the grant's provider.kind. See ADR-0015.
 package providers
 
 import (
@@ -29,17 +30,12 @@ import (
 )
 
 // Provider is the extensibility seam. All credentials — including
-// Static Secret reads — flow through a Provider; see ADR-0015 for the
-// no-bypass invariant.
+// UserSuppliedSecret Secret reads — flow through a Provider; see
+// ADR-0015 for the no-bypass invariant.
 type Provider interface {
 	// Name is the stable identifier matched against
 	// BrokerPolicy.spec.grants.credentials[*].provider.kind.
 	Name() string
-
-	// Purposes lists the credential purposes this provider can back.
-	// The admission algorithm (ADR-0014) rejects a BrokerPolicy that
-	// grants a credential whose purpose is not in this list.
-	Purposes() []paddockv1alpha1.CredentialPurpose
 
 	// Issue returns a value for the request. The broker passes in the
 	// (already-validated) BrokerPolicy grant that picked this provider;
@@ -60,9 +56,6 @@ type IssueRequest struct {
 	// grant.name). Providers return the value for this specific
 	// credential.
 	CredentialName string
-
-	// Purpose is the template's declared purpose for this credential.
-	Purpose paddockv1alpha1.CredentialPurpose
 
 	// Grant is the matched policy grant, including the provider config.
 	Grant paddockv1alpha1.CredentialGrant
@@ -91,9 +84,9 @@ type IssueResult struct {
 }
 
 // ErrNotImplemented is returned by a Provider when it cannot back the
-// given purpose. Broker callers should interpret this as a policy
+// given credential. Broker callers should interpret this as a policy
 // mismatch, not a server-side failure.
-var ErrNotImplemented = errors.New("provider cannot back this credential purpose")
+var ErrNotImplemented = errors.New("provider cannot back this credential")
 
 // Substituter is an optional capability: providers that back
 // auth-substituting egress destinations (AnthropicAPI's x-api-key swap
@@ -152,4 +145,20 @@ type SubstituteResult struct {
 	// upstream. Use for stripping the Paddock-issued bearer the agent
 	// presented so upstream only ever sees the substituted credential.
 	RemoveHeaders []string
+
+	// SetQueryParam overrides URL query parameters on the outbound
+	// request. Used by UserSuppliedSecret with a queryParam pattern —
+	// e.g. Google APIs that key on ?key=<value>.
+	SetQueryParam map[string]string
+
+	// SetBasicAuth, when non-nil, instructs the proxy to set HTTP Basic
+	// authentication on the outbound request. The proxy overwrites any
+	// existing Authorization header with the encoded username:password.
+	SetBasicAuth *BasicAuth
+}
+
+// BasicAuth carries an HTTP Basic username+password pair.
+type BasicAuth struct {
+	Username string
+	Password string
 }

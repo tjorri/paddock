@@ -45,8 +45,11 @@ func SetupBrokerPolicyWebhookWithManager(mgr ctrl.Manager) error {
 //
 //   - appliesToTemplates has at least one entry;
 //   - every grant has the fields its provider kind requires;
+//   - UserSuppliedSecret declares deliveryMode (proxyInjected or inContainer);
+//   - built-in providers do not set deliveryMode;
 //   - credential names are unique within the policy;
 //   - egress hosts are non-empty and wildcard-valid;
+//   - every proxy-injected host is covered by an egress grant;
 //   - git repo tuples are complete.
 type BrokerPolicyCustomValidator struct{}
 
@@ -85,6 +88,7 @@ func validateBrokerPolicySpec(spec *paddockv1alpha1.BrokerPolicySpec) error {
 	errs = append(errs, validateCredentialGrants(grantsPath.Child("credentials"), spec.Grants.Credentials)...)
 	errs = append(errs, validateEgressGrants(grantsPath.Child("egress"), spec.Grants.Egress)...)
 	errs = append(errs, validateGitRepoGrants(grantsPath.Child("gitRepos"), spec.Grants.GitRepos)...)
+	errs = append(errs, validateCredentialHostsCoveredByEgress(grantsPath, spec.Grants)...)
 
 	if len(errs) == 0 {
 		return nil
@@ -102,8 +106,8 @@ func validateCredentialGrants(p *field.Path, grants []paddockv1alpha1.Credential
 			continue
 		}
 		if prev, ok := seen[g.Name]; ok {
-			errs = append(errs, field.Duplicate(entry.Child("name"),
-				fmt.Sprintf("name %q collides with credentials[%d].name", g.Name, prev)))
+			errs = append(errs, field.Invalid(entry.Child("name"), g.Name,
+				fmt.Sprintf(`name "%s" collides with credentials[%d].name`, g.Name, prev)))
 			continue
 		}
 		seen[g.Name] = i
@@ -118,8 +122,26 @@ func validateProviderConfig(p *field.Path, cfg paddockv1alpha1.ProviderConfig) f
 		errs = append(errs, field.Required(p.Child("kind"), ""))
 		return errs
 	}
+	if cfg.Kind != "UserSuppliedSecret" && cfg.DeliveryMode != nil {
+		errs = append(errs, field.Forbidden(p.Child("deliveryMode"),
+			"deliveryMode is only valid for UserSuppliedSecret"))
+	}
 	switch cfg.Kind {
-	case "Static", "AnthropicAPI", "PATPool":
+	case "UserSuppliedSecret":
+		if cfg.SecretRef == nil {
+			errs = append(errs, field.Required(p.Child("secretRef"),
+				"UserSuppliedSecret requires secretRef"))
+		}
+		if cfg.AppID != "" || cfg.InstallationID != "" {
+			errs = append(errs, field.Forbidden(p,
+				"UserSuppliedSecret must not set appId or installationId"))
+		}
+		if len(cfg.Hosts) > 0 {
+			errs = append(errs, field.Forbidden(p.Child("hosts"),
+				"for UserSuppliedSecret, hosts live under deliveryMode.proxyInjected.hosts"))
+		}
+		errs = append(errs, validateDeliveryMode(p.Child("deliveryMode"), cfg.DeliveryMode)...)
+	case "AnthropicAPI", "PATPool":
 		if cfg.SecretRef == nil {
 			errs = append(errs, field.Required(p.Child("secretRef"),
 				fmt.Sprintf("provider kind %q requires secretRef", cfg.Kind)))
@@ -146,6 +168,112 @@ func validateProviderConfig(p *field.Path, cfg paddockv1alpha1.ProviderConfig) f
 		}
 		if cfg.SecretRef.Key == "" {
 			errs = append(errs, field.Required(p.Child("secretRef").Child("key"), ""))
+		}
+	}
+	errs = append(errs, validateHosts(p.Child("hosts"), cfg.Hosts)...)
+	return errs
+}
+
+func validateDeliveryMode(p *field.Path, dm *paddockv1alpha1.DeliveryMode) field.ErrorList {
+	var errs field.ErrorList
+	if dm == nil {
+		errs = append(errs, field.Required(p,
+			`provider "UserSuppliedSecret" requires deliveryMode. Set deliveryMode.proxyInjected (with hosts + one of header/queryParam/basicAuth) to inject the real value at the proxy, or deliveryMode.inContainer (with accepted=true and a reason) to accept that the secret will be visible to the agent container.`))
+		return errs
+	}
+	count := 0
+	if dm.ProxyInjected != nil {
+		count++
+	}
+	if dm.InContainer != nil {
+		count++
+	}
+	switch count {
+	case 0:
+		errs = append(errs, field.Invalid(p, "", "exactly one of proxyInjected or inContainer must be set"))
+	case 1:
+		// fine
+	default:
+		errs = append(errs, field.Invalid(p, "",
+			"exactly one of proxyInjected or inContainer must be set; both were provided"))
+	}
+	if dm.ProxyInjected != nil {
+		errs = append(errs, validateProxyInjected(p.Child("proxyInjected"), dm.ProxyInjected)...)
+	}
+	if dm.InContainer != nil {
+		errs = append(errs, validateInContainer(p.Child("inContainer"), dm.InContainer)...)
+	}
+	return errs
+}
+
+func validateProxyInjected(p *field.Path, pi *paddockv1alpha1.ProxyInjectedDelivery) field.ErrorList {
+	var errs field.ErrorList
+	if len(pi.Hosts) == 0 {
+		errs = append(errs, field.Required(p.Child("hosts"),
+			"at least one host is required for proxy-injected delivery"))
+	}
+	errs = append(errs, validateHosts(p.Child("hosts"), pi.Hosts)...)
+
+	count := 0
+	if pi.Header != nil {
+		count++
+	}
+	if pi.QueryParam != nil {
+		count++
+	}
+	if pi.BasicAuth != nil {
+		count++
+	}
+	switch count {
+	case 0:
+		errs = append(errs, field.Required(p,
+			"exactly one of header/queryParam/basicAuth must be set"))
+	case 1:
+		// fine
+	default:
+		errs = append(errs, field.Invalid(p, "",
+			"exactly one of header/queryParam/basicAuth must be set; multiple were provided"))
+	}
+	if pi.Header != nil && strings.TrimSpace(pi.Header.Name) == "" {
+		errs = append(errs, field.Required(p.Child("header").Child("name"), ""))
+	}
+	if pi.QueryParam != nil && strings.TrimSpace(pi.QueryParam.Name) == "" {
+		errs = append(errs, field.Required(p.Child("queryParam").Child("name"), ""))
+	}
+	if pi.BasicAuth != nil && strings.TrimSpace(pi.BasicAuth.Username) == "" {
+		errs = append(errs, field.Required(p.Child("basicAuth").Child("username"), ""))
+	}
+	return errs
+}
+
+func validateInContainer(p *field.Path, ic *paddockv1alpha1.InContainerDelivery) field.ErrorList {
+	var errs field.ErrorList
+	if !ic.Accepted {
+		errs = append(errs, field.Invalid(p.Child("accepted"), ic.Accepted,
+			"accepted must be true to deliver a secret in-container; set it with a reason or use deliveryMode.proxyInjected instead"))
+	}
+	if len(strings.TrimSpace(ic.Reason)) < 20 {
+		errs = append(errs, field.Invalid(p.Child("reason"), ic.Reason,
+			"reason must be at least 20 characters explaining why in-container delivery is needed"))
+	}
+	return errs
+}
+
+func validateHosts(p *field.Path, hosts []string) field.ErrorList {
+	var errs field.ErrorList
+	for i, h := range hosts {
+		entry := p.Index(i)
+		host := strings.TrimSpace(h)
+		if host == "" {
+			errs = append(errs, field.Required(entry, ""))
+			continue
+		}
+		if strings.HasPrefix(host, "*.") && strings.Contains(host[2:], "*") {
+			errs = append(errs, field.Invalid(entry, h,
+				"only a single leading '*.' wildcard is permitted"))
+		} else if !strings.HasPrefix(host, "*.") && strings.Contains(host, "*") {
+			errs = append(errs, field.Invalid(entry, h,
+				"wildcard '*' is only permitted as a leading '*.' segment"))
 		}
 	}
 	return errs
@@ -200,4 +328,44 @@ func validateGitRepoGrants(p *field.Path, grants []paddockv1alpha1.GitRepoGrant)
 		seen[key] = i
 	}
 	return errs
+}
+
+func validateCredentialHostsCoveredByEgress(p *field.Path, g paddockv1alpha1.BrokerPolicyGrants) field.ErrorList {
+	var errs field.ErrorList
+	for i, cg := range g.Credentials {
+		var hosts []string
+		var hostsPath *field.Path
+		if cg.Provider.DeliveryMode != nil && cg.Provider.DeliveryMode.ProxyInjected != nil {
+			hosts = cg.Provider.DeliveryMode.ProxyInjected.Hosts
+			hostsPath = p.Child("credentials").Index(i).Child("provider").Child("deliveryMode").Child("proxyInjected").Child("hosts")
+		} else {
+			hosts = cg.Provider.Hosts
+			hostsPath = p.Child("credentials").Index(i).Child("provider").Child("hosts")
+		}
+		for j, h := range hosts {
+			if !hostCoveredByAnyEgress(h, g.Egress) {
+				errs = append(errs, field.Invalid(hostsPath.Index(j), h,
+					fmt.Sprintf("host %q is not covered by any egress grant; add an entry to spec.grants.egress (globs with leading '*.' are supported)", h)))
+			}
+		}
+	}
+	return errs
+}
+
+func hostCoveredByAnyEgress(candidate string, egress []paddockv1alpha1.EgressGrant) bool {
+	candidate = strings.ToLower(strings.TrimSpace(candidate))
+	for _, e := range egress {
+		eh := strings.ToLower(strings.TrimSpace(e.Host))
+		if strings.HasPrefix(eh, "*.") {
+			suffix := eh[1:]
+			if strings.HasSuffix(candidate, suffix) && candidate != suffix[1:] {
+				return true
+			}
+			continue
+		}
+		if eh == candidate {
+			return true
+		}
+	}
+	return false
 }

@@ -153,12 +153,6 @@ var (
 
 func (p *PATPoolProvider) Name() string { return "PATPool" }
 
-// Purposes: pools only back gitforge credentials. Admission rejects
-// PATPool grants for LLM/generic requirements.
-func (p *PATPoolProvider) Purposes() []paddockv1alpha1.CredentialPurpose {
-	return []paddockv1alpha1.CredentialPurpose{paddockv1alpha1.CredentialPurposeGitForge}
-}
-
 // ErrPoolExhausted is returned when every entry in a pool is leased.
 // The broker surfaces this to the caller via the applicationError
 // path — runs see BrokerReady=False with reason=PoolExhausted until

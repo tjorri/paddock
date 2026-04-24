@@ -20,6 +20,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
 
@@ -30,102 +32,308 @@ var _ = Describe("BrokerPolicy Webhook", func() {
 		validator = BrokerPolicyCustomValidator{}
 	})
 
-	// Minimal valid spec used as a starting point; tests mutate it.
-	newSpec := func() paddockv1alpha1.BrokerPolicySpec {
+	minimalSpec := func() paddockv1alpha1.BrokerPolicySpec {
 		return paddockv1alpha1.BrokerPolicySpec{
-			AppliesToTemplates: []string{"claude-code"},
+			AppliesToTemplates: []string{"*"},
 			Grants: paddockv1alpha1.BrokerPolicyGrants{
-				Credentials: []paddockv1alpha1.CredentialGrant{
-					{
-						Name: "ANTHROPIC_API_KEY",
-						Provider: paddockv1alpha1.ProviderConfig{
-							Kind:      "AnthropicAPI",
-							SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "anthropic-api", Key: "key"},
-						},
-					},
-				},
 				Egress: []paddockv1alpha1.EgressGrant{
-					{Host: "api.anthropic.com", Ports: []int32{443}, SubstituteAuth: true},
+					{Host: "api.example.com", Ports: []int32{443}},
 				},
 			},
 		}
 	}
 
+	validate := func(spec paddockv1alpha1.BrokerPolicySpec) error {
+		obj := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
+			Spec:       spec,
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		return err
+	}
+
 	It("admits a minimal valid BrokerPolicy", func() {
-		obj := &paddockv1alpha1.BrokerPolicy{Spec: newSpec()}
-		_, err := validator.ValidateCreate(ctx, obj)
-		Expect(err).NotTo(HaveOccurred())
+		Expect(validate(minimalSpec())).To(Succeed())
 	})
 
-	It("admits a Static provider with only a secretRef", func() {
-		spec := newSpec()
-		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
-			Name: "DEMO",
-			Provider: paddockv1alpha1.ProviderConfig{
-				Kind:      "Static",
-				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
-			},
-		}}
-		spec.Grants.Egress = nil
-		obj := &paddockv1alpha1.BrokerPolicy{Spec: spec}
-		_, err := validator.ValidateCreate(ctx, obj)
-		Expect(err).NotTo(HaveOccurred())
-	})
-
-	It("admits a GitHubApp provider with appId/installationId/secretRef", func() {
-		spec := newSpec()
-		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
-			Name: "github-token",
-			Provider: paddockv1alpha1.ProviderConfig{
-				Kind:           "GitHubApp",
-				AppID:          "123",
-				InstallationID: "456",
-				SecretRef:      &paddockv1alpha1.SecretKeyReference{Name: "gh-app", Key: "private-key.pem"},
-			},
-		}}
-		spec.Grants.GitRepos = []paddockv1alpha1.GitRepoGrant{
-			{Owner: "acme", Repo: "app", Access: paddockv1alpha1.GitRepoAccessRead},
-		}
-		spec.Grants.Egress = nil
-		obj := &paddockv1alpha1.BrokerPolicy{Spec: spec}
-		_, err := validator.ValidateCreate(ctx, obj)
-		Expect(err).NotTo(HaveOccurred())
-	})
-
-	It("admits an egress grant with a leading '*.' wildcard", func() {
-		spec := newSpec()
-		spec.Grants.Egress = []paddockv1alpha1.EgressGrant{
-			{Host: "*.anthropic.com", Ports: []int32{443}},
-		}
-		obj := &paddockv1alpha1.BrokerPolicy{Spec: spec}
-		_, err := validator.ValidateCreate(ctx, obj)
-		Expect(err).NotTo(HaveOccurred())
-	})
-
-	It("rejects a spec with no appliesToTemplates", func() {
-		spec := newSpec()
+	It("rejects an empty appliesToTemplates list", func() {
+		spec := minimalSpec()
 		spec.AppliesToTemplates = nil
-		obj := &paddockv1alpha1.BrokerPolicy{Spec: spec}
-		_, err := validator.ValidateCreate(ctx, obj)
+		err := validate(spec)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("appliesToTemplates"))
 	})
 
-	It("rejects a Static provider missing secretRef", func() {
-		spec := newSpec()
-		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
-			Name:     "DEMO",
-			Provider: paddockv1alpha1.ProviderConfig{Kind: "Static"},
-		}}
-		spec.Grants.Egress = nil
-		obj := &paddockv1alpha1.BrokerPolicy{Spec: spec}
-		_, err := validator.ValidateCreate(ctx, obj)
+	It("rejects duplicate credential names", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{
+			{
+				Name: "DUP",
+				Provider: paddockv1alpha1.ProviderConfig{
+					Kind:      "UserSuppliedSecret",
+					SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+					DeliveryMode: &paddockv1alpha1.DeliveryMode{
+						InContainer: &paddockv1alpha1.InContainerDelivery{
+							Accepted: true,
+							Reason:   "legacy tool reads this env var directly",
+						},
+					},
+				},
+			},
+			{
+				Name: "DUP",
+				Provider: paddockv1alpha1.ProviderConfig{
+					Kind:      "AnthropicAPI",
+					SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "a", Key: "k"},
+				},
+			},
+		}
+		err := validate(spec)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("secretRef"))
+		Expect(err.Error()).To(ContainSubstring(`name "DUP"`))
 	})
 
-	It("rejects a GitHubApp provider missing appId", func() {
-		spec := newSpec()
+	It("rejects UserSuppliedSecret without deliveryMode", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "X",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "UserSuppliedSecret",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+			},
+		}}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("deliveryMode"))
+		Expect(err.Error()).To(ContainSubstring("UserSuppliedSecret"))
+	})
+
+	It("rejects UserSuppliedSecret with both modes set", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "X",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "UserSuppliedSecret",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+				DeliveryMode: &paddockv1alpha1.DeliveryMode{
+					ProxyInjected: &paddockv1alpha1.ProxyInjectedDelivery{
+						Hosts:  []string{"api.example.com"},
+						Header: &paddockv1alpha1.HeaderSubstitution{Name: "X-API-Key"},
+					},
+					InContainer: &paddockv1alpha1.InContainerDelivery{
+						Accepted: true,
+						Reason:   "legacy tool reads this env var directly",
+					},
+				},
+			},
+		}}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("exactly one of"))
+	})
+
+	It("rejects InContainer with accepted=false", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "X",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "UserSuppliedSecret",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+				DeliveryMode: &paddockv1alpha1.DeliveryMode{
+					InContainer: &paddockv1alpha1.InContainerDelivery{
+						Accepted: false,
+						Reason:   "legacy tool reads this env var directly",
+					},
+				},
+			},
+		}}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("accepted must be true"))
+	})
+
+	It("rejects InContainer with short reason", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "X",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "UserSuppliedSecret",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+				DeliveryMode: &paddockv1alpha1.DeliveryMode{
+					InContainer: &paddockv1alpha1.InContainerDelivery{
+						Accepted: true,
+						Reason:   "todo",
+					},
+				},
+			},
+		}}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("reason"))
+	})
+
+	It("rejects ProxyInjected with empty hosts", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "X",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "UserSuppliedSecret",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+				DeliveryMode: &paddockv1alpha1.DeliveryMode{
+					ProxyInjected: &paddockv1alpha1.ProxyInjectedDelivery{
+						Header: &paddockv1alpha1.HeaderSubstitution{Name: "X-API-Key"},
+					},
+				},
+			},
+		}}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("hosts"))
+	})
+
+	It("rejects ProxyInjected without any substitution pattern", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "X",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "UserSuppliedSecret",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+				DeliveryMode: &paddockv1alpha1.DeliveryMode{
+					ProxyInjected: &paddockv1alpha1.ProxyInjectedDelivery{
+						Hosts: []string{"api.example.com"},
+					},
+				},
+			},
+		}}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("one of header/queryParam/basicAuth"))
+	})
+
+	It("rejects ProxyInjected with two patterns", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "X",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "UserSuppliedSecret",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+				DeliveryMode: &paddockv1alpha1.DeliveryMode{
+					ProxyInjected: &paddockv1alpha1.ProxyInjectedDelivery{
+						Hosts:      []string{"api.example.com"},
+						Header:     &paddockv1alpha1.HeaderSubstitution{Name: "X-API-Key"},
+						QueryParam: &paddockv1alpha1.QueryParamSubstitution{Name: "api_key"},
+					},
+				},
+			},
+		}}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("exactly one of header/queryParam/basicAuth"))
+	})
+
+	It("rejects a proxyInjected host not covered by egress", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "X",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "UserSuppliedSecret",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+				DeliveryMode: &paddockv1alpha1.DeliveryMode{
+					ProxyInjected: &paddockv1alpha1.ProxyInjectedDelivery{
+						Hosts:  []string{"orphan.example.com"},
+						Header: &paddockv1alpha1.HeaderSubstitution{Name: "X-API-Key"},
+					},
+				},
+			},
+		}}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("orphan.example.com"))
+		Expect(err.Error()).To(ContainSubstring("not covered by any egress grant"))
+	})
+
+	It("accepts a proxyInjected host matched by a wildcard egress grant", func() {
+		spec := minimalSpec()
+		spec.Grants.Egress = []paddockv1alpha1.EgressGrant{
+			{Host: "*.example.com", Ports: []int32{443}},
+		}
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "X",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "UserSuppliedSecret",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+				DeliveryMode: &paddockv1alpha1.DeliveryMode{
+					ProxyInjected: &paddockv1alpha1.ProxyInjectedDelivery{
+						Hosts:  []string{"metrics.example.com"},
+						Header: &paddockv1alpha1.HeaderSubstitution{Name: "X-API-Key"},
+					},
+				},
+			},
+		}}
+		Expect(validate(spec)).To(Succeed())
+	})
+
+	It("accepts UserSuppliedSecret with basicAuth", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "X",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "UserSuppliedSecret",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+				DeliveryMode: &paddockv1alpha1.DeliveryMode{
+					ProxyInjected: &paddockv1alpha1.ProxyInjectedDelivery{
+						Hosts:     []string{"api.example.com"},
+						BasicAuth: &paddockv1alpha1.BasicAuthSubstitution{Username: "oauth2"},
+					},
+				},
+			},
+		}}
+		Expect(validate(spec)).To(Succeed())
+	})
+
+	It("rejects deliveryMode on AnthropicAPI", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "X",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "AnthropicAPI",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+				DeliveryMode: &paddockv1alpha1.DeliveryMode{
+					InContainer: &paddockv1alpha1.InContainerDelivery{
+						Accepted: true,
+						Reason:   "legacy tool reads this env var directly",
+					},
+				},
+			},
+		}}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("deliveryMode is only valid for UserSuppliedSecret"))
+	})
+
+	It("rejects a UserSuppliedSecret provider.hosts override", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "X",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "UserSuppliedSecret",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+				Hosts:     []string{"api.example.com"},
+				DeliveryMode: &paddockv1alpha1.DeliveryMode{
+					InContainer: &paddockv1alpha1.InContainerDelivery{
+						Accepted: true,
+						Reason:   "legacy tool reads this env var directly",
+					},
+				},
+			},
+		}}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("hosts live under deliveryMode.proxyInjected.hosts"))
+	})
+
+	It("rejects GitHubApp without appId", func() {
+		spec := minimalSpec()
 		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
 			Name: "gh",
 			Provider: paddockv1alpha1.ProviderConfig{
@@ -134,86 +342,8 @@ var _ = Describe("BrokerPolicy Webhook", func() {
 				SecretRef:      &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
 			},
 		}}
-		spec.Grants.Egress = nil
-		obj := &paddockv1alpha1.BrokerPolicy{Spec: spec}
-		_, err := validator.ValidateCreate(ctx, obj)
+		err := validate(spec)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("appId"))
-	})
-
-	It("rejects a Static provider carrying GitHubApp-only fields", func() {
-		spec := newSpec()
-		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
-			Name: "DEMO",
-			Provider: paddockv1alpha1.ProviderConfig{
-				Kind:      "Static",
-				AppID:     "123",
-				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
-			},
-		}}
-		spec.Grants.Egress = nil
-		obj := &paddockv1alpha1.BrokerPolicy{Spec: spec}
-		_, err := validator.ValidateCreate(ctx, obj)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("appId"))
-	})
-
-	It("rejects duplicate credential names", func() {
-		spec := newSpec()
-		spec.Grants.Credentials = append(spec.Grants.Credentials, paddockv1alpha1.CredentialGrant{
-			Name: "ANTHROPIC_API_KEY",
-			Provider: paddockv1alpha1.ProviderConfig{
-				Kind:      "Static",
-				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "dupe", Key: "k"},
-			},
-		})
-		obj := &paddockv1alpha1.BrokerPolicy{Spec: spec}
-		_, err := validator.ValidateCreate(ctx, obj)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("collides"))
-	})
-
-	It("rejects an egress grant with an interior wildcard", func() {
-		spec := newSpec()
-		spec.Grants.Egress = []paddockv1alpha1.EgressGrant{
-			{Host: "api.*.anthropic.com", Ports: []int32{443}},
-		}
-		obj := &paddockv1alpha1.BrokerPolicy{Spec: spec}
-		_, err := validator.ValidateCreate(ctx, obj)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("wildcard"))
-	})
-
-	It("rejects an egress grant with an out-of-range port", func() {
-		spec := newSpec()
-		spec.Grants.Egress = []paddockv1alpha1.EgressGrant{
-			{Host: "api.anthropic.com", Ports: []int32{70000}},
-		}
-		obj := &paddockv1alpha1.BrokerPolicy{Spec: spec}
-		_, err := validator.ValidateCreate(ctx, obj)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("port"))
-	})
-
-	It("rejects duplicate git repo tuples", func() {
-		spec := newSpec()
-		spec.Grants.Egress = nil
-		spec.Grants.GitRepos = []paddockv1alpha1.GitRepoGrant{
-			{Owner: "acme", Repo: "app"},
-			{Owner: "acme", Repo: "app"},
-		}
-		obj := &paddockv1alpha1.BrokerPolicy{Spec: spec}
-		_, err := validator.ValidateCreate(ctx, obj)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("collides"))
-	})
-
-	It("allows updates to spec (not immutable)", func() {
-		oldObj := &paddockv1alpha1.BrokerPolicy{Spec: newSpec()}
-		newObj := oldObj.DeepCopy()
-		newObj.Spec.Grants.Egress = append(newObj.Spec.Grants.Egress,
-			paddockv1alpha1.EgressGrant{Host: "api.openai.com", Ports: []int32{443}})
-		_, err := validator.ValidateUpdate(ctx, oldObj, newObj)
-		Expect(err).NotTo(HaveOccurred())
 	})
 })

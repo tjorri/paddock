@@ -582,7 +582,6 @@ spec:
   requires:
     credentials:
       - name: DEMO_TOKEN
-        purpose: generic
   defaults:
     timeout: 60s
   workspace:
@@ -590,7 +589,7 @@ spec:
     mountPath: /workspace
 `, v3BrokerDownTemplate, echoImage, adapterEchoImage))
 
-			By("applying a BrokerPolicy granting DEMO_TOKEN via StaticProvider")
+			By("applying a BrokerPolicy granting DEMO_TOKEN via UserSuppliedSecret (in-container delivery)")
 			applyFromYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
@@ -599,16 +598,18 @@ metadata:
   namespace: %s
 spec:
   appliesToTemplates: ["%s"]
-  denyMode: block
-  brokerFailureMode: Closed
   grants:
     credentials:
       - name: DEMO_TOKEN
         provider:
-          kind: Static
+          kind: UserSuppliedSecret
           secretRef:
             name: %s
             key: DEMO_TOKEN
+          deliveryMode:
+            inContainer:
+              accepted: true
+              reason: "E2E broker-down scenario exercises a raw credential plumbed into the run container."
 `, v3BrokerDownNamespace, v3BrokerDownTemplate, v3BrokerDownSecretName))
 
 			By("scaling the broker Deployment to 0 before submitting the run")
@@ -711,7 +712,6 @@ metadata:
   namespace: %s
 spec:
   appliesToTemplates: ["%s"]
-  denyMode: block
   grants:
     credentials: []
 `, v3PolicyDelPolicyName, v3PolicyDelNamespace, v3EgressTemplate))

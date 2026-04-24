@@ -75,6 +75,24 @@ type IssueResponse struct {
 	// Purely informational; the caller has no business deciding based
 	// on it.
 	Provider string `json:"provider"`
+
+	// DeliveryMode names how the value reaches the agent. One of
+	// "ProxyInjected" or "InContainer". Built-in providers
+	// (AnthropicAPI, GitHubApp, PATPool) are always ProxyInjected.
+	// UserSuppliedSecret takes this from the matched grant's
+	// deliveryMode.
+	DeliveryMode string `json:"deliveryMode"`
+
+	// Hosts is the destination host list associated with this
+	// credential's delivery. For ProxyInjected delivery it names the
+	// hostnames the proxy will substitute on; for InContainer delivery
+	// it is empty. PATPool, which is host-agnostic, may omit this.
+	Hosts []string `json:"hosts,omitempty"`
+
+	// InContainerReason is the operator-supplied justification for
+	// opting a UserSuppliedSecret into InContainer delivery. Empty for
+	// any other delivery mode.
+	InContainerReason string `json:"inContainerReason,omitempty"`
 }
 
 // ErrorResponse is the broker's error envelope. HTTP status code

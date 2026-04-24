@@ -20,9 +20,6 @@ spec:
     - jsonPath: .spec.appliesToTemplates
       name: Templates
       type: string
-    - jsonPath: .spec.denyMode
-      name: Deny-Mode
-      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -31,9 +28,7 @@ spec:
       openAPIV3Schema:
         description: |-
           BrokerPolicy declares the capabilities the broker will back for one
-          or more templates in a namespace. Without at least one BrokerPolicy
-          granting its required capabilities, a HarnessRun is rejected at
-          admission. See ADR-0014 and spec 0002 §8.
+          or more templates in a namespace.
         properties:
           apiVersion:
             description: |-
@@ -55,10 +50,7 @@ spec:
           spec:
             description: |-
               BrokerPolicySpec declares, for one namespace, which capabilities the
-              broker is willing to back for a set of templates. A HarnessRun against
-              template T in namespace N is admitted iff the union of matching
-              BrokerPolicy grants in N is a superset of T.spec.requires. See
-              ADR-0014 and spec 0002 §8.
+              broker is willing to back for a set of templates. See spec 0003.
             properties:
               appliesToTemplates:
                 description: |-
@@ -69,86 +61,132 @@ spec:
                   type: string
                 minItems: 1
                 type: array
-              brokerFailureMode:
-                default: Closed
-                description: |-
-                  BrokerFailureMode selects behaviour when the broker is unreachable.
-                  "Closed" (default) holds runs in Pending with BrokerReady=False;
-                  "DegradedOpen" is opt-in for homelab installs without broker HA.
-                enum:
-                - Closed
-                - DegradedOpen
-                type: string
-              denyMode:
-                default: block
-                description: |-
-                  DenyMode governs what the proxy does on a denied egress request.
-                  "block" drops the connection; "warn" allows the connection and
-                  records an AuditEvent with decision=warned. Only valid pre-prod.
-                enum:
-                - block
-                - warn
-                type: string
               grants:
                 description: Grants enumerates the capabilities this policy is willing
                   to back.
                 properties:
                   credentials:
-                    description: |-
-                      Credentials supplies a Provider + configuration for each logical
-                      credential name this policy is willing to back.
                     items:
                       description: |-
                         CredentialGrant supplies a provider + configuration for one logical
                         credential name declared by templates' requires.credentials[*].name.
                       properties:
                         name:
-                          description: Name matches a template's requires.credentials[*].name.
                           type: string
                         provider:
-                          description: |-
-                            Provider selects the backing issuer and its configuration. See
-                            ADR-0015 for the interface.
+                          description: ProviderConfig selects a broker provider and
+                            supplies its configuration.
                           properties:
                             appId:
                               description: AppID is the GitHub App numeric ID (GitHubApp
                                 only).
                               type: string
+                            deliveryMode:
+                              description: |-
+                                DeliveryMode is required for UserSuppliedSecret and forbidden for
+                                all other kinds.
+                              properties:
+                                inContainer:
+                                  description: |-
+                                    InContainerDelivery opts the user into delivering the real secret
+                                    value to the agent container's environment.
+                                  properties:
+                                    accepted:
+                                      description: Accepted must be true.
+                                      type: boolean
+                                    reason:
+                                      description: Reason explains why in-container
+                                        delivery is necessary.
+                                      maxLength: 500
+                                      minLength: 20
+                                      type: string
+                                  required:
+                                  - accepted
+                                  - reason
+                                  type: object
+                                proxyInjected:
+                                  description: |-
+                                    ProxyInjectedDelivery describes how the proxy should substitute the
+                                    real secret value onto outbound requests.
+                                  properties:
+                                    basicAuth:
+                                      description: BasicAuthSubstitution sets HTTP
+                                        Basic authentication.
+                                      properties:
+                                        username:
+                                          type: string
+                                      required:
+                                      - username
+                                      type: object
+                                    header:
+                                      description: Exactly one of Header / QueryParam
+                                        / BasicAuth must be set.
+                                      properties:
+                                        name:
+                                          type: string
+                                        valuePrefix:
+                                          description: ValuePrefix is prepended to
+                                            the secret value (e.g. "Bearer ").
+                                          type: string
+                                      required:
+                                      - name
+                                      type: object
+                                    hosts:
+                                      description: |-
+                                        Hosts are the destination hostnames the proxy will substitute on.
+                                        A leading "*." permits any subdomain. At least one entry required.
+                                      items:
+                                        type: string
+                                      minItems: 1
+                                      type: array
+                                    queryParam:
+                                      description: QueryParamSubstitution rewrites
+                                        one URL query parameter.
+                                      properties:
+                                        name:
+                                          type: string
+                                      required:
+                                      - name
+                                      type: object
+                                  required:
+                                  - hosts
+                                  type: object
+                              type: object
+                            hosts:
+                              description: |-
+                                Hosts optionally overrides the destination host list used for
+                                proxy substitution, for built-in providers (AnthropicAPI,
+                                GitHubApp, PATPool). For UserSuppliedSecret with proxyInjected
+                                delivery, hosts live under deliveryMode.proxyInjected instead and
+                                this field must not be set.
+                              items:
+                                type: string
+                              type: array
                             installationId:
                               description: InstallationID is the GitHub App installation
                                 ID (GitHubApp only).
                               type: string
                             kind:
-                              description: |-
-                                Kind names the provider implementation. Known values in v0.3:
-                                Static, AnthropicAPI, GitHubApp, PATPool. Adding a new provider
-                                is a broker code change, not a CRD change.
+                              description: Kind names the provider implementation.
                               enum:
-                              - Static
+                              - UserSuppliedSecret
                               - AnthropicAPI
                               - GitHubApp
                               - PATPool
                               type: string
                             rotationSeconds:
-                              description: |-
-                                RotationSeconds optionally overrides the provider's default TTL.
-                                Ignored by providers whose lease semantics are externally fixed
-                                (e.g. GitHubApp installation tokens are always 1h).
+                              description: RotationSeconds optionally overrides the
+                                provider's default TTL.
                               format: int32
                               minimum: 60
                               type: integer
                             secretRef:
-                              description: |-
-                                SecretRef identifies the Secret backing this provider. Required
-                                for Static (key supplies the value), AnthropicAPI (key holds the
-                                upstream API key), GitHubApp (key holds the private key PEM),
-                                PATPool (key holds a newline-delimited pool).
+                              description: SecretRef identifies the Secret backing
+                                this provider.
                               properties:
                                 key:
-                                  description: Key within the Secret's data.
                                   type: string
                                 name:
-                                  description: Name of the Secret.
                                   type: string
                               required:
                               - key
@@ -163,62 +201,37 @@ spec:
                       type: object
                     type: array
                   egress:
-                    description: |-
-                      Egress lists upstream destinations this policy permits. Host may
-                      include a leading "*." wildcard (e.g. "*.anthropic.com"). Port 0
-                      means any port; otherwise the tuple matches exactly.
                     items:
-                      description: EgressGrant permits an upstream destination.
+                      description: |-
+                        EgressGrant permits an upstream destination. Pure allow/deny; the
+                        substituteAuth flag from v0.3 is removed — substitution is driven by
+                        credential grants' deliveryMode and built-in providers' Hosts defaults.
                       properties:
                         host:
-                          description: |-
-                            Host is a destination hostname. A leading "*." permits any
-                            subdomain (e.g. "*.anthropic.com"). Case-insensitive.
                           type: string
                         ports:
-                          description: |-
-                            Ports lists TCP ports permitted for this host. Empty or [0] means
-                            any port.
                           items:
                             format: int32
                             type: integer
                           type: array
-                        substituteAuth:
-                          description: |-
-                            SubstituteAuth, when true, declares that the proxy should MITM
-                            connections to this destination and call the broker's
-                            SubstituteAuth endpoint before forwarding. Required for
-                            AnthropicAPIProvider's x-api-key swap. When false (default) the
-                            proxy acts as a transparent TCP relay after the ValidateEgress
-                            check — no TLS decryption.
-                          type: boolean
                       required:
                       - host
                       type: object
                     type: array
                   gitRepos:
-                    description: |-
-                      GitRepos lists repository tuples the broker will mint gitforge
-                      tokens for. Matched against the installation's actually-installed
-                      repo list at issuance time (double-gate).
                     items:
-                      description: |-
-                        GitRepoGrant permits the broker to mint a gitforge token scoped to
-                        this repository at the declared access level.
+                      description: GitRepoGrant permits a gitforge token scoped to
+                        one repo.
                       properties:
                         access:
                           default: read
-                          description: Access selects the scope granted to the issued
-                            token.
                           enum:
                           - read
                           - write
                           type: string
                         owner:
-                          description: Owner is the repo owner (user or org).
                           type: string
                         repo:
-                          description: Repo is the repository name.
                           type: string
                       required:
                       - owner
@@ -226,16 +239,6 @@ spec:
                       type: object
                     type: array
                 type: object
-              minInterceptionMode:
-                description: |-
-                  MinInterceptionMode rejects — rather than downgrades — a run that
-                  would resolve to a weaker interception mode than this value.
-                  "transparent" requires that the namespace admits NET_ADMIN on init
-                  containers. Unset means no floor. See ADR-0013.
-                enum:
-                - transparent
-                - cooperative
-                type: string
             required:
             - appliesToTemplates
             - grants
@@ -244,9 +247,6 @@ spec:
             description: BrokerPolicyStatus reports the observed state of a BrokerPolicy.
             properties:
               conditions:
-                description: |-
-                  Conditions report typed lifecycle signals. Known types:
-                  Ready (all referenced Secrets resolvable and providers loadable).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -306,7 +306,6 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               observedGeneration:
-                description: ObservedGeneration is the spec generation last reconciled.
                 format: int64
                 type: integer
             type: object

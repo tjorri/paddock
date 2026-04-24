@@ -124,7 +124,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, audit, err := s.issue(ctx, runNamespace, runName, req)
+	result, grant, audit, err := s.issue(ctx, runNamespace, runName, req)
 	if err != nil {
 		// Best-effort audit write for denials; any failure here is logged
 		// but not surfaced to the caller (the credential denial is the
@@ -149,24 +149,69 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, brokerapi.IssueResponse{
+	resp := brokerapi.IssueResponse{
 		Value:     result.Value,
 		LeaseID:   result.LeaseID,
 		ExpiresAt: result.ExpiresAt,
 		Provider:  audit.Provider,
-	})
+	}
+	populateDeliveryMetadata(&resp, grant)
+	writeJSON(w, http.StatusOK, resp)
 }
 
-// issue is the broker's core decision function. Returns (result, audit, err).
+// populateDeliveryMetadata fills DeliveryMode / Hosts / InContainerReason
+// on an IssueResponse from the grant that was matched. Built-in providers
+// are always ProxyInjected with baked-in default hosts (overridable via
+// grant.Provider.Hosts); UserSuppliedSecret takes its delivery mode from
+// grant.Provider.DeliveryMode.
+func populateDeliveryMetadata(resp *brokerapi.IssueResponse, grant *paddockv1alpha1.CredentialGrant) {
+	if grant == nil {
+		return
+	}
+	switch grant.Provider.Kind {
+	case "UserSuppliedSecret":
+		dm := grant.Provider.DeliveryMode
+		switch {
+		case dm != nil && dm.ProxyInjected != nil:
+			resp.DeliveryMode = "ProxyInjected"
+			resp.Hosts = dm.ProxyInjected.Hosts
+		case dm != nil && dm.InContainer != nil:
+			resp.DeliveryMode = "InContainer"
+			resp.InContainerReason = dm.InContainer.Reason
+		}
+	case "AnthropicAPI":
+		resp.DeliveryMode = "ProxyInjected"
+		resp.Hosts = hostsOrDefault(grant.Provider.Hosts, []string{"api.anthropic.com"})
+	case "GitHubApp":
+		resp.DeliveryMode = "ProxyInjected"
+		resp.Hosts = hostsOrDefault(grant.Provider.Hosts, []string{"github.com", "api.github.com"})
+	case "PATPool":
+		resp.DeliveryMode = "ProxyInjected"
+		resp.Hosts = hostsOrDefault(grant.Provider.Hosts, nil)
+	}
+}
+
+// hostsOrDefault returns override when non-empty, else the built-in
+// default list for the provider kind.
+func hostsOrDefault(override, builtin []string) []string {
+	if len(override) > 0 {
+		return override
+	}
+	return builtin
+}
+
+// issue is the broker's core decision function. Returns (result, grant, audit, err).
+// grant is the matched CredentialGrant when one was found, so the caller
+// can attach delivery metadata (mode, hosts, reason) to the response.
 // audit is non-nil whenever a decision was made (so the caller records
 // either credential-issued or credential-denied). err is the surface
 // error for the caller response; applicationError is preferred.
-func (s *Server) issue(ctx context.Context, namespace, runName string, req brokerapi.IssueRequest) (providers.IssueResult, *CredentialAudit, error) {
+func (s *Server) issue(ctx context.Context, namespace, runName string, req brokerapi.IssueRequest) (providers.IssueResult, *paddockv1alpha1.CredentialGrant, *CredentialAudit, error) {
 	// Resolve the run and its template.
 	var run paddockv1alpha1.HarnessRun
 	if err := s.Client.Get(ctx, types.NamespacedName{Name: runName, Namespace: namespace}, &run); err != nil {
 		if apierrors.IsNotFound(err) {
-			return providers.IssueResult{}, &CredentialAudit{
+			return providers.IssueResult{}, nil, &CredentialAudit{
 					RunName:        runName,
 					Namespace:      namespace,
 					CredentialName: req.Name,
@@ -174,16 +219,15 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 				},
 				&applicationError{status: http.StatusNotFound, code: "RunNotFound", message: err.Error()}
 		}
-		return providers.IssueResult{}, nil, fmt.Errorf("loading run: %w", err)
+		return providers.IssueResult{}, nil, nil, fmt.Errorf("loading run: %w", err)
 	}
 
 	spec, err := resolveTemplateSpec(ctx, s.Client, namespace, run.Spec.TemplateRef)
 	if err != nil {
-		return providers.IssueResult{}, nil, fmt.Errorf("resolving template: %w", err)
+		return providers.IssueResult{}, nil, nil, fmt.Errorf("resolving template: %w", err)
 	}
-	requirement, ok := findRequirement(spec.Requires.Credentials, req.Name)
-	if !ok {
-		return providers.IssueResult{}, &CredentialAudit{
+	if !hasRequirement(spec.Requires.Credentials, req.Name) {
+		return providers.IssueResult{}, nil, &CredentialAudit{
 				RunName:        runName,
 				Namespace:      namespace,
 				CredentialName: req.Name,
@@ -199,14 +243,13 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 	// Intersect template.requires against in-namespace BrokerPolicies.
 	grant, matchedPolicy, policyName, err := matchPolicyGrant(ctx, s.Client, namespace, run.Spec.TemplateRef.Name, req.Name)
 	if err != nil {
-		return providers.IssueResult{}, nil, fmt.Errorf("listing BrokerPolicies: %w", err)
+		return providers.IssueResult{}, nil, nil, fmt.Errorf("listing BrokerPolicies: %w", err)
 	}
 	if grant == nil {
-		return providers.IssueResult{}, &CredentialAudit{
+		return providers.IssueResult{}, nil, &CredentialAudit{
 				RunName:        runName,
 				Namespace:      namespace,
 				CredentialName: req.Name,
-				Purpose:        requirement.Purpose,
 				Reason:         fmt.Sprintf("no BrokerPolicy in namespace %q grants credential %q for template %q", namespace, req.Name, run.Spec.TemplateRef.Name),
 			},
 			&applicationError{
@@ -219,11 +262,10 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 	// Dispatch to the provider.
 	provider, ok := s.Providers.Lookup(grant.Provider.Kind)
 	if !ok {
-		return providers.IssueResult{}, &CredentialAudit{
+		return providers.IssueResult{}, grant, &CredentialAudit{
 				RunName:        runName,
 				Namespace:      namespace,
 				CredentialName: req.Name,
-				Purpose:        requirement.Purpose,
 				Provider:       grant.Provider.Kind,
 				MatchedPolicy:  policyName,
 				Reason:         "provider not registered on this broker",
@@ -233,27 +275,11 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 				message: fmt.Sprintf("provider kind %q is not registered on this broker", grant.Provider.Kind),
 			}
 	}
-	if !providerBacksPurpose(provider, requirement.Purpose) {
-		return providers.IssueResult{}, &CredentialAudit{
-				RunName:        runName,
-				Namespace:      namespace,
-				CredentialName: req.Name,
-				Purpose:        requirement.Purpose,
-				Provider:       provider.Name(),
-				MatchedPolicy:  policyName,
-				Reason:         fmt.Sprintf("provider %q cannot back purpose %q", provider.Name(), requirement.Purpose),
-			},
-			&applicationError{
-				status: http.StatusForbidden, code: "PolicyMissing",
-				message: fmt.Sprintf("provider %q cannot back purpose %q", provider.Name(), requirement.Purpose),
-			}
-	}
 
 	result, err := provider.Issue(ctx, providers.IssueRequest{
 		RunName:        runName,
 		Namespace:      namespace,
 		CredentialName: req.Name,
-		Purpose:        requirement.Purpose,
 		Grant:          *grant,
 		GitRepos:       matchedPolicy.Spec.Grants.GitRepos,
 	})
@@ -261,7 +287,6 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 		RunName:        runName,
 		Namespace:      namespace,
 		CredentialName: req.Name,
-		Purpose:        requirement.Purpose,
 		Provider:       provider.Name(),
 		MatchedPolicy:  policyName,
 		When:           time.Now().UTC(),
@@ -274,17 +299,17 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 		// ProviderFailure so the controller can pick an appropriate
 		// backoff.
 		if errors.Is(err, providers.ErrPoolExhausted) {
-			return providers.IssueResult{}, audit, &applicationError{
+			return providers.IssueResult{}, grant, audit, &applicationError{
 				status: http.StatusServiceUnavailable, code: "PoolExhausted",
 				message: err.Error(),
 			}
 		}
-		return providers.IssueResult{}, audit, &applicationError{
+		return providers.IssueResult{}, grant, audit, &applicationError{
 			status: http.StatusInternalServerError, code: "ProviderFailure",
 			message: err.Error(),
 		}
 	}
-	return result, audit, nil
+	return result, grant, audit, nil
 }
 
 // handleValidateEgress is the proxy's per-connection policy check.
@@ -354,9 +379,8 @@ func (s *Server) handleValidateEgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, brokerapi.ValidateEgressResponse{
-		Allowed:        true,
-		MatchedPolicy:  policyName,
-		SubstituteAuth: grant.SubstituteAuth,
+		Allowed:       true,
+		MatchedPolicy: policyName,
 	})
 }
 

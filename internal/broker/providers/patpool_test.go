@@ -61,7 +61,6 @@ func TestPATPool_IssueThenSubstitute(t *testing.T) {
 		RunName:        "cc-1",
 		Namespace:      "my-team",
 		CredentialName: "GITHUB_TOKEN",
-		Purpose:        paddockv1alpha1.CredentialPurposeGitForge,
 		Grant:          patPoolGrant(),
 	})
 	if err != nil {
@@ -296,12 +295,5 @@ func TestPATPool_EmptyPool(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("expected empty-pool error, got %v", err)
-	}
-}
-
-func TestPATPool_BacksOnlyGitForge(t *testing.T) {
-	got := (&PATPoolProvider{}).Purposes()
-	if len(got) != 1 || got[0] != paddockv1alpha1.CredentialPurposeGitForge {
-		t.Fatalf("Purposes = %v, want [gitforge]", got)
 	}
 }
