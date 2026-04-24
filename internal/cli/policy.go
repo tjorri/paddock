@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -50,6 +51,7 @@ func newPolicyCmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {
 	cmd.AddCommand(newPolicyScaffoldCmd(cfg))
 	cmd.AddCommand(newPolicyListCmd(cfg))
 	cmd.AddCommand(newPolicyCheckCmd(cfg))
+	cmd.AddCommand(newPolicySuggestCmd(cfg))
 	return cmd
 }
 
@@ -312,4 +314,165 @@ func yesNo(b bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+// ---------- policy suggest -------------------------------------------
+
+// suggestOptions is the parsed flag shape for `paddock policy suggest`.
+// --run X and --all are mutually exclusive; exactly one must be set.
+// --since is optional; zero means "no lower bound on event timestamp".
+type suggestOptions struct {
+	runName        string
+	allInNamespace bool
+	since          time.Duration
+}
+
+func newPolicySuggestCmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {
+	opts := suggestOptions{}
+	cmd := &cobra.Command{
+		Use:   "suggest",
+		Short: "Suggest BrokerPolicy.spec.grants.egress entries from recent denials",
+		Long: "Reads AuditEvent objects in the current namespace (kind=egress-block), " +
+			"groups by (host, port), and prints a ready-to-paste grants.egress block. " +
+			"Use after a first run to iterate toward a complete allowlist; see the " +
+			"Bootstrapping an allowlist section of the v0.3→v0.4 migration doc.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, ns, err := newClient(cfg)
+			if err != nil {
+				return err
+			}
+			return runPolicySuggestTo(cmd.Context(), c, ns,
+				cmd.OutOrStdout(), cmd.ErrOrStderr(), opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.runName, "run", "",
+		"Limit suggestions to one HarnessRun (matches the paddock.dev/run label on AuditEvents).")
+	cmd.Flags().BoolVar(&opts.allInNamespace, "all", false,
+		"Aggregate denials across every run in the current namespace. Mutually exclusive with --run.")
+	cmd.Flags().DurationVar(&opts.since, "since", 0,
+		"Only consider denials newer than this duration (e.g. 1h, 24h). Zero (default) means no lower bound.")
+	return cmd
+}
+
+// runPolicySuggest is the two-writer form used by the core test suite
+// (it routes diagnostics to the same writer as output). Cobra callers
+// go through runPolicySuggestTo so the no-denials message lands on
+// stderr while the (empty) suggestion lands on stdout.
+func runPolicySuggest(ctx context.Context, c client.Client, ns string, out io.Writer, opts suggestOptions) error { //nolint:unparam
+	return runPolicySuggestTo(ctx, c, ns, out, out, opts)
+}
+
+// runPolicySuggestTo is the testable entry point with split writers.
+// stdout receives the YAML suggestion; stderr receives the no-denials
+// diagnostic. Both writers must be non-nil.
+func runPolicySuggestTo(ctx context.Context, c client.Client, ns string,
+	stdout, stderr io.Writer, opts suggestOptions) error {
+	if opts.runName == "" && !opts.allInNamespace {
+		return fmt.Errorf("one of --run or --all is required")
+	}
+	if opts.runName != "" && opts.allInNamespace {
+		return fmt.Errorf("--run and --all are mutually exclusive")
+	}
+
+	labels := client.MatchingLabels{
+		paddockv1alpha1.AuditEventLabelKind: string(paddockv1alpha1.AuditKindEgressBlock),
+	}
+	if opts.runName != "" {
+		labels[paddockv1alpha1.AuditEventLabelRun] = opts.runName
+	}
+	var list paddockv1alpha1.AuditEventList
+	if err := c.List(ctx, &list, client.InNamespace(ns), labels); err != nil {
+		return fmt.Errorf("listing AuditEvents in %s: %w", ns, err)
+	}
+
+	var cutoff time.Time
+	if opts.since > 0 {
+		cutoff = time.Now().UTC().Add(-opts.since)
+	}
+	groups := groupDeniedEgress(list.Items, cutoff)
+
+	scope := "namespace " + ns
+	if opts.runName != "" {
+		scope = "run " + opts.runName
+	}
+	if len(groups) == 0 {
+		fmt.Fprintf(stderr, "no denied egress attempts found for %s\n", scope)
+		return nil
+	}
+	renderSuggestion(stdout, groups, scope)
+	return nil
+}
+
+// hostPort keys the grouping map. Kept as a value type so map lookups
+// don't need pointer dereferencing.
+type hostPort struct {
+	host string
+	port int32
+}
+
+// groupDeniedEgress aggregates AuditEvent destinations by (host, port).
+// Events older than cutoff are dropped; a zero cutoff disables the
+// filter. Events whose Destination is nil (shouldn't happen for
+// egress-block but defensive) are skipped silently.
+func groupDeniedEgress(events []paddockv1alpha1.AuditEvent, cutoff time.Time) map[hostPort]int {
+	out := map[hostPort]int{}
+	for _, e := range events {
+		if e.Spec.Destination == nil {
+			continue
+		}
+		if !cutoff.IsZero() && e.Spec.Timestamp.Time.Before(cutoff) {
+			continue
+		}
+		key := hostPort{host: e.Spec.Destination.Host, port: e.Spec.Destination.Port}
+		out[key]++
+	}
+	return out
+}
+
+// renderSuggestion writes a YAML snippet to w. Output is sorted by
+// count desc, host asc for byte-stability across runs. The final
+// `ports:` list uses [443] when the port is known, [] when port is 0
+// ("any port" sentinel).
+func renderSuggestion(w io.Writer, groups map[hostPort]int, scope string) {
+	type row struct {
+		key   hostPort
+		count int
+	}
+	rows := make([]row, 0, len(groups))
+	for k, v := range groups {
+		rows = append(rows, row{key: k, count: v})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].count != rows[j].count {
+			return rows[i].count > rows[j].count
+		}
+		return rows[i].key.host < rows[j].key.host
+	})
+
+	// Column-align the host field so the output is readable at a glance.
+	// maxHost tracks the widest hostField including the trailing comma.
+	maxHost := 0
+	for _, r := range rows {
+		quoted := len(r.key.host) + 3 // for the two " and the trailing ,
+		if quoted > maxHost {
+			maxHost = quoted
+		}
+	}
+
+	fmt.Fprintf(w, "# Suggested additions for %s (%d distinct denials):\n", scope, len(rows))
+	fmt.Fprintln(w, "spec.grants.egress:")
+	for _, r := range rows {
+		hostField := fmt.Sprintf("%q,", r.key.host)
+		pad := strings.Repeat(" ", maxHost+1-len(hostField))
+		portsField := "[]"
+		if r.key.port != 0 {
+			portsField = fmt.Sprintf("[%d]", r.key.port)
+		}
+		unit := "attempts"
+		if r.count == 1 {
+			unit = "attempt"
+		}
+		fmt.Fprintf(w, "  - { host: %s%sports: %s }    # %d %s denied\n",
+			hostField, pad, portsField, r.count, unit)
+	}
 }
