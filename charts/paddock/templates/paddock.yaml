@@ -699,7 +699,6 @@ spec:
       volumes:
         - name: tls-cert
           secret:
-            defaultMode: 272
             secretName: broker-serving-cert
 ---
 ---

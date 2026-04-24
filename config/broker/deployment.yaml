@@ -74,4 +74,11 @@ spec:
         - name: tls-cert
           secret:
             secretName: broker-serving-cert
-            defaultMode: 0o420
+            # Omit defaultMode — Kubernetes defaults to 0o644 (decimal
+            # 420), which lets the non-root broker process (UID 65532)
+            # read tls.crt/tls.key via the "other" bit. An earlier
+            # `defaultMode: 0o420` rendered as decimal 272 = 0420
+            # octal = r---w---- which root can read but non-root
+            # cannot, causing every TLS handshake to fail with
+            # "remote error: tls: internal error" once
+            # GetCertificate ran LoadX509KeyPair.
