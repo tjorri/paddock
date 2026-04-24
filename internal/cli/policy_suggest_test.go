@@ -123,10 +123,10 @@ func TestPolicySuggest_RunScoped_GroupsAndSorts(t *testing.T) {
 	// Most-denied host first. Exact YAML shape matters: downstream users
 	// copy-paste this directly into their BrokerPolicy.
 	wantLines := []string{
-		"# Suggested additions for run run-a (2 distinct denials):",
+		"# Suggested additions for run run-a (2 distinct destinations):",
 		"spec.grants.egress:",
-		`  - { host: "api.openai.com",     ports: [443] }    #  3 attempts denied`,
-		`  - { host: "registry.npmjs.org", ports: [443] }    #  1 attempt denied`,
+		`  - { host: "api.openai.com",     ports: [443] }    #  3 attempts logged`,
+		`  - { host: "registry.npmjs.org", ports: [443] }    #  1 attempt logged`,
 	}
 	for _, line := range wantLines {
 		if !strings.Contains(got, line) {
@@ -162,7 +162,7 @@ func TestPolicySuggest_AllInNamespace_AggregatesAcrossRuns(t *testing.T) {
 		t.Errorf("expected both hosts aggregated across runs; got:\n%s", got)
 	}
 	// openai had 2 attempts (one per run); slack had 1.
-	if !strings.Contains(got, "#  2 attempts denied") {
+	if !strings.Contains(got, "#  2 attempts logged") {
 		t.Errorf("expected openai count of 2; got:\n%s", got)
 	}
 }
@@ -204,7 +204,7 @@ func TestPolicySuggest_RunScoped_ZeroDenialsReturnsEmptyStdout(t *testing.T) {
 	if strings.TrimSpace(out.String()) != "" {
 		t.Errorf("expected empty stdout on zero denials; got: %q", out.String())
 	}
-	if !strings.Contains(errOut.String(), "no denied egress attempts") {
+	if !strings.Contains(errOut.String(), "no recorded egress attempts") {
 		t.Errorf("expected no-denials message on stderr; got: %q", errOut.String())
 	}
 	if !strings.Contains(errOut.String(), "run-a") {
@@ -330,10 +330,10 @@ func TestPolicySuggest_AggregatesDiscoveryAllowAlongsideEgressBlock(t *testing.T
 	if !strings.Contains(got, "registry.npmjs.org") {
 		t.Errorf("output missing registry.npmjs.org (discovery-allow only):\n%s", got)
 	}
-	if !strings.Contains(got, "#  2 attempts denied") {
+	if !strings.Contains(got, "#  2 attempts logged") {
 		t.Errorf("output missing 2-attempt count for openai:\n%s", got)
 	}
-	if !strings.Contains(got, "#  1 attempt denied") {
+	if !strings.Contains(got, "#  1 attempt logged") {
 		t.Errorf("output missing 1-attempt count for npmjs:\n%s", got)
 	}
 }

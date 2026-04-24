@@ -405,14 +405,14 @@ func runPolicySuggestTo(ctx context.Context, c client.Client, ns string,
 	if opts.since > 0 {
 		cutoff = time.Now().UTC().Add(-opts.since)
 	}
-	groups := groupDeniedEgress(list.Items, cutoff)
+	groups := groupEgressCandidates(list.Items, cutoff)
 
 	scope := "namespace " + ns
 	if opts.runName != "" {
 		scope = "run " + opts.runName
 	}
 	if len(groups) == 0 {
-		fmt.Fprintf(stderr, "no denied egress attempts found for %s\n", scope)
+		fmt.Fprintf(stderr, "no recorded egress attempts found for %s\n", scope)
 		return nil
 	}
 	renderSuggestion(stdout, groups, scope)
@@ -426,11 +426,12 @@ type hostPort struct {
 	port int32
 }
 
-// groupDeniedEgress aggregates AuditEvent destinations by (host, port).
-// Events older than cutoff are dropped; a zero cutoff disables the
-// filter. Events whose Destination is nil (shouldn't happen for
-// egress-block but defensive) are skipped silently.
-func groupDeniedEgress(events []paddockv1alpha1.AuditEvent, cutoff time.Time) map[hostPort]int {
+// groupEgressCandidates aggregates AuditEvent destinations by (host, port)
+// across both egress-block and egress-discovery-allow event kinds, producing
+// the candidate set for a policy suggestion. Events older than cutoff are
+// dropped; a zero cutoff disables the filter. Events whose Destination is nil
+// are skipped silently.
+func groupEgressCandidates(events []paddockv1alpha1.AuditEvent, cutoff time.Time) map[hostPort]int {
 	out := map[hostPort]int{}
 	for _, e := range events {
 		if e.Spec.Destination == nil {
@@ -475,7 +476,7 @@ func renderSuggestion(w io.Writer, groups map[hostPort]int, scope string) {
 		}
 	}
 
-	fmt.Fprintf(w, "# Suggested additions for %s (%d distinct denials):\n", scope, len(rows))
+	fmt.Fprintf(w, "# Suggested additions for %s (%d distinct destinations):\n", scope, len(rows))
 	fmt.Fprintln(w, "spec.grants.egress:")
 	for _, r := range rows {
 		hostField := fmt.Sprintf("%q,", r.key.host)
@@ -488,7 +489,7 @@ func renderSuggestion(w io.Writer, groups map[hostPort]int, scope string) {
 		if r.count == 1 {
 			unit = "attempt"
 		}
-		fmt.Fprintf(w, "  - { host: %s%sports: %s }    # %2d %s denied\n",
+		fmt.Fprintf(w, "  - { host: %s%sports: %s }    # %2d %s logged\n",
 			hostField, pad, portsField, r.count, unit)
 	}
 }
