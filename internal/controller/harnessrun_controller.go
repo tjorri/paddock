@@ -1078,9 +1078,9 @@ func (r *HarnessRunReconciler) proxyConfigured() bool {
 //     no init container is available).
 //  2. The run's namespace PSA enforce label permits NET_ADMIN.
 //
-// Otherwise cooperative mode is used. The admission webhook has
-// already rejected any MinInterceptionMode violations; this path
-// simply picks the concrete mode to render into the Pod spec.
+// Otherwise cooperative mode is used. BrokerPolicy no longer exposes
+// a minInterceptionMode floor; a Plan-B replacement may reintroduce
+// an explicit spec.interception knob in a future release.
 func (r *HarnessRunReconciler) resolveInterceptionMode(
 	ctx context.Context,
 	run *paddockv1alpha1.HarnessRun,
@@ -1093,7 +1093,7 @@ func (r *HarnessRunReconciler) resolveInterceptionMode(
 	if err != nil {
 		return "", err
 	}
-	mode, _, err := policy.ResolveInterceptionMode(ctx, r.Client, run.Namespace, matches)
+	mode, err := policy.ResolveInterceptionMode(ctx, r.Client, run.Namespace, matches)
 	if err != nil {
 		return "", err
 	}

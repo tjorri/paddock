@@ -181,8 +181,7 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 	if err != nil {
 		return providers.IssueResult{}, nil, fmt.Errorf("resolving template: %w", err)
 	}
-	requirement, ok := findRequirement(spec.Requires.Credentials, req.Name)
-	if !ok {
+	if !hasRequirement(spec.Requires.Credentials, req.Name) {
 		return providers.IssueResult{}, &CredentialAudit{
 				RunName:        runName,
 				Namespace:      namespace,
@@ -206,7 +205,6 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 				RunName:        runName,
 				Namespace:      namespace,
 				CredentialName: req.Name,
-				Purpose:        requirement.Purpose,
 				Reason:         fmt.Sprintf("no BrokerPolicy in namespace %q grants credential %q for template %q", namespace, req.Name, run.Spec.TemplateRef.Name),
 			},
 			&applicationError{
@@ -223,7 +221,6 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 				RunName:        runName,
 				Namespace:      namespace,
 				CredentialName: req.Name,
-				Purpose:        requirement.Purpose,
 				Provider:       grant.Provider.Kind,
 				MatchedPolicy:  policyName,
 				Reason:         "provider not registered on this broker",
@@ -233,27 +230,11 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 				message: fmt.Sprintf("provider kind %q is not registered on this broker", grant.Provider.Kind),
 			}
 	}
-	if !providerBacksPurpose(provider, requirement.Purpose) {
-		return providers.IssueResult{}, &CredentialAudit{
-				RunName:        runName,
-				Namespace:      namespace,
-				CredentialName: req.Name,
-				Purpose:        requirement.Purpose,
-				Provider:       provider.Name(),
-				MatchedPolicy:  policyName,
-				Reason:         fmt.Sprintf("provider %q cannot back purpose %q", provider.Name(), requirement.Purpose),
-			},
-			&applicationError{
-				status: http.StatusForbidden, code: "PolicyMissing",
-				message: fmt.Sprintf("provider %q cannot back purpose %q", provider.Name(), requirement.Purpose),
-			}
-	}
 
 	result, err := provider.Issue(ctx, providers.IssueRequest{
 		RunName:        runName,
 		Namespace:      namespace,
 		CredentialName: req.Name,
-		Purpose:        requirement.Purpose,
 		Grant:          *grant,
 		GitRepos:       matchedPolicy.Spec.Grants.GitRepos,
 	})
@@ -261,7 +242,6 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 		RunName:        runName,
 		Namespace:      namespace,
 		CredentialName: req.Name,
-		Purpose:        requirement.Purpose,
 		Provider:       provider.Name(),
 		MatchedPolicy:  policyName,
 		When:           time.Now().UTC(),
@@ -354,9 +334,8 @@ func (s *Server) handleValidateEgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, brokerapi.ValidateEgressResponse{
-		Allowed:        true,
-		MatchedPolicy:  policyName,
-		SubstituteAuth: grant.SubstituteAuth,
+		Allowed:       true,
+		MatchedPolicy: policyName,
 	})
 }
 

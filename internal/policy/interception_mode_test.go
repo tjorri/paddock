@@ -61,110 +61,13 @@ func TestResolveInterceptionMode_PSA(t *testing.T) {
 				WithScheme(newTestScheme(t)).
 				WithObjects(ns).
 				Build()
-			mode, floor, err := ResolveInterceptionMode(context.Background(), cli, "test", nil)
+			mode, err := ResolveInterceptionMode(context.Background(), cli, "test", nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if mode != c.want {
 				t.Errorf("mode = %q, want %q", mode, c.want)
 			}
-			if floor.Policy != "" {
-				t.Errorf("floor should be empty without policies; got %+v", floor)
-			}
 		})
-	}
-}
-
-func TestResolveInterceptionMode_RejectsDowngradeBelowFloor(t *testing.T) {
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "tenant",
-			Labels: map[string]string{PSAEnforceLabel: PSALevelBaseline},
-		},
-	}
-	policy := &paddockv1alpha1.BrokerPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "strict", Namespace: "tenant"},
-		Spec: paddockv1alpha1.BrokerPolicySpec{
-			AppliesToTemplates:  []string{"*"},
-			MinInterceptionMode: paddockv1alpha1.InterceptionModeTransparent,
-		},
-	}
-	cli := fake.NewClientBuilder().
-		WithScheme(newTestScheme(t)).
-		WithObjects(ns).
-		Build()
-	mode, floor, err := ResolveInterceptionMode(context.Background(), cli, "tenant", []*paddockv1alpha1.BrokerPolicy{policy})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if mode != paddockv1alpha1.InterceptionModeCooperative {
-		t.Errorf("mode = %q, want cooperative (baseline forbids NET_ADMIN)", mode)
-	}
-	if floor.Policy != "strict" {
-		t.Errorf("floor policy = %q, want strict", floor.Policy)
-	}
-}
-
-func TestResolveInterceptionMode_AcceptsWhenFloorMet(t *testing.T) {
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "tenant",
-			Labels: map[string]string{PSAEnforceLabel: PSALevelPrivileged},
-		},
-	}
-	policy := &paddockv1alpha1.BrokerPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "strict", Namespace: "tenant"},
-		Spec: paddockv1alpha1.BrokerPolicySpec{
-			AppliesToTemplates:  []string{"*"},
-			MinInterceptionMode: paddockv1alpha1.InterceptionModeTransparent,
-		},
-	}
-	cli := fake.NewClientBuilder().
-		WithScheme(newTestScheme(t)).
-		WithObjects(ns).
-		Build()
-	mode, floor, err := ResolveInterceptionMode(context.Background(), cli, "tenant", []*paddockv1alpha1.BrokerPolicy{policy})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if mode != paddockv1alpha1.InterceptionModeTransparent {
-		t.Errorf("mode = %q, want transparent", mode)
-	}
-	if floor.Policy != "" {
-		t.Errorf("floor should be satisfied; got %+v", floor)
-	}
-}
-
-// TestResolveInterceptionMode_NoFloorOnCooperativeFloor confirms that a
-// cooperative floor is always satisfiable — even a restricted namespace.
-// It exists to prevent future refactors from flipping the modeCovers
-// logic.
-func TestResolveInterceptionMode_NoFloorOnCooperativeFloor(t *testing.T) {
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "tenant",
-			Labels: map[string]string{PSAEnforceLabel: PSALevelRestricted},
-		},
-	}
-	policy := &paddockv1alpha1.BrokerPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "loose", Namespace: "tenant"},
-		Spec: paddockv1alpha1.BrokerPolicySpec{
-			AppliesToTemplates:  []string{"*"},
-			MinInterceptionMode: paddockv1alpha1.InterceptionModeCooperative,
-		},
-	}
-	cli := fake.NewClientBuilder().
-		WithScheme(newTestScheme(t)).
-		WithObjects(ns).
-		Build()
-	mode, floor, err := ResolveInterceptionMode(context.Background(), cli, "tenant", []*paddockv1alpha1.BrokerPolicy{policy})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if mode != paddockv1alpha1.InterceptionModeCooperative {
-		t.Errorf("mode = %q, want cooperative", mode)
-	}
-	if floor.Policy != "" {
-		t.Errorf("cooperative floor should be met; got %+v", floor)
 	}
 }

@@ -66,7 +66,7 @@ func TestIntersect_AdmitsWhenAllRequirementsGranted(t *testing.T) {
 	c := buildClient(t, bp)
 
 	res, err := policy.Intersect(context.Background(), c, "ns", "claude", paddockv1alpha1.RequireSpec{
-		Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "ANTHROPIC_API_KEY", Purpose: paddockv1alpha1.CredentialPurposeLLM}},
+		Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "ANTHROPIC_API_KEY"}},
 		Egress:      []paddockv1alpha1.EgressRequirement{{Host: "api.anthropic.com", Ports: []int32{443}}},
 	})
 	if err != nil {
@@ -84,7 +84,7 @@ func TestIntersect_AdmitsWhenAllRequirementsGranted(t *testing.T) {
 func TestIntersect_EmptyNamespaceRejects(t *testing.T) {
 	c := buildClient(t)
 	res, err := policy.Intersect(context.Background(), c, "ns", "claude", paddockv1alpha1.RequireSpec{
-		Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "K", Purpose: paddockv1alpha1.CredentialPurposeLLM}},
+		Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "K"}},
 	})
 	if err != nil {
 		t.Fatalf("Intersect: %v", err)
@@ -211,10 +211,10 @@ func TestIntersect_SpecificPortMismatch(t *testing.T) {
 func TestDescribeShortfall_NoPolicies(t *testing.T) {
 	res := &policy.IntersectionResult{
 		Admitted:           false,
-		MissingCredentials: []policy.CredentialShortfall{{Name: "K", Purpose: paddockv1alpha1.CredentialPurposeLLM}},
+		MissingCredentials: []policy.CredentialShortfall{{Name: "K"}},
 	}
 	out := policy.DescribeShortfall(res, "claude", "my-team")
-	for _, want := range []string{"claude", "my-team", "K", "llm", "(none)", "scaffold claude"} {
+	for _, want := range []string{"claude", "my-team", "K", "(none)", "scaffold claude"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("DescribeShortfall missing %q:\n%s", want, out)
 		}

@@ -22,7 +22,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/broker/providers"
 	"paddock.dev/paddock/internal/policy"
 )
 
@@ -33,14 +32,15 @@ func resolveTemplateSpec(ctx context.Context, c client.Client, namespace string,
 	return spec, err
 }
 
-// findRequirement looks up a credential requirement by name.
-func findRequirement(creds []paddockv1alpha1.CredentialRequirement, name string) (paddockv1alpha1.CredentialRequirement, bool) {
+// hasRequirement reports whether the template declares a credential
+// requirement with the given name.
+func hasRequirement(creds []paddockv1alpha1.CredentialRequirement, name string) bool {
 	for _, c := range creds {
 		if c.Name == name {
-			return c, true
+			return true
 		}
 	}
-	return paddockv1alpha1.CredentialRequirement{}, false
+	return false
 }
 
 // matchPolicyGrant walks BrokerPolicies in the namespace, selects
@@ -73,21 +73,6 @@ func matchPolicyGrant(ctx context.Context, c client.Client, namespace, templateN
 		}
 	}
 	return nil, nil, "", nil
-}
-
-// providerBacksPurpose reports whether p lists purpose in its
-// Purposes() set.
-func providerBacksPurpose(p providers.Provider, purpose paddockv1alpha1.CredentialPurpose) bool {
-	// Empty purpose on the requirement is treated as "generic".
-	if purpose == "" {
-		purpose = paddockv1alpha1.CredentialPurposeGeneric
-	}
-	for _, supported := range p.Purposes() {
-		if supported == purpose {
-			return true
-		}
-	}
-	return false
 }
 
 // matchEgressGrant walks BrokerPolicies applying to the run's template

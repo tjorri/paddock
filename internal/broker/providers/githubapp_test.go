@@ -159,7 +159,6 @@ func TestGitHubAppProvider_IssueThenSubstitute(t *testing.T) {
 		RunName:        "cc-1",
 		Namespace:      "my-team",
 		CredentialName: "GITHUB_TOKEN",
-		Purpose:        paddockv1alpha1.CredentialPurposeGitForge,
 		Grant:          githubGrant(),
 		GitRepos:       githubRepos(),
 	})
@@ -227,16 +226,18 @@ func TestGitHubAppProvider_TokenSharedAcrossBearers(t *testing.T) {
 
 	first, err := p.Issue(context.Background(), IssueRequest{
 		RunName: "cc-1", Namespace: "my-team",
-		CredentialName: "GITHUB_TOKEN", Purpose: paddockv1alpha1.CredentialPurposeGitForge,
-		Grant: githubGrant(), GitRepos: githubRepos(),
+		CredentialName: "GITHUB_TOKEN",
+		Grant:          githubGrant(),
+		GitRepos:       githubRepos(),
 	})
 	if err != nil {
 		t.Fatalf("Issue 1: %v", err)
 	}
 	second, err := p.Issue(context.Background(), IssueRequest{
 		RunName: "cc-1", Namespace: "my-team",
-		CredentialName: "GITHUB_TOKEN", Purpose: paddockv1alpha1.CredentialPurposeGitForge,
-		Grant: githubGrant(), GitRepos: githubRepos(),
+		CredentialName: "GITHUB_TOKEN",
+		Grant:          githubGrant(),
+		GitRepos:       githubRepos(),
 	})
 	if err != nil {
 		t.Fatalf("Issue 2: %v", err)
@@ -275,8 +276,9 @@ func TestGitHubAppProvider_TokenDistinctAcrossRuns(t *testing.T) {
 	for _, run := range []string{"cc-1", "cc-2"} {
 		res, err := p.Issue(context.Background(), IssueRequest{
 			RunName: run, Namespace: "my-team",
-			CredentialName: "GITHUB_TOKEN", Purpose: paddockv1alpha1.CredentialPurposeGitForge,
-			Grant: githubGrant(), GitRepos: githubRepos(),
+			CredentialName: "GITHUB_TOKEN",
+			Grant:          githubGrant(),
+			GitRepos:       githubRepos(),
 		})
 		if err != nil {
 			t.Fatalf("Issue %s: %v", run, err)
@@ -416,14 +418,6 @@ func TestGitHubAppProvider_IssueBadPEM(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected error on unparseable PEM")
-	}
-}
-
-func TestGitHubAppProvider_BacksOnlyGitForge(t *testing.T) {
-	p := &GitHubAppProvider{}
-	got := p.Purposes()
-	if len(got) != 1 || got[0] != paddockv1alpha1.CredentialPurposeGitForge {
-		t.Fatalf("Purposes = %v, want [gitforge]", got)
 	}
 }
 

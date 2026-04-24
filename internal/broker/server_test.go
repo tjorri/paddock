@@ -82,7 +82,7 @@ func setup(t *testing.T) (*broker.Server, client.Client) {
 			Command: []string{"/bin/echo"},
 			Requires: paddockv1alpha1.RequireSpec{
 				Credentials: []paddockv1alpha1.CredentialRequirement{
-					{Name: "DEMO_TOKEN", Purpose: paddockv1alpha1.CredentialPurposeGeneric},
+					{Name: "DEMO_TOKEN"},
 				},
 			},
 		},
