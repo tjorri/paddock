@@ -89,15 +89,11 @@ func (r *BrokerPolicyReconciler) now() time.Time {
 }
 
 // computeDiscoveryConditions returns the desired condition set for a
-// BrokerPolicy at time `now`. Pure — testable without envtest. Returns
-// nil when egressDiscovery is absent (the reconciler then skips the
-// status update entirely, leaving any pre-existing conditions of other
-// types untouched).
+// BrokerPolicy at time `now`. Pure — testable without envtest. Always
+// returns a 2-condition slice so that stale discovery conditions are
+// cleared when egressDiscovery is removed. When spec is nil both
+// conditions are set to False with Reason "NoDiscovery".
 func computeDiscoveryConditions(spec *paddockv1alpha1.EgressDiscoverySpec, gen int64, now time.Time) []metav1.Condition {
-	if spec == nil {
-		return nil
-	}
-	expiry := spec.ExpiresAt.Time
 	active := metav1.Condition{
 		Type:               paddockv1alpha1.BrokerPolicyConditionDiscoveryModeActive,
 		ObservedGeneration: gen,
@@ -106,6 +102,16 @@ func computeDiscoveryConditions(spec *paddockv1alpha1.EgressDiscoverySpec, gen i
 		Type:               paddockv1alpha1.BrokerPolicyConditionDiscoveryExpired,
 		ObservedGeneration: gen,
 	}
+	if spec == nil {
+		active.Status = metav1.ConditionFalse
+		active.Reason = "NoDiscovery"
+		active.Message = "egressDiscovery is not set"
+		expired.Status = metav1.ConditionFalse
+		expired.Reason = "NoDiscovery"
+		expired.Message = "egressDiscovery is not set"
+		return []metav1.Condition{active, expired}
+	}
+	expiry := spec.ExpiresAt.Time
 	if !expiry.After(now) {
 		active.Status = metav1.ConditionFalse
 		active.Reason = "Expired"
@@ -125,14 +131,11 @@ func computeDiscoveryConditions(spec *paddockv1alpha1.EgressDiscoverySpec, gen i
 }
 
 // discoveryConditionsEqual reports whether `current` already satisfies
-// `desired`. A nil desired means "no discovery feature in use" — we
-// only compare the discovery-related conditions to avoid stomping on
-// the unrelated BrokerPolicyConditionReady or any future conditions.
+// `desired`. We only compare the discovery-related conditions to avoid
+// stomping on the unrelated BrokerPolicyConditionReady or any future
+// conditions. computeDiscoveryConditions always returns a 2-condition
+// slice, so there is no nil-desired fast-path.
 func discoveryConditionsEqual(current, desired []metav1.Condition) bool {
-	if desired == nil {
-		// Reconciler has nothing to set; whatever's there is fine.
-		return true
-	}
 	for _, d := range desired {
 		var c *metav1.Condition
 		for i := range current {

@@ -86,7 +86,7 @@ var _ = Describe("BrokerPolicy controller", func() {
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 	})
 
-	It("does not set discovery conditions when egressDiscovery is absent", func() {
+	It("sets both discovery conditions to False with NoDiscovery reason when egressDiscovery is absent", func() {
 		ns := newTestNamespace()
 		bp := &paddockv1alpha1.BrokerPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "no-discovery", Namespace: ns},
@@ -96,13 +96,64 @@ var _ = Describe("BrokerPolicy controller", func() {
 		}
 		Expect(k8sClient.Create(ctx, bp)).To(Succeed())
 
-		// Give the reconciler a moment, then verify NO discovery
-		// conditions appeared.
-		Consistently(func(g Gomega) {
+		Eventually(func(g Gomega) {
 			got := &paddockv1alpha1.BrokerPolicy{}
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: bp.Name, Namespace: ns}, got)).To(Succeed())
-			g.Expect(findCondition(got.Status.Conditions, paddockv1alpha1.BrokerPolicyConditionDiscoveryModeActive)).To(BeNil())
-			g.Expect(findCondition(got.Status.Conditions, paddockv1alpha1.BrokerPolicyConditionDiscoveryExpired)).To(BeNil())
-		}, 2*time.Second, 200*time.Millisecond).Should(Succeed())
+			active := findCondition(got.Status.Conditions, paddockv1alpha1.BrokerPolicyConditionDiscoveryModeActive)
+			g.Expect(active).NotTo(BeNil())
+			g.Expect(string(active.Status)).To(Equal(string(metav1.ConditionFalse)))
+			g.Expect(active.Reason).To(Equal("NoDiscovery"))
+			expired := findCondition(got.Status.Conditions, paddockv1alpha1.BrokerPolicyConditionDiscoveryExpired)
+			g.Expect(expired).NotTo(BeNil())
+			g.Expect(string(expired.Status)).To(Equal(string(metav1.ConditionFalse)))
+			g.Expect(expired.Reason).To(Equal("NoDiscovery"))
+		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+	})
+
+	It("clears discovery conditions to False when egressDiscovery is removed from a previously-active policy", func() {
+		ns := newTestNamespace()
+		bp := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "removed-discovery", Namespace: ns},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				EgressDiscovery: &paddockv1alpha1.EgressDiscoverySpec{
+					Accepted:  true,
+					Reason:    "Bootstrapping allowlist for new metrics-scraper harness",
+					ExpiresAt: metav1.NewTime(time.Now().Add(2 * time.Hour)),
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, bp)).To(Succeed())
+
+		// Phase 1: wait for conditions to settle as Active=True.
+		Eventually(func(g Gomega) {
+			got := &paddockv1alpha1.BrokerPolicy{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: bp.Name, Namespace: ns}, got)).To(Succeed())
+			active := findCondition(got.Status.Conditions, paddockv1alpha1.BrokerPolicyConditionDiscoveryModeActive)
+			g.Expect(active).NotTo(BeNil())
+			g.Expect(string(active.Status)).To(Equal(string(metav1.ConditionTrue)))
+		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+
+		// Phase 2: remove egressDiscovery via update.
+		Eventually(func(g Gomega) {
+			got := &paddockv1alpha1.BrokerPolicy{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: bp.Name, Namespace: ns}, got)).To(Succeed())
+			got.Spec.EgressDiscovery = nil
+			g.Expect(k8sClient.Update(ctx, got)).To(Succeed())
+		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+
+		// Phase 3: conditions transition to False/NoDiscovery.
+		Eventually(func(g Gomega) {
+			got := &paddockv1alpha1.BrokerPolicy{}
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: bp.Name, Namespace: ns}, got)).To(Succeed())
+			active := findCondition(got.Status.Conditions, paddockv1alpha1.BrokerPolicyConditionDiscoveryModeActive)
+			g.Expect(active).NotTo(BeNil())
+			g.Expect(string(active.Status)).To(Equal(string(metav1.ConditionFalse)))
+			g.Expect(active.Reason).To(Equal("NoDiscovery"))
+			expired := findCondition(got.Status.Conditions, paddockv1alpha1.BrokerPolicyConditionDiscoveryExpired)
+			g.Expect(expired).NotTo(BeNil())
+			g.Expect(string(expired.Status)).To(Equal(string(metav1.ConditionFalse)))
+			g.Expect(expired.Reason).To(Equal("NoDiscovery"))
+		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 	})
 })
