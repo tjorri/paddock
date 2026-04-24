@@ -60,7 +60,7 @@ func SetupBrokerPolicyWebhookWithManager(mgr ctrl.Manager) error {
 //   - spec.interception, when present, has exactly one of transparent
 //     or cooperativeAccepted (with accepted=true and a written reason);
 //   - spec.egressDiscovery, when present, has accepted=true, a reason
-//     ≥20 chars, and expiresAt in [now, now+7d].
+//     ≥20 chars, and expiresAt in (now, now+7d].
 type BrokerPolicyCustomValidator struct{}
 
 var _ admission.Validator[*paddockv1alpha1.BrokerPolicy] = &BrokerPolicyCustomValidator{}
@@ -337,7 +337,8 @@ func validateEgressDiscovery(p *field.Path, ed *paddockv1alpha1.EgressDiscoveryS
 			"expiresAt must be in the future"))
 	} else if expiry.After(now.Add(MaxDiscoveryWindow)) {
 		errs = append(errs, field.Invalid(p.Child("expiresAt"), ed.ExpiresAt,
-			"expiresAt must be within 7 days of now"))
+			fmt.Sprintf("expiresAt must be within %d days of now",
+				int(MaxDiscoveryWindow.Hours()/24))))
 	}
 	return errs
 }
