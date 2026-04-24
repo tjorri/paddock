@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -136,14 +137,17 @@ func (v *HarnessRunCustomValidator) validateAgainstTemplate(ctx context.Context,
 	filtered := policy.FilterUnexpired(matches, now)
 	if len(filtered) == 0 && len(matches) > 0 {
 		// All matching policies were filtered out for expired discovery.
-		// Surface a clear diagnostic so the operator knows what to fix.
+		// len(matches) > 0 distinguishes "every match was expired" from
+		// "no policy matched at all"; the latter is handled by
+		// IntersectMatches below producing !result.Admitted with a
+		// shortfall list, and gives a more useful error.
 		names := make([]string, 0, len(matches))
 		for _, bp := range matches {
 			names = append(names, bp.Name)
 		}
-		return fmt.Errorf("BrokerPolicy(s) %v have expired egressDiscovery windows; "+
+		return fmt.Errorf("BrokerPolicy(s) %s have expired egressDiscovery windows; "+
 			"advance or remove spec.egressDiscovery.expiresAt to resume admitting runs",
-			names)
+			strings.Join(names, ", "))
 	}
 	result := policy.IntersectMatches(filtered, spec.Requires)
 	if !result.Admitted {
