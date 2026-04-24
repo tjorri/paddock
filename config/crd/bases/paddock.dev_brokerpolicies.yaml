@@ -76,7 +76,10 @@ spec:
                   updates expiresAt or removes the field. See spec 0003 §3.6.
                 properties:
                   accepted:
-                    description: Accepted must be true.
+                    description: |-
+                      Accepted must be true; setting it documents that the operator
+                      acknowledges egress will be allowed-but-logged rather than blocked
+                      for the duration of ExpiresAt.
                     type: boolean
                   expiresAt:
                     description: |-

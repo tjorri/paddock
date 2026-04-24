@@ -267,7 +267,9 @@ type CooperativeAcceptedInterception struct {
 // AuditEvents instead of kind=egress-block. After ExpiresAt, the
 // reconciler marks the policy non-effective.
 type EgressDiscoverySpec struct {
-	// Accepted must be true.
+	// Accepted must be true; setting it documents that the operator
+	// acknowledges egress will be allowed-but-logged rather than blocked
+	// for the duration of ExpiresAt.
 	// +kubebuilder:validation:Required
 	Accepted bool `json:"accepted"`
 
