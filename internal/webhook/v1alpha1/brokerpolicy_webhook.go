@@ -58,7 +58,9 @@ func SetupBrokerPolicyWebhookWithManager(mgr ctrl.Manager) error {
 //   - every proxy-injected host is covered by an egress grant;
 //   - git repo tuples are complete;
 //   - spec.interception, when present, has exactly one of transparent
-//     or cooperativeAccepted (with accepted=true and a written reason).
+//     or cooperativeAccepted (with accepted=true and a written reason);
+//   - spec.egressDiscovery, when present, has accepted=true, a reason
+//     ≥20 chars, and expiresAt in [now, now+7d].
 type BrokerPolicyCustomValidator struct{}
 
 var _ admission.Validator[*paddockv1alpha1.BrokerPolicy] = &BrokerPolicyCustomValidator{}
