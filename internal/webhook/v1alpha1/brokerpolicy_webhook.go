@@ -50,7 +50,9 @@ func SetupBrokerPolicyWebhookWithManager(mgr ctrl.Manager) error {
 //   - credential names are unique within the policy;
 //   - egress hosts are non-empty and wildcard-valid;
 //   - every proxy-injected host is covered by an egress grant;
-//   - git repo tuples are complete.
+//   - git repo tuples are complete;
+//   - spec.interception, when present, has exactly one of transparent
+//     or cooperativeAccepted (with accepted=true and a written reason).
 type BrokerPolicyCustomValidator struct{}
 
 var _ admission.Validator[*paddockv1alpha1.BrokerPolicy] = &BrokerPolicyCustomValidator{}
@@ -89,6 +91,7 @@ func validateBrokerPolicySpec(spec *paddockv1alpha1.BrokerPolicySpec) error {
 	errs = append(errs, validateEgressGrants(grantsPath.Child("egress"), spec.Grants.Egress)...)
 	errs = append(errs, validateGitRepoGrants(grantsPath.Child("gitRepos"), spec.Grants.GitRepos)...)
 	errs = append(errs, validateCredentialHostsCoveredByEgress(grantsPath, spec.Grants)...)
+	errs = append(errs, validateInterception(specPath.Child("interception"), spec.Interception)...)
 
 	if len(errs) == 0 {
 		return nil
@@ -255,6 +258,47 @@ func validateInContainer(p *field.Path, ic *paddockv1alpha1.InContainerDelivery)
 	if len(strings.TrimSpace(ic.Reason)) < 20 {
 		errs = append(errs, field.Invalid(p.Child("reason"), ic.Reason,
 			"reason must be at least 20 characters explaining why in-container delivery is needed"))
+	}
+	return errs
+}
+
+// validateInterception enforces spec 0003 §3.7's union rules on
+// spec.interception. A nil pointer is legal (defaults to transparent
+// at runtime); a set pointer must have exactly one sub-field, and
+// cooperativeAccepted carries the standard accepted+reason opt-in.
+func validateInterception(p *field.Path, i *paddockv1alpha1.InterceptionSpec) field.ErrorList {
+	var errs field.ErrorList
+	if i == nil {
+		return errs
+	}
+	count := 0
+	if i.Transparent != nil {
+		count++
+	}
+	if i.CooperativeAccepted != nil {
+		count++
+	}
+	switch count {
+	case 0:
+		errs = append(errs, field.Invalid(p, "",
+			"exactly one of transparent or cooperativeAccepted must be set; "+
+				"omit spec.interception to default to transparent"))
+	case 1:
+		// fine
+	default:
+		errs = append(errs, field.Invalid(p, "",
+			"exactly one of transparent or cooperativeAccepted must be set; both were provided"))
+	}
+	if ca := i.CooperativeAccepted; ca != nil {
+		if !ca.Accepted {
+			errs = append(errs, field.Invalid(p.Child("cooperativeAccepted").Child("accepted"), ca.Accepted,
+				"accepted must be true to opt into cooperative interception; "+
+					"omit spec.interception (or set spec.interception.transparent) to use the safer default"))
+		}
+		if len(strings.TrimSpace(ca.Reason)) < 20 {
+			errs = append(errs, field.Invalid(p.Child("cooperativeAccepted").Child("reason"), ca.Reason,
+				"reason must be at least 20 characters explaining why cooperative interception is needed"))
+		}
 	}
 	return errs
 }
