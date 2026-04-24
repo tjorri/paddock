@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -184,13 +185,17 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 
 		// 2. Wait for each namespace to fully terminate. Budget per
 		//    ns covers HarnessRun Job delete + Workspace PVC cascade
-		//    with slack. Fallback on timeout → force-clear + warn.
+		//    with slack. 120s is generous for CI's 2-vCPU runners
+		//    (controller reconcile latency + the Workspace finalizer's
+		//    15s requeue-on-activeRunRef cadence can easily add up to
+		//    45-60s of drain time); still well below Ginkgo's 11-min
+		//    suite timeout. Fallback on timeout → force-clear + warn.
 		for _, ns := range testNamespaces {
-			if waitForNamespaceGone(ns, 60*time.Second) {
+			if waitForNamespaceGone(ns, 120*time.Second) {
 				continue
 			}
 			fmt.Fprintf(GinkgoWriter,
-				"WARNING: namespace %s stuck in Terminating after 60s; "+
+				"WARNING: namespace %s stuck in Terminating after 120s; "+
 					"controller-side finalizer drain likely broken — force-clearing\n", ns)
 			forceClearFinalizers(ns)
 			// One more short wait so subsequent steps aren't racing
@@ -969,14 +974,37 @@ func forceClearFinalizers(ns string) {
 }
 
 // runWithTimeout runs a command via utils.Run under a context with
-// the given deadline. On timeout, SIGKILL is sent to the process and
-// a one-line note is written to GinkgoWriter. Output is discarded —
-// callers who need it should use utils.Run directly. Intended for
-// best-effort teardown steps that must not block.
+// the given deadline. On timeout the ENTIRE process group gets
+// SIGKILL, and pipe I/O is force-closed within WaitDelay. A one-line
+// note lands on GinkgoWriter. Output is discarded — callers who need
+// it should use utils.Run directly. Intended for best-effort teardown
+// steps that must not block the suite.
+//
+// Why the process-group gymnastics: `exec.CommandContext`'s default
+// cancel signals only the top-level process. When we call `make
+// undeploy`, `make` spawns `kustomize build | kubectl delete`, and
+// those children inherit stdout/stderr fds. SIGKILL on `make` leaves
+// them running with the pipes open, and `os/exec.(*Cmd).Wait()`
+// blocks forever in `awaitGoroutines` draining the pipe readers.
+// CI run 24880620880 hung AfterAll on exactly this and hit Ginkgo's
+// 11-min suite timeout. Setpgid + pgid-SIGKILL kills the whole tree;
+// WaitDelay caps the pipe-drain wait as a belt-and-suspenders so Wait
+// can never block past `timeout + WaitDelay`.
 func runWithTimeout(timeout time.Duration, name string, args ...string) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	_, err := utils.Run(exec.CommandContext(ctx, name, args...))
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		// Negative pid signals the process group created by Setpgid,
+		// not just the leader — kills make + every inherited child.
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 5 * time.Second
+	_, err := utils.Run(cmd)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		fmt.Fprintf(GinkgoWriter, "teardown timed out after %s: %s %s\n",
 			timeout, name, strings.Join(args, " "))
