@@ -336,6 +336,7 @@ rules:
     resources:
       - auditevents
     verbs:
+      - create
       - delete
       - get
       - list

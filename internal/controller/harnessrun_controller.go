@@ -147,6 +147,13 @@ type HarnessRunReconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=paddock.dev,resources=brokerpolicies,verbs=get;list;watch
+// auditevents/create isn't used by the controller itself — the proxy
+// sidecar writes AuditEvents via the per-run SA. But RBAC
+// escalation-prevention requires the manager to hold every verb it
+// grants in ensureCollectorRBAC, so the marker covers that delegation
+// path (the auditevent TTL reaper gets the remaining verbs via
+// auditevent_controller.go).
+// +kubebuilder:rbac:groups=paddock.dev,resources=auditevents,verbs=create
 
 // Reconcile drives a HarnessRun through its lifecycle. See
 // docs/specs/0001-core-v0.1.md §3.3 for the state machine.
