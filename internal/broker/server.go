@@ -38,6 +38,7 @@ import (
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 	"paddock.dev/paddock/internal/broker/providers"
+	"paddock.dev/paddock/internal/policy"
 )
 
 // Server is the HTTP handler set for the broker. Register it on a
@@ -372,6 +373,23 @@ func (s *Server) handleValidateEgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if grant == nil {
+		// No explicit egress grant. Before denying, check whether any
+		// matching BrokerPolicy has an active discovery window — if so,
+		// return Allowed=true with DiscoveryAllow=true so the proxy
+		// can emit an egress-discovery-allow event instead of denying.
+		matches, err := policy.ListMatchingPolicies(ctx, s.Client, runNamespace, run.Spec.TemplateRef.Name)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ProviderFailure", err.Error())
+			return
+		}
+		if policy.AnyDiscoveryActive(matches, time.Now()) {
+			writeJSON(w, http.StatusOK, brokerapi.ValidateEgressResponse{
+				Allowed:        true,
+				DiscoveryAllow: true,
+				Reason:         fmt.Sprintf("no grant covers %s:%d, but a matching policy has an active egressDiscovery window", req.Host, req.Port),
+			})
+			return
+		}
 		writeJSON(w, http.StatusOK, brokerapi.ValidateEgressResponse{
 			Allowed: false,
 			Reason:  fmt.Sprintf("no BrokerPolicy grants egress to %s:%d", req.Host, req.Port),

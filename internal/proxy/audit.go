@@ -44,6 +44,12 @@ type EgressEvent struct {
 	MatchedPolicy string
 	Reason        string
 	When          time.Time
+
+	// Kind, when non-empty, overrides the default AuditKind that
+	// ClientAuditSink.RecordEgress would derive from Decision. Set
+	// explicitly by the proxy on egress-discovery-allow events so the
+	// audit trail distinguishes them from regular egress-allow events.
+	Kind paddockv1alpha1.AuditKind
 }
 
 // NoopAuditSink silently drops records. Handy for tests and for running
@@ -71,12 +77,14 @@ func (s *ClientAuditSink) RecordEgress(ctx context.Context, e EgressEvent) {
 	if when.IsZero() {
 		when = time.Now().UTC()
 	}
-	var kind paddockv1alpha1.AuditKind
-	switch e.Decision {
-	case paddockv1alpha1.AuditDecisionDenied, paddockv1alpha1.AuditDecisionWarned:
-		kind = paddockv1alpha1.AuditKindEgressBlock
-	default:
-		kind = paddockv1alpha1.AuditKindEgressAllow
+	kind := e.Kind
+	if kind == "" {
+		switch e.Decision {
+		case paddockv1alpha1.AuditDecisionDenied, paddockv1alpha1.AuditDecisionWarned:
+			kind = paddockv1alpha1.AuditKindEgressBlock
+		default:
+			kind = paddockv1alpha1.AuditKindEgressAllow
+		}
 	}
 	ae := &paddockv1alpha1.AuditEvent{
 		ObjectMeta: metav1.ObjectMeta{

@@ -301,6 +301,62 @@ func TestStaticValidator_Matchers(t *testing.T) {
 	}
 }
 
+// TestProxy_EmitsEgressDiscoveryAllowOnDiscoveryAllow verifies that when the
+// validator returns DiscoveryAllow=true the proxy lets the connection through
+// and emits an egress-discovery-allow AuditEvent (Kind set) rather than an
+// ordinary egress-allow event.
+func TestProxy_EmitsEgressDiscoveryAllowOnDiscoveryAllow(t *testing.T) {
+	upstream, host, port, upstreamPool := startUpstream(t)
+	_ = upstream
+
+	certPEM, keyPEM := generateTestCA(t)
+	ca, err := NewMITMCertificateAuthority(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("build CA: %v", err)
+	}
+
+	sink := &recordingSink{}
+	srv := &Server{
+		CA:                ca,
+		Validator:         discoveryValidator{},
+		Audit:             sink,
+		UpstreamTLSConfig: &tls.Config{RootCAs: upstreamPool, MinVersion: tls.VersionTLS12},
+	}
+	proxyURL := startProxy(t, srv)
+	pu, _ := url.Parse(proxyURL)
+
+	// Client trusts the MITM CA leaf, not the upstream cert.
+	clientPool := x509.NewCertPool()
+	clientPool.AppendCertsFromPEM(certPEM)
+
+	tr := &http.Transport{
+		Proxy:           http.ProxyURL(pu),
+		TLSClientConfig: &tls.Config{RootCAs: clientPool, MinVersion: tls.VersionTLS12},
+	}
+	cli := &http.Client{Transport: tr, Timeout: 5 * time.Second}
+
+	resp, err := cli.Get(fmt.Sprintf("https://%s:%d/", host, port))
+	if err != nil {
+		t.Fatalf("proxy GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "ok" {
+		t.Fatalf("response body = %q, want ok", body)
+	}
+
+	evs := sink.snapshot()
+	if len(evs) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(evs))
+	}
+	if evs[0].Decision != paddockv1alpha1.AuditDecisionGranted {
+		t.Errorf("decision = %q, want granted", evs[0].Decision)
+	}
+	if evs[0].Kind != paddockv1alpha1.AuditKindEgressDiscoveryAllow {
+		t.Errorf("kind = %q, want egress-discovery-allow", evs[0].Kind)
+	}
+}
+
 // TestStaticValidator_DenyAllOnEmpty keeps the deny-all default from
 // drifting — the spec's §6.4 fail-closed posture requires it.
 func TestStaticValidator_DenyAllOnEmpty(t *testing.T) {
@@ -315,6 +371,19 @@ func TestStaticValidator_DenyAllOnEmpty(t *testing.T) {
 	if got.Allowed {
 		t.Errorf("empty allow-list must deny-all; got Allowed=true")
 	}
+}
+
+// discoveryValidator always returns Allowed=true with DiscoveryAllow=true,
+// simulating the broker's response when a matching policy has an active
+// egressDiscovery window but no explicit egress grant covers the destination.
+type discoveryValidator struct{}
+
+func (discoveryValidator) ValidateEgress(_ context.Context, host string, port int) (Decision, error) {
+	return Decision{
+		Allowed:        true,
+		DiscoveryAllow: true,
+		Reason:         fmt.Sprintf("no grant covers %s:%d, but a matching policy has an active egressDiscovery window", host, port),
+	}, nil
 }
 
 // errValidator simulates a broker-unreachable error path so we can

@@ -51,6 +51,11 @@ type Decision struct {
 	// (cooperative/transparent without substitution) or still MITMs for
 	// visibility but doesn't rewrite credentials.
 	SubstituteAuth bool
+
+	// DiscoveryAllow mirrors ValidateEgressResponse.DiscoveryAllow.
+	// When true, the proxy emits an egress-discovery-allow AuditEvent
+	// instead of egress-allow.
+	DiscoveryAllow bool
 }
 
 // StaticValidator accepts a caller-provided host:port allow-list. This

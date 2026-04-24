@@ -208,10 +208,16 @@ func (s *Server) mitm(ctx context.Context, clientConn net.Conn, host string, por
 	}
 	defer func() { _ = upstreamConn.Close() }()
 
+	kind := paddockv1alpha1.AuditKindEgressAllow
+	if decision.DiscoveryAllow {
+		kind = paddockv1alpha1.AuditKindEgressDiscoveryAllow
+	}
 	s.recordEgress(ctx, EgressEvent{
 		Host: host, Port: port,
 		Decision:      paddockv1alpha1.AuditDecisionGranted,
 		MatchedPolicy: decision.MatchedPolicy,
+		Kind:          kind,
+		Reason:        decision.Reason,
 	})
 
 	if decision.SubstituteAuth && s.Substituter != nil {
