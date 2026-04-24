@@ -205,6 +205,9 @@ func TestProxy_AllowsAndMITMsTrustedHost(t *testing.T) {
 	if evs[0].MatchedPolicy != "static-allow" {
 		t.Errorf("matchedPolicy = %q, want static-allow", evs[0].MatchedPolicy)
 	}
+	if evs[0].Kind != paddockv1alpha1.AuditKindEgressAllow {
+		t.Errorf("kind = %q, want egress-allow", evs[0].Kind)
+	}
 }
 
 func TestProxy_DeniesWhenHostNotInAllowList(t *testing.T) {
