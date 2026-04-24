@@ -358,6 +358,7 @@ func newPolicySuggestCmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {
 // (it routes diagnostics to the same writer as output). Cobra callers
 // go through runPolicySuggestTo so the no-denials message lands on
 // stderr while the (empty) suggestion lands on stdout.
+// ns varies by caller; unparam fires only because all current callers pass testNamespace.
 func runPolicySuggest(ctx context.Context, c client.Client, ns string, out io.Writer, opts suggestOptions) error { //nolint:unparam
 	return runPolicySuggestTo(ctx, c, ns, out, out, opts)
 }

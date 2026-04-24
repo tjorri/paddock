@@ -230,6 +230,8 @@ func TestPolicySuggest_DeterministicOutputOrder(t *testing.T) {
 	// YAML must still be byte-stable across runs so CI diffs don't flake.
 	ns := testNamespace
 	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	// Sequential timestamps avoid object-name collisions in the fake client
+	// (auditEgressEvent derives Name from UnixNano; same time → duplicate key).
 	events := []*paddockv1alpha1.AuditEvent{
 		auditEgressEvent(ns, "run-a", "a.example.com", 443, now),
 		auditEgressEvent(ns, "run-a", "a.example.com", 443, now.Add(1*time.Second)),
@@ -249,5 +251,28 @@ func TestPolicySuggest_DeterministicOutputOrder(t *testing.T) {
 	}
 	if first.String() != second.String() {
 		t.Errorf("output not deterministic:\nfirst:\n%s\nsecond:\n%s", first.String(), second.String())
+	}
+}
+
+func TestPolicySuggest_PortZeroRendersEmptyPortsList(t *testing.T) {
+	ns := testNamespace
+	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	events := []*paddockv1alpha1.AuditEvent{
+		auditEgressEvent(ns, "run-a", "wildcard.example.com", 0, now),
+	}
+	c := newFakeClientWithEvents(t, events...).Build()
+
+	var out bytes.Buffer
+	err := runPolicySuggest(context.Background(), c, ns, &out, suggestOptions{runName: "run-a"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, `ports: []`) {
+		t.Errorf("port=0 should render as ports: []; got:\n%s", got)
+	}
+	// Should not accidentally render [0] or similar.
+	if strings.Contains(got, "ports: [0]") {
+		t.Errorf("port=0 rendered as [0] instead of []; got:\n%s", got)
 	}
 }
