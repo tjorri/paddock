@@ -239,6 +239,45 @@ spec:
                       type: object
                     type: array
                 type: object
+              interception:
+                description: |-
+                  Interception selects the egress-proxy interception mode for runs
+                  governed by this policy. Absent the field admission defaults to
+                  requiring transparent mode; a run whose namespace PSA forbids
+                  NET_ADMIN (baseline/restricted) then fails closed rather than
+                  silently falling back to cooperative. Set
+                  spec.interception.cooperativeAccepted to opt into the weaker mode
+                  with a written reason.
+                properties:
+                  cooperativeAccepted:
+                    description: |-
+                      CooperativeAcceptedInterception opts the BrokerPolicy into cooperative
+                      interception, which is weaker than transparent because an agent can
+                      unset HTTPS_PROXY to bypass it. The user documents why that weakening
+                      is acceptable in Reason.
+                    properties:
+                      accepted:
+                        description: Accepted must be true.
+                        type: boolean
+                      reason:
+                        description: |-
+                          Reason explains why cooperative interception is necessary instead
+                          of transparent. Typical reasons include cluster PSA=restricted
+                          without a node-level DaemonSet proxy.
+                        maxLength: 500
+                        minLength: 20
+                        type: string
+                    required:
+                    - accepted
+                    - reason
+                    type: object
+                  transparent:
+                    description: |-
+                      TransparentInterception is an empty marker that selects transparent
+                      mode. No knobs are required; it exists as a distinct sub-field so
+                      admission can enforce exactly-one-of semantics with cooperativeAccepted.
+                    type: object
+                type: object
             required:
             - appliesToTemplates
             - grants

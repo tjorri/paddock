@@ -346,4 +346,79 @@ var _ = Describe("BrokerPolicy Webhook", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("appId"))
 	})
+
+	// --- Interception ---------------------------------------------------
+
+	It("admits a policy without spec.interception (defaulted to transparent)", func() {
+		spec := minimalSpec()
+		Expect(validate(spec)).To(Succeed())
+	})
+
+	It("admits spec.interception.transparent = {}", func() {
+		spec := minimalSpec()
+		spec.Interception = &paddockv1alpha1.InterceptionSpec{
+			Transparent: &paddockv1alpha1.TransparentInterception{},
+		}
+		Expect(validate(spec)).To(Succeed())
+	})
+
+	It("admits cooperativeAccepted with accepted=true and a sufficient reason", func() {
+		spec := minimalSpec()
+		spec.Interception = &paddockv1alpha1.InterceptionSpec{
+			CooperativeAccepted: &paddockv1alpha1.CooperativeAcceptedInterception{
+				Accepted: true,
+				Reason:   "Cluster PSA=restricted; node-level proxy not available yet",
+			},
+		}
+		Expect(validate(spec)).To(Succeed())
+	})
+
+	It("rejects an empty spec.interception (neither sub-field set)", func() {
+		spec := minimalSpec()
+		spec.Interception = &paddockv1alpha1.InterceptionSpec{}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("exactly one of transparent or cooperativeAccepted"))
+	})
+
+	It("rejects spec.interception with both sub-fields set", func() {
+		spec := minimalSpec()
+		spec.Interception = &paddockv1alpha1.InterceptionSpec{
+			Transparent: &paddockv1alpha1.TransparentInterception{},
+			CooperativeAccepted: &paddockv1alpha1.CooperativeAcceptedInterception{
+				Accepted: true,
+				Reason:   "Cluster PSA=restricted; node-level proxy not available yet",
+			},
+		}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("exactly one of transparent or cooperativeAccepted"))
+	})
+
+	It("rejects cooperativeAccepted with accepted=false", func() {
+		spec := minimalSpec()
+		spec.Interception = &paddockv1alpha1.InterceptionSpec{
+			CooperativeAccepted: &paddockv1alpha1.CooperativeAcceptedInterception{
+				Accepted: false,
+				Reason:   "Cluster PSA=restricted; node-level proxy not available yet",
+			},
+		}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("accepted must be true"))
+	})
+
+	It("rejects cooperativeAccepted with a reason shorter than 20 characters", func() {
+		spec := minimalSpec()
+		spec.Interception = &paddockv1alpha1.InterceptionSpec{
+			CooperativeAccepted: &paddockv1alpha1.CooperativeAcceptedInterception{
+				Accepted: true,
+				Reason:   "too short",
+			},
+		}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("reason"))
+		Expect(err.Error()).To(ContainSubstring("20"))
+	})
 })

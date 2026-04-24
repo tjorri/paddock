@@ -45,8 +45,11 @@ proxyAllowList: ""
 # Transparent-mode init container that installs iptables REDIRECT
 # rules in each run's Pod netns (ADR-0013 §7.2). Required for
 # hostile-co-tenant posture — the agent cannot bypass the proxy by
-# ignoring HTTPS_PROXY. Set .repository to "" to force every run to
-# cooperative mode regardless of BrokerPolicy.minInterceptionMode.
+# ignoring HTTPS_PROXY. Set .repository to "" to disable transparent
+# mode entirely; any BrokerPolicy without spec.interception.cooperativeAccepted
+# will then fail its runs closed with InterceptionUnavailable. To permit
+# cooperative interception instead, set spec.interception.cooperativeAccepted
+# on the governing BrokerPolicy with a written reason.
 iptablesInitImage:
   repository: paddock-iptables-init
   tag: ""

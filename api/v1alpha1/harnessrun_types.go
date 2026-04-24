@@ -141,6 +141,11 @@ const (
 	// were issued, and on True carries a short message like
 	// "3 credentials issued: 2 proxy-injected, 1 in-container".
 	HarnessRunConditionBrokerCredentialsReady = "BrokerCredentialsReady"
+	// InterceptionUnavailable signals that the BrokerPolicy (explicitly
+	// or by default) required transparent interception but the run's
+	// namespace PSA or the manager's configuration cannot provide it.
+	// The run is terminal Failed; no fallback to cooperative.
+	HarnessRunConditionInterceptionUnavailable = "InterceptionUnavailable"
 )
 
 // HarnessRunStatus reports the observed state of a HarnessRun.
