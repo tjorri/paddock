@@ -41,19 +41,20 @@ const (
 
 // AuditKind names the category of a recorded decision. See spec 0002 §9
 // for the full taxonomy.
-// +kubebuilder:validation:Enum=credential-issued;credential-denied;credential-renewed;credential-revoked;egress-allow;egress-block;egress-block-summary;policy-applied;broker-unavailable
+// +kubebuilder:validation:Enum=credential-issued;credential-denied;credential-renewed;credential-revoked;egress-allow;egress-block;egress-block-summary;egress-discovery-allow;policy-applied;broker-unavailable
 type AuditKind string
 
 const (
-	AuditKindCredentialIssued   AuditKind = "credential-issued"
-	AuditKindCredentialDenied   AuditKind = "credential-denied"
-	AuditKindCredentialRenewed  AuditKind = "credential-renewed"
-	AuditKindCredentialRevoked  AuditKind = "credential-revoked"
-	AuditKindEgressAllow        AuditKind = "egress-allow"
-	AuditKindEgressBlock        AuditKind = "egress-block"
-	AuditKindEgressBlockSummary AuditKind = "egress-block-summary"
-	AuditKindPolicyApplied      AuditKind = "policy-applied"
-	AuditKindBrokerUnavailable  AuditKind = "broker-unavailable"
+	AuditKindCredentialIssued     AuditKind = "credential-issued"
+	AuditKindCredentialDenied     AuditKind = "credential-denied"
+	AuditKindCredentialRenewed    AuditKind = "credential-renewed"
+	AuditKindCredentialRevoked    AuditKind = "credential-revoked"
+	AuditKindEgressAllow          AuditKind = "egress-allow"
+	AuditKindEgressBlock          AuditKind = "egress-block"
+	AuditKindEgressBlockSummary   AuditKind = "egress-block-summary"
+	AuditKindEgressDiscoveryAllow AuditKind = "egress-discovery-allow"
+	AuditKindPolicyApplied        AuditKind = "policy-applied"
+	AuditKindBrokerUnavailable    AuditKind = "broker-unavailable"
 )
 
 // AuditEventSpec records one security-relevant decision. Write-once:

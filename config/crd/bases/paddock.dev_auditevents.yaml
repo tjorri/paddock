@@ -127,6 +127,7 @@ spec:
                 - egress-allow
                 - egress-block
                 - egress-block-summary
+                - egress-discovery-allow
                 - policy-applied
                 - broker-unavailable
                 type: string

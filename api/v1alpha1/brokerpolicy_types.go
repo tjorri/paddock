@@ -43,6 +43,16 @@ type BrokerPolicySpec struct {
 	// with a written reason.
 	// +optional
 	Interception *InterceptionSpec `json:"interception,omitempty"`
+
+	// EgressDiscovery, when present, opens a time-bounded window during
+	// which denied egress is allowed-but-logged. Admission rejects
+	// expiresAt values in the past or more than 7 days in the future.
+	// After the window closes, the BrokerPolicy reconciler sets
+	// DiscoveryExpired=True and the HarnessRun admission webhook
+	// rejects new runs governed by this policy until the operator
+	// updates expiresAt or removes the field. See spec 0003 §3.6.
+	// +optional
+	EgressDiscovery *EgressDiscoverySpec `json:"egressDiscovery,omitempty"`
 }
 
 // BrokerPolicyGrants enumerates the capabilities a BrokerPolicy backs.
@@ -251,6 +261,29 @@ type CooperativeAcceptedInterception struct {
 	Reason string `json:"reason"`
 }
 
+// EgressDiscoverySpec opts the BrokerPolicy into a time-bounded
+// "allow + log" window. While now < ExpiresAt, denied egress is
+// allowed through and recorded as kind=egress-discovery-allow
+// AuditEvents instead of kind=egress-block. After ExpiresAt, the
+// reconciler marks the policy non-effective.
+type EgressDiscoverySpec struct {
+	// Accepted must be true.
+	// +kubebuilder:validation:Required
+	Accepted bool `json:"accepted"`
+
+	// Reason explains why a discovery window is necessary instead of
+	// iterating per-denial via paddock policy suggest.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=20
+	// +kubebuilder:validation:MaxLength=500
+	Reason string `json:"reason"`
+
+	// ExpiresAt closes the discovery window. Admission rejects values
+	// in the past or more than 7 days in the future.
+	// +kubebuilder:validation:Required
+	ExpiresAt metav1.Time `json:"expiresAt"`
+}
+
 // BrokerPolicyStatus reports the observed state of a BrokerPolicy.
 type BrokerPolicyStatus struct {
 	// +optional
@@ -262,7 +295,9 @@ type BrokerPolicyStatus struct {
 }
 
 const (
-	BrokerPolicyConditionReady = "Ready"
+	BrokerPolicyConditionReady               = "Ready"
+	BrokerPolicyConditionDiscoveryModeActive = "DiscoveryModeActive"
+	BrokerPolicyConditionDiscoveryExpired    = "DiscoveryExpired"
 )
 
 // +kubebuilder:object:root=true
@@ -270,6 +305,7 @@ const (
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Templates",type=string,JSONPath=`.spec.appliesToTemplates`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:printcolumn:name="Discovery-Until",type=date,JSONPath=`.spec.egressDiscovery.expiresAt`,priority=1
 
 // BrokerPolicy declares the capabilities the broker will back for one
 // or more templates in a namespace.
