@@ -61,6 +61,35 @@ func auditEgressEvent(ns, runName, host string, port int32, when time.Time) *pad
 	}
 }
 
+// auditDiscoveryAllowEvent fabricates an AuditEvent of kind
+// egress-discovery-allow. Mirrors auditEgressEvent's shape so test
+// fixtures can mix both kinds and verify policy suggest aggregates them.
+func auditDiscoveryAllowEvent(ns, runName, host string, port int32, when time.Time) *paddockv1alpha1.AuditEvent {
+	safeHost := strings.ReplaceAll(host, ".", "-")
+	return &paddockv1alpha1.AuditEvent{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      fmt.Sprintf("ae-disc-%s-%s-%d", runName, safeHost, when.UnixNano()),
+			Labels: map[string]string{
+				paddockv1alpha1.AuditEventLabelRun:      runName,
+				paddockv1alpha1.AuditEventLabelKind:     string(paddockv1alpha1.AuditKindEgressDiscoveryAllow),
+				paddockv1alpha1.AuditEventLabelDecision: string(paddockv1alpha1.AuditDecisionGranted),
+			},
+		},
+		Spec: paddockv1alpha1.AuditEventSpec{
+			Decision:  paddockv1alpha1.AuditDecisionGranted,
+			Kind:      paddockv1alpha1.AuditKindEgressDiscoveryAllow,
+			Timestamp: metav1.NewTime(when),
+			RunRef:    &paddockv1alpha1.LocalObjectReference{Name: runName},
+			Destination: &paddockv1alpha1.AuditDestination{
+				Host: host,
+				Port: port,
+			},
+			Reason: "discovery window active",
+		},
+	}
+}
+
 // newFakeClientWithEvents builds a fake client seeded with the given
 // AuditEvents. Registers the paddock scheme for round-tripping.
 func newFakeClientWithEvents(t *testing.T, events ...*paddockv1alpha1.AuditEvent) *fake.ClientBuilder {
@@ -274,5 +303,37 @@ func TestPolicySuggest_PortZeroRendersEmptyPortsList(t *testing.T) {
 	// Should not accidentally render [0] or similar.
 	if strings.Contains(got, "ports: [0]") {
 		t.Errorf("port=0 rendered as [0] instead of []; got:\n%s", got)
+	}
+}
+
+func TestPolicySuggest_AggregatesDiscoveryAllowAlongsideEgressBlock(t *testing.T) {
+	ns := testNamespace
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	events := []*paddockv1alpha1.AuditEvent{
+		auditEgressEvent(ns, "run-a", "api.openai.com", 443, now),
+		auditDiscoveryAllowEvent(ns, "run-a", "api.openai.com", 443, now.Add(time.Second)),
+		auditDiscoveryAllowEvent(ns, "run-a", "registry.npmjs.org", 443, now.Add(2*time.Second)),
+	}
+	c := newFakeClientWithEvents(t, events...).Build()
+
+	var out bytes.Buffer
+	err := runPolicySuggest(context.Background(), c, ns, &out, suggestOptions{runName: "run-a"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := out.String()
+	// 2 attempts on openai (one egress-block, one discovery-allow)
+	// 1 attempt on npmjs (discovery-allow only)
+	if !strings.Contains(got, "api.openai.com") {
+		t.Errorf("output missing api.openai.com:\n%s", got)
+	}
+	if !strings.Contains(got, "registry.npmjs.org") {
+		t.Errorf("output missing registry.npmjs.org (discovery-allow only):\n%s", got)
+	}
+	if !strings.Contains(got, "#  2 attempts denied") {
+		t.Errorf("output missing 2-attempt count for openai:\n%s", got)
+	}
+	if !strings.Contains(got, "#  1 attempt denied") {
+		t.Errorf("output missing 1-attempt count for npmjs:\n%s", got)
 	}
 }

@@ -27,6 +27,8 @@ import (
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
@@ -375,14 +377,27 @@ func runPolicySuggestTo(ctx context.Context, c client.Client, ns string,
 		return fmt.Errorf("--run and --all are mutually exclusive")
 	}
 
-	labels := client.MatchingLabels{
-		paddockv1alpha1.AuditEventLabelKind: string(paddockv1alpha1.AuditKindEgressBlock),
+	kindReq, err := labels.NewRequirement(
+		paddockv1alpha1.AuditEventLabelKind,
+		selection.In,
+		[]string{
+			string(paddockv1alpha1.AuditKindEgressBlock),
+			string(paddockv1alpha1.AuditKindEgressDiscoveryAllow),
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("building kind selector: %w", err)
 	}
+	selector := labels.NewSelector().Add(*kindReq)
 	if opts.runName != "" {
-		labels[paddockv1alpha1.AuditEventLabelRun] = opts.runName
+		runReq, rErr := labels.NewRequirement(paddockv1alpha1.AuditEventLabelRun, selection.Equals, []string{opts.runName})
+		if rErr != nil {
+			return fmt.Errorf("building run selector: %w", rErr)
+		}
+		selector = selector.Add(*runReq)
 	}
 	var list paddockv1alpha1.AuditEventList
-	if err := c.List(ctx, &list, client.InNamespace(ns), labels); err != nil {
+	if err := c.List(ctx, &list, client.InNamespace(ns), client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		return fmt.Errorf("listing AuditEvents in %s: %w", ns, err)
 	}
 
