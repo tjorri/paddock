@@ -114,6 +114,7 @@ kubectl paddock list runs
 kubectl paddock audit --run demo          # AuditEvents for one run (v0.3)
 kubectl paddock policy list -n claude-demo # BrokerPolicies in this namespace
 kubectl paddock policy check claude-code   # shortfall diagnostic (v0.3)
+kubectl paddock policy suggest --run demo  # suggest egress grants from denials (v0.4)
 ```
 
 ### 6. Tear down

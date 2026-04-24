@@ -473,7 +473,7 @@ func renderSuggestion(w io.Writer, groups map[hostPort]int, scope string) {
 		if r.count == 1 {
 			unit = "attempt"
 		}
-		fmt.Fprintf(w, "  - { host: %s%sports: %s }    # %d %s denied\n",
+		fmt.Fprintf(w, "  - { host: %s%sports: %s }    # %2d %s denied\n",
 			hostField, pad, portsField, r.count, unit)
 	}
 }

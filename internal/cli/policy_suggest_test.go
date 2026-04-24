@@ -96,8 +96,8 @@ func TestPolicySuggest_RunScoped_GroupsAndSorts(t *testing.T) {
 	wantLines := []string{
 		"# Suggested additions for run run-a (2 distinct denials):",
 		"spec.grants.egress:",
-		`  - { host: "api.openai.com",     ports: [443] }    # 3 attempts denied`,
-		`  - { host: "registry.npmjs.org", ports: [443] }    # 1 attempt denied`,
+		`  - { host: "api.openai.com",     ports: [443] }    #  3 attempts denied`,
+		`  - { host: "registry.npmjs.org", ports: [443] }    #  1 attempt denied`,
 	}
 	for _, line := range wantLines {
 		if !strings.Contains(got, line) {
@@ -133,7 +133,7 @@ func TestPolicySuggest_AllInNamespace_AggregatesAcrossRuns(t *testing.T) {
 		t.Errorf("expected both hosts aggregated across runs; got:\n%s", got)
 	}
 	// openai had 2 attempts (one per run); slack had 1.
-	if !strings.Contains(got, "# 2 attempts denied") {
+	if !strings.Contains(got, "#  2 attempts denied") {
 		t.Errorf("expected openai count of 2; got:\n%s", got)
 	}
 }
