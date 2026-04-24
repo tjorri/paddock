@@ -97,6 +97,22 @@ func TestResolveInterceptionMode_Decision(t *testing.T) {
 		{name: "two cooperativeAccepted policies, PSA blocks → cooperative", psaLabel: PSALevelRestricted, policies: []*paddockv1alpha1.BrokerPolicy{cooperativePolicy("c1"), cooperativePolicy("c2")}, wantMode: paddockv1alpha1.InterceptionModeCooperative},
 		{name: "mixed: one transparent, one cooperativeAccepted, PSA permits → transparent", psaLabel: PSALevelPrivileged, policies: []*paddockv1alpha1.BrokerPolicy{transparentPolicy("t"), cooperativePolicy("c")}, wantMode: paddockv1alpha1.InterceptionModeTransparent},
 		{name: "mixed: one unset, one cooperativeAccepted, PSA blocks → unavailable", psaLabel: PSALevelRestricted, policies: []*paddockv1alpha1.BrokerPolicy{unsetPolicy("u"), cooperativePolicy("c")}, wantUnavail: true},
+		{
+			name:     "cooperativeAccepted with accepted=false treated as transparent",
+			psaLabel: PSALevelPrivileged,
+			policies: []*paddockv1alpha1.BrokerPolicy{{
+				ObjectMeta: metav1.ObjectMeta{Name: "bp"},
+				Spec: paddockv1alpha1.BrokerPolicySpec{
+					AppliesToTemplates: []string{"*"},
+					Interception: &paddockv1alpha1.InterceptionSpec{
+						CooperativeAccepted: &paddockv1alpha1.CooperativeAcceptedInterception{
+							Accepted: false,
+						},
+					},
+				},
+			}},
+			wantMode: paddockv1alpha1.InterceptionModeTransparent,
+		},
 	}
 
 	for _, c := range cases {

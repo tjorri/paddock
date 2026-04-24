@@ -94,7 +94,7 @@ func ResolveInterceptionMode(
 				"namespace %q has PSA enforce=%q which forbids NET_ADMIN on the "+
 					"iptables init container required for transparent interception; "+
 					"either relabel the namespace as privileged or set "+
-					"spec.interception.cooperativeAccepted on the BrokerPolicy",
+					"spec.interception.cooperativeAccepted on the BrokerPolicy.",
 				ns, nsObj.Labels[PSAEnforceLabel]),
 		}, nil
 	}
