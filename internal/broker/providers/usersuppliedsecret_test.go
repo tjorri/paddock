@@ -32,12 +32,26 @@ import (
 
 type fakeClientBuilder = *fake.ClientBuilder
 
+// buildScheme registers corev1 + paddockv1alpha1 on a fresh scheme.
+// Shared with the anthropic / githubapp / patpool tests in this
+// package; kept here (the old home was static_test.go, removed with
+// StaticProvider).
+func buildScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatalf("corev1 scheme: %v", err)
+	}
+	if err := paddockv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("paddock scheme: %v", err)
+	}
+	return s
+}
+
 func newFakeClientWithSecret(t *testing.T, ns, name, key, value string) fakeClientBuilder {
 	t.Helper()
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
 	return fake.NewClientBuilder().
-		WithScheme(scheme).
+		WithScheme(buildScheme(t)).
 		WithObjects(&corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 			Data:       map[string][]byte{key: []byte(value)},

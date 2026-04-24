@@ -55,7 +55,6 @@ func TestAnthropicAPIProvider_IssueThenSubstitute(t *testing.T) {
 		RunName:        "demo",
 		Namespace:      "my-team",
 		CredentialName: "ANTHROPIC_API_KEY",
-		Purpose:        paddockv1alpha1.CredentialPurposeLLM,
 		Grant:          anthropicGrant(),
 	})
 	if err != nil {
@@ -178,13 +177,5 @@ func TestAnthropicAPIProvider_IssueMissingSecret(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected Issue to fail on missing Secret")
-	}
-}
-
-func TestAnthropicAPIProvider_BacksOnlyLLM(t *testing.T) {
-	p := &AnthropicAPIProvider{}
-	purposes := p.Purposes()
-	if len(purposes) != 1 || purposes[0] != paddockv1alpha1.CredentialPurposeLLM {
-		t.Fatalf("Purposes = %v, want [llm]", purposes)
 	}
 }
