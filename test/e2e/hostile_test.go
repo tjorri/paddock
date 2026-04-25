@@ -497,11 +497,26 @@ spec:
 			dumpRunDiagnostics(ctx, tg19Namespace, runName)
 
 			By("asserting no credential leaked into <run>-broker-creds")
-			out, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", tg19Namespace,
+			// Two acceptable outcomes:
+			//  (a) Secret doesn't exist at all (controller never reached
+			//      the upsert step because every Issue attempt failed).
+			//  (b) Secret exists but DEMO_TOKEN data is empty.
+			// Either way no credential leaked. Failure mode would be a
+			// secret with non-empty DEMO_TOKEN bytes, which would surface
+			// as base64-encoded data in jsonpath output.
+			out, getErr := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", tg19Namespace,
 				"get", "secret", runName+"-broker-creds",
 				"-o", "jsonpath={.data.DEMO_TOKEN}"))
-			Expect(strings.TrimSpace(out)).To(BeEmpty(),
-				"DEMO_TOKEN must not be persisted when broker fail-closes the issue path; got %q", out)
+			if getErr != nil {
+				// kubectl errored — most likely the secret doesn't exist.
+				// That's the strongest possible guarantee that nothing
+				// leaked. Pass.
+				Expect(strings.ToLower(out)).To(ContainSubstring("notfound"),
+					"unexpected kubectl error when checking <run>-broker-creds: %s", out)
+			} else {
+				Expect(strings.TrimSpace(out)).To(BeEmpty(),
+					"DEMO_TOKEN must not be persisted when broker fail-closes the issue path; got %q", out)
+			}
 
 			By("asserting the run's BrokerReady condition reflects BrokerUnavailable")
 			brokerReady, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", tg19Namespace,
