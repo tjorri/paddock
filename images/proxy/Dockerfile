@@ -16,6 +16,7 @@ COPY go.sum go.sum
 
 COPY api/ api/
 COPY cmd/proxy/ cmd/proxy/
+COPY internal/auditing/ internal/auditing/
 COPY internal/proxy/ internal/proxy/
 # internal/proxy/broker_client.go imports the broker's wire types
 # (paddock.dev/paddock/internal/broker/api) to share request/response
