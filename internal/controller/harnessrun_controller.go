@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"strings"
 	"time"
@@ -124,6 +125,12 @@ type HarnessRunReconciler struct {
 	// ClusterServiceCIDR is the cluster's service CIDR. Same purpose as
 	// ClusterPodCIDR; set via --cluster-service-cidr.
 	ClusterServiceCIDR string
+	// APIServerIPs is the set of IPv4 addresses the controller's
+	// kubeconfig resolves the kube-apiserver to. Set once at manager
+	// startup; per-run NetworkPolicies include a TCP/443 allow rule
+	// for each entry so sidecars (collector, adapter) can reach the
+	// apiserver. F-41 / Phase 2d.
+	APIServerIPs []net.IP
 
 	// BrokerEndpoint is the in-cluster broker URL the proxy sidecar
 	// calls for ValidateEgress + SubstituteAuth. Empty disables

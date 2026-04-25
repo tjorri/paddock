@@ -25,7 +25,7 @@ import (
 
 func TestAPIServerIPsFromConfig_IPLiteralHost(t *testing.T) {
 	cfg := &rest.Config{Host: "https://10.96.0.1:443"}
-	ips, err := apiserverIPsFromConfig(cfg)
+	ips, err := APIServerIPsFromConfig(cfg)
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
@@ -36,7 +36,7 @@ func TestAPIServerIPsFromConfig_IPLiteralHost(t *testing.T) {
 
 func TestAPIServerIPsFromConfig_LocalhostHost(t *testing.T) {
 	cfg := &rest.Config{Host: "https://localhost:6443"}
-	ips, err := apiserverIPsFromConfig(cfg)
+	ips, err := APIServerIPsFromConfig(cfg)
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
@@ -54,7 +54,7 @@ func TestAPIServerIPsFromConfig_LocalhostHost(t *testing.T) {
 
 func TestAPIServerIPsFromConfig_HostWithoutScheme(t *testing.T) {
 	cfg := &rest.Config{Host: "10.96.0.1"}
-	ips, err := apiserverIPsFromConfig(cfg)
+	ips, err := APIServerIPsFromConfig(cfg)
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
@@ -65,7 +65,7 @@ func TestAPIServerIPsFromConfig_HostWithoutScheme(t *testing.T) {
 
 func TestAPIServerIPsFromConfig_EmptyHost(t *testing.T) {
 	cfg := &rest.Config{Host: ""}
-	_, err := apiserverIPsFromConfig(cfg)
+	_, err := APIServerIPsFromConfig(cfg)
 	if err == nil {
 		t.Fatal("expected error for empty host")
 	}
@@ -74,7 +74,7 @@ func TestAPIServerIPsFromConfig_EmptyHost(t *testing.T) {
 func TestAPIServerIPsFromConfig_UnresolvableHost(t *testing.T) {
 	// .invalid is reserved by RFC 6761 — guaranteed never to resolve.
 	cfg := &rest.Config{Host: "https://nothing.invalid:6443"}
-	_, err := apiserverIPsFromConfig(cfg)
+	_, err := APIServerIPsFromConfig(cfg)
 	if err == nil {
 		t.Fatal("expected error for unresolvable host")
 	}
@@ -84,7 +84,7 @@ func TestAPIServerIPsFromConfig_FiltersIPv6(t *testing.T) {
 	// ::1 is loopback v6 only. The helper must reject IPv6-only hosts
 	// because every existing NP rule uses IPv4 ipBlock CIDRs.
 	cfg := &rest.Config{Host: "https://[::1]:6443"}
-	_, err := apiserverIPsFromConfig(cfg)
+	_, err := APIServerIPsFromConfig(cfg)
 	if err == nil {
 		t.Fatal("expected error for IPv6-only host (no IPv4 resolved)")
 	}

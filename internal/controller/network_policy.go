@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -72,6 +73,11 @@ type networkPolicyConfig struct {
 	BrokerNamespace string
 	// BrokerPort is the broker's TLS service port (default 8443).
 	BrokerPort int32
+	// APIServerIPs is the set of IPv4 addresses the controller's
+	// kubeconfig resolves the kube-apiserver to. Each entry becomes a
+	// /32 ipBlock peer in the per-run NP's apiserver allow rule
+	// (TCP/443). Empty disables the rule. F-41 / Phase 2d.
+	APIServerIPs []net.IP
 }
 
 // rfc1918AndLinkLocalCIDRs are the always-excluded ranges. RFC1918
@@ -255,6 +261,7 @@ func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *
 		ClusterPodCIDR:     r.ClusterPodCIDR,
 		ClusterServiceCIDR: r.ClusterServiceCIDR,
 		BrokerNamespace:    r.BrokerNamespace,
+		APIServerIPs:       r.APIServerIPs,
 	}
 	desired := buildRunNetworkPolicy(run, cfg)
 	np := &networkingv1.NetworkPolicy{

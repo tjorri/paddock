@@ -27,7 +27,7 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// apiserverIPsFromConfig returns the IPv4 set the controller's
+// APIServerIPsFromConfig returns the IPv4 set the controller's
 // kubeconfig resolves the kube-apiserver to. Used to seed a per-run
 // NetworkPolicy allow rule on TCP/443 from sidecar pods (collector,
 // adapter) so AuditEvent emission and ConfigMap writes can reach the
@@ -43,9 +43,9 @@ import (
 //   - An empty result (no IPv4 resolved, or the host was empty/invalid)
 //     returns an error so manager startup can fail fast rather than
 //     starting with a permissively-configured controller.
-func apiserverIPsFromConfig(cfg *rest.Config) ([]net.IP, error) {
+func APIServerIPsFromConfig(cfg *rest.Config) ([]net.IP, error) {
 	if cfg == nil || strings.TrimSpace(cfg.Host) == "" {
-		return nil, errors.New("apiserverIPsFromConfig: empty cfg.Host")
+		return nil, errors.New("APIServerIPsFromConfig: empty cfg.Host")
 	}
 	host := cfg.Host
 	// rest.Config.Host can be either a URL ("https://10.96.0.1:443") or
@@ -53,7 +53,7 @@ func apiserverIPsFromConfig(cfg *rest.Config) ([]net.IP, error) {
 	if strings.Contains(host, "://") {
 		u, err := url.Parse(host)
 		if err != nil {
-			return nil, fmt.Errorf("apiserverIPsFromConfig: parse host %q: %w", host, err)
+			return nil, fmt.Errorf("APIServerIPsFromConfig: parse host %q: %w", host, err)
 		}
 		host = u.Hostname()
 	} else if h, _, splitErr := net.SplitHostPort(host); splitErr == nil {
@@ -65,12 +65,12 @@ func apiserverIPsFromConfig(cfg *rest.Config) ([]net.IP, error) {
 		if v4 := ip.To4(); v4 != nil {
 			return []net.IP{v4}, nil
 		}
-		return nil, fmt.Errorf("apiserverIPsFromConfig: host %q is IPv6 only; IPv4 required", host)
+		return nil, fmt.Errorf("APIServerIPsFromConfig: host %q is IPv6 only; IPv4 required", host)
 	}
 
 	netAddrs, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
 	if err != nil {
-		return nil, fmt.Errorf("apiserverIPsFromConfig: lookup %q: %w", host, err)
+		return nil, fmt.Errorf("APIServerIPsFromConfig: lookup %q: %w", host, err)
 	}
 	var v4s []net.IP
 	for _, a := range netAddrs {
@@ -79,7 +79,7 @@ func apiserverIPsFromConfig(cfg *rest.Config) ([]net.IP, error) {
 		}
 	}
 	if len(v4s) == 0 {
-		return nil, fmt.Errorf("apiserverIPsFromConfig: %q resolved to no IPv4 addresses", host)
+		return nil, fmt.Errorf("APIServerIPsFromConfig: %q resolved to no IPv4 addresses", host)
 	}
 	return v4s, nil
 }
