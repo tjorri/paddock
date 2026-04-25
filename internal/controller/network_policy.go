@@ -308,11 +308,11 @@ func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *
 }
 
 // deleteRunNetworkPolicy deletes the per-run NetworkPolicy if it exists.
-// Not called from the main reconcile path after Phase 2d (F-43) — the
-// pinned Status.NetworkPolicyEnforced field makes active deletion
-// unnecessary. Retained for envtest teardown paths and future use.
-//
-//nolint:unused // Intentionally kept as a helper; not called from Reconcile post-Phase-2d.
+// Called from the empty-`requires` branch in Reconcile to clean up any
+// stale NP from a previous reconcile that did emit one (e.g., template
+// edited to drop requires). Not called for the active flag-flip case
+// — the pinned Status.NetworkPolicyEnforced field makes that
+// unnecessary post-Phase-2d.
 func (r *HarnessRunReconciler) deleteRunNetworkPolicy(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
 	var np networkingv1.NetworkPolicy
 	key := client.ObjectKey{Namespace: run.Namespace, Name: runNetworkPolicyName(run.Name)}
