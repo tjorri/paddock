@@ -1,0 +1,25 @@
+# Hostile-harness ClusterHarnessTemplate for adversarial E2E only.
+# Do not use in production.
+apiVersion: paddock.dev/v1alpha1
+kind: ClusterHarnessTemplate
+metadata:
+  name: evil-echo
+  labels:
+    app.kubernetes.io/component: test-fixture
+    paddock.dev/test-only: "true"
+spec:
+  image: paddock-evil-echo:dev
+  imagePullPolicy: IfNotPresent
+  command: ["/usr/local/bin/evil-echo"]
+  # Args supplied by the HarnessRun on a per-test basis.
+  eventAdapter:
+    image: paddock-adapter-echo:dev
+    imagePullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+  # Tests provide their own interception choice via BrokerPolicy.
