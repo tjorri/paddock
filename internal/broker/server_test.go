@@ -145,7 +145,7 @@ func post(t *testing.T, srv *broker.Server, runName, runNS, bearer, body string)
 	t.Helper()
 	mux := http.NewServeMux()
 	srv.Register(mux)
-	req := httptest.NewRequest(http.MethodPost, brokerapi.PathIssue, strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, brokerapi.PathIssue, strings.NewReader(body))
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
@@ -484,7 +484,7 @@ func TestIssue_WrongMethodRejected(t *testing.T) {
 	srv, _ := setup(t)
 	mux := http.NewServeMux()
 	srv.Register(mux)
-	req := httptest.NewRequest(http.MethodGet, brokerapi.PathIssue, bytes.NewReader(nil))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, brokerapi.PathIssue, bytes.NewReader(nil))
 	req.Header.Set("Authorization", "Bearer t")
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
@@ -499,7 +499,7 @@ func postValidateEgress(t *testing.T, srv *broker.Server, runName, runNS, bearer
 	t.Helper()
 	mux := http.NewServeMux()
 	srv.Register(mux)
-	req := httptest.NewRequest(http.MethodPost, brokerapi.PathValidateEgress, strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, brokerapi.PathValidateEgress, strings.NewReader(body))
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}

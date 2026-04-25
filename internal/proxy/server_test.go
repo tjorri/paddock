@@ -134,7 +134,8 @@ func parsePort(s string) (int, error) {
 // Validator + AuditSink.
 func startProxy(t *testing.T, srv *Server) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -185,7 +186,8 @@ func TestProxy_AllowsAndMITMsTrustedHost(t *testing.T) {
 	}
 	cli := &http.Client{Transport: tr, Timeout: 5 * time.Second}
 
-	resp, err := cli.Get(fmt.Sprintf("https://%s:%d/", host, port))
+	getReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("https://%s:%d/", host, port), nil)
+	resp, err := cli.Do(getReq)
 	if err != nil {
 		t.Fatalf("proxy GET: %v", err)
 	}
@@ -235,7 +237,8 @@ func TestProxy_DeniesWhenHostNotInAllowList(t *testing.T) {
 
 	// The 403 from the proxy closes the tunnel; net/http surfaces this
 	// as a transport error, not a response.
-	resp, err := cli.Get("https://evil.com/")
+	evilReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://evil.com/", nil)
+	resp, err := cli.Do(evilReq)
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
@@ -266,7 +269,7 @@ func TestProxy_RejectsPlainHTTPRequest(t *testing.T) {
 	srv := &Server{CA: ca, Validator: validator, Audit: &recordingSink{}}
 	proxyURL := startProxy(t, srv)
 
-	req, _ := http.NewRequest(http.MethodGet, proxyURL+"/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, proxyURL+"/", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
@@ -344,7 +347,8 @@ func TestProxy_EmitsEgressDiscoveryAllowOnDiscoveryAllow(t *testing.T) {
 	}
 	cli := &http.Client{Transport: tr, Timeout: 5 * time.Second}
 
-	resp, err := cli.Get(fmt.Sprintf("https://%s:%d/", host, port))
+	discReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("https://%s:%d/", host, port), nil)
+	resp, err := cli.Do(discReq)
 	if err != nil {
 		t.Fatalf("proxy GET: %v", err)
 	}
@@ -417,7 +421,8 @@ func TestProxy_ValidatorErrorFailsClosed(t *testing.T) {
 
 	tr := &http.Transport{Proxy: http.ProxyURL(pu)}
 	cli := &http.Client{Transport: tr, Timeout: 3 * time.Second}
-	resp, err := cli.Get("https://api.anthropic.com/")
+	errReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.anthropic.com/", nil)
+	resp, err := cli.Do(errReq)
 	if resp != nil {
 		_ = resp.Body.Close()
 	}

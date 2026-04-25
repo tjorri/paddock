@@ -138,7 +138,7 @@ func TestProxy_SubstituteAuthRewritesHeaders(t *testing.T) {
 
 	// Agent sends a Paddock bearer — the proxy must swap it before the
 	// upstream sees it. Body is POSTed to exercise non-empty request.
-	req, _ := http.NewRequest(http.MethodPost,
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		fmt.Sprintf("https://%s:%d/v1/messages", host, port),
 		stringReader("hello"))
 	req.Header.Set("Authorization", "Bearer pdk-anthropic-deadbeef")
@@ -197,7 +197,8 @@ func TestProxy_SubstituteAuthErrorDropsConnection(t *testing.T) {
 		TLSClientConfig: &tls.Config{RootCAs: clientPool, MinVersion: tls.VersionTLS12},
 	}
 	cli := &http.Client{Transport: tr, Timeout: 3 * time.Second}
-	resp, err := cli.Get(fmt.Sprintf("https://%s:%d/", host, port))
+	subErrReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, fmt.Sprintf("https://%s:%d/", host, port), nil)
+	resp, err := cli.Do(subErrReq)
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
@@ -234,7 +235,7 @@ func (b *stringBody) Read(p []byte) (int, error) {
 }
 
 func TestApplySubstitution_QueryParam(t *testing.T) {
-	req, _ := http.NewRequest("GET", "https://api.example.com/v1/thing?access_token=pdk-usersecret-abc&other=keep", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/v1/thing?access_token=pdk-usersecret-abc&other=keep", nil)
 	res := providers.SubstituteResult{
 		Matched:       true,
 		SetQueryParam: map[string]string{"access_token": "real-token"},
@@ -250,7 +251,7 @@ func TestApplySubstitution_QueryParam(t *testing.T) {
 }
 
 func TestApplySubstitution_BasicAuth(t *testing.T) {
-	req, _ := http.NewRequest("GET", "https://api.example.com/repo.git", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/repo.git", nil)
 	req.Header.Set("Authorization", "Bearer pdk-usersecret-abc")
 	res := providers.SubstituteResult{
 		Matched:      true,

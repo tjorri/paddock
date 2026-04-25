@@ -107,7 +107,7 @@ func postTo(t *testing.T, srv *broker.Server, path, runName, runNS, body string)
 	t.Helper()
 	mux := http.NewServeMux()
 	srv.Register(mux)
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer token")
 	req.Header.Set(brokerapi.HeaderRun, runName)
 	if runNS != "" {
