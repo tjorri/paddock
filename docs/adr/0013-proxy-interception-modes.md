@@ -44,9 +44,16 @@ v0.3 ships **transparent** and **cooperative** modes. The HarnessRun resolves to
 
 The per-run NetworkPolicy now includes a TCP/443 allow rule for the
 kube-apiserver IPs resolved from the controller's kubeconfig at manager
-startup, so all admitted runs can be policy-enforced regardless of
-whether their template declares a non-empty `requires` block. The Phase
-2b empty-`requires` skip workaround is removed.
+startup. This helps clusters whose CNI enforces NetworkPolicy ipBlock
+rules against the kube-apiserver Service ClusterIP. **It does not help
+on Cilium**: Cilium does not enforce standard NetworkPolicy ipBlock
+rules against host-network destinations like the kube-apiserver static
+pod, even when the rule matches by Service ClusterIP. The Phase 2b
+empty-`requires` skip workaround is therefore retained — templates with
+empty `requires` continue to skip NP emission so collector + adapter
+sidecars retain their kube-apiserver access on Cilium clusters. A
+proper Cilium fix uses CiliumNetworkPolicy with
+`toEntities: kube-apiserver` and is queued for a future phase.
 
 The NP-enforce decision is captured in
 `HarnessRun.status.networkPolicyEnforced` at admission and persists for
