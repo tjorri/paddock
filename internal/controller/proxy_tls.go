@@ -110,7 +110,7 @@ func (r *HarnessRunReconciler) ensureProxyTLS(ctx context.Context, run *paddockv
 			},
 		},
 	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dst, func() error {
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, dst, func() error {
 		if err := controllerutil.SetControllerReference(run, dst, r.Scheme); err != nil {
 			return err
 		}
@@ -124,6 +124,9 @@ func (r *HarnessRunReconciler) ensureProxyTLS(ctx context.Context, run *paddockv
 	})
 	if err != nil {
 		return false, fmt.Errorf("upserting proxy-tls secret: %w", err)
+	}
+	if op == controllerutil.OperationResultCreated {
+		r.Audit.EmitCAProjected(ctx, run.Name, run.Namespace, dst.Name)
 	}
 	return true, nil
 }
