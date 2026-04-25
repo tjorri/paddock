@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -194,6 +195,38 @@ func TestIssue_Success(t *testing.T) {
 	}
 	if aes.Items[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialIssued {
 		t.Fatalf("audit kind = %q, want credential-issued", aes.Items[0].Spec.Kind)
+	}
+}
+
+// errorSink wraps a real audit writer but injects an error on demand,
+// for testing the broker's fail-closed behaviour on audit-write failure.
+type errorSink struct {
+	err error
+}
+
+func (s errorSink) Write(_ context.Context, _ *paddockv1alpha1.AuditEvent) error { return s.err }
+
+func TestIssue_AuditFailure_Returns503AndNoCredential(t *testing.T) {
+	srv, _ := setup(t)
+	srv.Audit = &broker.AuditWriter{Sink: errorSink{err: errors.New("etcd partition")}}
+
+	rr := post(t, srv, "hello", "my-team", "valid-token", `{"name":"DEMO_TOKEN"}`)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "super-secret") {
+		t.Errorf("response body leaked credential: %q", rr.Body.String())
+	}
+}
+
+func TestIssue_DenyAuditFailure_Returns503(t *testing.T) {
+	srv, _ := setup(t)
+	srv.Audit = &broker.AuditWriter{Sink: errorSink{err: errors.New("etcd partition")}}
+
+	// Ask for a credential the template does not declare → CredentialNotFound.
+	rr := post(t, srv, "hello", "my-team", "valid-token", `{"name":"NO_SUCH_CRED"}`)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 (audit-write failed during deny)", rr.Code)
 	}
 }
 

@@ -127,12 +127,15 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 
 	result, grant, audit, err := s.issue(ctx, runNamespace, runName, req)
 	if err != nil {
-		// Best-effort audit write for denials; any failure here is logged
-		// but not surfaced to the caller (the credential denial is the
-		// primary signal).
+		// Deny path: write audit BEFORE returning the error to the
+		// caller. If the audit write itself fails, return 503 so the
+		// caller retries; the deny re-evaluates on retry. F-12.
 		if audit != nil {
 			if wErr := s.Audit.CredentialDenied(ctx, *audit); wErr != nil {
 				logger.Error(wErr, "writing denial AuditEvent", "run", runName)
+				writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+					"paddock-broker: audit unavailable, please retry")
+				return
 			}
 		}
 		var appErr *applicationError
@@ -144,9 +147,15 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Issuance path: write audit BEFORE writing the JSON response. If
+	// the audit write fails the credential has been minted but not yet
+	// returned; the caller sees 503 and retries. F-12.
 	if audit != nil {
 		if wErr := s.Audit.CredentialIssued(ctx, *audit); wErr != nil {
 			logger.Error(wErr, "writing issuance AuditEvent", "run", runName)
+			writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+				"paddock-broker: audit unavailable, please retry")
+			return
 		}
 	}
 
