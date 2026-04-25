@@ -98,3 +98,14 @@ recentEventsCap: 50
 # (ADR-0016). Wired through to --audit-retention-days. Lower this if
 # etcd pressure is a concern before reaching for external export.
 auditRetentionDays: 30
+
+# F-33: the AuditEvent validating webhook ships with failurePolicy=Ignore
+# (all other webhooks remain failurePolicy=Fail). This trade-off ensures
+# audit-trail availability is not gated on the controller pod's webhook
+# handler — broker fail-closed deny semantics (F-12, F-24) would
+# otherwise convert any webhook outage into a self-DoS on issuance.
+# The cost is that AuditEvent write-once enforcement is briefly bypassed
+# during webhook outages; operators detect this via:
+#   - paddock_audit_write_failures_total counter (rate > 0 alerts)
+#   - controller-pod webhook readiness probes
+# See docs/observability/audit-monitoring.md for an alert example.

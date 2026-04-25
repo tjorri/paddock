@@ -924,7 +924,7 @@ webhooks:
         name: paddock-webhook-service
         namespace: paddock-system
         path: /validate-paddock-dev-v1alpha1-auditevent
-    failurePolicy: Fail
+    failurePolicy: Ignore
     name: vauditevent-v1alpha1.kb.io
     rules:
       - apiGroups:
