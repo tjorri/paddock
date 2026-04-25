@@ -18,35 +18,25 @@ package broker
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/auditing"
 )
 
-// AuditWriter creates AuditEvent objects in the run's namespace. This
-// is the canonical security trail — every credential issuance (including
-// Static) and every denial lands as one record. See ADR-0016.
-//
-// v0.3 ships the simplest possible writer: one etcd write per event.
-// The debounce + summary story from ADR-0016 is wired at the emitter
-// (per-run counter here + a periodic flush) in later milestones when
-// proxy-side egress events start generating enough volume to matter.
+// AuditWriter retains the v0.3 broker-local API but delegates to the
+// shared auditing.Sink. New broker code should consume an auditing.Sink
+// directly via Server.Sink; AuditWriter is kept so that bootstrap code
+// outside cmd/broker that constructs Server with a Client (e.g. tests)
+// can keep working until callers migrate.
 type AuditWriter struct {
+	// Client is retained for backwards-compat: code that builds an
+	// AuditWriter without a Sink defaults to a KubeSink wrapping it.
 	Client client.Client
-}
-
-// AuditCredentialIssued records a successful Issue.
-func (w *AuditWriter) CredentialIssued(ctx context.Context, e CredentialAudit) error {
-	return w.write(ctx, e.buildEvent(paddockv1alpha1.AuditDecisionGranted, paddockv1alpha1.AuditKindCredentialIssued))
-}
-
-// AuditCredentialDenied records a failed Issue.
-func (w *AuditWriter) CredentialDenied(ctx context.Context, e CredentialAudit) error {
-	return w.write(ctx, e.buildEvent(paddockv1alpha1.AuditDecisionDenied, paddockv1alpha1.AuditKindCredentialDenied))
+	// Sink, when non-nil, is the actual write target. Construct with
+	// auditing.KubeSink{Client: c, Component: "broker"} or NoopSink.
+	Sink auditing.Sink
 }
 
 // CredentialAudit is the emitter-side shape for a credential decision.
@@ -60,44 +50,35 @@ type CredentialAudit struct {
 	When           time.Time
 }
 
-func (e CredentialAudit) buildEvent(decision paddockv1alpha1.AuditDecision, kind paddockv1alpha1.AuditKind) *paddockv1alpha1.AuditEvent {
-	when := e.When
-	if when.IsZero() {
-		when = time.Now().UTC()
+func (w *AuditWriter) sink() auditing.Sink {
+	if w.Sink != nil {
+		return w.Sink
 	}
-	ae := &paddockv1alpha1.AuditEvent{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace:    e.Namespace,
-			GenerateName: "ae-cred-",
-			Labels: map[string]string{
-				paddockv1alpha1.AuditEventLabelRun:      e.RunName,
-				paddockv1alpha1.AuditEventLabelDecision: string(decision),
-				paddockv1alpha1.AuditEventLabelKind:     string(kind),
-			},
-		},
-		Spec: paddockv1alpha1.AuditEventSpec{
-			Decision:  decision,
-			Kind:      kind,
-			Timestamp: metav1.NewTime(when),
-			Reason:    e.Reason,
-			Credential: &paddockv1alpha1.AuditCredentialRef{
-				Name:     e.CredentialName,
-				Provider: e.Provider,
-			},
-		},
-	}
-	if e.RunName != "" {
-		ae.Spec.RunRef = &paddockv1alpha1.LocalObjectReference{Name: e.RunName}
-	}
-	if e.MatchedPolicy != "" {
-		ae.Spec.MatchedPolicy = &paddockv1alpha1.LocalObjectReference{Name: e.MatchedPolicy}
-	}
-	return ae
+	return &auditing.KubeSink{Client: w.Client, Component: "broker"}
 }
 
-func (w *AuditWriter) write(ctx context.Context, ae *paddockv1alpha1.AuditEvent) error {
-	if err := w.Client.Create(ctx, ae); err != nil {
-		return fmt.Errorf("creating AuditEvent: %w", err)
-	}
-	return nil
+// CredentialIssued records a successful Issue.
+func (w *AuditWriter) CredentialIssued(ctx context.Context, e CredentialAudit) error {
+	return w.sink().Write(ctx, auditing.NewCredentialIssued(auditing.CredentialIssuedInput{
+		RunName:        e.RunName,
+		Namespace:      e.Namespace,
+		CredentialName: e.CredentialName,
+		Provider:       e.Provider,
+		MatchedPolicy:  e.MatchedPolicy,
+		Reason:         e.Reason,
+		When:           e.When,
+	}))
+}
+
+// CredentialDenied records a failed Issue.
+func (w *AuditWriter) CredentialDenied(ctx context.Context, e CredentialAudit) error {
+	return w.sink().Write(ctx, auditing.NewCredentialDenied(auditing.CredentialDeniedInput{
+		RunName:        e.RunName,
+		Namespace:      e.Namespace,
+		CredentialName: e.CredentialName,
+		Provider:       e.Provider,
+		MatchedPolicy:  e.MatchedPolicy,
+		Reason:         e.Reason,
+		When:           e.When,
+	}))
 }
