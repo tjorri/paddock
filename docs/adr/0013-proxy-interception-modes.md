@@ -39,3 +39,20 @@ v0.3 ships **transparent** and **cooperative** modes. The HarnessRun resolves to
 - **Cooperative-only.** Rejected: fails the threat model. A compromised agent trivially bypasses `HTTPS_PROXY`. Would effectively concede that Paddock has no defence against a malicious binary.
 - **Make mode a user-facing field on HarnessRun.** Rejected: decision belongs to the platform operator (via PSA + BrokerPolicy), not the run submitter. Surfacing it invites "why isn't my run using transparent?" tickets that are really PSA questions.
 - **Ship CNI mode now.** Rejected: shipping a CNI plugin is its own milestone, with its own supply-chain story. Defer until transparent + cooperative have production hours on them.
+
+## Phase 2d update (2026-04-26)
+
+The per-run NetworkPolicy now includes a TCP/443 allow rule for the
+kube-apiserver IPs resolved from the controller's kubeconfig at manager
+startup, so all admitted runs can be policy-enforced regardless of
+whether their template declares a non-empty `requires` block. The Phase
+2b empty-`requires` skip workaround is removed.
+
+The NP-enforce decision is captured in
+`HarnessRun.status.networkPolicyEnforced` at admission and persists for
+the run's lifetime; flag flips on the manager affect new runs only.
+Operator-side deletion of a per-run NP triggers an immediate reconcile
+that re-creates the NP and emits a `network-policy-enforcement-withdrawn`
+AuditEvent so the operator's trail records the withdrawal. Combined with
+F-41's `Owns(&networkingv1.NetworkPolicy{})` watch on the controller,
+this makes manual NP withdrawal observable and self-healing.
