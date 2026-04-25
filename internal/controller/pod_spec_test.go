@@ -108,9 +108,10 @@ func TestBuildPodSpec_EchoShape(t *testing.T) {
 		t.Errorf("pod restartPolicy = %v, want Never", ps.RestartPolicy)
 	}
 
-	// Volumes: shared (emptyDir) + prompt (ConfigMap) + workspace (PVC).
-	if len(ps.Volumes) != 3 {
-		t.Fatalf("volumes = %d, want 3 (shared, prompt, workspace)", len(ps.Volumes))
+	// Volumes: shared (emptyDir) + prompt (Secret) + workspace (PVC) +
+	// paddock-sa-token (projected, for sidecars only — F-38).
+	if len(ps.Volumes) != 4 {
+		t.Fatalf("volumes = %d, want 4 (shared, prompt, workspace, paddock-sa-token)", len(ps.Volumes))
 	}
 	byName := map[string]corev1.Volume{}
 	for _, v := range ps.Volumes {
@@ -149,7 +150,10 @@ func TestBuildPodSpec_MountsPerContainer(t *testing.T) {
 	}
 
 	adapterMounts := mountSet(ps.InitContainers[0].VolumeMounts)
-	wantAdapter := map[string]bool{sharedVolumeName: true}
+	wantAdapter := map[string]bool{
+		sharedVolumeName:    true,
+		paddockSAVolumeName: true, // F-38: sidecars get explicit SA token; agent does not
+	}
 	if !mapsEqualBool(adapterMounts, wantAdapter) {
 		t.Errorf("adapter mounts = %v, want %v — adapter must not see workspace", adapterMounts, wantAdapter)
 	}
@@ -158,6 +162,7 @@ func TestBuildPodSpec_MountsPerContainer(t *testing.T) {
 	wantCollector := map[string]bool{
 		sharedVolumeName:    true,
 		workspaceVolumeName: true,
+		paddockSAVolumeName: true, // F-38: collector needs SA token for auditevents:create
 	}
 	if !mapsEqualBool(collectorMounts, wantCollector) {
 		t.Errorf("collector mounts = %v, want %v", collectorMounts, wantCollector)
@@ -530,6 +535,62 @@ func TestBuildPodSpec_NoProxyWhenDisabled(t *testing.T) {
 		if _, ok := env[k]; ok {
 			t.Errorf("env[%q] must be unset when proxy is disabled; got %q", k, env[k])
 		}
+	}
+}
+
+func TestBuildPodSpec_AgentHasNoServiceAccountToken(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+	}
+	template := &resolvedTemplate{
+		Spec: paddockv1alpha1.HarnessTemplateSpec{
+			Image: "ghcr.io/test/echo:dev",
+		},
+	}
+	in := podSpecInputs{
+		serviceAccount:  "test-sa",
+		outputConfigMap: "hr-1-out",
+		collectorImage:  "ghcr.io/test/collector:dev",
+	}
+
+	spec := buildPodSpec(run, template, in)
+
+	// Pod-level automount must be disabled (F-38).
+	if spec.AutomountServiceAccountToken == nil || *spec.AutomountServiceAccountToken != false {
+		t.Errorf("PodSpec.AutomountServiceAccountToken = %v, want pointer-to-false", spec.AutomountServiceAccountToken)
+	}
+
+	// The agent container is the only entry in spec.Containers; verify
+	// it has no SA token VolumeMount.
+	if len(spec.Containers) != 1 {
+		t.Fatalf("Containers length = %d, want 1 (agent only)", len(spec.Containers))
+	}
+	agent := spec.Containers[0]
+	if agent.Name != agentContainerName {
+		t.Fatalf("agent container name = %q, want %q", agent.Name, agentContainerName)
+	}
+	for _, vm := range agent.VolumeMounts {
+		if vm.MountPath == "/var/run/secrets/kubernetes.io/serviceaccount" ||
+			vm.Name == "kube-api-access" || // the projected default
+			vm.Name == "paddock-sa-token" { // the explicit name we'll use
+			t.Errorf("agent container has SA-token mount %+v; should be absent (F-38)", vm)
+		}
+	}
+
+	// At least one sidecar (collector or adapter or proxy) MUST have
+	// the explicit paddock-sa-token mount. The collector definitely
+	// needs it (auditevents:create) — assert presence on at least one
+	// init container.
+	sawSidecarWithToken := false
+	for _, c := range spec.InitContainers {
+		for _, vm := range c.VolumeMounts {
+			if vm.Name == "paddock-sa-token" {
+				sawSidecarWithToken = true
+			}
+		}
+	}
+	if !sawSidecarWithToken {
+		t.Errorf("expected at least one sidecar/init container to mount paddock-sa-token; sidecars must keep their SA access for AuditEvent emission")
 	}
 }
 
