@@ -116,6 +116,15 @@ type HarnessRunReconciler struct {
 	// NetworkPolicyEnforce is on or off explicitly.
 	NetworkPolicyAutoEnabled bool
 
+	// ClusterPodCIDR is the cluster's pod CIDR (e.g. 10.244.0.0/16).
+	// Excluded from per-run NetworkPolicy public-internet egress so a
+	// hostile agent cannot reach co-tenant pods. Set via
+	// --cluster-pod-cidr manager flag. See finding F-19.
+	ClusterPodCIDR string
+	// ClusterServiceCIDR is the cluster's service CIDR. Same purpose as
+	// ClusterPodCIDR; set via --cluster-service-cidr.
+	ClusterServiceCIDR string
+
 	// BrokerEndpoint is the in-cluster broker URL the proxy sidecar
 	// calls for ValidateEgress + SubstituteAuth. Empty disables
 	// broker-backed proxy enforcement — the proxy then falls back to

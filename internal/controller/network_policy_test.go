@@ -30,7 +30,11 @@ func TestBuildRunNetworkPolicy_Shape(t *testing.T) {
 	run := &paddockv1alpha1.HarnessRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
 	}
-	np := buildRunNetworkPolicy(run)
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     "10.244.0.0/16",
+		ClusterServiceCIDR: "10.96.0.0/12",
+	}
+	np := buildRunNetworkPolicy(run, cfg)
 
 	if np.Name != "hr-1-egress" {
 		t.Errorf("name = %q, want hr-1-egress", np.Name)
@@ -42,17 +46,17 @@ func TestBuildRunNetworkPolicy_Shape(t *testing.T) {
 		t.Errorf("podSelector = %+v, want paddock.dev/run=hr-1", np.Spec.PodSelector.MatchLabels)
 	}
 
-	// Egress-only policy — we don't restrict ingress in v0.3.
+	// Egress-only policy.
 	if len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != networkingv1.PolicyTypeEgress {
 		t.Errorf("policyTypes = %v, want [Egress]", np.Spec.PolicyTypes)
 	}
 
-	// Expected three rules: kube-dns, TCP 443, TCP 80.
+	// Three rules: kube-dns, TCP 443 (with except list), TCP 80 (same).
 	if len(np.Spec.Egress) != 3 {
 		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80)", len(np.Spec.Egress))
 	}
 
-	// First rule covers DNS with UDP + TCP 53 to kube-dns.
+	// First rule: DNS to kube-dns with both UDP and TCP 53.
 	dns := np.Spec.Egress[0]
 	if len(dns.To) != 1 || dns.To[0].PodSelector == nil ||
 		dns.To[0].PodSelector.MatchLabels["k8s-app"] != "kube-dns" {
@@ -74,12 +78,20 @@ func TestBuildRunNetworkPolicy_Shape(t *testing.T) {
 		t.Errorf("DNS must allow both UDP and TCP 53; got %+v", dns.Ports)
 	}
 
-	// Second + third rules: TCP 443 and TCP 80 to 0.0.0.0/0.
+	// Second + third: TCP 443 and TCP 80 to 0.0.0.0/0 with non-empty
+	// except list. (TestBuildRunNetworkPolicy_ExcludesPrivateAndClusterCIDRs
+	// verifies the exact except contents.)
 	for i, wantPort := range []int32{443, 80} {
 		rule := np.Spec.Egress[i+1]
-		if len(rule.To) != 1 || rule.To[0].IPBlock == nil ||
-			rule.To[0].IPBlock.CIDR != "0.0.0.0/0" {
-			t.Errorf("rule[%d] peer = %+v, want 0.0.0.0/0 ipBlock", i+1, rule.To)
+		if len(rule.To) != 1 || rule.To[0].IPBlock == nil {
+			t.Errorf("rule[%d] peer = %+v, want ipBlock", i+1, rule.To)
+			continue
+		}
+		if rule.To[0].IPBlock.CIDR != "0.0.0.0/0" {
+			t.Errorf("rule[%d] CIDR = %q, want 0.0.0.0/0", i+1, rule.To[0].IPBlock.CIDR)
+		}
+		if len(rule.To[0].IPBlock.Except) == 0 {
+			t.Errorf("rule[%d] except is empty; want RFC1918 + link-local + cluster CIDRs", i+1)
 		}
 		if len(rule.Ports) != 1 ||
 			rule.Ports[0].Port == nil ||
@@ -87,6 +99,65 @@ func TestBuildRunNetworkPolicy_Shape(t *testing.T) {
 			t.Errorf("rule[%d] port = %+v, want TCP %d", i+1, rule.Ports, wantPort)
 		}
 	}
+}
+
+func TestBuildRunNetworkPolicy_ExcludesPrivateAndClusterCIDRs(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+	}
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     "10.244.0.0/16",
+		ClusterServiceCIDR: "10.96.0.0/12",
+	}
+	np := buildRunNetworkPolicy(run, cfg)
+
+	// Egress rules: kube-dns, TCP 443, TCP 80. Same count as before.
+	if len(np.Spec.Egress) != 3 {
+		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80)", len(np.Spec.Egress))
+	}
+
+	// Rules 2 and 3 are the public-internet rules; both should now have
+	// 0.0.0.0/0 with an except list that contains RFC1918 + link-local +
+	// configured cluster CIDRs.
+	wantExcept := []string{
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"169.254.0.0/16",
+		"10.244.0.0/16",
+		"10.96.0.0/12",
+	}
+	for i, rule := range np.Spec.Egress[1:] {
+		if len(rule.To) != 1 || rule.To[0].IPBlock == nil {
+			t.Fatalf("rule[%d] expected ipBlock peer; got %+v", i+1, rule.To)
+		}
+		got := rule.To[0].IPBlock
+		if got.CIDR != "0.0.0.0/0" {
+			t.Errorf("rule[%d] CIDR = %q, want 0.0.0.0/0", i+1, got.CIDR)
+		}
+		if !cidrSliceEqual(got.Except, wantExcept) {
+			t.Errorf("rule[%d] except = %v, want %v", i+1, got.Except, wantExcept)
+		}
+	}
+}
+
+// cidrSliceEqual returns true when two CIDR slices contain the same
+// entries regardless of order. Test helper.
+func cidrSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, s := range a {
+		seen[s]++
+	}
+	for _, s := range b {
+		if seen[s] == 0 {
+			return false
+		}
+		seen[s]--
+	}
+	return true
 }
 
 // TestNetworkPolicyEnforced verifies the decision table across modes.

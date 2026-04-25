@@ -97,6 +97,8 @@ func main() {
 	var networkPolicyEnforce string
 	var brokerCAName string
 	var brokerCANamespace string
+	var clusterPodCIDR string
+	var clusterServiceCIDR string
 	flag.StringVar(&collectorImage, "collector-image", controller.DefaultCollectorImage,
 		"Image for the generic collector sidecar injected into every HarnessRun Pod.")
 	flag.IntVar(&ringMaxEvents, "recent-events-cap", 50,
@@ -133,6 +135,12 @@ func main() {
 			"'off' never does; 'auto' probes kube-system for a known NP-capable CNI "+
 			"(Calico / Cilium / Weave / kube-router / Antrea) and turns on when one is found. "+
 			"Kind/kindnet installs resolve to off.")
+	flag.StringVar(&clusterPodCIDR, "cluster-pod-cidr", "10.244.0.0/16",
+		"Cluster pod CIDR; excluded from per-run NetworkPolicy public-internet egress. "+
+			"Default matches Kind/kindnet; managed cluster operators must set this to their cluster's pod CIDR.")
+	flag.StringVar(&clusterServiceCIDR, "cluster-service-cidr", "10.96.0.0/12",
+		"Cluster service CIDR; excluded from per-run NetworkPolicy public-internet egress. "+
+			"Default matches Kind; managed cluster operators must set this to their cluster's service CIDR.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -295,6 +303,8 @@ func main() {
 		IPTablesInitImage:        iptablesInitImage,
 		NetworkPolicyEnforce:     npEnforce,
 		NetworkPolicyAutoEnabled: npAuto,
+		ClusterPodCIDR:           clusterPodCIDR,
+		ClusterServiceCIDR:       clusterServiceCIDR,
 		BrokerEndpoint:           brokerEndpoint,
 		ProxyCASource: controller.ProxyCASource{
 			Name:      proxyCAName,
