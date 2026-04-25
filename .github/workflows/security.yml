@@ -1,0 +1,72 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+    # Security workflow runs on doc / chart changes too — kube-linter
+    # cares about charts, and a doc-only PR shouldn't bypass the
+    # tooling gate.
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  golangci-lint:
+    name: golangci-lint (security linters enabled)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11.4
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...
+
+  trivy:
+    name: trivy (container images)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build images
+        run: |
+          make images
+          make docker-build IMG=paddock-manager:dev
+      - name: Install trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin v0.55.0
+      - name: Scan all images
+        run: make trivy-images
+
+  kube-linter:
+    name: kube-linter (chart + samples)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Install helm
+        uses: azure/setup-helm@v4
+      - name: Install kube-linter
+        run: go install golang.stackrox.io/kube-linter/cmd/kube-linter@latest
+      - name: Run kube-linter
+        run: make kube-lint

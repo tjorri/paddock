@@ -1,0 +1,12 @@
+# Trivy CVE allowlist for Paddock images.
+#
+# Format: one CVE per line, optional comment with rationale and review date.
+# Example:
+#   CVE-2024-12345  # accepted; affects unused code path; review 2026-07
+#
+# Empty for now; entries added during triage.
+
+CVE-2026-33671  # picomatch ReDoS in @anthropic-ai/claude-code bundled dep (tinyglobby);
+                # demo harness image only, not network-facing; fix requires upstream npm bump;
+                # tracked as F-07 in docs/security/2026-04-25-v0.4-audit-findings.md;
+                # review 2026-07-24

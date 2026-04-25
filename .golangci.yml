@@ -9,16 +9,19 @@ run:
 linters:
   default: none
   enable:
+    - bodyclose
     - copyloopvar
     - dupl
     - errcheck
     - ginkgolinter
     - goconst
+    - gosec
     - govet
     - ineffassign
     - lll
     - misspell
     - nakedret
+    - noctx
     - prealloc
     - revive
     - staticcheck
@@ -84,6 +87,98 @@ linters:
       - linters:
           - unparam
         path: _test\.go$
+      # gosec G101: Several constants contain "credential" or token-prefix
+      # strings in their identifiers or values:
+      #   - api/v1alpha1: AuditKind values like "credential-issued" are
+      #     taxonomy labels, not credential values.
+      #   - internal/broker/providers: anthropicBearerPrefix /
+      #     githubAppBearerPrefix are routing markers for proxy-issued
+      #     ephemeral tokens, not real secrets.
+      #   - internal/controller/pod_spec.go: brokerTokenMountPath is a
+      #     Kubernetes volume mount path, not a credential.
+      # gosec matches on the string content; none of these are actual secrets.
+      - linters:
+          - gosec
+        text: "G101"
+      # gosec G104: tabwriter.Flush() to a CLI output writer. Identical
+      # rationale to the existing errcheck exclusion for fmt.Fprintf —
+      # write errors to stdout/stderr in a CLI tool are not actionable and
+      # are suppressed by convention throughout the codebase.
+      - linters:
+          - gosec
+        text: "G104"
+        path: internal/cli/.*
+      # gosec G301/G302: adapter and collector write event files into a
+      # Pod-local workspace directory (/paddock/…). 0o755 dirs and 0o644
+      # files are intentional — sibling containers in the same Pod must be
+      # able to read the audit trail. The files are never exposed outside
+      # the Pod.
+      - linters:
+          - gosec
+        text: "G30[12]"
+        path: cmd/(adapter-claude-code|adapter-echo|collector)/.*
+      # gosec G304: file paths from variables in these packages come from
+      # trusted sources:
+      #   - cmd/adapter-*/collector: paths from flags/env set by the
+      #     controller in the Pod spec (trusted control plane).
+      #   - internal/cli: --prompt-file flag is an intentional user-supplied
+      #     file path for a CLI tool; analogous to `cat <file>`.
+      #   - internal/controller + internal/proxy (caPath): CA cert paths
+      #     from operator configuration, not user input.
+      - linters:
+          - gosec
+        text: "G304"
+        path: cmd/(adapter-claude-code|adapter-echo|collector)/.*
+      - linters:
+          - gosec
+        text: "G304"
+        path: internal/cli/submit\.go
+      - linters:
+          - gosec
+        text: "G304"
+        path: internal/(controller|proxy)/broker_client\.go
+      # gosec G304: internal/proxy/ca.go reads cert-manager-generated TLS
+      # cert + key from paths specified in operator configuration (mounted
+      # Secret volume). cmd/proxy reads an optional extra CA bundle from an
+      # operator-specified path. Neither path is user-tainted.
+      - linters:
+          - gosec
+        text: "G304"
+        path: internal/proxy/ca\.go
+      - linters:
+          - gosec
+        text: "G304"
+        path: cmd/proxy/main\.go
+      # gosec G204 / noctx: iptables-init invokes a compile-time constant
+      # binary ("iptables") with arguments derived from validated config
+      # flags. Neither the binary path nor the arguments come from user
+      # input. The init container runs to completion so context
+      # cancellation via CommandContext is not meaningful here.
+      - linters:
+          - gosec
+          - noctx
+        text: "G204|os/exec.Command"
+        path: cmd/iptables-init/.*
+      # gosec G204: test/utils e2e scaffold invokes "kubectl" (hardcoded)
+      # to manage cert-manager during integration tests. These are not
+      # production code paths.
+      - linters:
+          - gosec
+        text: "G204"
+        path: test/.*
+      # gosec G703: BrokerClient reads the projected SA token from a
+      # controller-mounted path (TokenPath). gosec's taint analysis treats
+      # struct fields as tainted; the path is a fixed Kubernetes volume
+      # mount set by the trusted control plane, not user input.
+      - linters:
+          - gosec
+        text: "G703"
+        path: internal/proxy/broker_client\.go
+      # noctx: test/utils e2e helpers call exec.Command without context.
+      # These are test-only utilities with no production DoS surface.
+      - linters:
+          - noctx
+        path: test/.*
     paths:
       - third_party$
       - builtin$
