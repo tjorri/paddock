@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"net"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -218,6 +219,59 @@ func TestBuildRunNetworkPolicy_NoBrokerRuleWhenNamespaceUnset(t *testing.T) {
 	// Expect 3 rules: DNS + 443 + 80 (no broker rule when namespace is empty).
 	if len(np.Spec.Egress) != 3 {
 		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80; no broker rule)", len(np.Spec.Egress))
+	}
+}
+
+func TestBuildRunNetworkPolicy_APIServerEgressRule(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+	}
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     "10.244.0.0/16",
+		ClusterServiceCIDR: "10.96.0.0/12",
+		APIServerIPs:       []net.IP{net.ParseIP("10.96.0.1"), net.ParseIP("10.96.0.2")},
+	}
+	np := buildRunNetworkPolicy(run, cfg)
+
+	// Expect 4 rules: DNS + 443 + 80 + apiserver. (No broker rule —
+	// BrokerNamespace empty.) The apiserver rule is the new one and is
+	// last; assert the shape.
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + apiserver)", len(np.Spec.Egress))
+	}
+	apiRule := np.Spec.Egress[3]
+	if len(apiRule.To) != 2 {
+		t.Fatalf("apiserver rule To = %d peers, want 2", len(apiRule.To))
+	}
+	gotCIDRs := map[string]bool{}
+	for _, p := range apiRule.To {
+		if p.IPBlock == nil {
+			t.Fatalf("apiserver rule peer missing IPBlock: %+v", p)
+		}
+		gotCIDRs[p.IPBlock.CIDR] = true
+	}
+	if !gotCIDRs["10.96.0.1/32"] || !gotCIDRs["10.96.0.2/32"] {
+		t.Errorf("apiserver CIDRs = %v, want includes 10.96.0.1/32 + 10.96.0.2/32", gotCIDRs)
+	}
+	if len(apiRule.Ports) != 1 ||
+		apiRule.Ports[0].Port == nil ||
+		apiRule.Ports[0].Port.IntValue() != 443 {
+		t.Errorf("apiserver ports = %+v, want TCP/443", apiRule.Ports)
+	}
+}
+
+func TestBuildRunNetworkPolicy_NoAPIServerRuleWhenIPsEmpty(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+	}
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     "10.244.0.0/16",
+		ClusterServiceCIDR: "10.96.0.0/12",
+		// APIServerIPs deliberately empty.
+	}
+	np := buildRunNetworkPolicy(run, cfg)
+	if len(np.Spec.Egress) != 3 {
+		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80; no apiserver rule)", len(np.Spec.Egress))
 	}
 }
 

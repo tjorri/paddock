@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"net"
 	"testing"
 
 	networkingv1 "k8s.io/api/networking/v1"
@@ -89,6 +90,26 @@ func TestBuildSeedNetworkPolicy_BrokerEgressRule(t *testing.T) {
 
 	if len(np.Spec.Egress) != 4 {
 		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + broker)", len(np.Spec.Egress))
+	}
+}
+
+func TestBuildSeedNetworkPolicy_APIServerEgressRule(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+	}
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     "10.244.0.0/16",
+		ClusterServiceCIDR: "10.96.0.0/12",
+		APIServerIPs:       []net.IP{net.ParseIP("10.96.0.1")},
+	}
+	np := buildSeedNetworkPolicy(ws, cfg)
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + apiserver)", len(np.Spec.Egress))
+	}
+	apiRule := np.Spec.Egress[3]
+	if len(apiRule.To) != 1 || apiRule.To[0].IPBlock == nil ||
+		apiRule.To[0].IPBlock.CIDR != "10.96.0.1/32" {
+		t.Errorf("apiserver rule peer = %+v, want 10.96.0.1/32 ipBlock", apiRule.To)
 	}
 }
 

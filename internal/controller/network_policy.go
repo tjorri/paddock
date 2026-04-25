@@ -145,20 +145,6 @@ func buildBrokerEgressRule(cfg networkPolicyConfig) *networkingv1.NetworkPolicyE
 	}
 }
 
-// (No API-server egress rule. The kube-apiserver runs as a host-network
-// static pod and is therefore unreachable via standard NetworkPolicy
-// podSelectors — Cilium and other CNIs do not match host-network
-// destinations via pod selectors. For runs that genuinely need the
-// kube-apiserver from a sidecar (collector for AuditEvent emission;
-// adapter for status writes), the only portable solution is to *not*
-// emit the per-run NetworkPolicy at all. The HarnessRun reconciler
-// handles this by skipping NP emission for templates with empty
-// requires; runs that DO declare requires accept the trade-off that
-// kube-apiserver access from sidecars is brittle. A proper fix is
-// Phase 2c work — likely a CiliumNetworkPolicy variant using
-// `entity: kube-apiserver`, or backend-IP discovery via a manager flag
-// fed into an ipBlock rule.)
-
 // buildRunNetworkPolicy renders the defence-in-depth NetworkPolicy
 // that rides alongside the proxy sidecar. The policy targets the run's
 // Pod by label, permits:
@@ -226,6 +212,26 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyCon
 	}
 	if brokerRule := buildBrokerEgressRule(cfg); brokerRule != nil {
 		rules = append(rules, *brokerRule)
+	}
+	// Apiserver allow rule. Sidecars (collector for AuditEvent emission,
+	// adapter for status writes) need TCP/443 to the kube-apiserver.
+	// Pod-wide because NetworkPolicy operates at pod level; the agent
+	// container shares the network namespace with sidecars. F-38 (Phase
+	// 2a) ensures the agent has automountServiceAccountToken=false, so
+	// the apiserver rejects any request the agent might forge.
+	if len(cfg.APIServerIPs) > 0 {
+		apiPeers := make([]networkingv1.NetworkPolicyPeer, 0, len(cfg.APIServerIPs))
+		for _, ip := range cfg.APIServerIPs {
+			apiPeers = append(apiPeers, networkingv1.NetworkPolicyPeer{
+				IPBlock: &networkingv1.IPBlock{CIDR: ip.String() + "/32"},
+			})
+		}
+		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
+			To: apiPeers,
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: &httpsPort},
+			},
+		})
 	}
 
 	return &networkingv1.NetworkPolicy{
