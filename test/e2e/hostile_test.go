@@ -208,6 +208,89 @@ spec:
 				"broker must reject synthetic bearers; got %+v", probeEvent)
 		})
 	})
+
+	Context("F-45: per-seed-Pod NetworkPolicy denies in-cluster reach from seed Pod", func() {
+		It("seed Pod's connect-raw-tcp to cluster service CIDR is blocked (TG-24)", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+
+			seedNamespace := "paddock-hostile-seed-e2e"
+			By("creating a dedicated namespace")
+			mustCreateNamespace(seedNamespace)
+
+			By("creating a Workspace whose seed image is paddock-evil-echo")
+			workspaceName := "tg24-seed-np"
+			workspaceManifest := fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: Workspace
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  storage:
+    size: 1Gi
+  seed:
+    image: paddock-evil-echo:dev
+    imagePullPolicy: IfNotPresent
+    repos: []
+    args:
+      - "--connect-raw-tcp"
+      - "10.96.0.1:443"
+`, workspaceName, seedNamespace)
+			// NOTE: this test relies on Workspace.spec.seed.image and
+			// .args being honoured by the controller. If the spec field
+			// shape differs, update accordingly. The test-gap design
+			// notes this is a known integration-point fragility.
+			mustApplyManifest(workspaceManifest)
+
+			By("waiting for the seed Pod to reach completion")
+			Eventually(func() string {
+				out, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", seedNamespace, "get", "workspace", workspaceName,
+					"-o", "jsonpath={.status.phase}"))
+				return strings.TrimSpace(out)
+			}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Active"), Equal("Failed")))
+
+			By("verifying the seed-Pod NetworkPolicy was created")
+			out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", seedNamespace, "get", "networkpolicy",
+				"-l", "app.kubernetes.io/component=workspace-seed-egress",
+				"-o", "jsonpath={.items[*].metadata.name}"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(strings.TrimSpace(out)).ToNot(BeEmpty(),
+				"expected a workspace-seed-egress NetworkPolicy in %s (F-45); got %q", seedNamespace, out)
+
+			By("reading the seed Pod's logs and confirming connect-raw-tcp was denied")
+			seedJobName, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", seedNamespace, "get", "workspace", workspaceName,
+				"-o", "jsonpath={.status.seedJobName}"))
+			seedJobName = strings.TrimSpace(seedJobName)
+			Expect(seedJobName).ToNot(BeEmpty(), "no seedJobName on workspace status")
+
+			podName, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", seedNamespace, "get", "pods",
+				"-l", "job-name="+seedJobName, "-o", "jsonpath={.items[0].metadata.name}"))
+			podName = strings.TrimSpace(podName)
+			Expect(podName).ToNot(BeEmpty(), "no seed pod found for job %s", seedJobName)
+
+			logs, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", seedNamespace, "logs", podName))
+			Expect(err).ToNot(HaveOccurred(), "kubectl logs %s/%s: %s", seedNamespace, podName, logs)
+
+			events := parseHostileEvents(logs)
+			Expect(events).ToNot(BeEmpty(), "expected hostile-event JSON in seed-pod logs; got: %s", logs)
+
+			var connectEvent *hostileEvent
+			for i := range events {
+				if events[i].Flag == "--connect-raw-tcp" {
+					connectEvent = &events[i]
+					break
+				}
+			}
+			Expect(connectEvent).ToNot(BeNil(), "no --connect-raw-tcp event in seed-pod logs: %s", logs)
+			Expect(connectEvent.Result).To(Equal("denied"),
+				"seed Pod NetworkPolicy should have blocked the in-cluster connection (F-45); got %+v", connectEvent)
+
+			By("cleanup")
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "workspace", "-n", seedNamespace, workspaceName, "--wait=false"))
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", seedNamespace, "--wait=false"))
+		})
+	})
 })
 
 // mustApply applies a YAML file at the cluster scope. Fails the test on
