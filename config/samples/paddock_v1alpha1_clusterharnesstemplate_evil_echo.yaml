@@ -24,6 +24,14 @@ spec:
   eventAdapter:
     image: paddock-adapter-echo:dev
     imagePullPolicy: IfNotPresent
+  # Non-empty requires triggers per-run NetworkPolicy emission (the
+  # controller skips NP for empty-requires runs since there's nothing
+  # to enforce). The BrokerPolicy fixture grants this exact host, so
+  # admission intersection passes.
+  requires:
+    egress:
+      - host: example.com
+        ports: [443]
   defaults:
     timeout: 60s
     resources:
@@ -60,6 +68,10 @@ spec:
   eventAdapter:
     image: paddock-adapter-echo:dev
     imagePullPolicy: IfNotPresent
+  requires:
+    egress:
+      - host: example.com
+        ports: [443]
   defaults:
     timeout: 60s
     resources:

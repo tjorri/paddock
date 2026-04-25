@@ -9,7 +9,10 @@ metadata:
   labels:
     paddock.dev/test-only: "true"
 spec:
-  appliesToTemplates: ["evil-echo-*"]
+  # F-30 in the v0.4 audit: appliesToTemplates only does exact name or
+  # `*`, not glob — `evil-echo-*` would silently match nothing. Use
+  # `*` here so both evil-echo-tg2 and evil-echo-tg7 are covered.
+  appliesToTemplates: ["*"]
   interception:
     cooperativeAccepted:
       accepted: true
