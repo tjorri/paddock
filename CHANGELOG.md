@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.1](https://github.com/tjorri/paddock/compare/v0.4.0...v0.4.1) (2026-04-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **controller:** v0.4 security Phase 2a — P0 hotfix (F-04, F-19, F-38, F-45) ([#22](https://github.com/tjorri/paddock/issues/22))
+
+### Bug Fixes
+
+* **controller:** v0.4 security Phase 2a — P0 hotfix (F-04, F-19, F-38, F-45) ([#22](https://github.com/tjorri/paddock/issues/22)) ([98d50d3](https://github.com/tjorri/paddock/commit/98d50d3d47e090b606eaeeeb796fac55a7620e22))
+
+
+### Documentation
+
+* **security:** v0.4 holistic security review (Phase 1: audit) ([#21](https://github.com/tjorri/paddock/issues/21)) ([ad43cd4](https://github.com/tjorri/paddock/commit/ad43cd45c48cfee6a5915d22fad23d6f165d33a0))
+
 ## [0.4.0](https://github.com/tjorri/paddock/compare/v0.3.0...v0.4.0) (2026-04-25)
 
 
