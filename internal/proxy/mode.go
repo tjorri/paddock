@@ -56,42 +56,54 @@ func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 	hello, err := peekClientHello(peek)
 	if err != nil {
 		s.log().V(1).Info("ClientHello peek failed", "err", err, "dst", origIP.String())
-		_ = s.recordEgress(ctx, EgressEvent{
+		if aErr := s.recordEgress(ctx, EgressEvent{
 			Host:     origIP.String(),
 			Port:     origPort,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
 			Reason:   "could not parse TLS ClientHello — plain-HTTP transparent interception is a v0.4 item",
-		})
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on transparent deny", "host", origIP.String(), "port", origPort)
+			abruptClose(conn)
+		}
 		return
 	}
 	sni := hello.ServerName
 	if sni == "" {
-		_ = s.recordEgress(ctx, EgressEvent{
+		if aErr := s.recordEgress(ctx, EgressEvent{
 			Host:     origIP.String(),
 			Port:     origPort,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
 			Reason:   "TLS ClientHello did not carry an SNI; destinations without SNI are blocked in v0.3",
-		})
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on transparent deny", "host", origIP.String(), "port", origPort)
+			abruptClose(conn)
+		}
 		return
 	}
 
 	decision, vErr := s.Validator.ValidateEgress(ctx, sni, origPort)
 	if vErr != nil {
 		s.log().Error(vErr, "validator error", "host", sni, "port", origPort)
-		_ = s.recordEgress(ctx, EgressEvent{
+		if aErr := s.recordEgress(ctx, EgressEvent{
 			Host: sni, Port: origPort,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
 			Reason:   fmt.Sprintf("validator error: %v", vErr),
-		})
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on transparent deny", "host", sni, "port", origPort)
+			abruptClose(conn)
+		}
 		return
 	}
 	if !decision.Allowed {
 		s.log().V(1).Info("denied", "host", sni, "port", origPort, "reason", decision.Reason)
-		_ = s.recordEgress(ctx, EgressEvent{
+		if aErr := s.recordEgress(ctx, EgressEvent{
 			Host: sni, Port: origPort,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
 			Reason:   decision.Reason,
-		})
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on transparent deny", "host", sni, "port", origPort)
+			abruptClose(conn)
+		}
 		return
 	}
 
@@ -198,4 +210,15 @@ func (s *Server) dialUpstreamAt(ctx context.Context, sni string, ip net.IP, port
 // Currently a thin pass-through; deadlines land in M6 with timeouts.
 func copyNonBlocking(dst, src net.Conn) (int64, error) {
 	return copyRaw(dst, src)
+}
+
+// abruptClose sets SO_LINGER to 0 on conn (when supported) so the
+// deferred Close sends a TCP RST instead of a graceful FIN. Used on
+// transparent-mode deny paths when audit emission fails — the agent
+// sees an unexpected connection drop instead of a clean close and can
+// retry rather than treating the graceful close as a final decision.
+func abruptClose(conn net.Conn) {
+	if tc, ok := conn.(interface{ SetLinger(int) error }); ok {
+		_ = tc.SetLinger(0)
+	}
 }
