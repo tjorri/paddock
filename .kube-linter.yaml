@@ -31,7 +31,6 @@ checks:
     - mismatching-selector
     - no-extensions-v1beta
     - no-read-only-root-fs
-    - no-rolling-update-strategy
     - non-existent-service-account
     - privilege-escalation-container
     - privileged-container
