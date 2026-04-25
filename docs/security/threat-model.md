@@ -38,7 +38,22 @@ This threat model covers the three Paddock components (`controller`, `broker`, `
 
 ## 2. Assets
 
-(Populated in Task 3.)
+What's worth protecting, where it lives, and who issues it.
+
+| Asset                                  | Storage location                              | Issued by                | Lifetime                     |
+|----------------------------------------|-----------------------------------------------|--------------------------|------------------------------|
+| Long-lived upstream secrets            | `paddock-system` Secrets                      | Operator                 | Indefinite                   |
+| GitHub App private key                 | `paddock-system` Secret (PEM)                 | Operator                 | Indefinite                   |
+| PAT pool entries                       | `paddock-system` Secrets                      | Operator                 | PAT lifetime                 |
+| Broker-issued opaque bearers (`pdk-*`) | Run-pod env (via `envFrom`) + broker memory   | Broker (per run)         | Run lifetime                 |
+| Substitution mapping (bearer→real)     | Broker memory only                            | Broker (per run)         | Run lifetime                 |
+| Workspace contents (PVC)               | PVC in run namespace                          | Workspace controller     | Workspace lifetime           |
+| AuditEvent stream                      | Run namespace, TTL-reaped                     | Controller / broker      | Per ADR-0016 retention       |
+| Run prompts                            | Run-namespace Secrets (per ADR-0011)          | Controller (admission)   | Run lifetime                 |
+| MITM CA private key (per-run)          | Run-namespace Secret + projected into proxy   | Broker / cert-manager    | Run lifetime                 |
+| Controller / broker / proxy SA tokens  | `paddock-system` (controller, broker), run ns (proxy) | Kubernetes        | Token rotation interval      |
+
+The most sensitive assets are: long-lived upstream secrets (compromise = full upstream account access), the substitution mapping (compromise = real-credential disclosure to the agent), and the MITM CA private key (compromise = the agent can forge upstream certs and bypass MITM substitution detection).
 
 ## 3. Actors
 
