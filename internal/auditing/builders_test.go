@@ -201,3 +201,26 @@ func TestNewCAProjected(t *testing.T) {
 		t.Errorf("ca-projected decision = %q, want granted", ae.Spec.Decision)
 	}
 }
+
+func TestNewNetworkPolicyEnforcementWithdrawn(t *testing.T) {
+	ae := auditing.NewNetworkPolicyEnforcementWithdrawn(auditing.NetworkPolicyEnforcementWithdrawnInput{
+		RunName:   "hr-1",
+		Namespace: "team-a",
+		Reason:    "operator deleted per-run NetworkPolicy",
+	})
+	if !strings.HasPrefix(ae.GenerateName, "ae-np-") {
+		t.Errorf("GenerateName = %q, want ae-np- prefix", ae.GenerateName)
+	}
+	if ae.Spec.Kind != paddockv1alpha1.AuditKindNetworkPolicyEnforcementWithdrawn {
+		t.Errorf("kind = %q, want network-policy-enforcement-withdrawn", ae.Spec.Kind)
+	}
+	if ae.Spec.Decision != paddockv1alpha1.AuditDecisionWarned {
+		t.Errorf("decision = %q, want warned", ae.Spec.Decision)
+	}
+	if ae.Spec.RunRef == nil || ae.Spec.RunRef.Name != "hr-1" {
+		t.Errorf("run ref = %+v, want hr-1", ae.Spec.RunRef)
+	}
+	if !strings.Contains(ae.Spec.Reason, "operator deleted") {
+		t.Errorf("reason = %q", ae.Spec.Reason)
+	}
+}

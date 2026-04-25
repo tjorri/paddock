@@ -308,3 +308,38 @@ func NewCAProjected(in CAProjectionInput) *paddockv1alpha1.AuditEvent {
 	stampLabels(ae, in.RunName)
 	return ae
 }
+
+// NetworkPolicyEnforcementWithdrawnInput is the flat input shape for
+// NewNetworkPolicyEnforcementWithdrawn.
+type NetworkPolicyEnforcementWithdrawnInput struct {
+	RunName   string
+	Namespace string
+	Reason    string
+	When      time.Time
+}
+
+// NewNetworkPolicyEnforcementWithdrawn builds a
+// network-policy-enforcement-withdrawn AuditEvent. Emitted by the
+// controller when the per-run NetworkPolicy was re-created in response
+// to an operator-side deletion (caught by F-41's Owns() watch). The
+// decision is warned because nothing was blocked — the system
+// auto-recovered, but operators should know the deletion happened.
+func NewNetworkPolicyEnforcementWithdrawn(in NetworkPolicyEnforcementWithdrawnInput) *paddockv1alpha1.AuditEvent {
+	ae := &paddockv1alpha1.AuditEvent{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:    in.Namespace,
+			GenerateName: "ae-np-",
+		},
+		Spec: paddockv1alpha1.AuditEventSpec{
+			Decision:  paddockv1alpha1.AuditDecisionWarned,
+			Kind:      paddockv1alpha1.AuditKindNetworkPolicyEnforcementWithdrawn,
+			Timestamp: metav1.NewTime(nowOr(in.When)),
+			Reason:    in.Reason,
+		},
+	}
+	if in.RunName != "" {
+		ae.Spec.RunRef = &paddockv1alpha1.LocalObjectReference{Name: in.RunName}
+	}
+	stampLabels(ae, in.RunName)
+	return ae
+}

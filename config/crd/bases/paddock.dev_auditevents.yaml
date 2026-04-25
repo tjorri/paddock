@@ -134,6 +134,7 @@ spec:
                 - run-failed
                 - run-completed
                 - ca-projected
+                - network-policy-enforcement-withdrawn
                 type: string
               matchedPolicy:
                 description: |-
