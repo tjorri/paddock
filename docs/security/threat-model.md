@@ -191,4 +191,81 @@ Seven boundaries are tracked. Each carries data and identity across a privilege 
 
 ## 5. STRIDE-per-boundary table
 
-(Populated in Task 6.)
+The cells are short — they say what the threat is and what defence exists. Each cell is walked in detail in `2026-04-25-v0.4-audit-findings.md` §5.1 (STRIDE walkthroughs); findings reference cells by `(boundary, STRIDE-letter)`, e.g. `(B-3, T)` for Tampering at the run pod ↔ broker boundary.
+
+### B-1: cluster operator ↔ paddock-system
+
+| STRIDE                     | Threat                                                    | Defence                                                       |
+|----------------------------|-----------------------------------------------------------|---------------------------------------------------------------|
+| Spoofing                   | Attacker poses as cluster operator                        | RBAC; cluster authn (out of scope, T-7 trusted)               |
+| Tampering                  | Operator misconfigures resources                          | Admission webhooks (T-3 defence)                              |
+| Repudiation                | Operator action lost                                      | K8s audit log (cluster-level, out of scope)                   |
+| Information disclosure     | Operator reads broker secrets                             | Trusted (T-7); not defended against                           |
+| Denial of service          | Operator deletes paddock-system namespace                 | Trusted (T-7); not defended against                           |
+| Elevation of privilege     | n/a — operator is the privileged actor                    | n/a                                                           |
+
+### B-2: paddock-system ↔ run namespace
+
+| STRIDE                     | Threat                                                    | Defence                                                       |
+|----------------------------|-----------------------------------------------------------|---------------------------------------------------------------|
+| Spoofing                   | Tenant submits a forged HarnessRun                        | Admission webhooks; capability intersection                   |
+| Tampering                  | Tenant edits a Pod the controller created                 | RBAC (run pods owned by HarnessRun, finalizer-protected)       |
+| Repudiation                | Run completes without an audit trail                      | AuditEvent CRD writes per decision                            |
+| Information disclosure     | Controller leaks data across tenant namespaces            | Namespace-scoped reconciliation; status-only writes back       |
+| Denial of service          | Tenant submits unbounded HarnessRuns                       | Admission limits (configurable); k8s ResourceQuota             |
+| Elevation of privilege     | Tenant gains paddock-system access via Pod creation       | PSA on tenant ns; controller does not run privileged Pods      |
+
+### B-3: run pod ↔ broker
+
+| STRIDE                     | Threat                                                    | Defence                                                       |
+|----------------------------|-----------------------------------------------------------|---------------------------------------------------------------|
+| Spoofing                   | Tenant A presents Tenant B's SA-token                     | Token-review API; broker validates issuer + audience           |
+| Tampering                  | Bearer issuance request modified on the wire              | mTLS broker server cert (cert-manager-issued)                  |
+| Repudiation                | Broker issues a bearer with no audit trail                | AuditEvent on every issuance; `kind: credential-issued`        |
+| Information disclosure     | Bearer or substitution mapping leaks                      | Bearer is opaque; mapping is broker-memory-only                |
+| Denial of service          | Tenant exhausts broker capacity                           | Per-run rate limiting (TBD audit finding)                      |
+| Elevation of privilege     | Bearer scope expands beyond grant                         | Per-request validation; intersection check at issuance         |
+
+### B-4: run pod (agent) ↔ proxy sidecar
+
+| STRIDE                     | Threat                                                    | Defence                                                       |
+|----------------------------|-----------------------------------------------------------|---------------------------------------------------------------|
+| Spoofing                   | Agent forges proxy CA-signed cert                         | Per-run CA; CA private key not reachable from agent            |
+| Tampering                  | Agent unsets HTTPS_PROXY env (cooperative mode)           | Cooperative requires opt-in; transparent mode unbypassable     |
+| Repudiation                | Agent attempts ungranted egress without record            | Proxy logs every connection; AuditEvent on deny                |
+| Information disclosure     | Agent reads CA private key                                | CA key in proxy-only Secret; not mounted in agent              |
+| Denial of service          | Agent floods proxy with connections                       | Proxy connection limits (TBD audit finding)                    |
+| Elevation of privilege     | Agent gains NET_ADMIN to bypass iptables                   | PSS restricted on tenant ns; iptables-init init-only          |
+
+### B-5: run pod ↔ external internet
+
+| STRIDE                     | Threat                                                    | Defence                                                       |
+|----------------------------|-----------------------------------------------------------|---------------------------------------------------------------|
+| Spoofing                   | Agent connects to attacker-controlled DNS-rebound IP      | Proxy resolves SNI; allowlist matches host (TBD finding on rebinding) |
+| Tampering                  | Agent modifies request after substitution                 | Proxy re-checks per request; agent doesn't see real cred        |
+| Repudiation                | External call lacks audit trail                           | AuditEvent on every connection                                 |
+| Information disclosure     | Allowlisted host receives substituted secret              | Trusted upstream; substitution targets declared in policy       |
+| Denial of service          | Agent floods upstream                                     | Proxy connection limits; upstream-side rate limit              |
+| Elevation of privilege     | n/a (agent is already the lowest privilege)               | n/a                                                            |
+
+### B-6: broker ↔ upstream Secrets
+
+| STRIDE                     | Threat                                                    | Defence                                                       |
+|----------------------------|-----------------------------------------------------------|---------------------------------------------------------------|
+| Spoofing                   | Compromised SA reads paddock-system Secrets               | RBAC on broker SA; minimal-permissions audit                   |
+| Tampering                  | API-server response modified                              | TLS to API server                                              |
+| Repudiation                | Secret read without audit trail                           | K8s audit log (cluster-level)                                  |
+| Information disclosure     | Compromised broker exfiltrates upstream secrets           | T-5 — defence in depth: image scanning, govulncheck            |
+| Denial of service          | API-server unavailable                                    | Broker fails closed; runs marked Pending                       |
+| Elevation of privilege     | Broker gains permissions beyond Secrets/get               | RBAC review (audit finding candidate)                          |
+
+### B-7: workspace seed Job ↔ git host
+
+| STRIDE                     | Threat                                                    | Defence                                                       |
+|----------------------------|-----------------------------------------------------------|---------------------------------------------------------------|
+| Spoofing                   | Seed Job clones from attacker-controlled URL              | Workspace.spec.gitRepos validated at admission                 |
+| Tampering                  | Cloned content tampered on the wire                       | git over HTTPS via proxy (allowlisted host)                    |
+| Repudiation                | Seed Job clones without audit trail                       | AuditEvent on broker-leased token issuance                     |
+| Information disclosure     | Seed Job's leased token leaks                             | Token short-lived; proxy-injected; not in env (proxy-mode)     |
+| Denial of service          | Slow-loris on git host                                    | Seed-Job timeout; pod activeDeadlineSeconds                    |
+| Elevation of privilege     | Seed Job gains write to a non-target repo                 | Token lease scope; broker validates per-call                   |
