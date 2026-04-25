@@ -359,6 +359,142 @@ spec:
 			_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", seedNamespace, "--wait=false"))
 		})
 	})
+
+	Context("F-12 / TG-19: broker fail-closed when audit unavailable", func() {
+		It("returns 503 to controller and persists no credential when AuditEvent CRUD is denied (TG-19)", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+
+			By("creating a dedicated namespace + BrokerPolicy that grants DEMO_TOKEN")
+			tg19Namespace := "paddock-hostile-tg19"
+			mustCreateNamespace(tg19Namespace)
+
+			tg19Policy := fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: BrokerPolicy
+metadata:
+  name: tg19-policy
+  namespace: %s
+spec:
+  appliesToTemplates: ["*"]
+  grants:
+    credentials:
+      - name: DEMO_TOKEN
+        provider:
+          kind: UserSuppliedSecret
+          secretRef:
+            name: tg19-demo
+            key: token
+          deliveryMode:
+            inContainer:
+              accepted: true
+              reason: "TG-19 adversarial fixture; tests broker fail-closed semantics"
+`, tg19Namespace)
+			mustApplyManifest(tg19Policy)
+
+			By("creating the upstream Secret the policy references")
+			tg19Secret := fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tg19-demo
+  namespace: %s
+stringData:
+  token: super-secret
+`, tg19Namespace)
+			mustApplyManifest(tg19Secret)
+
+			By("creating a HarnessTemplate that requires DEMO_TOKEN")
+			templateManifest := fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessTemplate
+metadata:
+  name: tg19-template
+  namespace: %s
+spec:
+  harness: paddock-echo
+  image: paddock-echo:dev
+  command: ["/usr/local/bin/paddock-echo"]
+  requires:
+    credentials:
+      - name: DEMO_TOKEN
+  workspace:
+    required: true
+    mountPath: /workspace
+  defaults:
+    timeout: 60s
+    resources:
+      limits:
+        cpu: 200m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+`, tg19Namespace)
+			mustApplyManifest(templateManifest)
+
+			By("snapshotting the broker ClusterRole and patching it to remove auditevents:create")
+			origRoleYAML, err := utils.Run(exec.CommandContext(ctx, "kubectl",
+				"get", "clusterrole", "paddock-broker-role", "-o", "yaml"))
+			Expect(err).NotTo(HaveOccurred(), "kubectl get clusterrole paddock-broker-role: %s", origRoleYAML)
+			DeferCleanup(func() {
+				By("restoring the broker ClusterRole")
+				cmd := exec.Command("kubectl", "apply", "-f", "-")
+				cmd.Stdin = strings.NewReader(origRoleYAML)
+				out, err := utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred(), "restoring clusterrole: %s", out)
+			})
+
+			// Replace the rules entirely with one that grants everything
+			// the broker needs EXCEPT auditevents:create. The simplest
+			// approach: use kubectl patch with --type=json to delete the
+			// auditevents rule.
+			//
+			// The ClusterRole has 4 rules in order: tokenreviews, paddock
+			// CRDs read, secrets read, auditevents create. The
+			// auditevents rule is at index 3.
+			_, err = utils.Run(exec.CommandContext(ctx, "kubectl",
+				"patch", "clusterrole", "paddock-broker-role",
+				"--type=json",
+				`-p=[{"op":"remove","path":"/rules/3"}]`))
+			Expect(err).NotTo(HaveOccurred())
+
+			By("submitting a HarnessRun that triggers broker.Issue")
+			runName := "tg19-fail-closed"
+			runManifest := fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  templateRef:
+    name: tg19-template
+  prompt: "tg-19 audit-fail probe"
+`, runName, tg19Namespace)
+			mustApplyManifest(runManifest)
+
+			By("waiting for the run to fail because broker returns 503 AuditUnavailable")
+			Eventually(func() string {
+				return runPhase(ctx, tg19Namespace, runName)
+			}, 4*time.Minute, 5*time.Second).Should(Equal("Failed"),
+				"expected run to reach Failed phase due to BrokerUnavailable from 503 AuditUnavailable")
+
+			By("dumping run state for diagnostic context")
+			dumpRunDiagnostics(ctx, tg19Namespace, runName)
+
+			By("asserting no credential leaked into <run>-broker-creds")
+			out, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", tg19Namespace,
+				"get", "secret", runName+"-broker-creds",
+				"-o", "jsonpath={.data.DEMO_TOKEN}"))
+			Expect(strings.TrimSpace(out)).To(BeEmpty(),
+				"DEMO_TOKEN must not be persisted when broker fail-closes the issue path; got %q", out)
+
+			By("cleaning up TG-19 namespace")
+			_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+				"delete", "ns", tg19Namespace, "--ignore-not-found", "--wait=false"))
+		})
+	})
 })
 
 // mustApply applies a YAML file at the cluster scope. Fails the test on
