@@ -11,6 +11,7 @@ metadata:
     app.kubernetes.io/component: test-fixture
     paddock.dev/test-only: "true"
 spec:
+  harness: evil-echo
   image: paddock-evil-echo:dev
   command: ["/usr/local/bin/evil-echo"]
   # TG-2: bypass proxy env vars then attempt a raw TCP connection to the
@@ -24,6 +25,7 @@ spec:
     image: paddock-adapter-echo:dev
     imagePullPolicy: IfNotPresent
   defaults:
+    timeout: 60s
     resources:
       limits:
         cpu: 200m
@@ -31,6 +33,9 @@ spec:
       requests:
         cpu: 50m
         memory: 64Mi
+  workspace:
+    required: true
+    mountPath: /workspace
 ---
 apiVersion: paddock.dev/v1alpha1
 kind: ClusterHarnessTemplate
@@ -40,6 +45,7 @@ metadata:
     app.kubernetes.io/component: test-fixture
     paddock.dev/test-only: "true"
 spec:
+  harness: evil-echo
   image: paddock-evil-echo:dev
   command: ["/usr/local/bin/evil-echo"]
   # TG-7: read SA-token files (expect no mount, so denied) then probe the
@@ -55,6 +61,7 @@ spec:
     image: paddock-adapter-echo:dev
     imagePullPolicy: IfNotPresent
   defaults:
+    timeout: 60s
     resources:
       limits:
         cpu: 200m
@@ -62,3 +69,6 @@ spec:
       requests:
         cpu: 50m
         memory: 64Mi
+  workspace:
+    required: true
+    mountPath: /workspace
