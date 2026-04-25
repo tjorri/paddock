@@ -41,16 +41,18 @@ import (
 )
 
 // recordingSink captures every emitted EgressEvent for assertion. Safe
-// for concurrent use: the proxy writes from the CONNECT goroutine.
+// for concurrent use across the MITM goroutines.
 type recordingSink struct {
 	mu     sync.Mutex
 	events []EgressEvent
+	err    error // optional injection for fail-closed tests
 }
 
-func (r *recordingSink) RecordEgress(_ context.Context, e EgressEvent) {
+func (r *recordingSink) RecordEgress(_ context.Context, e EgressEvent) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, e)
+	return r.err
 }
 
 func (r *recordingSink) snapshot() []EgressEvent {

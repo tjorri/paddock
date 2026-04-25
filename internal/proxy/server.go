@@ -126,7 +126,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// design — the spec's §6.4 brokerFailureMode=Closed posture.
 		s.log().Error(vErr, "validator error", "host", host, "port", port)
 		http.Error(w, "paddock-proxy: broker unreachable", http.StatusBadGateway)
-		s.recordEgress(ctx, EgressEvent{
+		_ = s.recordEgress(ctx, EgressEvent{
 			Host: host, Port: port,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
 			Reason:   fmt.Sprintf("validator error: %v", vErr),
@@ -136,7 +136,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if !decision.Allowed {
 		s.log().V(1).Info("denied", "host", host, "port", port, "reason", decision.Reason)
 		http.Error(w, fmt.Sprintf("paddock-proxy: %s", decision.Reason), http.StatusForbidden)
-		s.recordEgress(ctx, EgressEvent{
+		_ = s.recordEgress(ctx, EgressEvent{
 			Host: host, Port: port,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
 			Reason:   decision.Reason,
@@ -212,7 +212,7 @@ func (s *Server) mitm(ctx context.Context, clientConn net.Conn, host string, por
 	if decision.DiscoveryAllow {
 		kind = paddockv1alpha1.AuditKindEgressDiscoveryAllow
 	}
-	s.recordEgress(ctx, EgressEvent{
+	_ = s.recordEgress(ctx, EgressEvent{
 		Host: host, Port: port,
 		Decision:      paddockv1alpha1.AuditDecisionGranted,
 		MatchedPolicy: decision.MatchedPolicy,
@@ -270,11 +270,14 @@ func (s *Server) handshakeTimeout() time.Duration {
 	return 30 * time.Second
 }
 
-func (s *Server) recordEgress(ctx context.Context, e EgressEvent) {
+// recordEgress emits one EgressEvent via the configured AuditSink.
+// Returns the sink's error so the caller can fail-close on the deny
+// path. nil on success and when no sink is configured.
+func (s *Server) recordEgress(ctx context.Context, e EgressEvent) error {
 	if s.Audit == nil {
-		return
+		return nil
 	}
-	s.Audit.RecordEgress(ctx, e)
+	return s.Audit.RecordEgress(ctx, e)
 }
 
 func (s *Server) log() logr.Logger {

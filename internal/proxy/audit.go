@@ -20,23 +20,19 @@ import (
 	"context"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/auditing"
 )
 
-// AuditSink records per-connection decisions. The M4 implementation
-// creates one AuditEvent per denied connection; allows are summarised
-// in a future milestone per ADR-0016 (debounce + summary). The deny
-// path is unconditional because denials are always security-relevant.
+// AuditSink records per-connection decisions. Phase 2c migrated this
+// from a noop-on-error best-effort interface to one that returns an
+// error; callers fail-close on the deny path and log+counter on the
+// allow path.
 type AuditSink interface {
-	RecordEgress(ctx context.Context, e EgressEvent)
+	RecordEgress(ctx context.Context, e EgressEvent) error
 }
 
-// EgressEvent is what the MITM engine hands to the sink. Keep the
-// shape flat — sinks may buffer thousands of these in memory between
-// writes.
+// EgressEvent is what the MITM engine hands to the sink.
 type EgressEvent struct {
 	Host          string
 	Port          int
@@ -44,76 +40,56 @@ type EgressEvent struct {
 	MatchedPolicy string
 	Reason        string
 	When          time.Time
-
-	// Kind, when non-empty, overrides the default AuditKind that
-	// ClientAuditSink.RecordEgress would derive from Decision. Set
-	// explicitly by the proxy on egress-discovery-allow events so the
-	// audit trail distinguishes them from regular egress-allow events.
-	Kind paddockv1alpha1.AuditKind
+	Kind          paddockv1alpha1.AuditKind
 }
 
-// NoopAuditSink silently drops records. Handy for tests and for running
-// the proxy locally without cluster credentials.
+// NoopAuditSink silently drops records; never errors.
 type NoopAuditSink struct{}
 
 // RecordEgress implements AuditSink.
-func (NoopAuditSink) RecordEgress(_ context.Context, _ EgressEvent) {}
+func (NoopAuditSink) RecordEgress(_ context.Context, _ EgressEvent) error { return nil }
 
-// ClientAuditSink writes AuditEvent objects via a controller-runtime
-// client. Unbuffered for M4 — every deny lands as its own object. M6+
-// brings debounce + egress-block-summary once volume justifies it
-// (ADR-0016 §"Debounce and summarization").
+// ClientAuditSink writes via the shared auditing.Sink. Sink is the
+// production injection point; for back-compat with old call sites that
+// supply only a controller-runtime Client + namespace + run name we
+// fall back to wrapping a KubeSink internally.
 type ClientAuditSink struct {
-	Client    client.Client
+	Sink      auditing.Sink
 	Namespace string
 	RunName   string
 }
 
-// RecordEgress writes one AuditEvent. Errors are swallowed after
-// logging because the proxy's hot path must not block on audit writes.
-// The log is the fallback record.
-func (s *ClientAuditSink) RecordEgress(ctx context.Context, e EgressEvent) {
+func (s *ClientAuditSink) writeSink() auditing.Sink {
+	if s.Sink != nil {
+		return s.Sink
+	}
+	return auditing.NoopSink{}
+}
+
+// RecordEgress writes one AuditEvent via the configured Sink. Returns
+// the Sink's error (or nil on success). Callers decide whether to fail
+// the connection or log+counter.
+func (s *ClientAuditSink) RecordEgress(ctx context.Context, e EgressEvent) error {
 	when := e.When
 	if when.IsZero() {
 		when = time.Now().UTC()
 	}
-	kind := e.Kind
-	if kind == "" {
-		switch e.Decision {
-		case paddockv1alpha1.AuditDecisionDenied, paddockv1alpha1.AuditDecisionWarned:
-			kind = paddockv1alpha1.AuditKindEgressBlock
-		default:
-			kind = paddockv1alpha1.AuditKindEgressAllow
-		}
+	in := auditing.EgressInput{
+		RunName:       s.RunName,
+		Namespace:     s.Namespace,
+		Host:          e.Host,
+		Port:          e.Port,
+		Decision:      e.Decision,
+		MatchedPolicy: e.MatchedPolicy,
+		Reason:        e.Reason,
+		When:          when,
+		Kind:          e.Kind,
 	}
-	ae := &paddockv1alpha1.AuditEvent{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace:    s.Namespace,
-			GenerateName: "ae-egress-",
-			Labels: map[string]string{
-				paddockv1alpha1.AuditEventLabelRun:      s.RunName,
-				paddockv1alpha1.AuditEventLabelDecision: string(e.Decision),
-				paddockv1alpha1.AuditEventLabelKind:     string(kind),
-			},
-		},
-		Spec: paddockv1alpha1.AuditEventSpec{
-			Decision:  e.Decision,
-			Kind:      kind,
-			Timestamp: metav1.NewTime(when),
-			Reason:    e.Reason,
-			Destination: &paddockv1alpha1.AuditDestination{
-				Host: e.Host,
-				Port: int32(e.Port), //nolint:gosec // bounded [1,65535]
-			},
-		},
+	switch e.Decision {
+	case paddockv1alpha1.AuditDecisionDenied, paddockv1alpha1.AuditDecisionWarned:
+		return s.writeSink().Write(ctx, auditing.NewEgressBlock(in))
+	default:
+		// Allow path: respect Kind override (egress-discovery-allow vs egress-allow).
+		return s.writeSink().Write(ctx, auditing.NewEgressAllow(in))
 	}
-	if s.RunName != "" {
-		ae.Spec.RunRef = &paddockv1alpha1.LocalObjectReference{Name: s.RunName}
-	}
-	if e.MatchedPolicy != "" {
-		ae.Spec.MatchedPolicy = &paddockv1alpha1.LocalObjectReference{Name: e.MatchedPolicy}
-	}
-	// Best-effort: the proxy logs + metrics are the backstop channel
-	// when etcd is unreachable.
-	_ = s.Client.Create(ctx, ae)
 }

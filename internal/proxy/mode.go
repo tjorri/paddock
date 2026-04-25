@@ -56,7 +56,7 @@ func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 	hello, err := peekClientHello(peek)
 	if err != nil {
 		s.log().V(1).Info("ClientHello peek failed", "err", err, "dst", origIP.String())
-		s.recordEgress(ctx, EgressEvent{
+		_ = s.recordEgress(ctx, EgressEvent{
 			Host:     origIP.String(),
 			Port:     origPort,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
@@ -66,7 +66,7 @@ func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 	}
 	sni := hello.ServerName
 	if sni == "" {
-		s.recordEgress(ctx, EgressEvent{
+		_ = s.recordEgress(ctx, EgressEvent{
 			Host:     origIP.String(),
 			Port:     origPort,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
@@ -78,7 +78,7 @@ func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 	decision, vErr := s.Validator.ValidateEgress(ctx, sni, origPort)
 	if vErr != nil {
 		s.log().Error(vErr, "validator error", "host", sni, "port", origPort)
-		s.recordEgress(ctx, EgressEvent{
+		_ = s.recordEgress(ctx, EgressEvent{
 			Host: sni, Port: origPort,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
 			Reason:   fmt.Sprintf("validator error: %v", vErr),
@@ -87,7 +87,7 @@ func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 	}
 	if !decision.Allowed {
 		s.log().V(1).Info("denied", "host", sni, "port", origPort, "reason", decision.Reason)
-		s.recordEgress(ctx, EgressEvent{
+		_ = s.recordEgress(ctx, EgressEvent{
 			Host: sni, Port: origPort,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
 			Reason:   decision.Reason,
@@ -141,7 +141,7 @@ func (s *Server) mitmTransparent(
 	if decision.DiscoveryAllow {
 		kind = paddockv1alpha1.AuditKindEgressDiscoveryAllow
 	}
-	s.recordEgress(ctx, EgressEvent{
+	_ = s.recordEgress(ctx, EgressEvent{
 		Host: sni, Port: origPort,
 		Decision:      paddockv1alpha1.AuditDecisionGranted,
 		MatchedPolicy: decision.MatchedPolicy,
