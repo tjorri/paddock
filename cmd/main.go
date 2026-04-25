@@ -308,6 +308,9 @@ func main() {
 			Name:      brokerCAName,
 			Namespace: brokerCANamespace,
 		},
+		Audit: &controller.ControllerAudit{
+			Sink: &auditing.KubeSink{Client: mgr.GetClient(), Component: "controller"},
+		},
 	}
 	if brokerClient != nil {
 		hrReconciler.BrokerClient = brokerClient

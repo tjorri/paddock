@@ -142,6 +142,10 @@ type HarnessRunReconciler struct {
 	// the proxy can verify the broker's TLS. Zero Name disables the
 	// broker-CA copy regardless of BrokerEndpoint.
 	BrokerCASource BrokerCASource
+
+	// Audit emits per-decision AuditEvents. Nil-safe — when unset (e.g.
+	// in unit tests), all emits are no-ops. F-40.
+	Audit *ControllerAudit
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=harnessruns,verbs=get;list;watch;create;update;patch;delete
