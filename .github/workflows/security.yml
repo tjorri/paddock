@@ -50,9 +50,13 @@ jobs:
           make images
           make docker-build IMG=paddock-manager:dev
       - name: Install trivy
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sh -s -- -b /usr/local/bin v0.55.0
+        # Official setup action; pins the trivy CLI version cleanly and
+        # caches the binary across runs. The previous curl|sh install
+        # against v0.55.0 started silently exiting 1 after the upstream
+        # install.sh changed shape.
+        uses: aquasecurity/setup-trivy@v0.2.6
+        with:
+          version: v0.70.0
       - name: Scan all images
         run: make trivy-images
 
