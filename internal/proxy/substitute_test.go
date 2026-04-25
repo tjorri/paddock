@@ -197,7 +197,10 @@ func TestProxy_SubstituteAuthErrorDropsConnection(t *testing.T) {
 		TLSClientConfig: &tls.Config{RootCAs: clientPool, MinVersion: tls.VersionTLS12},
 	}
 	cli := &http.Client{Transport: tr, Timeout: 3 * time.Second}
-	_, err := cli.Get(fmt.Sprintf("https://%s:%d/", host, port))
+	resp, err := cli.Get(fmt.Sprintf("https://%s:%d/", host, port))
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	if err == nil {
 		t.Fatalf("expected error — substituter failure must drop connection before upstream")
 	}

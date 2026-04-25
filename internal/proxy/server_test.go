@@ -235,7 +235,10 @@ func TestProxy_DeniesWhenHostNotInAllowList(t *testing.T) {
 
 	// The 403 from the proxy closes the tunnel; net/http surfaces this
 	// as a transport error, not a response.
-	_, err = cli.Get("https://evil.com/")
+	resp, err := cli.Get("https://evil.com/")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	if err == nil {
 		t.Fatalf("expected connection error; got nil")
 	}
@@ -414,7 +417,10 @@ func TestProxy_ValidatorErrorFailsClosed(t *testing.T) {
 
 	tr := &http.Transport{Proxy: http.ProxyURL(pu)}
 	cli := &http.Client{Transport: tr, Timeout: 3 * time.Second}
-	_, err = cli.Get("https://api.anthropic.com/")
+	resp, err := cli.Get("https://api.anthropic.com/")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	if err == nil {
 		t.Fatalf("expected error on validator failure; got nil")
 	}
