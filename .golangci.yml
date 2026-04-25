@@ -174,6 +174,14 @@ linters:
           - gosec
         text: "G703"
         path: internal/proxy/broker_client\.go
+      # gosec G704: BrokerClient.Endpoint is operator-supplied via the
+      # controller's --broker-endpoint flag, not user input. The HTTP call
+      # is to a fixed in-cluster service. The "SSRF via taint analysis"
+      # warning is spurious here.
+      - linters:
+          - gosec
+        text: "G704"
+        path: internal/proxy/broker_client\.go
       # noctx: test/utils e2e helpers call exec.Command without context.
       # These are test-only utilities with no production DoS surface.
       - linters:
