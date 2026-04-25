@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.4.0](https://github.com/tjorri/paddock/compare/v0.3.0...v0.4.0) (2026-04-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api,controller,broker,proxy:** bounded egress discovery window (Plan D) ([#11](https://github.com/tjorri/paddock/issues/11))
+* **api,controller:** broker interception mode explicit opt-in (Plan B) ([#9](https://github.com/tjorri/paddock/issues/9))
+* **api,broker,controller:** v0.4 broker secret injection core (Plan A) ([#7](https://github.com/tjorri/paddock/issues/7))
+
+### Features
+
+* **api,broker,controller:** v0.4 broker secret injection core (Plan A) ([#7](https://github.com/tjorri/paddock/issues/7)) ([36aca4a](https://github.com/tjorri/paddock/commit/36aca4a80b3bcb2c83ae51a1dda098139e974b44))
+* **api,controller,broker,proxy:** bounded egress discovery window (Plan D) ([#11](https://github.com/tjorri/paddock/issues/11)) ([49aa6b3](https://github.com/tjorri/paddock/commit/49aa6b3f479094b78a87158b8ade94b0fa770412))
+* **api,controller:** broker interception mode explicit opt-in (Plan B) ([#9](https://github.com/tjorri/paddock/issues/9)) ([26cf2e8](https://github.com/tjorri/paddock/commit/26cf2e8c3e73ebb79cba8548d7ac56b04d071bdc))
+* **cli:** paddock policy suggest + observability (Plan C) ([#10](https://github.com/tjorri/paddock/issues/10)) ([f7ec3a9](https://github.com/tjorri/paddock/commit/f7ec3a92b6cc986572724038ac761c711d574049))
+
+
+### Documentation
+
+* add v0.4 Plan A + drop v1alpha2 from spec 0003 (evolve v1alpha1 in place) ([562f452](https://github.com/tjorri/paddock/commit/562f4522d4a65d1a18a889937f43c6404de71a42))
+* **plans:** add v0.4 Plan A broker secret injection core ([8aea78f](https://github.com/tjorri/paddock/commit/8aea78f2f415f8afc39c8cc4717715b41fee86e8))
+* **specs:** add 0003 broker secret injection redesign (v0.4) ([e9bcc19](https://github.com/tjorri/paddock/commit/e9bcc19560646b452a6842f0881da29c5c7d39c1))
+* v0.4 operator cookbooks + docs reorganization (Plan E) ([#13](https://github.com/tjorri/paddock/issues/13)) ([6f35687](https://github.com/tjorri/paddock/commit/6f35687fea7cb7ebf3c1d2bda8b91e14aeda6de1))
+
 ## [0.3.0](https://github.com/tjorri/paddock/compare/v0.2.0...v0.3.0) (2026-04-24)
 
 
