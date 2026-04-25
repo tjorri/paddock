@@ -23,6 +23,32 @@ Three layered threats, all in scope:
 
 The v0.3 goal is that all three fail closed with a clear signal (run rejected at admission, proxy denies at runtime, `AuditEvent` records the decision) rather than silently weakening isolation.
 
+### 2.x Admission updates in v0.4
+
+The v0.4 release tightens the admission story per spec 0003:
+
+- **Deny-by-default egress.** The v0.3 `denyMode: warn` escape hatch is
+  removed. Bounded discovery windows replace it for bootstrap iteration —
+  see [discovery-window.md](../cookbooks/discovery-window.md) and spec
+  0003 §3.6.
+- **In-container credential delivery is opt-in.** The renamed
+  `UserSuppliedSecret` provider requires
+  `deliveryMode.inContainer.accepted: true` plus a ≥20-char written
+  reason for any credential the agent container will see in plaintext.
+  See spec 0003 §3.1 and [usersuppliedsecret.md](../cookbooks/usersuppliedsecret.md).
+- **Cooperative interception is opt-in.** The v0.3 silent fallback to
+  cooperative when PSA blocks `NET_ADMIN` is replaced by an explicit
+  `spec.interception.cooperativeAccepted` opt-in. Without it, the run
+  fails closed with `Condition: InterceptionUnavailable`. See spec 0003
+  §3.7 and [interception-mode.md](../cookbooks/interception-mode.md).
+- **Bounded discovery is admission-gated.** `spec.egressDiscovery` is
+  capped at 7 days; expired windows make policies non-effective and
+  HarnessRun admission rejects new runs against them. See spec 0003 §3.6.
+- **Audit trail distinguishes discovery-allowed traffic.** A new
+  `egress-discovery-allow` AuditKind separates traffic let through
+  during a discovery window from traffic explicitly granted by an egress
+  rule.
+
 ## 3. Scope
 
 **In v0.3:**
