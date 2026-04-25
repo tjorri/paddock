@@ -88,6 +88,16 @@ rules:
 - apiGroups:
   - paddock.dev
   resources:
+  - brokerpolicies/status
+  - harnessruns/status
+  - workspaces/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - paddock.dev
+  resources:
   - harnessruns
   - workspaces
   verbs:
@@ -104,15 +114,6 @@ rules:
   - harnessruns/finalizers
   - workspaces/finalizers
   verbs:
-  - update
-- apiGroups:
-  - paddock.dev
-  resources:
-  - harnessruns/status
-  - workspaces/status
-  verbs:
-  - get
-  - patch
   - update
 - apiGroups:
   - rbac.authorization.k8s.io
