@@ -211,6 +211,12 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	origStatus := run.Status.DeepCopy()
 	run.Status.ObservedGeneration = run.Generation
 
+	// Pin the NP-enforce decision at admission so flag flips don't
+	// weaken existing runs. F-43 / Phase 2d.
+	if err := r.pinNetworkPolicyEnforced(ctx, &run); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// 1. Resolve template.
 	tpl, err := resolveTemplate(ctx, r.Client, &run)
 	if err != nil {
@@ -1193,6 +1199,21 @@ func (r *HarnessRunReconciler) resolveInterceptionMode(
 		}, nil
 	}
 	return decision, nil
+}
+
+// pinNetworkPolicyEnforced records the current --networkpolicy-enforce
+// decision on run.Status the first time it's called (when the field is
+// nil). Subsequent calls are no-ops, so flag flips on the manager
+// don't weaken existing runs. F-43 / Phase 2d.
+//
+//nolint:unparam // ctx is unused now; reserved for a future status patch via the sub-resource client.
+func (r *HarnessRunReconciler) pinNetworkPolicyEnforced(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
+	if run.Status.NetworkPolicyEnforced != nil {
+		return nil
+	}
+	v := r.networkPolicyEnforced()
+	run.Status.NetworkPolicyEnforced = &v
+	return nil
 }
 
 // fail sets a terminal Failed phase with the given condition reason.

@@ -257,11 +257,20 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyCon
 }
 
 // ensureRunNetworkPolicy creates or updates the per-run NetworkPolicy
-// when NetworkPolicyEnforce is "on" (or resolved-auto=on). Deletes any
-// stale policy when enforcement flips off mid-run.
+// based on the admission-time decision pinned in Status.NetworkPolicyEnforced
+// (F-43 / Phase 2d). Reading from Status rather than the live flag means
+// a controller-manager flag flip (--networkpolicy-enforce=on → off) does
+// not delete the per-run NP out from under a running pod; new runs after
+// the flip get the new behaviour; existing runs keep theirs.
 func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
-	if !r.networkPolicyEnforced() {
-		return r.deleteRunNetworkPolicy(ctx, run)
+	// Phase 2d (F-43): read the pinned admission-time decision from
+	// Status, not the live flag. Flag flips on the manager affect new
+	// runs only; existing runs retain the policy they were admitted
+	// with. The pin is applied at the top of Reconcile via
+	// pinNetworkPolicyEnforced, so by the time we get here Status is
+	// authoritative.
+	if run.Status.NetworkPolicyEnforced == nil || !*run.Status.NetworkPolicyEnforced {
+		return nil
 	}
 	cfg := networkPolicyConfig{
 		ClusterPodCIDR:     r.ClusterPodCIDR,
@@ -290,6 +299,12 @@ func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *
 	return nil
 }
 
+// deleteRunNetworkPolicy deletes the per-run NetworkPolicy if it exists.
+// Not called from the main reconcile path after Phase 2d (F-43) — the
+// pinned Status.NetworkPolicyEnforced field makes active deletion
+// unnecessary. Retained for envtest teardown paths and future use.
+//
+//nolint:unused // Intentionally kept as a helper; not called from Reconcile post-Phase-2d.
 func (r *HarnessRunReconciler) deleteRunNetworkPolicy(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
 	var np networkingv1.NetworkPolicy
 	key := client.ObjectKey{Namespace: run.Namespace, Name: runNetworkPolicyName(run.Name)}

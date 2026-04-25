@@ -520,6 +520,15 @@ spec:
                 description: JobName is the name of the backing batch/v1 Job, once
                   created.
                 type: string
+              networkPolicyEnforced:
+                description: |-
+                  NetworkPolicyEnforced records whether per-run NetworkPolicy
+                  enforcement was active when this run was admitted. Immutable after
+                  admission. The reconciler honours this for the run's lifetime, so a
+                  flag flip on the controller-manager
+                  (--networkpolicy-enforce=on → off) does not weaken running pods.
+                  F-43 / Phase 2d.
+                type: boolean
               observedGeneration:
                 description: ObservedGeneration is the spec generation last reconciled.
                 format: int64
