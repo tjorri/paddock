@@ -129,6 +129,9 @@ spec:
 				return runPhase(ctx, hostileNamespace, runName)
 			}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
 
+			By("dumping run state for diagnostic context")
+			dumpRunDiagnostics(ctx, hostileNamespace, runName)
+
 			By("reading harness JSON output and asserting connect-raw-tcp was denied")
 			output := readRunOutput(ctx, hostileNamespace, runName)
 			events := parseHostileEvents(output)
@@ -439,4 +442,25 @@ func readRunOutput(ctx context.Context, namespace, name string) string {
 		parts = append(parts, v)
 	}
 	return strings.Join(parts, "\n")
+}
+
+// dumpRunDiagnostics emits to GinkgoWriter the current state of the
+// HarnessRun, its associated Pods, and the controller-manager logs.
+// Called before output-shape assertions so a failure surfaces enough
+// context to diagnose without re-running.
+func dumpRunDiagnostics(ctx context.Context, namespace, runName string) {
+	dump := func(title string, args ...string) {
+		out, _ := utils.Run(exec.CommandContext(ctx, "kubectl", args...))
+		GinkgoWriter.Printf("--- %s ---\n%s\n", title, out)
+	}
+	dump("harnessrun describe",
+		"-n", namespace, "describe", "harnessrun", runName)
+	dump("pods in run namespace",
+		"-n", namespace, "get", "pods", "-o", "wide")
+	dump("pod descriptions",
+		"-n", namespace, "describe", "pods")
+	dump("events in run namespace",
+		"-n", namespace, "get", "events", "--sort-by=.lastTimestamp")
+	dump("controller-manager logs",
+		"-n", "paddock-system", "logs", "-l", "control-plane=controller-manager", "--tail=200")
 }
