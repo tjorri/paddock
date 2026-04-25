@@ -24,6 +24,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/auditing"
 	"paddock.dev/paddock/internal/policy"
 )
 
@@ -39,10 +41,11 @@ var harnessrunlog = logf.Log.WithName("harnessrun-resource")
 // SetupHarnessRunWebhookWithManager registers the validating webhook for
 // HarnessRun with the manager. The validator gets the manager's client so
 // it can resolve the referenced template and intersect its requires with
-// in-namespace BrokerPolicies (ADR-0014).
-func SetupHarnessRunWebhookWithManager(mgr ctrl.Manager) error {
+// in-namespace BrokerPolicies (ADR-0014). sink receives one AuditEvent
+// per admission decision; pass auditing.NoopSink{} in test environments.
+func SetupHarnessRunWebhookWithManager(mgr ctrl.Manager, sink auditing.Sink) error {
 	return ctrl.NewWebhookManagedBy(mgr, &paddockv1alpha1.HarnessRun{}).
-		WithValidator(&HarnessRunCustomValidator{Client: mgr.GetClient()}).
+		WithValidator(&HarnessRunCustomValidator{Client: mgr.GetClient(), Sink: sink}).
 		Complete()
 }
 
@@ -64,18 +67,23 @@ func SetupHarnessRunWebhookWithManager(mgr ctrl.Manager) error {
 // Client is optional — test code constructs the validator without one,
 // which skips the cross-object requires check. Production installs
 // always wire the manager's client via SetupHarnessRunWebhookWithManager.
+// Sink receives one AuditEvent per admission decision; a nil Sink is
+// treated as a no-op (fail-open: audit unavailability never blocks admission).
 type HarnessRunCustomValidator struct {
 	Client client.Client
+	Sink   auditing.Sink
 }
 
 var _ admission.Validator[*paddockv1alpha1.HarnessRun] = &HarnessRunCustomValidator{}
 
 func (v *HarnessRunCustomValidator) ValidateCreate(ctx context.Context, run *paddockv1alpha1.HarnessRun) (admission.Warnings, error) {
 	harnessrunlog.V(1).Info("validating HarnessRun create", "name", run.GetName())
-	if err := validateHarnessRunSpec(&run.Spec); err != nil {
-		return nil, err
+	var err error
+	if err = validateHarnessRunSpec(&run.Spec); err == nil {
+		err = v.validateAgainstTemplate(ctx, run)
 	}
-	return nil, v.validateAgainstTemplate(ctx, run)
+	v.audit(ctx, run, nil, err)
+	return nil, err
 }
 
 func (v *HarnessRunCustomValidator) ValidateUpdate(ctx context.Context, oldRun, newRun *paddockv1alpha1.HarnessRun) (admission.Warnings, error) {
@@ -95,19 +103,55 @@ func (v *HarnessRunCustomValidator) ValidateUpdate(ctx context.Context, oldRun, 
 		return nil, nil
 	}
 
+	var err error
 	if !reflect.DeepEqual(oldRun.Spec, newRun.Spec) {
-		return nil, fmt.Errorf("spec is immutable: submit a new HarnessRun to change configuration")
+		err = fmt.Errorf("spec is immutable: submit a new HarnessRun to change configuration")
+	} else if specErr := validateHarnessRunSpec(&newRun.Spec); specErr != nil {
+		// Still run spec validation so a formerly-valid object can't drift
+		// through changes to types or defaults.
+		err = specErr
+	} else {
+		err = v.validateAgainstTemplate(ctx, newRun)
 	}
-	// Still run spec validation so a formerly-valid object can't drift
-	// through changes to types or defaults.
-	if err := validateHarnessRunSpec(&newRun.Spec); err != nil {
-		return nil, err
+	owner := &metav1.OwnerReference{
+		APIVersion: paddockv1alpha1.GroupVersion.String(),
+		Kind:       "HarnessRun",
+		Name:       newRun.Name,
+		UID:        newRun.UID,
 	}
-	return nil, v.validateAgainstTemplate(ctx, newRun)
+	v.audit(ctx, newRun, owner, err)
+	return nil, err
 }
 
 func (v *HarnessRunCustomValidator) ValidateDelete(_ context.Context, _ *paddockv1alpha1.HarnessRun) (admission.Warnings, error) {
 	return nil, nil
+}
+
+// audit emits one policy-applied (admit) or policy-rejected (reject)
+// AuditEvent. Failures are logged but never block the validator's
+// decision — admission must not depend on audit availability (F-32).
+func (v *HarnessRunCustomValidator) audit(ctx context.Context, run *paddockv1alpha1.HarnessRun, owner *metav1.OwnerReference, err error) {
+	if v.Sink == nil {
+		return
+	}
+	in := auditing.AdmissionInput{
+		RunName:     run.Name,
+		Namespace:   run.Namespace,
+		TemplateRef: run.Spec.TemplateRef.Name,
+		OwnerRef:    owner,
+	}
+	var ae *paddockv1alpha1.AuditEvent
+	if err == nil {
+		in.Reason = "admitted"
+		ae = auditing.NewPolicyApplied(in)
+	} else {
+		in.Reason = err.Error()
+		ae = auditing.NewPolicyRejected(in)
+	}
+	if wErr := v.Sink.Write(ctx, ae); wErr != nil {
+		harnessrunlog.Error(wErr, "writing admission AuditEvent",
+			"name", run.Name, "namespace", run.Namespace)
+	}
 }
 
 // validateAgainstTemplate resolves the run's template and runs the

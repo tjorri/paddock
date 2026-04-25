@@ -17,8 +17,12 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -445,3 +449,98 @@ var _ = Describe("HarnessRun Webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("expired"))
 	})
 })
+
+// ---------------------------------------------------------------------------
+// Standard-library unit tests for audit emission (F-32)
+// ---------------------------------------------------------------------------
+
+// recordingAuditSink records every AuditEvent passed to Write. The err
+// field, when non-nil, is returned by every Write call to simulate an
+// unavailable audit backend (fail-open testing).
+type recordingAuditSink struct {
+	mu  sync.Mutex
+	all []*paddockv1alpha1.AuditEvent
+	err error
+}
+
+func (r *recordingAuditSink) Write(_ context.Context, ae *paddockv1alpha1.AuditEvent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.all = append(r.all, ae.DeepCopy())
+	return r.err
+}
+
+func (r *recordingAuditSink) events() []*paddockv1alpha1.AuditEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*paddockv1alpha1.AuditEvent, len(r.all))
+	copy(out, r.all)
+	return out
+}
+
+// validHarnessRunFixture builds a HarnessRun whose spec passes static
+// validation (templateRef.name set, prompt set, no extraEnv secret refs).
+// When Client is nil the validator skips the cross-template check, so this
+// fixture admits unconditionally in unit tests.
+func validHarnessRunFixture(name, namespace string) *paddockv1alpha1.HarnessRun {
+	return &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Prompt:      "say hi",
+		},
+	}
+}
+
+func TestHarnessRunValidator_AdmitEmitsPolicyApplied(t *testing.T) {
+	rec := &recordingAuditSink{}
+	v := &HarnessRunCustomValidator{Sink: rec} // Client nil → validateAgainstTemplate returns nil
+	run := validHarnessRunFixture("hr-1", "team-a")
+	if _, err := v.ValidateCreate(context.Background(), run); err != nil {
+		t.Fatalf("admit: unexpected error: %v", err)
+	}
+	wrote := rec.events()
+	if len(wrote) != 1 {
+		t.Fatalf("expected 1 AuditEvent, got %d", len(wrote))
+	}
+	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindPolicyApplied {
+		t.Errorf("kind = %q, want %q", wrote[0].Spec.Kind, paddockv1alpha1.AuditKindPolicyApplied)
+	}
+}
+
+func TestHarnessRunValidator_RejectEmitsPolicyRejected(t *testing.T) {
+	rec := &recordingAuditSink{}
+	v := &HarnessRunCustomValidator{Sink: rec}
+	// missing templateRef.name and prompt → static validation rejects
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+	}
+	_, err := v.ValidateCreate(context.Background(), run)
+	if err == nil {
+		t.Fatal("expected rejection, got nil error")
+	}
+	wrote := rec.events()
+	if len(wrote) != 1 {
+		t.Fatalf("expected 1 AuditEvent, got %d", len(wrote))
+	}
+	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindPolicyRejected {
+		t.Errorf("kind = %q, want %q", wrote[0].Spec.Kind, paddockv1alpha1.AuditKindPolicyRejected)
+	}
+	if !strings.Contains(wrote[0].Spec.Reason, "templateRef") &&
+		!strings.Contains(wrote[0].Spec.Reason, "prompt") {
+		t.Errorf("reason = %q, want it to mention 'templateRef' or 'prompt'", wrote[0].Spec.Reason)
+	}
+}
+
+func TestHarnessRunValidator_SinkErrorOnReject_StillRejects(t *testing.T) {
+	rec := &recordingAuditSink{err: errors.New("etcd partition")}
+	v := &HarnessRunCustomValidator{Sink: rec}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+		// empty spec → rejected by validateHarnessRunSpec
+	}
+	_, err := v.ValidateCreate(context.Background(), run)
+	if err == nil {
+		t.Fatal("expected rejection regardless of sink error (fail-open)")
+	}
+}
