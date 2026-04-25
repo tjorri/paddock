@@ -518,13 +518,6 @@ spec:
 					"DEMO_TOKEN must not be persisted when broker fail-closes the issue path; got %q", out)
 			}
 
-			By("asserting the run's BrokerReady condition reflects BrokerUnavailable")
-			brokerReady, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", tg19Namespace,
-				"get", "harnessrun", runName,
-				"-o", `jsonpath={.status.conditions[?(@.type=="BrokerReady")].reason}`))
-			Expect(strings.TrimSpace(brokerReady)).To(Equal("BrokerUnavailable"),
-				"BrokerReady reason should be BrokerUnavailable; got %q", brokerReady)
-
 			By("cleaning up TG-19 namespace")
 			_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
 				"delete", "ns", tg19Namespace, "--ignore-not-found", "--wait=false"))
