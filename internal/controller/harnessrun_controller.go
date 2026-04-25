@@ -132,6 +132,11 @@ type HarnessRunReconciler struct {
 	// flag the reconciler uses for credential issuance.
 	BrokerEndpoint string
 
+	// BrokerNamespace is the namespace where the broker is deployed
+	// (default `paddock-system`). Used by the per-run NetworkPolicy
+	// to allow broker egress when NP enforcement is on. See F-19.
+	BrokerNamespace string
+
 	// BrokerCASource names the cert-manager-issued broker-serving-cert
 	// Secret whose ca.crt is copied into per-run broker-ca Secrets so
 	// the proxy can verify the broker's TLS. Zero Name disables the

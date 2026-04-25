@@ -675,6 +675,46 @@ func buildSeedNetworkPolicy(ws *paddockv1alpha1.Workspace, cfg networkPolicyConf
 	openCIDR := "0.0.0.0/0"
 	exceptCIDRs := buildExceptCIDRs(cfg)
 
+	rules := []networkingv1.NetworkPolicyEgressRule{
+		{
+			To: []networkingv1.NetworkPolicyPeer{
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"kubernetes.io/metadata.name": "kube-system",
+						},
+					},
+					PodSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"k8s-app": "kube-dns"},
+					},
+				},
+			},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &udp, Port: &dnsPort},
+				{Protocol: &tcp, Port: &dnsPort},
+			},
+		},
+		{
+			To: []networkingv1.NetworkPolicyPeer{
+				{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR, Except: exceptCIDRs}},
+			},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: &httpsPort},
+			},
+		},
+		{
+			To: []networkingv1.NetworkPolicyPeer{
+				{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR, Except: exceptCIDRs}},
+			},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: &httpPort},
+			},
+		},
+	}
+	if brokerRule := buildBrokerEgressRule(cfg); brokerRule != nil {
+		rules = append(rules, *brokerRule)
+	}
+
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      seedNetworkPolicyName(ws),
@@ -692,42 +732,7 @@ func buildSeedNetworkPolicy(ws *paddockv1alpha1.Workspace, cfg networkPolicyConf
 			PolicyTypes: []networkingv1.PolicyType{
 				networkingv1.PolicyTypeEgress,
 			},
-			Egress: []networkingv1.NetworkPolicyEgressRule{
-				{
-					To: []networkingv1.NetworkPolicyPeer{
-						{
-							NamespaceSelector: &metav1.LabelSelector{
-								MatchLabels: map[string]string{
-									"kubernetes.io/metadata.name": "kube-system",
-								},
-							},
-							PodSelector: &metav1.LabelSelector{
-								MatchLabels: map[string]string{"k8s-app": "kube-dns"},
-							},
-						},
-					},
-					Ports: []networkingv1.NetworkPolicyPort{
-						{Protocol: &udp, Port: &dnsPort},
-						{Protocol: &tcp, Port: &dnsPort},
-					},
-				},
-				{
-					To: []networkingv1.NetworkPolicyPeer{
-						{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR, Except: exceptCIDRs}},
-					},
-					Ports: []networkingv1.NetworkPolicyPort{
-						{Protocol: &tcp, Port: &httpsPort},
-					},
-				},
-				{
-					To: []networkingv1.NetworkPolicyPeer{
-						{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR, Except: exceptCIDRs}},
-					},
-					Ports: []networkingv1.NetworkPolicyPort{
-						{Protocol: &tcp, Port: &httpPort},
-					},
-				},
-			},
+			Egress: rules,
 		},
 	}
 }

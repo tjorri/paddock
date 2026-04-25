@@ -77,6 +77,9 @@ type WorkspaceReconciler struct {
 	// HarnessRunReconciler. Excluded from seed-Pod NP egress. See F-19.
 	ClusterPodCIDR     string
 	ClusterServiceCIDR string
+	// BrokerNamespace mirrors HarnessRunReconciler.BrokerNamespace; used
+	// by the per-seed-Pod NetworkPolicy. See F-45.
+	BrokerNamespace string
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=workspaces,verbs=get;list;watch;create;update;patch;delete
@@ -430,6 +433,7 @@ func (r *WorkspaceReconciler) ensureSeedNetworkPolicy(ctx context.Context, ws *p
 	cfg := networkPolicyConfig{
 		ClusterPodCIDR:     r.ClusterPodCIDR,
 		ClusterServiceCIDR: r.ClusterServiceCIDR,
+		BrokerNamespace:    r.BrokerNamespace,
 	}
 	desired := buildSeedNetworkPolicy(ws, cfg)
 	np := &networkingv1.NetworkPolicy{

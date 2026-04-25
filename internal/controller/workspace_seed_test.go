@@ -75,6 +75,22 @@ func TestBuildSeedNetworkPolicy_Shape(t *testing.T) {
 	}
 }
 
+func TestBuildSeedNetworkPolicy_BrokerEgressRule(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+	}
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     "10.244.0.0/16",
+		ClusterServiceCIDR: "10.96.0.0/12",
+		BrokerNamespace:    "paddock-system",
+	}
+	np := buildSeedNetworkPolicy(ws, cfg)
+
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + broker)", len(np.Spec.Egress))
+	}
+}
+
 func TestIsSSHURL(t *testing.T) {
 	cases := []struct {
 		name string

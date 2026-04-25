@@ -160,6 +160,65 @@ func cidrSliceEqual(a, b []string) bool {
 	return true
 }
 
+func TestBuildRunNetworkPolicy_BrokerEgressRule(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+	}
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     "10.244.0.0/16",
+		ClusterServiceCIDR: "10.96.0.0/12",
+		BrokerNamespace:    "paddock-system",
+	}
+	np := buildRunNetworkPolicy(run, cfg)
+
+	// Now expect 4 rules: DNS + 443 + 80 + broker.
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + broker)", len(np.Spec.Egress))
+	}
+
+	// Find the broker rule (it's the one with paddock-system namespace selector
+	// and the broker pod selector).
+	var brokerRule *networkingv1.NetworkPolicyEgressRule
+	for i := range np.Spec.Egress {
+		rule := &np.Spec.Egress[i]
+		if len(rule.To) == 1 &&
+			rule.To[0].NamespaceSelector != nil &&
+			rule.To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == "paddock-system" {
+			brokerRule = rule
+			break
+		}
+	}
+	if brokerRule == nil {
+		t.Fatalf("expected egress rule for broker namespace; found none")
+	}
+
+	if brokerRule.To[0].PodSelector == nil {
+		t.Errorf("broker rule missing podSelector")
+	}
+	if len(brokerRule.Ports) != 1 ||
+		brokerRule.Ports[0].Port == nil ||
+		brokerRule.Ports[0].Port.IntValue() != 8443 {
+		t.Errorf("broker rule ports = %+v, want TCP 8443", brokerRule.Ports)
+	}
+}
+
+func TestBuildRunNetworkPolicy_NoBrokerRuleWhenNamespaceUnset(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+	}
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     "10.244.0.0/16",
+		ClusterServiceCIDR: "10.96.0.0/12",
+		// BrokerNamespace deliberately unset.
+	}
+	np := buildRunNetworkPolicy(run, cfg)
+
+	// Expect 3 rules: no broker rule when namespace is empty.
+	if len(np.Spec.Egress) != 3 {
+		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80; no broker rule)", len(np.Spec.Egress))
+	}
+}
+
 // TestNetworkPolicyEnforced verifies the decision table across modes.
 func TestNetworkPolicyEnforced(t *testing.T) {
 	cases := []struct {

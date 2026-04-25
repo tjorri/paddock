@@ -97,6 +97,7 @@ func main() {
 	var networkPolicyEnforce string
 	var brokerCAName string
 	var brokerCANamespace string
+	var brokerNamespace string
 	var clusterPodCIDR string
 	var clusterServiceCIDR string
 	flag.StringVar(&collectorImage, "collector-image", controller.DefaultCollectorImage,
@@ -108,6 +109,9 @@ func main() {
 	flag.StringVar(&brokerEndpoint, "broker-endpoint", "",
 		"HTTPS URL of the paddock-broker service, e.g. https://paddock-broker.paddock-system.svc:8443. "+
 			"Empty disables broker integration — runs against templates declaring spec.requires will fail with BrokerReady=False.")
+	flag.StringVar(&brokerNamespace, "broker-namespace", "paddock-system",
+		"Namespace where the broker is deployed; used to construct the per-run NetworkPolicy "+
+			"broker-egress rule when --networkpolicy-enforce=on. Default matches the chart.")
 	flag.StringVar(&brokerTokenPath, "broker-token-path", "/var/run/secrets/paddock-broker/token",
 		"Path to a ProjectedServiceAccountToken with audience=paddock-broker.")
 	flag.StringVar(&brokerCAPath, "broker-ca-path", "/etc/paddock-broker/ca/ca.crt",
@@ -289,6 +293,7 @@ func main() {
 		ClusterPodCIDR:           clusterPodCIDR,
 		ClusterServiceCIDR:       clusterServiceCIDR,
 		BrokerEndpoint:           brokerEndpoint,
+		BrokerNamespace:          brokerNamespace,
 		ProxyCASource: controller.ProxyCASource{
 			Name:      proxyCAName,
 			Namespace: proxyCANamespace,
@@ -343,6 +348,7 @@ func main() {
 		NetworkPolicyAutoEnabled: npAuto,
 		ClusterPodCIDR:           clusterPodCIDR,
 		ClusterServiceCIDR:       clusterServiceCIDR,
+		BrokerNamespace:          brokerNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Workspace")
 		os.Exit(1)
