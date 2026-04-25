@@ -29,6 +29,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -1319,6 +1320,13 @@ func (r *HarnessRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&batchv1.Job{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&paddockv1alpha1.Workspace{}).
+		// F-41 / Phase 2d: react to mid-run mutation of owned per-run
+		// resources so kubectl edit/delete is reverted via CreateOrUpdate.
+		Owns(&corev1.Secret{}).
+		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(&corev1.ServiceAccount{}).
+		Owns(&rbacv1.Role{}).
+		Owns(&rbacv1.RoleBinding{}).
 		Named("harnessrun").
 		Complete(r)
 }
