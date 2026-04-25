@@ -202,7 +202,8 @@ func main() {
 			os.Exit(1)
 		}
 		setupLog.Info("interception mode", "mode", mode, "listener", "raw TCP (SO_ORIGINAL_DST)")
-		ln, err := net.Listen("tcp", listenAddr)
+		var lc net.ListenConfig
+		ln, err := lc.Listen(ctx, "tcp", listenAddr)
 		if err != nil {
 			setupLog.Error(err, "transparent listen")
 			os.Exit(1)

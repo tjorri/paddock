@@ -18,6 +18,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -47,7 +48,7 @@ func (p *peekConn) Read(b []byte) (int, error) {
 // ClientHello, then stashes those bytes back onto p.buffered so the
 // TLS library handshaking later sees the full stream. Only the first
 // packet is consumed; subsequent bytes flow through untouched.
-func peekClientHello(p *peekConn) (*tls.ClientHelloInfo, error) {
+func peekClientHello(ctx context.Context, p *peekConn) (*tls.ClientHelloInfo, error) {
 	var hello *tls.ClientHelloInfo
 	// Use a zero-length tls.Server with GetConfigForClient — the only
 	// way stdlib lets us inspect the ClientHello without committing to
@@ -61,7 +62,7 @@ func peekClientHello(p *peekConn) (*tls.ClientHelloInfo, error) {
 			return nil, errFinishedPeeking
 		},
 	}
-	err := tls.Server(dummy, cfg).Handshake()
+	err := tls.Server(dummy, cfg).HandshakeContext(ctx)
 	if errors.Is(err, errFinishedPeeking) && hello != nil {
 		return hello, nil
 	}
