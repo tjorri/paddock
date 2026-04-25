@@ -125,22 +125,30 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// Validator errors (e.g. broker unreachable) fail closed by
 		// design — the spec's §6.4 brokerFailureMode=Closed posture.
 		s.log().Error(vErr, "validator error", "host", host, "port", port)
-		http.Error(w, "paddock-proxy: broker unreachable", http.StatusBadGateway)
-		_ = s.recordEgress(ctx, EgressEvent{
+		if aErr := s.recordEgress(ctx, EgressEvent{
 			Host: host, Port: port,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
 			Reason:   fmt.Sprintf("validator error: %v", vErr),
-		})
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on deny path", "host", host, "port", port)
+			http.Error(w, "paddock-proxy: audit unavailable", http.StatusBadGateway)
+			return
+		}
+		http.Error(w, "paddock-proxy: broker unreachable", http.StatusBadGateway)
 		return
 	}
 	if !decision.Allowed {
 		s.log().V(1).Info("denied", "host", host, "port", port, "reason", decision.Reason)
-		http.Error(w, fmt.Sprintf("paddock-proxy: %s", decision.Reason), http.StatusForbidden)
-		_ = s.recordEgress(ctx, EgressEvent{
+		if aErr := s.recordEgress(ctx, EgressEvent{
 			Host: host, Port: port,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
 			Reason:   decision.Reason,
-		})
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on deny path", "host", host, "port", port)
+			http.Error(w, "paddock-proxy: audit unavailable", http.StatusBadGateway)
+			return
+		}
+		http.Error(w, fmt.Sprintf("paddock-proxy: %s", decision.Reason), http.StatusForbidden)
 		return
 	}
 

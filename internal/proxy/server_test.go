@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -424,5 +425,61 @@ func TestProxy_ValidatorErrorFailsClosed(t *testing.T) {
 	}
 	if evs[0].Decision != paddockv1alpha1.AuditDecisionDenied {
 		t.Errorf("decision = %q, want denied", evs[0].Decision)
+	}
+}
+
+// denyAllValidator always returns Allowed=false, simulating a policy
+// that explicitly denies every destination.
+type denyAllValidator struct{}
+
+func (denyAllValidator) ValidateEgress(_ context.Context, _ string, _ int) (Decision, error) {
+	return Decision{Allowed: false, Reason: "deny by test fixture"}, nil
+}
+
+// TestHandleConnect_AuditFailureOnDeny_Returns502 verifies the fail-closed
+// behaviour on the policy-deny path (F-24): if the AuditSink returns an
+// error, the proxy must reply 502 "audit unavailable" so the agent sees
+// an indeterminate state and retries rather than treating a 403 as final.
+func TestHandleConnect_AuditFailureOnDeny_Returns502(t *testing.T) {
+	certPEM, keyPEM := generateTestCA(t)
+	ca, err := NewMITMCertificateAuthority(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("build CA: %v", err)
+	}
+	sink := &recordingSink{err: errors.New("etcd partition")}
+
+	srv := &Server{CA: ca, Validator: denyAllValidator{}, Audit: sink}
+	proxyURL := startProxy(t, srv)
+	pu, _ := url.Parse(proxyURL)
+
+	// The proxy denies before any TLS handshake with the client, so the
+	// client pool only needs to trust the MITM CA for completeness; the
+	// CONNECT response itself is plain HTTP.
+	clientPool := x509.NewCertPool()
+	clientPool.AppendCertsFromPEM(certPEM)
+
+	tr := &http.Transport{
+		Proxy:           http.ProxyURL(pu),
+		TLSClientConfig: &tls.Config{RootCAs: clientPool, MinVersion: tls.VersionTLS12},
+	}
+	defer tr.CloseIdleConnections()
+	c := &http.Client{Transport: tr, Timeout: 5 * time.Second}
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.com/x", nil)
+	resp, err := c.Do(req)
+	if err != nil {
+		// CONNECT replied with non-200 — the Go HTTP client surfaces the
+		// CONNECT failure in the error message as either the numeric code
+		// ("502") or the status text ("Bad Gateway"), depending on version.
+		// Both forms are valid; we accept either.
+		msg := err.Error()
+		if !strings.Contains(msg, "502") && !strings.Contains(msg, "Bad Gateway") {
+			t.Errorf("err = %v, want includes 502 or Bad Gateway", err)
+		}
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", resp.StatusCode)
 	}
 }
