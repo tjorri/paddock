@@ -474,11 +474,18 @@ spec:
 `, runName, tg19Namespace)
 			mustApplyManifest(runManifest)
 
-			By("waiting for the run to fail because broker returns 503 AuditUnavailable")
-			Eventually(func() string {
+			By("giving the controller time to attempt issuance against the audit-broken broker")
+			// The broker returns 503 AuditUnavailable on every Issue
+			// attempt because the audit write fails (RBAC revoked). The
+			// controller treats 503 as transient — it sets BrokerReady=False
+			// with Reason=BrokerUnavailable, keeps the run in Pending, and
+			// requeues. The fail-closed guarantee under test is that the
+			// credential never lands in <run>-broker-creds, NOT that the
+			// run fails terminally. F-12.
+			Consistently(func() string {
 				return runPhase(ctx, tg19Namespace, runName)
-			}, 4*time.Minute, 5*time.Second).Should(Equal("Failed"),
-				"expected run to reach Failed phase due to BrokerUnavailable from 503 AuditUnavailable")
+			}, 90*time.Second, 5*time.Second).ShouldNot(Equal("Succeeded"),
+				"run must not reach Succeeded while broker's audit-write is failing")
 
 			By("dumping run state for diagnostic context")
 			dumpRunDiagnostics(ctx, tg19Namespace, runName)
@@ -489,6 +496,13 @@ spec:
 				"-o", "jsonpath={.data.DEMO_TOKEN}"))
 			Expect(strings.TrimSpace(out)).To(BeEmpty(),
 				"DEMO_TOKEN must not be persisted when broker fail-closes the issue path; got %q", out)
+
+			By("asserting the run's BrokerReady condition reflects BrokerUnavailable")
+			brokerReady, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", tg19Namespace,
+				"get", "harnessrun", runName,
+				"-o", `jsonpath={.status.conditions[?(@.type=="BrokerReady")].reason}`))
+			Expect(strings.TrimSpace(brokerReady)).To(Equal("BrokerUnavailable"),
+				"BrokerReady reason should be BrokerUnavailable; got %q", brokerReady)
 
 			By("cleaning up TG-19 namespace")
 			_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
