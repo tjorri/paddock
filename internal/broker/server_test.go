@@ -679,6 +679,155 @@ func TestIssue_ResolveTemplateInfraError_EmitsAudit(t *testing.T) {
 	}
 }
 
+// stubSubstituter implements both providers.Provider and providers.Substituter
+// for testing handleSubstituteAuth audit emission.
+type stubSubstituter struct {
+	name      string
+	matched   bool
+	subErr    error
+	setHdrs   map[string]string
+	removeHdr []string
+}
+
+func (s *stubSubstituter) Name() string { return s.name }
+
+func (s *stubSubstituter) Issue(_ context.Context, _ providers.IssueRequest) (providers.IssueResult, error) {
+	return providers.IssueResult{}, errors.New("stub does not implement Issue")
+}
+
+func (s *stubSubstituter) SubstituteAuth(_ context.Context, _ providers.SubstituteRequest) (providers.SubstituteResult, error) {
+	if !s.matched {
+		return providers.SubstituteResult{Matched: false}, nil
+	}
+	return providers.SubstituteResult{
+		Matched:       true,
+		SetHeaders:    s.setHdrs,
+		RemoveHeaders: s.removeHdr,
+	}, s.subErr
+}
+
+// setupSubstituteAuth builds a Server whose Providers registry has the
+// supplied substituter. Mirrors setup() but substitutes the provider list.
+func setupSubstituteAuth(t *testing.T, sub *stubSubstituter) (*broker.Server, client.Client) {
+	t.Helper()
+	ns := "team-a"
+	tpl := &paddockv1alpha1.HarnessTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo", Namespace: ns, ResourceVersion: "1"},
+	}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: ns, ResourceVersion: "1"},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(buildScheme(t)).
+		WithObjects(tpl, run).
+		Build()
+	registry, err := providers.NewRegistry(sub)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	return &broker.Server{
+		Client:    c,
+		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
+		Providers: registry,
+		Audit:     &broker.AuditWriter{Client: c},
+	}, c
+}
+
+func TestSubstituteAuth_GrantedEmitsCredentialIssuedAudit(t *testing.T) {
+	sub := &stubSubstituter{
+		name:    "anthropic-stub",
+		matched: true,
+		setHdrs: map[string]string{"x-api-key": "real-key"},
+	}
+	srv, _ := setupSubstituteAuth(t, sub)
+	rec := &recordingAuditSink{}
+	srv.Audit = &broker.AuditWriter{Sink: rec}
+
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	body := `{"host":"api.anthropic.com","port":443,"incomingXApiKey":"paddock-bearer-x"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, brokerapi.PathSubstituteAuth, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer valid-token")
+	req.Header.Set(brokerapi.HeaderRun, "hr-1")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	wrote := rec.events()
+	if len(wrote) != 1 {
+		t.Fatalf("got %d events, want 1", len(wrote))
+	}
+	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialIssued {
+		t.Errorf("kind = %q, want credential-issued", wrote[0].Spec.Kind)
+	}
+}
+
+func TestSubstituteAuth_SubstituteFailedEmitsCredentialDeniedAudit(t *testing.T) {
+	sub := &stubSubstituter{
+		name:    "anthropic-stub",
+		matched: true,
+		subErr:  errors.New("token expired"),
+	}
+	srv, _ := setupSubstituteAuth(t, sub)
+	rec := &recordingAuditSink{}
+	srv.Audit = &broker.AuditWriter{Sink: rec}
+
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	body := `{"host":"api.anthropic.com","port":443,"incomingXApiKey":"paddock-bearer-x"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, brokerapi.PathSubstituteAuth, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer valid-token")
+	req.Header.Set(brokerapi.HeaderRun, "hr-1")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	wrote := rec.events()
+	if len(wrote) != 1 {
+		t.Fatalf("got %d events, want 1", len(wrote))
+	}
+	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialDenied {
+		t.Errorf("kind = %q, want credential-denied", wrote[0].Spec.Kind)
+	}
+	if !strings.Contains(wrote[0].Spec.Reason, "token expired") {
+		t.Errorf("reason = %q, want contains 'token expired'", wrote[0].Spec.Reason)
+	}
+}
+
+func TestSubstituteAuth_BearerUnknownEmitsCredentialDeniedAudit(t *testing.T) {
+	sub := &stubSubstituter{name: "anthropic-stub", matched: false}
+	srv, _ := setupSubstituteAuth(t, sub)
+	rec := &recordingAuditSink{}
+	srv.Audit = &broker.AuditWriter{Sink: rec}
+
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	body := `{"host":"api.anthropic.com","port":443,"incomingXApiKey":"unknown-bearer"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, brokerapi.PathSubstituteAuth, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer valid-token")
+	req.Header.Set(brokerapi.HeaderRun, "hr-1")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rr.Code, rr.Body.String())
+	}
+	wrote := rec.events()
+	if len(wrote) != 1 {
+		t.Fatalf("got %d events, want 1", len(wrote))
+	}
+	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialDenied {
+		t.Errorf("kind = %q, want credential-denied", wrote[0].Spec.Kind)
+	}
+}
+
 func TestIssue_ListBrokerPoliciesInfraError_EmitsAudit(t *testing.T) {
 	tpl := &paddockv1alpha1.HarnessTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "echo", Namespace: "team-a"},

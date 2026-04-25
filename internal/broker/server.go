@@ -494,7 +494,33 @@ func (s *Server) handleSubstituteAuth(w http.ResponseWriter, r *http.Request) {
 			}
 			if err != nil {
 				logger.Info("SubstituteAuth denied", "run", runName, "provider", prov.Name(), "err", err)
+				denyAudit := CredentialAudit{
+					RunName:        runName,
+					Namespace:      runNamespace,
+					CredentialName: pReq.Host,
+					Provider:       prov.Name(),
+					Reason:         "substitute failed: " + err.Error(),
+				}
+				if wErr := s.Audit.CredentialDenied(ctx, denyAudit); wErr != nil {
+					logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
+					writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+						"paddock-broker: audit unavailable, please retry")
+					return
+				}
 				writeError(w, http.StatusForbidden, "SubstituteFailed", err.Error())
+				return
+			}
+			grantAudit := CredentialAudit{
+				RunName:        runName,
+				Namespace:      runNamespace,
+				CredentialName: pReq.Host,
+				Provider:       prov.Name(),
+				Reason:         "substituted upstream credential",
+			}
+			if wErr := s.Audit.CredentialIssued(ctx, grantAudit); wErr != nil {
+				logger.Error(wErr, "writing substitute-auth issuance AuditEvent", "run", runName)
+				writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+					"paddock-broker: audit unavailable, please retry")
 				return
 			}
 			writeJSON(w, http.StatusOK, brokerapi.SubstituteAuthResponse{
@@ -503,6 +529,18 @@ func (s *Server) handleSubstituteAuth(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+	}
+	bearerUnknownAudit := CredentialAudit{
+		RunName:        runName,
+		Namespace:      runNamespace,
+		CredentialName: req.Host,
+		Reason:         "no registered provider owns the supplied bearer",
+	}
+	if wErr := s.Audit.CredentialDenied(ctx, bearerUnknownAudit); wErr != nil {
+		logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
+		writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+			"paddock-broker: audit unavailable, please retry")
+		return
 	}
 	writeError(w, http.StatusNotFound, "BearerUnknown",
 		"no registered provider owns the supplied bearer")
