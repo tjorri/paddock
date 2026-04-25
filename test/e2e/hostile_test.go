@@ -401,47 +401,28 @@ func runPhase(ctx context.Context, namespace, name string) string {
 	return strings.TrimSpace(out)
 }
 
-// readRunOutput returns the concatenated text from the run's output
-// ConfigMap. The collector sidecar writes evil-echo's stdout there.
+// readRunOutput returns the concatenated text from the run's pod logs
+// (agent container). evil-echo emits its hostile-event JSON to stdout,
+// which is captured by the kubelet's pod-log buffer — NOT by the
+// collector sidecar (which reads PADDOCK_RAW_PATH for echo-compatible
+// events). For hostile scenarios we therefore fetch pod logs directly,
+// not the run's output ConfigMap.
 func readRunOutput(ctx context.Context, namespace, name string) string {
-	out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace, "get", "configmap",
-		name+"-out", "-o", "jsonpath={.data}"))
-	if err != nil {
-		// Fallback: read pod logs directly. Slower path but
-		// resilient when the output ConfigMap shape isn't guaranteed.
-		jobName, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace, "get", "harnessrun", name,
-			"-o", "jsonpath={.status.jobName}"))
-		jobName = strings.TrimSpace(jobName)
-		if jobName != "" {
-			podName, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace, "get", "pods",
-				"-l", "job-name="+jobName, "-o", "jsonpath={.items[0].metadata.name}"))
-			podName = strings.TrimSpace(podName)
-			if podName != "" {
-				logs, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace, "logs",
-					podName, "-c", "agent"))
-				return logs
-			}
-		}
+	jobName, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace, "get", "harnessrun", name,
+		"-o", "jsonpath={.status.jobName}"))
+	jobName = strings.TrimSpace(jobName)
+	if jobName == "" {
 		return ""
 	}
-	// jsonpath={.data} returns map[string]string serialised; tests want
-	// the values concatenated. Re-fetch as JSON and join.
-	jsonOut, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace, "get", "configmap",
-		name+"-out", "-o", "json"))
-	if err != nil {
-		return out
+	podName, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace, "get", "pods",
+		"-l", "job-name="+jobName, "-o", "jsonpath={.items[0].metadata.name}"))
+	podName = strings.TrimSpace(podName)
+	if podName == "" {
+		return ""
 	}
-	var cm struct {
-		Data map[string]string `json:"data"`
-	}
-	if err := json.Unmarshal([]byte(jsonOut), &cm); err != nil {
-		return out
-	}
-	parts := make([]string, 0, len(cm.Data))
-	for _, v := range cm.Data {
-		parts = append(parts, v)
-	}
-	return strings.Join(parts, "\n")
+	logs, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace, "logs",
+		podName, "-c", "agent"))
+	return logs
 }
 
 // dumpRunDiagnostics emits to GinkgoWriter the current state of the
