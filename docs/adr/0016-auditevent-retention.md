@@ -50,3 +50,28 @@ Retention has to balance:
 - **In-memory ring buffer on the broker, with periodic flush to object storage.** Rejected for v0.3: introduces a second storage system to operate. The CRD path is "etcd is your audit store" — fine for the default scale; v0.4's external sink will be the upgrade path.
 - **No debounce — trust etcd to compact.** Rejected: etcd compaction does not help live watch traffic, and a flood of CRD writes pressurises the apiserver's informer caches cluster-wide, not just ours. Measured the same pattern hit the collector's ConfigMap writes in early v0.1 testing.
 - **One AuditEvent per run (stream-appended).** Rejected: CRDs are not designed for append-in-place; every write replaces the full object, which quadratic-ifies write cost as the run progresses. Label-selectable individual objects are the right shape for an observability surface.
+
+## Phase 2c F-33: webhook fail-policy
+
+The `ValidatingWebhookConfiguration` for `/validate-paddock-dev-v1alpha1-auditevent`
+ships with `failurePolicy: Ignore` (other webhooks remain `Fail`).
+Combined with broker / proxy fail-closed audit semantics on the deny
+path, the prior `Fail` policy created a self-DoS during controller-pod
+outages: every audit write would fail, every deny would convert to
+503/502, and clients would retry into the same failure mode.
+
+`Ignore` lets AuditEvent writes proceed when the webhook is unavailable.
+The cost is brief write-once-bypass during outages; operators monitor
+via `paddock_audit_write_failures_total` and the controller-pod
+readiness probe. See `docs/observability/audit-monitoring.md` for the
+alert example.
+
+## Phase 2c fail-closed semantics
+
+Broker `handleIssue` writes the AuditEvent **before** the HTTP response
+on both the issuance and deny paths; on Sink.Write error the broker
+returns `503 AuditUnavailable` and the caller retries. Proxy CONNECT
+deny paths return 502 on Sink.Write error; transparent-mode deny paths
+RST-close the connection. Allow paths log + counter; admission and
+controller emit best-effort. Threat-model B-3 / B-4 Repudiation
+defences are now load-bearing rather than soft.

@@ -51,3 +51,11 @@ Invariants:
 - **Per-template policy (option A).** Rejected above. Doesn't scale across namespaces.
 - **Policy-as-code (OPA/Cedar) instead of a CRD schema.** Attractive long-term; overbuilt for v0.3. The capability axes are small (egress, credentials, gitRepos), the composition rule is simple (union), and the CRD shape maps cleanly to `kubectl` UX. Revisit if the axes explode past what declarative YAML accommodates.
 - **Intersect instead of union across policies.** Rejected: intersection makes it impossible to add a new capability by adding a new policy — you'd always have to extend every existing one. Union matches how operators actually reason.
+
+## Phase 2c update (2026-04-25)
+
+`kind: policy-applied` and `kind: policy-rejected` AuditEvents are now
+emitted by `HarnessRunCustomValidator` and `BrokerPolicyCustomValidator`.
+The validators wire an `auditing.Sink` from `cmd/main.go`. Audit-write
+failures are fail-open — admission decisions are not gated on
+AuditEvent availability. See Phase 2c spec §5.3.
