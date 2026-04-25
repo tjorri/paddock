@@ -224,6 +224,22 @@ image-e2e-egress: ## Build the paddock-e2e-egress harness (e2e-only probe tool).
 .PHONY: images
 images: image-echo image-adapter-echo image-collector image-claude-code image-adapter-claude-code image-broker image-proxy image-iptables-init ## Build all reference images.
 
+.PHONY: trivy-images
+trivy-images: ## Run trivy on all Paddock images. Fails on HIGH/CRITICAL.
+	@command -v trivy >/dev/null 2>&1 || { echo "Install trivy: https://aquasecurity.github.io/trivy/"; exit 1; }
+	@for img in paddock-manager:dev paddock-broker:dev paddock-proxy:dev paddock-iptables-init:dev \
+	            paddock-echo:dev paddock-adapter-echo:dev paddock-collector:dev \
+	            paddock-claude-code:dev paddock-adapter-claude-code:dev; do \
+	  echo "==> trivy on $$img"; \
+	  trivy image --severity HIGH,CRITICAL --exit-code 1 --ignorefile .trivyignore "$$img" || exit 1; \
+	done
+
+.PHONY: kube-lint
+kube-lint: ## Run kube-linter on the Helm chart and config samples.
+	@command -v kube-linter >/dev/null 2>&1 || { echo "Install kube-linter: https://docs.kubelinter.io/"; exit 1; }
+	helm template paddock charts/paddock --namespace paddock-system | kube-linter lint --config .kube-linter.yaml -
+	kube-linter lint --config .kube-linter.yaml config/samples/
+
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
