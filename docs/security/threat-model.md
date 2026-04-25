@@ -141,7 +141,53 @@ Actors are numbered `T-1` through `T-8`. Findings cite these IDs (`Threats: T-1,
 
 ## 4. Trust boundaries
 
-(Populated in Task 5.)
+Seven boundaries are tracked. Each carries data and identity across a privilege divide. The audit's STRIDE walkthroughs (§5) iterate these in order.
+
+```
+                            ┌────────────────────────────────────────────────┐
+                            │  Cluster operator (T-7, trusted)               │
+                            └─────────────────────┬──────────────────────────┘
+                                          B-1: kubectl + RBAC
+                            ┌─────────────────────▼──────────────────────────┐
+                            │  paddock-system namespace                      │
+                            │  ┌──────────────┐    ┌──────────────────────┐  │
+                            │  │ controller   │    │ broker               │  │
+                            │  └──────┬───────┘    └──────┬───────────────┘  │
+                            └─────────┼───────────────────┼──────────────────┘
+                                      │                   │
+                              B-2: pod-spec writes        │
+                              (controller → run ns)       │
+                                      │                   │
+   ┌──────────────────┐               │                   │
+   │ Upstream Secrets │ ◄── B-6: API server reads ───────┘
+   └──────────────────┘                                   │
+                                                          │
+                            ┌─────────────────────────────▼──────────────────┐
+                            │  Run namespace                                 │
+                            │  ┌──────────────────────────────────────────┐  │
+                            │  │ Run pod                                  │  │
+                            │  │  ┌──────┐ ─── B-4: loopback/iptables ──┐ │  │
+                            │  │  │agent │      to proxy sidecar         │ │  │
+                            │  │  └───┬──┘ ─── B-3: gRPC/mTLS to broker──┘ │  │
+                            │  │      │                                    │  │
+                            │  │      └──── B-5: external internet ────────┼─┐
+                            │  └──────────────────────────────────────────┘  │ │
+                            │                                                │ │
+                            │  Workspace seed Job ─── B-7: git host ─────────┼─┤
+                            └────────────────────────────────────────────────┘ │
+                                                                               │
+                                                       External services ─────┘
+```
+
+| #   | Boundary                                | What crosses                                                | What enforces                                                            |
+|-----|-----------------------------------------|-------------------------------------------------------------|---------------------------------------------------------------------------|
+| B-1 | cluster operator ↔ paddock-system        | kubectl manifests; controller image deployment              | RBAC; PSA `restricted` on `paddock-system`                                |
+| B-2 | paddock-system ↔ run namespace           | Pod specs (controller → tenant ns); status updates back     | RBAC scoping; admission webhooks; namespace-level PSA                     |
+| B-3 | run pod ↔ broker                         | Bearer-issuance gRPC; SA-token authn; opaque bearers back   | mTLS on broker; SA-token validation; BrokerPolicy cache (10 s)            |
+| B-4 | run pod (agent) ↔ proxy sidecar          | Outbound HTTPS via loopback or iptables redirect; ALPN/CONNECT | iptables (transparent); HTTPS_PROXY env (cooperative, opt-in only)        |
+| B-5 | run pod ↔ external internet              | Allowlisted egress only; substituted-credential requests    | Proxy `ValidateEgress` per-connection; broker `SubstituteAuth` per-request|
+| B-6 | broker ↔ upstream Secrets                | API-server reads of long-lived secrets in `paddock-system`  | RBAC on broker SA; namespace boundary; etcd encryption (operator-config)  |
+| B-7 | workspace seed Job ↔ git host             | git-HTTPS; broker-leased token via proxy sidecar            | Proxy on the seed Job; broker token lease; allowlist on git host          |
 
 ## 5. STRIDE-per-boundary table
 
