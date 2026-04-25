@@ -26,6 +26,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -64,6 +65,18 @@ type WorkspaceReconciler struct {
 	BrokerEndpoint string
 	ProxyCASource  ProxyCASource
 	BrokerCASource BrokerCASource
+
+	// NetworkPolicyEnforce controls whether the controller emits a
+	// per-seed-Pod NetworkPolicy. Mirrors HarnessRunReconciler.NetworkPolicyEnforce.
+	// See finding F-45.
+	NetworkPolicyEnforce NetworkPolicyEnforceMode
+	// NetworkPolicyAutoEnabled is set at manager startup based on the
+	// CNI probe; when NetworkPolicyEnforce="auto", this gates emission.
+	NetworkPolicyAutoEnabled bool
+	// ClusterPodCIDR / ClusterServiceCIDR — same purpose as on
+	// HarnessRunReconciler. Excluded from seed-Pod NP egress. See F-19.
+	ClusterPodCIDR     string
+	ClusterServiceCIDR string
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=workspaces,verbs=get;list;watch;create;update;patch;delete
@@ -72,6 +85,7 @@ type WorkspaceReconciler struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile brings a Workspace to its desired state. See package doc and
 // docs/specs/0001-core-v0.1.md §3.2 for the state machine.
@@ -223,6 +237,11 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				brokerEndpoint: r.BrokerEndpoint,
 				brokerCASecret: workspaceBrokerCASecretName(ws.Name),
 			}
+		}
+
+		if err := r.ensureSeedNetworkPolicy(ctx, &ws); err != nil {
+			logger.Error(err, "ensuring seed NetworkPolicy failed")
+			return ctrl.Result{}, err
 		}
 
 		job, err := r.ensureSeedJob(ctx, &ws, inputs)
@@ -381,6 +400,58 @@ func (r *WorkspaceReconciler) ensureSeedJob(ctx context.Context, ws *paddockv1al
 	return &existing, nil
 }
 
+// ensureSeedNetworkPolicy creates or updates the per-seed-Pod
+// NetworkPolicy. Called only when the workspace has a seed Job and
+// NetworkPolicyEnforce gates allow it. Deleted when enforcement
+// switches off mid-workspace.
+func (r *WorkspaceReconciler) ensureSeedNetworkPolicy(ctx context.Context, ws *paddockv1alpha1.Workspace) error {
+	enforced := false
+	switch r.NetworkPolicyEnforce {
+	case NetworkPolicyEnforceOn:
+		enforced = true
+	case NetworkPolicyEnforceAuto:
+		enforced = r.NetworkPolicyAutoEnabled
+	}
+	if !enforced {
+		// Delete any stale policy if enforcement flipped off.
+		var np networkingv1.NetworkPolicy
+		key := client.ObjectKey{Namespace: ws.Namespace, Name: seedNetworkPolicyName(ws)}
+		if err := r.Get(ctx, key, &np); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		if err := r.Delete(ctx, &np); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		return nil
+	}
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     r.ClusterPodCIDR,
+		ClusterServiceCIDR: r.ClusterServiceCIDR,
+	}
+	desired := buildSeedNetworkPolicy(ws, cfg)
+	np := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      desired.Name,
+			Namespace: desired.Namespace,
+		},
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
+		if err := controllerutil.SetControllerReference(ws, np, r.Scheme); err != nil {
+			return err
+		}
+		np.Labels = desired.Labels
+		np.Spec = desired.Spec
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("upserting seed NetworkPolicy: %w", err)
+	}
+	return nil
+}
+
 // setCondition sets or replaces the condition of the given type on the
 // slice. Preserves LastTransitionTime when Status doesn't change.
 func setCondition(conds *[]metav1.Condition, c metav1.Condition) {
@@ -414,6 +485,7 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&paddockv1alpha1.Workspace{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&batchv1.Job{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Named("workspace").
 		Complete(r)
 }

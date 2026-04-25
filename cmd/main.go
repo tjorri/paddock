@@ -261,23 +261,6 @@ func main() {
 			}
 		}
 	}
-	if err := (&controller.WorkspaceReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		ProxyImage:     proxyImage,
-		BrokerEndpoint: brokerEndpoint,
-		ProxyCASource: controller.ProxyCASource{
-			Name:      proxyCAName,
-			Namespace: proxyCANamespace,
-		},
-		BrokerCASource: controller.BrokerCASource{
-			Name:      brokerCAName,
-			Namespace: brokerCANamespace,
-		},
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Workspace")
-		os.Exit(1)
-	}
 	brokerClient, err := controller.NewBrokerHTTPClient(brokerEndpoint, brokerTokenPath, brokerCAPath)
 	if err != nil {
 		setupLog.Error(err, "unable to build broker client")
@@ -333,6 +316,7 @@ func main() {
 			setupLog.Error(probeErr, "CNI probe failed; defaulting NetworkPolicy enforcement to off")
 		}
 		hrReconciler.NetworkPolicyAutoEnabled = enabled
+		npAuto = enabled
 		setupLog.Info("NetworkPolicy auto-detection complete", "enforced", enabled, "reason", reason)
 	}
 	setupLog.Info("NetworkPolicy enforcement", "mode", npEnforce,
@@ -340,6 +324,27 @@ func main() {
 			(hrReconciler.NetworkPolicyEnforce == controller.NetworkPolicyEnforceAuto && hrReconciler.NetworkPolicyAutoEnabled))
 	if err := hrReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HarnessRun")
+		os.Exit(1)
+	}
+	if err := (&controller.WorkspaceReconciler{
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		ProxyImage:     proxyImage,
+		BrokerEndpoint: brokerEndpoint,
+		ProxyCASource: controller.ProxyCASource{
+			Name:      proxyCAName,
+			Namespace: proxyCANamespace,
+		},
+		BrokerCASource: controller.BrokerCASource{
+			Name:      brokerCAName,
+			Namespace: brokerCANamespace,
+		},
+		NetworkPolicyEnforce:     npEnforce,
+		NetworkPolicyAutoEnabled: npAuto,
+		ClusterPodCIDR:           clusterPodCIDR,
+		ClusterServiceCIDR:       clusterServiceCIDR,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Workspace")
 		os.Exit(1)
 	}
 	if err := (&controller.AuditEventReconciler{
