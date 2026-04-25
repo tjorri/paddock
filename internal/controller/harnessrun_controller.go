@@ -203,10 +203,24 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Terminal phase: no further work; let TTL (if set) or explicit
-	// deletion handle cleanup.
+	// Terminal phase: short-circuit unless the Job still exists. While
+	// the Pod is draining within terminationGracePeriodSeconds, an edit
+	// to a mounted Secret / SA / Role would be read by the agent on next
+	// access; keep reconciling so the new Owns() watches can revert
+	// tampering. F-41 / Phase 2d.
 	if isTerminal(run.Status.Phase) {
-		return ctrl.Result{}, nil
+		if run.Status.JobName == "" {
+			return ctrl.Result{}, nil
+		}
+		var job batchv1.Job
+		err := r.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: run.Status.JobName}, &job)
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		// Job still exists; fall through to re-converge owned resources.
 	}
 
 	origStatus := run.Status.DeepCopy()
