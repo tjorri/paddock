@@ -142,6 +142,10 @@ type HarnessRunReconciler struct {
 	// the proxy can verify the broker's TLS. Zero Name disables the
 	// broker-CA copy regardless of BrokerEndpoint.
 	BrokerCASource BrokerCASource
+
+	// Audit emits per-decision AuditEvents. Nil-safe — when unset (e.g.
+	// in unit tests), all emits are no-ops. F-40.
+	Audit *ControllerAudit
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=harnessruns,verbs=get;list;watch;create;update;patch;delete
@@ -1233,6 +1237,12 @@ func (r *HarnessRunReconciler) commitStatus(
 	if reflect.DeepEqual(orig, &run.Status) {
 		return ctrl.Result{}, nil
 	}
+	// Lifecycle audit emission: emit run-failed (and run-completed) once
+	// when the reconcile flips the phase to a terminal state. Skipped when
+	// orig was already terminal — idempotent across requeues. F-40.
+	if !isTerminal(orig.Phase) && isTerminal(run.Status.Phase) {
+		r.emitTerminalAudit(ctx, run)
+	}
 	if err := r.Status().Update(ctx, run); err != nil {
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
@@ -1240,6 +1250,34 @@ func (r *HarnessRunReconciler) commitStatus(
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+// emitTerminalAudit emits the appropriate AuditEvents when a run transitions
+// to a terminal phase. For Failed: run-failed + run-completed{denied}.
+// For Succeeded: run-completed{granted}. For Cancelled: run-completed{warned}.
+func (r *HarnessRunReconciler) emitTerminalAudit(ctx context.Context, run *paddockv1alpha1.HarnessRun) {
+	switch run.Status.Phase {
+	case paddockv1alpha1.HarnessRunPhaseFailed:
+		reason, message := failureReasonFromConditions(run)
+		r.Audit.EmitRunFailed(ctx, run.Name, run.Namespace, reason, message)
+		r.Audit.EmitRunCompleted(ctx, run.Name, run.Namespace, paddockv1alpha1.AuditDecisionDenied, reason)
+	case paddockv1alpha1.HarnessRunPhaseSucceeded:
+		r.Audit.EmitRunCompleted(ctx, run.Name, run.Namespace, paddockv1alpha1.AuditDecisionGranted, "Succeeded")
+	case paddockv1alpha1.HarnessRunPhaseCancelled:
+		// No run-failed for Cancelled — operator action, not a policy failure.
+		r.Audit.EmitRunCompleted(ctx, run.Name, run.Namespace, paddockv1alpha1.AuditDecisionWarned, "Cancelled")
+	}
+}
+
+// failureReasonFromConditions extracts the reason and message from the
+// Completed condition set by fail(). Falls back to "Unknown" if absent.
+func failureReasonFromConditions(run *paddockv1alpha1.HarnessRun) (string, string) {
+	for _, c := range run.Status.Conditions {
+		if c.Type == paddockv1alpha1.HarnessRunConditionCompleted && c.Status == metav1.ConditionTrue {
+			return c.Reason, c.Message
+		}
+	}
+	return "Unknown", ""
 }
 
 func isTerminal(p paddockv1alpha1.HarnessRunPhase) bool {

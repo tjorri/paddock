@@ -22,12 +22,14 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/auditing"
 )
 
 var brokerpolicylog = logf.Log.WithName("brokerpolicy-resource")
@@ -38,10 +40,11 @@ var brokerpolicylog = logf.Log.WithName("brokerpolicy-resource")
 const MaxDiscoveryWindow = 7 * 24 * time.Hour
 
 // SetupBrokerPolicyWebhookWithManager registers the validating webhook
-// for BrokerPolicy with the manager.
-func SetupBrokerPolicyWebhookWithManager(mgr ctrl.Manager) error {
+// for BrokerPolicy with the manager. sink receives one AuditEvent per
+// admission decision; pass auditing.NoopSink{} in test environments.
+func SetupBrokerPolicyWebhookWithManager(mgr ctrl.Manager, sink auditing.Sink) error {
 	return ctrl.NewWebhookManagedBy(mgr, &paddockv1alpha1.BrokerPolicy{}).
-		WithValidator(&BrokerPolicyCustomValidator{}).
+		WithValidator(&BrokerPolicyCustomValidator{Sink: sink}).
 		Complete()
 }
 
@@ -61,22 +64,68 @@ func SetupBrokerPolicyWebhookWithManager(mgr ctrl.Manager) error {
 //     or cooperativeAccepted (with accepted=true and a written reason);
 //   - spec.egressDiscovery, when present, has accepted=true, a reason
 //     ≥20 chars, and expiresAt in (now, now+7d].
-type BrokerPolicyCustomValidator struct{}
+//
+// Sink receives one AuditEvent per admission decision; a nil Sink is
+// treated as a no-op (fail-open: audit unavailability never blocks admission).
+type BrokerPolicyCustomValidator struct {
+	Sink auditing.Sink
+}
 
 var _ admission.Validator[*paddockv1alpha1.BrokerPolicy] = &BrokerPolicyCustomValidator{}
 
-func (v *BrokerPolicyCustomValidator) ValidateCreate(_ context.Context, bp *paddockv1alpha1.BrokerPolicy) (admission.Warnings, error) {
+func (v *BrokerPolicyCustomValidator) ValidateCreate(ctx context.Context, bp *paddockv1alpha1.BrokerPolicy) (admission.Warnings, error) {
 	brokerpolicylog.V(1).Info("validating BrokerPolicy create", "name", bp.GetName())
-	return nil, validateBrokerPolicySpec(&bp.Spec, time.Now())
+	err := validateBrokerPolicySpec(&bp.Spec, time.Now())
+	owner := &metav1.OwnerReference{
+		APIVersion: paddockv1alpha1.GroupVersion.String(),
+		Kind:       "BrokerPolicy",
+		Name:       bp.Name,
+		UID:        bp.UID,
+	}
+	v.audit(ctx, bp, owner, err)
+	return nil, err
 }
 
-func (v *BrokerPolicyCustomValidator) ValidateUpdate(_ context.Context, _, newBP *paddockv1alpha1.BrokerPolicy) (admission.Warnings, error) {
+func (v *BrokerPolicyCustomValidator) ValidateUpdate(ctx context.Context, _, newBP *paddockv1alpha1.BrokerPolicy) (admission.Warnings, error) {
 	brokerpolicylog.V(1).Info("validating BrokerPolicy update", "name", newBP.GetName())
-	return nil, validateBrokerPolicySpec(&newBP.Spec, time.Now())
+	err := validateBrokerPolicySpec(&newBP.Spec, time.Now())
+	owner := &metav1.OwnerReference{
+		APIVersion: paddockv1alpha1.GroupVersion.String(),
+		Kind:       "BrokerPolicy",
+		Name:       newBP.Name,
+		UID:        newBP.UID,
+	}
+	v.audit(ctx, newBP, owner, err)
+	return nil, err
 }
 
 func (v *BrokerPolicyCustomValidator) ValidateDelete(_ context.Context, _ *paddockv1alpha1.BrokerPolicy) (admission.Warnings, error) {
 	return nil, nil
+}
+
+// audit emits one policy-applied (admit) or policy-rejected (reject)
+// AuditEvent. Failures are logged but never block the validator's
+// decision — admission must not depend on audit availability (F-32).
+func (v *BrokerPolicyCustomValidator) audit(ctx context.Context, bp *paddockv1alpha1.BrokerPolicy, owner *metav1.OwnerReference, err error) {
+	if v.Sink == nil {
+		return
+	}
+	in := auditing.AdmissionInput{
+		Namespace: bp.Namespace,
+		OwnerRef:  owner,
+	}
+	var ae *paddockv1alpha1.AuditEvent
+	if err == nil {
+		in.Reason = "admitted"
+		ae = auditing.NewPolicyApplied(in)
+	} else {
+		in.Reason = err.Error()
+		ae = auditing.NewPolicyRejected(in)
+	}
+	if wErr := v.Sink.Write(ctx, ae); wErr != nil {
+		brokerpolicylog.Error(wErr, "writing admission AuditEvent",
+			"name", bp.Name, "namespace", bp.Namespace)
+	}
 }
 
 func validateBrokerPolicySpec(spec *paddockv1alpha1.BrokerPolicySpec, now time.Time) error {

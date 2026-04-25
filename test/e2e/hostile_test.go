@@ -359,6 +359,224 @@ spec:
 			_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", seedNamespace, "--wait=false"))
 		})
 	})
+
+	Context("F-12 / TG-19: broker fail-closed when audit unavailable", func() {
+		It("returns 503 to controller and persists no credential when AuditEvent CRUD is denied (TG-19)", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+
+			By("creating a dedicated namespace + BrokerPolicy that grants DEMO_TOKEN")
+			tg19Namespace := "paddock-hostile-tg19"
+			// Ensure clean state: delete + wait for any prior namespace
+			// (e.g. left over from a failed previous run that successfully
+			// completed after DeferCleanup restored RBAC). Otherwise we'd
+			// observe a stale Succeeded HarnessRun on the first poll.
+			_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+				"delete", "ns", tg19Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
+			mustCreateNamespace(tg19Namespace)
+
+			tg19Policy := fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: BrokerPolicy
+metadata:
+  name: tg19-policy
+  namespace: %s
+spec:
+  appliesToTemplates: ["*"]
+  grants:
+    credentials:
+      - name: DEMO_TOKEN
+        provider:
+          kind: UserSuppliedSecret
+          secretRef:
+            name: tg19-demo
+            key: token
+          deliveryMode:
+            inContainer:
+              accepted: true
+              reason: "TG-19 adversarial fixture; tests broker fail-closed semantics"
+`, tg19Namespace)
+			mustApplyManifest(tg19Policy)
+
+			By("creating the upstream Secret the policy references")
+			tg19Secret := fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tg19-demo
+  namespace: %s
+stringData:
+  token: super-secret
+`, tg19Namespace)
+			mustApplyManifest(tg19Secret)
+
+			By("creating a HarnessTemplate that requires DEMO_TOKEN")
+			templateManifest := fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessTemplate
+metadata:
+  name: tg19-template
+  namespace: %s
+spec:
+  harness: paddock-echo
+  image: paddock-echo:dev
+  command: ["/usr/local/bin/paddock-echo"]
+  requires:
+    credentials:
+      - name: DEMO_TOKEN
+  workspace:
+    required: true
+    mountPath: /workspace
+  defaults:
+    timeout: 60s
+    resources:
+      limits:
+        cpu: 200m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+`, tg19Namespace)
+			mustApplyManifest(templateManifest)
+
+			By("patching the broker ClusterRole to remove auditevents:create")
+			// Restoration is symmetric: a JSON-patch add appends the
+			// auditevents rule back to the rules slice in DeferCleanup.
+			// Avoids the resourceVersion-conflict trap of full-resource
+			// kubectl apply during cleanup.
+			DeferCleanup(func() {
+				By("restoring the broker ClusterRole's auditevents rule")
+				_, err := utils.Run(exec.Command("kubectl",
+					"patch", "clusterrole", "paddock-broker-role",
+					"--type=json",
+					`-p=[{"op":"add","path":"/rules/-","value":{"apiGroups":["paddock.dev"],"resources":["auditevents"],"verbs":["create"]}}]`))
+				Expect(err).NotTo(HaveOccurred(), "restoring clusterrole patch")
+			})
+
+			// The ClusterRole has 4 rules in order: tokenreviews, paddock
+			// CRDs read, secrets read, auditevents create. The
+			// auditevents rule is at index 3.
+			_, err := utils.Run(exec.CommandContext(ctx, "kubectl",
+				"patch", "clusterrole", "paddock-broker-role",
+				"--type=json",
+				`-p=[{"op":"remove","path":"/rules/3"}]`))
+			Expect(err).NotTo(HaveOccurred())
+
+			By("submitting a HarnessRun that triggers broker.Issue")
+			runName := "tg19-fail-closed"
+			runManifest := fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  templateRef:
+    name: tg19-template
+  prompt: "tg-19 audit-fail probe"
+`, runName, tg19Namespace)
+			mustApplyManifest(runManifest)
+
+			By("giving the controller time to attempt issuance against the audit-broken broker")
+			// The broker returns 503 AuditUnavailable on every Issue
+			// attempt because the audit write fails (RBAC revoked). The
+			// controller treats 503 as transient — it sets BrokerReady=False
+			// with Reason=BrokerUnavailable, keeps the run in Pending, and
+			// requeues. The fail-closed guarantee under test is that the
+			// credential never lands in <run>-broker-creds, NOT that the
+			// run fails terminally. F-12.
+			Consistently(func() string {
+				return runPhase(ctx, tg19Namespace, runName)
+			}, 90*time.Second, 5*time.Second).ShouldNot(Equal("Succeeded"),
+				"run must not reach Succeeded while broker's audit-write is failing")
+
+			By("dumping run state for diagnostic context")
+			dumpRunDiagnostics(ctx, tg19Namespace, runName)
+
+			By("asserting no credential leaked into <run>-broker-creds")
+			// Two acceptable outcomes:
+			//  (a) Secret doesn't exist at all (controller never reached
+			//      the upsert step because every Issue attempt failed).
+			//  (b) Secret exists but DEMO_TOKEN data is empty.
+			// Either way no credential leaked. Failure mode would be a
+			// secret with non-empty DEMO_TOKEN bytes, which would surface
+			// as base64-encoded data in jsonpath output.
+			out, getErr := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", tg19Namespace,
+				"get", "secret", runName+"-broker-creds",
+				"-o", "jsonpath={.data.DEMO_TOKEN}"))
+			if getErr != nil {
+				// kubectl errored — most likely the secret doesn't exist.
+				// That's the strongest possible guarantee that nothing
+				// leaked. Pass.
+				Expect(strings.ToLower(out)).To(ContainSubstring("notfound"),
+					"unexpected kubectl error when checking <run>-broker-creds: %s", out)
+			} else {
+				Expect(strings.TrimSpace(out)).To(BeEmpty(),
+					"DEMO_TOKEN must not be persisted when broker fail-closes the issue path; got %q", out)
+			}
+
+			By("cleaning up TG-19 namespace")
+			_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+				"delete", "ns", tg19Namespace, "--ignore-not-found", "--wait=false"))
+		})
+	})
+
+	Context("F-32: admission-rejected HarnessRun emits policy-rejected AuditEvent", func() {
+		It("creates a policy-rejected AuditEvent with decision=denied (F-32 e2e)", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+
+			f32Namespace := "paddock-hostile-f32"
+			// Ensure clean state in case a prior run left the namespace.
+			_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+				"delete", "ns", f32Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
+			mustCreateNamespace(f32Namespace)
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+					"delete", "ns", f32Namespace, "--ignore-not-found", "--wait=false"))
+			})
+
+			invalidName := "f32-invalid-spec"
+			By("submitting a HarnessRun with an invalid spec (no prompt or promptFrom)")
+			invalidManifest := fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  templateRef:
+    name: any
+`, invalidName, f32Namespace)
+
+			cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(invalidManifest)
+			out, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred(),
+				"admission must reject HarnessRun without prompt/promptFrom; got: %s", out)
+			Expect(out).To(ContainSubstring("prompt"),
+				"rejection diagnostic must mention the missing prompt field; got: %s", out)
+
+			By("asserting a policy-rejected AuditEvent landed in the namespace")
+			Eventually(func() int {
+				out, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", f32Namespace,
+					"get", "auditevents",
+					"-l", "paddock.dev/kind=policy-rejected,paddock.dev/run="+invalidName,
+					"--no-headers",
+					"-o", "name"))
+				return strings.Count(out, "auditevent")
+			}, 30*time.Second, 2*time.Second).Should(BeNumerically(">=", 1),
+				"expected >=1 policy-rejected AuditEvent for the invalid HarnessRun")
+
+			By("verifying the AuditEvent's spec.decision is denied")
+			out, err = utils.Run(exec.CommandContext(ctx, "kubectl", "-n", f32Namespace,
+				"get", "auditevents",
+				"-l", "paddock.dev/kind=policy-rejected,paddock.dev/run="+invalidName,
+				"-o", "jsonpath={.items[0].spec.decision}"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(out)).To(Equal("denied"))
+		})
+	})
 })
 
 // mustApply applies a YAML file at the cluster scope. Fails the test on

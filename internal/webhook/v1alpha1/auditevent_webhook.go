@@ -39,7 +39,11 @@ func SetupAuditEventWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// +kubebuilder:webhook:path=/validate-paddock-dev-v1alpha1-auditevent,mutating=false,failurePolicy=fail,sideEffects=None,groups=paddock.dev,resources=auditevents,verbs=create;update,versions=v1alpha1,name=vauditevent-v1alpha1.kb.io,admissionReviewVersions=v1
+// failurePolicy=ignore on this validator only — write-once enforcement
+// is bypassed during webhook outages, but the AuditEvent emit path
+// across broker/proxy/controller must NOT depend on the controller
+// pod's webhook server being up. Phase 2c F-33; see docs/adr/0016.
+// +kubebuilder:webhook:path=/validate-paddock-dev-v1alpha1-auditevent,mutating=false,failurePolicy=ignore,sideEffects=None,groups=paddock.dev,resources=auditevents,verbs=create;update,versions=v1alpha1,name=vauditevent-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // AuditEventCustomValidator enforces the write-once invariant and
 // shape-checks the spec on create. See ADR-0016.

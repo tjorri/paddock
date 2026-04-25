@@ -15,6 +15,7 @@ COPY go.sum go.sum
 
 COPY api/ api/
 COPY cmd/broker/ cmd/broker/
+COPY internal/auditing/ internal/auditing/
 COPY internal/broker/ internal/broker/
 COPY internal/policy/ internal/policy/
 

@@ -125,22 +125,30 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// Validator errors (e.g. broker unreachable) fail closed by
 		// design — the spec's §6.4 brokerFailureMode=Closed posture.
 		s.log().Error(vErr, "validator error", "host", host, "port", port)
-		http.Error(w, "paddock-proxy: broker unreachable", http.StatusBadGateway)
-		s.recordEgress(ctx, EgressEvent{
+		if aErr := s.recordEgress(ctx, EgressEvent{
 			Host: host, Port: port,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
 			Reason:   fmt.Sprintf("validator error: %v", vErr),
-		})
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on deny path", "host", host, "port", port)
+			http.Error(w, "paddock-proxy: audit unavailable", http.StatusBadGateway)
+			return
+		}
+		http.Error(w, "paddock-proxy: broker unreachable", http.StatusBadGateway)
 		return
 	}
 	if !decision.Allowed {
 		s.log().V(1).Info("denied", "host", host, "port", port, "reason", decision.Reason)
-		http.Error(w, fmt.Sprintf("paddock-proxy: %s", decision.Reason), http.StatusForbidden)
-		s.recordEgress(ctx, EgressEvent{
+		if aErr := s.recordEgress(ctx, EgressEvent{
 			Host: host, Port: port,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
 			Reason:   decision.Reason,
-		})
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on deny path", "host", host, "port", port)
+			http.Error(w, "paddock-proxy: audit unavailable", http.StatusBadGateway)
+			return
+		}
+		http.Error(w, fmt.Sprintf("paddock-proxy: %s", decision.Reason), http.StatusForbidden)
 		return
 	}
 
@@ -212,13 +220,19 @@ func (s *Server) mitm(ctx context.Context, clientConn net.Conn, host string, por
 	if decision.DiscoveryAllow {
 		kind = paddockv1alpha1.AuditKindEgressDiscoveryAllow
 	}
-	s.recordEgress(ctx, EgressEvent{
+	if aErr := s.recordEgress(ctx, EgressEvent{
 		Host: host, Port: port,
 		Decision:      paddockv1alpha1.AuditDecisionGranted,
 		MatchedPolicy: decision.MatchedPolicy,
 		Kind:          kind,
 		Reason:        decision.Reason,
-	})
+	}); aErr != nil {
+		// Allow path proceeds despite audit failure — the connection's
+		// security posture is already enforced, and failing legit
+		// traffic on a transient etcd hiccup is worse than a missing
+		// audit record. paddock_audit_write_failures_total catches it.
+		s.log().Error(aErr, "audit write failed on allow path", "host", host, "port", port)
+	}
 
 	if decision.SubstituteAuth && s.Substituter != nil {
 		if err := handleSubstituted(ctx, clientTLS, upstreamConn, host, port, s.Substituter); err != nil {
@@ -270,11 +284,14 @@ func (s *Server) handshakeTimeout() time.Duration {
 	return 30 * time.Second
 }
 
-func (s *Server) recordEgress(ctx context.Context, e EgressEvent) {
+// recordEgress emits one EgressEvent via the configured AuditSink.
+// Returns the sink's error so the caller can fail-close on the deny
+// path. nil on success and when no sink is configured.
+func (s *Server) recordEgress(ctx context.Context, e EgressEvent) error {
 	if s.Audit == nil {
-		return
+		return nil
 	}
-	s.Audit.RecordEgress(ctx, e)
+	return s.Audit.RecordEgress(ctx, e)
 }
 
 func (s *Server) log() logr.Logger {

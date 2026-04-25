@@ -127,6 +127,7 @@ func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run 
 		return false, nil, "", "", fmt.Errorf("upserting broker-creds secret: %w", err)
 	}
 	_ = op
+	r.Audit.EmitCredentialIssuedSummary(ctx, run.Name, run.Namespace, len(credStatus))
 	return true, credStatus, "", "", nil
 }
 

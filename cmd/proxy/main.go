@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/auditing"
 	"paddock.dev/paddock/internal/proxy"
 )
 
@@ -258,10 +259,17 @@ func waitForShutdown(ctx context.Context, errCh <-chan error, grace time.Duratio
 }
 
 // buildAuditSink constructs the AuditEvent writer or returns a no-op
-// when audit is disabled / a run name is missing. M4 writes one event
-// per denied connection directly against the K8s API.
+// when audit is disabled / a run name is missing. The fallback path now
+// logs a warning so silently-disabled audit is visible in proxy startup
+// logs (F-24).
 func buildAuditSink(disabled bool, runName, runNamespace string) proxy.AuditSink {
-	if disabled || runName == "" || runNamespace == "" {
+	if disabled {
+		setupLog.Info("audit disabled by flag; proxy egress events will not be persisted")
+		return proxy.NoopAuditSink{}
+	}
+	if runName == "" || runNamespace == "" {
+		setupLog.Info("audit disabled: run name or namespace missing; proxy egress events will not be persisted",
+			"runName", runName, "runNamespace", runNamespace)
 		return proxy.NoopAuditSink{}
 	}
 	cfg, err := ctrl.GetConfig()
@@ -274,7 +282,11 @@ func buildAuditSink(disabled bool, runName, runNamespace string) proxy.AuditSink
 		setupLog.Error(err, "unable to build audit client; audit disabled")
 		return proxy.NoopAuditSink{}
 	}
-	return &proxy.ClientAuditSink{Client: c, Namespace: runNamespace, RunName: runName}
+	return &proxy.ClientAuditSink{
+		Sink:      &auditing.KubeSink{Client: c, Component: "proxy"},
+		Namespace: runNamespace,
+		RunName:   runName,
+	}
 }
 
 // buildUpstreamTLSConfig loads the system roots (or an empty pool on

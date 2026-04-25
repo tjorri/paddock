@@ -24,9 +24,10 @@ import (
 // (`kubectl get auditevents -l paddock.dev/run=…`). Keep in sync with
 // the emitter code in the broker and proxy.
 const (
-	AuditEventLabelRun      = "paddock.dev/run"
-	AuditEventLabelDecision = "paddock.dev/decision"
-	AuditEventLabelKind     = "paddock.dev/kind"
+	AuditEventLabelRun       = "paddock.dev/run"
+	AuditEventLabelDecision  = "paddock.dev/decision"
+	AuditEventLabelKind      = "paddock.dev/kind"
+	AuditEventLabelComponent = "paddock.dev/component"
 )
 
 // AuditDecision is the outcome recorded on an AuditEvent.
@@ -41,7 +42,7 @@ const (
 
 // AuditKind names the category of a recorded decision. See spec 0002 §9
 // for the full taxonomy.
-// +kubebuilder:validation:Enum=credential-issued;credential-denied;credential-renewed;credential-revoked;egress-allow;egress-block;egress-block-summary;egress-discovery-allow;policy-applied;broker-unavailable
+// +kubebuilder:validation:Enum=credential-issued;credential-denied;credential-renewed;credential-revoked;egress-allow;egress-block;egress-block-summary;egress-discovery-allow;policy-applied;policy-rejected;broker-unavailable;run-failed;run-completed;ca-projected
 type AuditKind string
 
 const (
@@ -54,7 +55,11 @@ const (
 	AuditKindEgressBlockSummary   AuditKind = "egress-block-summary"
 	AuditKindEgressDiscoveryAllow AuditKind = "egress-discovery-allow"
 	AuditKindPolicyApplied        AuditKind = "policy-applied"
+	AuditKindPolicyRejected       AuditKind = "policy-rejected"
 	AuditKindBrokerUnavailable    AuditKind = "broker-unavailable"
+	AuditKindRunFailed            AuditKind = "run-failed"
+	AuditKindRunCompleted         AuditKind = "run-completed"
+	AuditKindCAProjected          AuditKind = "ca-projected"
 )
 
 // AuditEventSpec records one security-relevant decision. Write-once:

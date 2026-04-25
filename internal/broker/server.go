@@ -127,12 +127,15 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 
 	result, grant, audit, err := s.issue(ctx, runNamespace, runName, req)
 	if err != nil {
-		// Best-effort audit write for denials; any failure here is logged
-		// but not surfaced to the caller (the credential denial is the
-		// primary signal).
+		// Deny path: write audit BEFORE returning the error to the
+		// caller. If the audit write itself fails, return 503 so the
+		// caller retries; the deny re-evaluates on retry. F-12.
 		if audit != nil {
 			if wErr := s.Audit.CredentialDenied(ctx, *audit); wErr != nil {
 				logger.Error(wErr, "writing denial AuditEvent", "run", runName)
+				writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+					"paddock-broker: audit unavailable, please retry")
+				return
 			}
 		}
 		var appErr *applicationError
@@ -144,9 +147,15 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Issuance path: write audit BEFORE writing the JSON response. If
+	// the audit write fails the credential has been minted but not yet
+	// returned; the caller sees 503 and retries. F-12.
 	if audit != nil {
 		if wErr := s.Audit.CredentialIssued(ctx, *audit); wErr != nil {
 			logger.Error(wErr, "writing issuance AuditEvent", "run", runName)
+			writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+				"paddock-broker: audit unavailable, please retry")
+			return
 		}
 	}
 
@@ -220,12 +229,24 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 				},
 				&applicationError{status: http.StatusNotFound, code: "RunNotFound", message: err.Error()}
 		}
-		return providers.IssueResult{}, nil, nil, fmt.Errorf("loading run: %w", err)
+		return providers.IssueResult{}, nil, &CredentialAudit{
+				RunName:        runName,
+				Namespace:      namespace,
+				CredentialName: req.Name,
+				Reason:         fmt.Sprintf("broker infrastructure error: loading run: %v", err),
+			},
+			fmt.Errorf("loading run: %w", err)
 	}
 
 	spec, err := resolveTemplateSpec(ctx, s.Client, namespace, run.Spec.TemplateRef)
 	if err != nil {
-		return providers.IssueResult{}, nil, nil, fmt.Errorf("resolving template: %w", err)
+		return providers.IssueResult{}, nil, &CredentialAudit{
+				RunName:        runName,
+				Namespace:      namespace,
+				CredentialName: req.Name,
+				Reason:         fmt.Sprintf("broker infrastructure error: resolving template: %v", err),
+			},
+			fmt.Errorf("resolving template: %w", err)
 	}
 	if !hasRequirement(spec.Requires.Credentials, req.Name) {
 		return providers.IssueResult{}, nil, &CredentialAudit{
@@ -244,7 +265,13 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 	// Intersect template.requires against in-namespace BrokerPolicies.
 	grant, matchedPolicy, policyName, err := matchPolicyGrant(ctx, s.Client, namespace, run.Spec.TemplateRef.Name, req.Name)
 	if err != nil {
-		return providers.IssueResult{}, nil, nil, fmt.Errorf("listing BrokerPolicies: %w", err)
+		return providers.IssueResult{}, nil, &CredentialAudit{
+				RunName:        runName,
+				Namespace:      namespace,
+				CredentialName: req.Name,
+				Reason:         fmt.Sprintf("broker infrastructure error: listing BrokerPolicies: %v", err),
+			},
+			fmt.Errorf("listing BrokerPolicies: %w", err)
 	}
 	if grant == nil {
 		return providers.IssueResult{}, nil, &CredentialAudit{
@@ -467,7 +494,33 @@ func (s *Server) handleSubstituteAuth(w http.ResponseWriter, r *http.Request) {
 			}
 			if err != nil {
 				logger.Info("SubstituteAuth denied", "run", runName, "provider", prov.Name(), "err", err)
+				denyAudit := CredentialAudit{
+					RunName:        runName,
+					Namespace:      runNamespace,
+					CredentialName: pReq.Host,
+					Provider:       prov.Name(),
+					Reason:         "substitute failed: " + err.Error(),
+				}
+				if wErr := s.Audit.CredentialDenied(ctx, denyAudit); wErr != nil {
+					logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
+					writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+						"paddock-broker: audit unavailable, please retry")
+					return
+				}
 				writeError(w, http.StatusForbidden, "SubstituteFailed", err.Error())
+				return
+			}
+			grantAudit := CredentialAudit{
+				RunName:        runName,
+				Namespace:      runNamespace,
+				CredentialName: pReq.Host,
+				Provider:       prov.Name(),
+				Reason:         "substituted upstream credential",
+			}
+			if wErr := s.Audit.CredentialIssued(ctx, grantAudit); wErr != nil {
+				logger.Error(wErr, "writing substitute-auth issuance AuditEvent", "run", runName)
+				writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+					"paddock-broker: audit unavailable, please retry")
 				return
 			}
 			writeJSON(w, http.StatusOK, brokerapi.SubstituteAuthResponse{
@@ -476,6 +529,18 @@ func (s *Server) handleSubstituteAuth(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+	}
+	bearerUnknownAudit := CredentialAudit{
+		RunName:        runName,
+		Namespace:      runNamespace,
+		CredentialName: req.Host,
+		Reason:         "no registered provider owns the supplied bearer",
+	}
+	if wErr := s.Audit.CredentialDenied(ctx, bearerUnknownAudit); wErr != nil {
+		logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
+		writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+			"paddock-broker: audit unavailable, please retry")
+		return
 	}
 	writeError(w, http.StatusNotFound, "BearerUnknown",
 		"no registered provider owns the supplied bearer")

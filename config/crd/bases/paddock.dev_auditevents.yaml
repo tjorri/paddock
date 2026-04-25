@@ -129,7 +129,11 @@ spec:
                 - egress-block-summary
                 - egress-discovery-allow
                 - policy-applied
+                - policy-rejected
                 - broker-unavailable
+                - run-failed
+                - run-completed
+                - ca-projected
                 type: string
               matchedPolicy:
                 description: |-

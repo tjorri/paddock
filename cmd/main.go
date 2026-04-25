@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/auditing"
 	"paddock.dev/paddock/internal/controller"
 	webhookv1alpha1 "paddock.dev/paddock/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
@@ -247,15 +248,20 @@ func main() {
 	// ENABLE_WEBHOOKS=false lets envtest-style runs skip webhook
 	// registration when they're driving reconcilers without a cert dir.
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		webhookSink := &auditing.KubeSink{Client: mgr.GetClient(), Component: "webhook"}
 		webhooks := []struct {
 			name  string
 			setup func(ctrl.Manager) error
 		}{
 			{"HarnessTemplate", webhookv1alpha1.SetupHarnessTemplateWebhookWithManager},
 			{"ClusterHarnessTemplate", webhookv1alpha1.SetupClusterHarnessTemplateWebhookWithManager},
-			{"HarnessRun", webhookv1alpha1.SetupHarnessRunWebhookWithManager},
+			{"HarnessRun", func(m ctrl.Manager) error {
+				return webhookv1alpha1.SetupHarnessRunWebhookWithManager(m, webhookSink)
+			}},
 			{"Workspace", webhookv1alpha1.SetupWorkspaceWebhookWithManager},
-			{"BrokerPolicy", webhookv1alpha1.SetupBrokerPolicyWebhookWithManager},
+			{"BrokerPolicy", func(m ctrl.Manager) error {
+				return webhookv1alpha1.SetupBrokerPolicyWebhookWithManager(m, webhookSink)
+			}},
 			{"AuditEvent", webhookv1alpha1.SetupAuditEventWebhookWithManager},
 		}
 		for _, w := range webhooks {
@@ -301,6 +307,9 @@ func main() {
 		BrokerCASource: controller.BrokerCASource{
 			Name:      brokerCAName,
 			Namespace: brokerCANamespace,
+		},
+		Audit: &controller.ControllerAudit{
+			Sink: &auditing.KubeSink{Client: mgr.GetClient(), Component: "controller"},
 		},
 	}
 	if brokerClient != nil {

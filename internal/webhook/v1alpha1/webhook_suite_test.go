@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/auditing"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -115,13 +116,13 @@ var _ = BeforeSuite(func() {
 	err = SetupClusterHarnessTemplateWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupHarnessRunWebhookWithManager(mgr)
+	err = SetupHarnessRunWebhookWithManager(mgr, auditing.NoopSink{})
 	Expect(err).NotTo(HaveOccurred())
 
 	err = SetupWorkspaceWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupBrokerPolicyWebhookWithManager(mgr)
+	err = SetupBrokerPolicyWebhookWithManager(mgr, auditing.NoopSink{})
 	Expect(err).NotTo(HaveOccurred())
 
 	err = SetupAuditEventWebhookWithManager(mgr)

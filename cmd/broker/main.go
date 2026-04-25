@@ -42,6 +42,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/auditing"
 	"paddock.dev/paddock/internal/broker"
 	"paddock.dev/paddock/internal/broker/providers"
 )
@@ -155,7 +156,9 @@ func main() {
 		Client:    cachedClient,
 		Auth:      &broker.Authenticator{Client: kclient},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Client: cachedClient},
+		Audit: &broker.AuditWriter{
+			Sink: &auditing.KubeSink{Client: cachedClient, Component: "broker"},
+		},
 	}
 
 	mux := http.NewServeMux()
