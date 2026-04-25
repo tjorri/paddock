@@ -117,7 +117,9 @@ var _ = Describe("HarnessRun controller", func() {
 			for _, v := range job.Spec.Template.Spec.Volumes {
 				volNames = append(volNames, v.Name)
 			}
-			Expect(volNames).To(ConsistOf(sharedVolumeName, promptVolumeName, workspaceVolumeName))
+			// paddock-sa-token is now always present (F-38): sidecars get
+			// the explicit projected SA token; the agent container does not.
+			Expect(volNames).To(ConsistOf(sharedVolumeName, promptVolumeName, workspaceVolumeName, paddockSAVolumeName))
 
 			By("PADDOCK_* env vars are wired")
 			envByName := map[string]string{}

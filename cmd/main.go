@@ -97,6 +97,9 @@ func main() {
 	var networkPolicyEnforce string
 	var brokerCAName string
 	var brokerCANamespace string
+	var brokerNamespace string
+	var clusterPodCIDR string
+	var clusterServiceCIDR string
 	flag.StringVar(&collectorImage, "collector-image", controller.DefaultCollectorImage,
 		"Image for the generic collector sidecar injected into every HarnessRun Pod.")
 	flag.IntVar(&ringMaxEvents, "recent-events-cap", 50,
@@ -106,6 +109,9 @@ func main() {
 	flag.StringVar(&brokerEndpoint, "broker-endpoint", "",
 		"HTTPS URL of the paddock-broker service, e.g. https://paddock-broker.paddock-system.svc:8443. "+
 			"Empty disables broker integration — runs against templates declaring spec.requires will fail with BrokerReady=False.")
+	flag.StringVar(&brokerNamespace, "broker-namespace", "paddock-system",
+		"Namespace where the broker is deployed; used to construct the per-run NetworkPolicy "+
+			"broker-egress rule when --networkpolicy-enforce=on. Default matches the chart.")
 	flag.StringVar(&brokerTokenPath, "broker-token-path", "/var/run/secrets/paddock-broker/token",
 		"Path to a ProjectedServiceAccountToken with audience=paddock-broker.")
 	flag.StringVar(&brokerCAPath, "broker-ca-path", "/etc/paddock-broker/ca/ca.crt",
@@ -133,6 +139,12 @@ func main() {
 			"'off' never does; 'auto' probes kube-system for a known NP-capable CNI "+
 			"(Calico / Cilium / Weave / kube-router / Antrea) and turns on when one is found. "+
 			"Kind/kindnet installs resolve to off.")
+	flag.StringVar(&clusterPodCIDR, "cluster-pod-cidr", "10.244.0.0/16",
+		"Cluster pod CIDR; excluded from per-run NetworkPolicy public-internet egress. "+
+			"Default matches Kind/kindnet; managed cluster operators must set this to their cluster's pod CIDR.")
+	flag.StringVar(&clusterServiceCIDR, "cluster-service-cidr", "10.96.0.0/12",
+		"Cluster service CIDR; excluded from per-run NetworkPolicy public-internet egress. "+
+			"Default matches Kind; managed cluster operators must set this to their cluster's service CIDR.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -253,23 +265,6 @@ func main() {
 			}
 		}
 	}
-	if err := (&controller.WorkspaceReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		ProxyImage:     proxyImage,
-		BrokerEndpoint: brokerEndpoint,
-		ProxyCASource: controller.ProxyCASource{
-			Name:      proxyCAName,
-			Namespace: proxyCANamespace,
-		},
-		BrokerCASource: controller.BrokerCASource{
-			Name:      brokerCAName,
-			Namespace: brokerCANamespace,
-		},
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Workspace")
-		os.Exit(1)
-	}
 	brokerClient, err := controller.NewBrokerHTTPClient(brokerEndpoint, brokerTokenPath, brokerCAPath)
 	if err != nil {
 		setupLog.Error(err, "unable to build broker client")
@@ -295,7 +290,10 @@ func main() {
 		IPTablesInitImage:        iptablesInitImage,
 		NetworkPolicyEnforce:     npEnforce,
 		NetworkPolicyAutoEnabled: npAuto,
+		ClusterPodCIDR:           clusterPodCIDR,
+		ClusterServiceCIDR:       clusterServiceCIDR,
 		BrokerEndpoint:           brokerEndpoint,
+		BrokerNamespace:          brokerNamespace,
 		ProxyCASource: controller.ProxyCASource{
 			Name:      proxyCAName,
 			Namespace: proxyCANamespace,
@@ -323,6 +321,7 @@ func main() {
 			setupLog.Error(probeErr, "CNI probe failed; defaulting NetworkPolicy enforcement to off")
 		}
 		hrReconciler.NetworkPolicyAutoEnabled = enabled
+		npAuto = enabled
 		setupLog.Info("NetworkPolicy auto-detection complete", "enforced", enabled, "reason", reason)
 	}
 	setupLog.Info("NetworkPolicy enforcement", "mode", npEnforce,
@@ -330,6 +329,28 @@ func main() {
 			(hrReconciler.NetworkPolicyEnforce == controller.NetworkPolicyEnforceAuto && hrReconciler.NetworkPolicyAutoEnabled))
 	if err := hrReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HarnessRun")
+		os.Exit(1)
+	}
+	if err := (&controller.WorkspaceReconciler{
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		ProxyImage:     proxyImage,
+		BrokerEndpoint: brokerEndpoint,
+		ProxyCASource: controller.ProxyCASource{
+			Name:      proxyCAName,
+			Namespace: proxyCANamespace,
+		},
+		BrokerCASource: controller.BrokerCASource{
+			Name:      brokerCAName,
+			Namespace: brokerCANamespace,
+		},
+		NetworkPolicyEnforce:     npEnforce,
+		NetworkPolicyAutoEnabled: npAuto,
+		ClusterPodCIDR:           clusterPodCIDR,
+		ClusterServiceCIDR:       clusterServiceCIDR,
+		BrokerNamespace:          brokerNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Workspace")
 		os.Exit(1)
 	}
 	if err := (&controller.AuditEventReconciler{

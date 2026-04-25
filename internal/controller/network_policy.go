@@ -47,33 +47,163 @@ func runNetworkPolicyName(runName string) string {
 	return runName + "-egress"
 }
 
+// networkPolicyConfig carries the cluster-specific values needed to
+// shape per-run NetworkPolicy egress. Cluster pod/service CIDRs are
+// excluded from the public-internet allow rules so a hostile agent
+// in cooperative mode cannot bypass HTTPS_PROXY to reach in-cluster
+// targets, the kube API server, the broker, or co-tenant pods.
+type networkPolicyConfig struct {
+	// ClusterPodCIDR is the cluster's pod CIDR (e.g. 10.244.0.0/16).
+	// Empty string is permitted (the exclude list just won't include
+	// this entry); operators in clusters with non-default CIDRs should
+	// set the manager flag.
+	ClusterPodCIDR string
+	// ClusterServiceCIDR is the cluster's service CIDR.
+	ClusterServiceCIDR string
+	// BrokerNamespace is the namespace where the broker is deployed
+	// (default `paddock-system`). Used to construct the broker egress
+	// allow rule for run-pod and seed-pod NetworkPolicies — without
+	// this rule, in-cluster broker calls would be blocked by the
+	// cluster-CIDR exclusion in F-19/F-45's egress rules.
+	BrokerNamespace string
+	// BrokerPort is the broker's TLS service port (default 8443).
+	BrokerPort int32
+}
+
+// rfc1918AndLinkLocalCIDRs are the always-excluded ranges. RFC1918
+// covers private networks; 169.254.0.0/16 covers link-local including
+// the cloud metadata service at 169.254.169.254.
+var rfc1918AndLinkLocalCIDRs = []string{
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"169.254.0.0/16",
+}
+
+// buildExceptCIDRs returns the deny-list to set on `to.ipBlock.except`
+// for run-pod public-internet egress rules. Always-excluded private
+// + link-local ranges plus any configured cluster CIDRs that aren't
+// already covered.
+func buildExceptCIDRs(cfg networkPolicyConfig) []string {
+	exc := make([]string, 0, len(rfc1918AndLinkLocalCIDRs)+2)
+	exc = append(exc, rfc1918AndLinkLocalCIDRs...)
+	if cfg.ClusterPodCIDR != "" {
+		exc = append(exc, cfg.ClusterPodCIDR)
+	}
+	if cfg.ClusterServiceCIDR != "" {
+		exc = append(exc, cfg.ClusterServiceCIDR)
+	}
+	return exc
+}
+
+// buildBrokerEgressRule returns the egress rule that allows traffic
+// from the run/seed pod to the broker. Without this rule, NP
+// enforcement combined with the cluster-CIDR exclusion (F-19/F-45)
+// would block the proxy sidecar's broker calls.
+//
+// Empty BrokerNamespace returns nil — operators without an in-cluster
+// broker (or without a configured namespace) get no broker rule.
+func buildBrokerEgressRule(cfg networkPolicyConfig) *networkingv1.NetworkPolicyEgressRule {
+	if cfg.BrokerNamespace == "" {
+		return nil
+	}
+	tcp := corev1.ProtocolTCP
+	port := cfg.BrokerPort
+	if port == 0 {
+		port = 8443
+	}
+	brokerPort := intstr.FromInt32(port)
+	return &networkingv1.NetworkPolicyEgressRule{
+		To: []networkingv1.NetworkPolicyPeer{
+			{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"kubernetes.io/metadata.name": cfg.BrokerNamespace,
+					},
+				},
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app.kubernetes.io/component": "broker",
+						"app.kubernetes.io/name":      "paddock",
+					},
+				},
+			},
+		},
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Protocol: &tcp, Port: &brokerPort},
+		},
+	}
+}
+
 // buildRunNetworkPolicy renders the defence-in-depth NetworkPolicy
 // that rides alongside the proxy sidecar. The policy targets the run's
 // Pod by label, permits:
 //
 //   - DNS (UDP+TCP 53) to kube-dns in kube-system — name resolution has
 //     to work or the proxy cannot dial upstreams;
-//   - TCP 443 and TCP 80 to any destination — the proxy sidecar's
-//     outbound leg is the thing that actually connects, and hostname-
-//     level policy is enforced by the proxy (M4+). The NetworkPolicy
-//     narrows by port only, which is defence-in-depth against an
-//     iptables-init bypass that somehow lands raw TCP.
-//   - No other egress. Ingress is left permissive (Kubernetes default
-//     allows everything not explicitly blocked); no one targets run
-//     Pods on their cluster IP, so this is functionally a deny.
+//   - TCP 443 and TCP 80 to public-internet destinations excluding
+//     RFC1918, link-local, and the cluster's pod/service CIDRs. The
+//     proxy sidecar's outbound to public hosts continues to work; an
+//     agent that bypasses HTTPS_PROXY in cooperative mode cannot
+//     reach in-cluster targets, the kube API server, the broker, or
+//     the cloud metadata service. See finding F-19.
+//   - No other egress. Ingress is left permissive.
 //
 // The host-level allowlist the proxy enforces (from BrokerPolicy grants)
-// could in principle be rendered into the NetworkPolicy as ipBlock
-// rules, but DNS-driven upstream IPs rotate and re-rendering on
-// resolution is a bigger engineering lift. Port-level is the right
-// trade-off for v0.3.
-func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun) *networkingv1.NetworkPolicy {
+// is not rendered into the NetworkPolicy as ipBlock rules — DNS-driven
+// upstream IPs rotate. Per-FQDN egress is a CNI-specific feature
+// (Cilium etc.) and is Phase 2b territory.
+func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyConfig) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 	udp := corev1.ProtocolUDP
 	dnsPort := intstr.FromInt32(53)
 	httpsPort := intstr.FromInt32(443)
 	httpPort := intstr.FromInt32(80)
 	openCIDR := "0.0.0.0/0"
+	exceptCIDRs := buildExceptCIDRs(cfg)
+
+	rules := []networkingv1.NetworkPolicyEgressRule{
+		{
+			To: []networkingv1.NetworkPolicyPeer{
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"kubernetes.io/metadata.name": "kube-system",
+						},
+					},
+					PodSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"k8s-app": "kube-dns"},
+					},
+				},
+			},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &udp, Port: &dnsPort},
+				{Protocol: &tcp, Port: &dnsPort},
+			},
+		},
+		// TCP 443 — public-internet egress, excluding private +
+		// link-local + cluster CIDRs (F-19).
+		{
+			To: []networkingv1.NetworkPolicyPeer{
+				{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR, Except: exceptCIDRs}},
+			},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: &httpsPort},
+			},
+		},
+		// TCP 80 — same exclusions as 443.
+		{
+			To: []networkingv1.NetworkPolicyPeer{
+				{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR, Except: exceptCIDRs}},
+			},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: &httpPort},
+			},
+		},
+	}
+	if brokerRule := buildBrokerEgressRule(cfg); brokerRule != nil {
+		rules = append(rules, *brokerRule)
+	}
 
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -92,64 +222,24 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun) *networkingv1.Networ
 			PolicyTypes: []networkingv1.PolicyType{
 				networkingv1.PolicyTypeEgress,
 			},
-			Egress: []networkingv1.NetworkPolicyEgressRule{
-				{
-					To: []networkingv1.NetworkPolicyPeer{
-						{
-							NamespaceSelector: &metav1.LabelSelector{
-								MatchLabels: map[string]string{
-									"kubernetes.io/metadata.name": "kube-system",
-								},
-							},
-							PodSelector: &metav1.LabelSelector{
-								MatchLabels: map[string]string{"k8s-app": "kube-dns"},
-							},
-						},
-					},
-					Ports: []networkingv1.NetworkPolicyPort{
-						{Protocol: &udp, Port: &dnsPort},
-						{Protocol: &tcp, Port: &dnsPort},
-					},
-				},
-				// TCP 443 — where the proxy actually dials upstream,
-				// and where every supported upstream (Anthropic, GitHub
-				// Apps, OpenAI) terminates TLS.
-				{
-					To: []networkingv1.NetworkPolicyPeer{
-						{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR}},
-					},
-					Ports: []networkingv1.NetworkPolicyPort{
-						{Protocol: &tcp, Port: &httpsPort},
-					},
-				},
-				// TCP 80 — plain HTTP for git-clone fallbacks and the
-				// rare upstream that still redirects 80→443 upstream.
-				{
-					To: []networkingv1.NetworkPolicyPeer{
-						{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR}},
-					},
-					Ports: []networkingv1.NetworkPolicyPort{
-						{Protocol: &tcp, Port: &httpPort},
-					},
-				},
-			},
+			Egress: rules,
 		},
 	}
 }
 
 // ensureRunNetworkPolicy creates or updates the per-run NetworkPolicy
 // when NetworkPolicyEnforce is "on" (or resolved-auto=on). Deletes any
-// stale policy when enforcement flips off mid-run — the alternative
-// leaves runs stuck after a chart downgrade.
+// stale policy when enforcement flips off mid-run.
 func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
 	if !r.networkPolicyEnforced() {
 		return r.deleteRunNetworkPolicy(ctx, run)
 	}
-	desired := buildRunNetworkPolicy(run)
-	// Avoid hitting the API server for the CreateOrUpdate path when
-	// we already have something with the correct shape. The spec we
-	// produce is deterministic from run.Name so unchanged reconciles
-	// no-op on the update.
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     r.ClusterPodCIDR,
+		ClusterServiceCIDR: r.ClusterServiceCIDR,
+		BrokerNamespace:    r.BrokerNamespace,
+	}
+	desired := buildRunNetworkPolicy(run, cfg)
 	np := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      desired.Name,

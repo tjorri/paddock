@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
@@ -102,6 +103,19 @@ const (
 	// Secret), which is what SSL_CERT_FILE and friends want.
 	agentCABundleMountPath = "/etc/ssl/certs/paddock-proxy-ca.crt"
 	agentCABundleSubPath   = "ca.crt"
+
+	// paddockSAVolumeName is the explicit projected SA-token mount
+	// added to sidecars only. Pod-level AutomountServiceAccountToken
+	// is set to false; sidecars that need API access (collector for
+	// AuditEvent emission, proxy for broker authentication) get the
+	// token via this explicit volume. The agent container does not
+	// mount this — F-38: prevents the agent from forging AuditEvents
+	// or making other unauthorised API calls.
+	paddockSAVolumeName = "paddock-sa-token"
+	// paddockSAMountPath mirrors the standard SA-token projection path
+	// so client libraries that auto-discover (kubernetes.io/serviceaccount)
+	// continue to work in the sidecars.
+	paddockSAMountPath = "/var/run/secrets/kubernetes.io/serviceaccount"
 )
 
 // DefaultCollectorImage is used when the reconciler does not override
@@ -242,8 +256,14 @@ func buildPodSpec(
 		initContainers = append(initContainers, buildProxyContainer(run, in))
 	}
 
+	automount := false
 	return corev1.PodSpec{
-		ServiceAccountName:            in.serviceAccount,
+		ServiceAccountName: in.serviceAccount,
+		// AutomountServiceAccountToken: false at pod level prevents the
+		// agent container from receiving an SA token. Sidecars that
+		// need API access mount the token explicitly via the
+		// paddock-sa-token projected volume. See F-38.
+		AutomountServiceAccountToken:  &automount,
 		RestartPolicy:                 corev1.RestartPolicyNever,
 		TerminationGracePeriodSeconds: &grace,
 		InitContainers:                initContainers,
@@ -320,6 +340,7 @@ func buildAdapterContainer(template *resolvedTemplate) corev1.Container {
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: sharedVolumeName, MountPath: sharedMountPath},
+			{Name: paddockSAVolumeName, MountPath: paddockSAMountPath, ReadOnly: true},
 		},
 	}
 	if template.Spec.EventAdapter.ImagePullPolicy != "" {
@@ -360,6 +381,7 @@ func buildCollectorContainer(
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: sharedVolumeName, MountPath: sharedMountPath},
 			{Name: workspaceVolumeName, MountPath: mountPath},
+			{Name: paddockSAVolumeName, MountPath: paddockSAMountPath, ReadOnly: true},
 		},
 	}
 }
@@ -407,6 +429,47 @@ func buildPodVolumes(in podSpecInputs) []corev1.Volume {
 			},
 		})
 	}
+	// paddock-sa-token: explicit projected SA-token volume mounted on
+	// sidecars only (collector, adapter, proxy). Pod-level
+	// AutomountServiceAccountToken=false means the agent container
+	// gets no token; sidecars that need API access mount this volume
+	// explicitly. Mirrors the standard Kubernetes SA-token projection
+	// shape (token + ca.crt + namespace). See F-38.
+	vols = append(vols, corev1.Volume{
+		Name: paddockSAVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{
+				Sources: []corev1.VolumeProjection{
+					{
+						ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+							Path:              "token",
+							ExpirationSeconds: ptr.To[int64](3600),
+						},
+					},
+					{
+						ConfigMap: &corev1.ConfigMapProjection{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "kube-root-ca.crt"},
+							Items: []corev1.KeyToPath{
+								{Key: "ca.crt", Path: "ca.crt"},
+							},
+						},
+					},
+					{
+						DownwardAPI: &corev1.DownwardAPIProjection{
+							Items: []corev1.DownwardAPIVolumeFile{
+								{
+									Path: "namespace",
+									FieldRef: &corev1.ObjectFieldSelector{
+										FieldPath: "metadata.namespace",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
 	if proxyEnabled(in) && in.brokerEndpoint != "" {
 		// ProjectedServiceAccountToken gives the proxy a short-lived
 		// credential scoped specifically to the broker. The kubelet
@@ -484,6 +547,7 @@ func buildProxyContainer(run *paddockv1alpha1.HarnessRun, in podSpecInputs) core
 	}
 	mounts := []corev1.VolumeMount{
 		{Name: proxyCAVolumeName, MountPath: proxyCAMountPath, ReadOnly: true},
+		{Name: paddockSAVolumeName, MountPath: paddockSAMountPath, ReadOnly: true},
 	}
 	if in.brokerEndpoint != "" {
 		mounts = append(mounts,

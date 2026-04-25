@@ -16,7 +16,80 @@ limitations under the License.
 
 package controller
 
-import "testing"
+import (
+	"testing"
+
+	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+)
+
+func TestBuildSeedNetworkPolicy_Shape(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+	}
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     "10.244.0.0/16",
+		ClusterServiceCIDR: "10.96.0.0/12",
+	}
+	np := buildSeedNetworkPolicy(ws, cfg)
+
+	// Expected name and namespace.
+	if np.Name != seedNetworkPolicyName(ws) {
+		t.Errorf("name = %q, want %q", np.Name, seedNetworkPolicyName(ws))
+	}
+	if np.Namespace != ws.Namespace {
+		t.Errorf("namespace = %q, want %q", np.Namespace, ws.Namespace)
+	}
+
+	// Selector matches the seed Pod's labels (uses workspace label).
+	if np.Spec.PodSelector.MatchLabels["paddock.dev/workspace"] != "ws-1" {
+		t.Errorf("podSelector = %+v, want paddock.dev/workspace=ws-1",
+			np.Spec.PodSelector.MatchLabels)
+	}
+
+	// Egress-only.
+	if len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != networkingv1.PolicyTypeEgress {
+		t.Errorf("policyTypes = %v, want [Egress]", np.Spec.PolicyTypes)
+	}
+
+	// Three egress rules, same shape as run-pod NP: kube-dns, TCP 443
+	// excluding cluster CIDRs, TCP 80 excluding cluster CIDRs.
+	if len(np.Spec.Egress) != 3 {
+		t.Fatalf("egress rules = %d, want 3", len(np.Spec.Egress))
+	}
+
+	// Both public-internet rules must have non-empty Except list.
+	for i, rule := range np.Spec.Egress[1:] {
+		if len(rule.To) != 1 || rule.To[0].IPBlock == nil {
+			t.Errorf("rule[%d] expected ipBlock; got %+v", i+1, rule.To)
+			continue
+		}
+		if rule.To[0].IPBlock.CIDR != "0.0.0.0/0" {
+			t.Errorf("rule[%d] CIDR = %q, want 0.0.0.0/0", i+1, rule.To[0].IPBlock.CIDR)
+		}
+		if len(rule.To[0].IPBlock.Except) == 0 {
+			t.Errorf("rule[%d] except is empty; expected RFC1918 + cluster CIDRs", i+1)
+		}
+	}
+}
+
+func TestBuildSeedNetworkPolicy_BrokerEgressRule(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+	}
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     "10.244.0.0/16",
+		ClusterServiceCIDR: "10.96.0.0/12",
+		BrokerNamespace:    "paddock-system",
+	}
+	np := buildSeedNetworkPolicy(ws, cfg)
+
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + broker)", len(np.Spec.Egress))
+	}
+}
 
 func TestIsSSHURL(t *testing.T) {
 	cases := []struct {
