@@ -34,6 +34,11 @@ func (c *capturedSink) Write(_ context.Context, ae *paddockv1alpha1.AuditEvent) 
 	return c.err
 }
 
+// events returns a snapshot of captured AuditEvents.
+func (c *capturedSink) events() []*paddockv1alpha1.AuditEvent {
+	return c.all
+}
+
 func TestControllerAudit_EmitCredentialIssuedSummary(t *testing.T) {
 	rec := &capturedSink{}
 	a := &ControllerAudit{Sink: rec}
@@ -76,5 +81,22 @@ func TestControllerAudit_RunFailedAndCompleted(t *testing.T) {
 	if rec.all[0].Spec.Kind != paddockv1alpha1.AuditKindRunFailed ||
 		rec.all[1].Spec.Kind != paddockv1alpha1.AuditKindRunCompleted {
 		t.Errorf("kinds = %q,%q", rec.all[0].Spec.Kind, rec.all[1].Spec.Kind)
+	}
+}
+
+func TestControllerAudit_EmitNetworkPolicyEnforcementWithdrawn(t *testing.T) {
+	rec := &capturedSink{}
+	a := &ControllerAudit{Sink: rec}
+	a.EmitNetworkPolicyEnforcementWithdrawn(context.Background(), "hr-1", "team-a",
+		"per-run NetworkPolicy hr-1-egress was missing on reconcile; re-created")
+	if len(rec.all) != 1 {
+		t.Fatalf("got %d events, want 1", len(rec.all))
+	}
+	ae := rec.all[0]
+	if ae.Spec.Kind != paddockv1alpha1.AuditKindNetworkPolicyEnforcementWithdrawn {
+		t.Errorf("kind = %q", ae.Spec.Kind)
+	}
+	if ae.Spec.Decision != paddockv1alpha1.AuditDecisionWarned {
+		t.Errorf("decision = %q, want warned", ae.Spec.Decision)
 	}
 }

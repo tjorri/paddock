@@ -285,7 +285,7 @@ func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *
 			Namespace: desired.Namespace,
 		},
 	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
 		if err := controllerutil.SetControllerReference(run, np, r.Scheme); err != nil {
 			return err
 		}
@@ -295,6 +295,14 @@ func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *
 	})
 	if err != nil {
 		return fmt.Errorf("upserting run NetworkPolicy: %w", err)
+	}
+	// F-43: a Create on a run that already has Status set (i.e. has been
+	// reconciled before) means the NP was deleted out from under us
+	// (typically by an operator). The CreateOrUpdate call already
+	// re-created it — emit an audit so operators see the withdrawal.
+	if op == controllerutil.OperationResultCreated && run.Status.ObservedGeneration > 0 {
+		r.Audit.EmitNetworkPolicyEnforcementWithdrawn(ctx, run.Name, run.Namespace,
+			fmt.Sprintf("per-run NetworkPolicy %s was missing on reconcile; re-created", desired.Name))
 	}
 	return nil
 }

@@ -90,3 +90,16 @@ func (c *ControllerAudit) EmitCAProjected(ctx context.Context, runName, namespac
 		Reason:     "controller projected " + secretName,
 	}), "ca-projected")
 }
+
+// EmitNetworkPolicyEnforcementWithdrawn is called when the reconciler
+// observes that a run admitted with enforcement=true no longer has its
+// NetworkPolicy (e.g., operator deleted it via kubectl). The reconciler
+// re-creates the NP on the same pass; this audit records the
+// withdrawal attempt for the operator's trail. F-43 / Phase 2d.
+func (c *ControllerAudit) EmitNetworkPolicyEnforcementWithdrawn(ctx context.Context, runName, namespace, reason string) {
+	c.write(ctx, auditing.NewNetworkPolicyEnforcementWithdrawn(auditing.NetworkPolicyEnforcementWithdrawnInput{
+		RunName:   runName,
+		Namespace: namespace,
+		Reason:    reason,
+	}), "network-policy-enforcement-withdrawn")
+}

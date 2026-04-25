@@ -17,12 +17,15 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"net"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
@@ -272,6 +275,57 @@ func TestBuildRunNetworkPolicy_NoAPIServerRuleWhenIPsEmpty(t *testing.T) {
 	np := buildRunNetworkPolicy(run, cfg)
 	if len(np.Spec.Egress) != 3 {
 		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80; no apiserver rule)", len(np.Spec.Egress))
+	}
+}
+
+func TestEnsureRunNetworkPolicy_EmitsWithdrawnOnRecreate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := paddockv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("corev1 scheme: %v", err)
+	}
+	if err := networkingv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("networkingv1 scheme: %v", err)
+	}
+
+	enforced := true
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a", ResourceVersion: "1"},
+		Status: paddockv1alpha1.HarnessRunStatus{
+			NetworkPolicyEnforced: &enforced,
+			ObservedGeneration:    1, // simulate "reconciled before"
+		},
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(run).WithStatusSubresource(run).Build()
+
+	rec := &capturedSink{}
+	r := &HarnessRunReconciler{
+		Client: cli,
+		Scheme: scheme,
+		Audit:  &ControllerAudit{Sink: rec},
+	}
+
+	// First call: NP doesn't exist; CreateOrUpdate returns Created;
+	// because Status was already set with ObservedGeneration>0, this
+	// is the operator-deleted-it case → emit one withdrawal.
+	if err := r.ensureRunNetworkPolicy(context.Background(), run); err != nil {
+		t.Fatalf("ensureRunNetworkPolicy: %v", err)
+	}
+	got := rec.events()
+	if len(got) != 1 || got[0].Spec.Kind != paddockv1alpha1.AuditKindNetworkPolicyEnforcementWithdrawn {
+		t.Fatalf("got %d events; want one network-policy-enforcement-withdrawn (events=%+v)", len(got), got)
+	}
+
+	// Second call: NP exists; CreateOrUpdate returns Unchanged →
+	// no emission.
+	rec.all = nil
+	if err := r.ensureRunNetworkPolicy(context.Background(), run); err != nil {
+		t.Fatalf("ensureRunNetworkPolicy (idempotent): %v", err)
+	}
+	if got := rec.events(); len(got) != 0 {
+		t.Errorf("got %d events on no-op reconcile; want 0", len(got))
 	}
 }
 
