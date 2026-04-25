@@ -229,12 +229,24 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 				},
 				&applicationError{status: http.StatusNotFound, code: "RunNotFound", message: err.Error()}
 		}
-		return providers.IssueResult{}, nil, nil, fmt.Errorf("loading run: %w", err)
+		return providers.IssueResult{}, nil, &CredentialAudit{
+				RunName:        runName,
+				Namespace:      namespace,
+				CredentialName: req.Name,
+				Reason:         fmt.Sprintf("broker infrastructure error: loading run: %v", err),
+			},
+			fmt.Errorf("loading run: %w", err)
 	}
 
 	spec, err := resolveTemplateSpec(ctx, s.Client, namespace, run.Spec.TemplateRef)
 	if err != nil {
-		return providers.IssueResult{}, nil, nil, fmt.Errorf("resolving template: %w", err)
+		return providers.IssueResult{}, nil, &CredentialAudit{
+				RunName:        runName,
+				Namespace:      namespace,
+				CredentialName: req.Name,
+				Reason:         fmt.Sprintf("broker infrastructure error: resolving template: %v", err),
+			},
+			fmt.Errorf("resolving template: %w", err)
 	}
 	if !hasRequirement(spec.Requires.Credentials, req.Name) {
 		return providers.IssueResult{}, nil, &CredentialAudit{
@@ -253,7 +265,13 @@ func (s *Server) issue(ctx context.Context, namespace, runName string, req broke
 	// Intersect template.requires against in-namespace BrokerPolicies.
 	grant, matchedPolicy, policyName, err := matchPolicyGrant(ctx, s.Client, namespace, run.Spec.TemplateRef.Name, req.Name)
 	if err != nil {
-		return providers.IssueResult{}, nil, nil, fmt.Errorf("listing BrokerPolicies: %w", err)
+		return providers.IssueResult{}, nil, &CredentialAudit{
+				RunName:        runName,
+				Namespace:      namespace,
+				CredentialName: req.Name,
+				Reason:         fmt.Sprintf("broker infrastructure error: listing BrokerPolicies: %v", err),
+			},
+			fmt.Errorf("listing BrokerPolicies: %w", err)
 	}
 	if grant == nil {
 		return providers.IssueResult{}, nil, &CredentialAudit{

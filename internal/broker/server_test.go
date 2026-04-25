@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	"paddock.dev/paddock/internal/broker"
@@ -205,6 +207,29 @@ type errorSink struct {
 }
 
 func (s errorSink) Write(_ context.Context, _ *paddockv1alpha1.AuditEvent) error { return s.err }
+
+// recordingAuditSink captures every AuditEvent written to it so tests can
+// assert that the broker emitted the expected audit records.
+type recordingAuditSink struct {
+	mu  sync.Mutex
+	all []*paddockv1alpha1.AuditEvent
+	err error
+}
+
+func (r *recordingAuditSink) Write(_ context.Context, ae *paddockv1alpha1.AuditEvent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.all = append(r.all, ae.DeepCopy())
+	return r.err
+}
+
+func (r *recordingAuditSink) events() []*paddockv1alpha1.AuditEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*paddockv1alpha1.AuditEvent, len(r.all))
+	copy(out, r.all)
+	return out
+}
 
 func TestIssue_AuditFailure_Returns503AndNoCredential(t *testing.T) {
 	srv, _ := setup(t)
@@ -557,5 +582,159 @@ func TestValidateEgress_DiscoveryAllow(t *testing.T) {
 	}
 	if got.Reason == "" {
 		t.Errorf("Reason is empty, want non-empty discovery explanation")
+	}
+}
+
+func TestIssue_GetRunInfraError_EmitsAudit(t *testing.T) {
+	c := fake.NewClientBuilder().
+		WithScheme(buildScheme(t)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*paddockv1alpha1.HarnessRun); ok {
+					return errors.New("apiserver unreachable")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	registry, err := providers.NewRegistry(&providers.UserSuppliedSecretProvider{Client: c})
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	rec := &recordingAuditSink{}
+	srv := &broker.Server{
+		Client:    c,
+		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: "team-a", ServiceAccount: "default"}},
+		Providers: registry,
+		Audit:     &broker.AuditWriter{Sink: rec},
+	}
+	rr := post(t, srv, "hr-1", "team-a", "valid-token", `{"name":"DEMO_TOKEN"}`)
+	if rr.Code != http.StatusInternalServerError && rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 500/503", rr.Code)
+	}
+	wrote := rec.events()
+	if len(wrote) != 1 {
+		t.Fatalf("got %d events, want 1: %+v", len(wrote), wrote)
+	}
+	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialDenied {
+		t.Errorf("kind = %q, want credential-denied", wrote[0].Spec.Kind)
+	}
+	if !strings.Contains(wrote[0].Spec.Reason, "loading run") {
+		t.Errorf("reason = %q, want contains 'loading run'", wrote[0].Spec.Reason)
+	}
+}
+
+func TestIssue_ResolveTemplateInfraError_EmitsAudit(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Prompt:      "hi",
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(buildScheme(t)).
+		WithObjects(run).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				// Let HarnessRun Get succeed (use real fake client).
+				if _, ok := obj.(*paddockv1alpha1.HarnessRun); ok {
+					return c.Get(ctx, key, obj, opts...)
+				}
+				// Fail for templates.
+				if _, ok := obj.(*paddockv1alpha1.HarnessTemplate); ok {
+					return errors.New("apiserver unreachable: template")
+				}
+				if _, ok := obj.(*paddockv1alpha1.ClusterHarnessTemplate); ok {
+					return errors.New("apiserver unreachable: cluster template")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	registry, err := providers.NewRegistry(&providers.UserSuppliedSecretProvider{Client: c})
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	rec := &recordingAuditSink{}
+	srv := &broker.Server{
+		Client:    c,
+		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: "team-a", ServiceAccount: "default"}},
+		Providers: registry,
+		Audit:     &broker.AuditWriter{Sink: rec},
+	}
+	rr := post(t, srv, "hr-1", "team-a", "valid-token", `{"name":"DEMO_TOKEN"}`)
+	if rr.Code != http.StatusInternalServerError && rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 500/503", rr.Code)
+	}
+	wrote := rec.events()
+	if len(wrote) != 1 {
+		t.Fatalf("got %d events, want 1: %+v", len(wrote), wrote)
+	}
+	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialDenied {
+		t.Errorf("kind = %q, want credential-denied", wrote[0].Spec.Kind)
+	}
+	if !strings.Contains(wrote[0].Spec.Reason, "resolving template") {
+		t.Errorf("reason = %q, want contains 'resolving template'", wrote[0].Spec.Reason)
+	}
+}
+
+func TestIssue_ListBrokerPoliciesInfraError_EmitsAudit(t *testing.T) {
+	tpl := &paddockv1alpha1.HarnessTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo", Namespace: "team-a"},
+		Spec: paddockv1alpha1.HarnessTemplateSpec{
+			Harness: "echo",
+			Image:   "paddock-echo:v1",
+			Command: []string{"/bin/echo"},
+			Requires: paddockv1alpha1.RequireSpec{
+				Credentials: []paddockv1alpha1.CredentialRequirement{
+					{Name: "DEMO_TOKEN"},
+				},
+			},
+		},
+	}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Prompt:      "hi",
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(buildScheme(t)).
+		WithObjects(tpl, run).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*paddockv1alpha1.BrokerPolicyList); ok {
+					return errors.New("apiserver unreachable: list bp")
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}).
+		Build()
+	registry, err := providers.NewRegistry(&providers.UserSuppliedSecretProvider{Client: c})
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	rec := &recordingAuditSink{}
+	srv := &broker.Server{
+		Client:    c,
+		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: "team-a", ServiceAccount: "default"}},
+		Providers: registry,
+		Audit:     &broker.AuditWriter{Sink: rec},
+	}
+	rr := post(t, srv, "hr-1", "team-a", "valid-token", `{"name":"DEMO_TOKEN"}`)
+	if rr.Code != http.StatusInternalServerError && rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 500/503", rr.Code)
+	}
+	wrote := rec.events()
+	if len(wrote) != 1 {
+		t.Fatalf("got %d events, want 1: %+v", len(wrote), wrote)
+	}
+	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialDenied {
+		t.Errorf("kind = %q, want credential-denied", wrote[0].Spec.Kind)
+	}
+	if !strings.Contains(wrote[0].Spec.Reason, "listing BrokerPolicies") {
+		t.Errorf("reason = %q, want contains 'listing BrokerPolicies'", wrote[0].Spec.Reason)
 	}
 }
