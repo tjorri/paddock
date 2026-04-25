@@ -174,6 +174,22 @@ linters:
           - gosec
         text: "G703"
         path: internal/proxy/broker_client\.go
+      # gosec G704: BrokerClient.Endpoint is operator-supplied via the
+      # controller's --broker-endpoint flag, not user input. The HTTP call
+      # is to a fixed in-cluster service. The "SSRF via taint analysis"
+      # warning is spurious here.
+      - linters:
+          - gosec
+        text: "G704"
+        path: internal/proxy/broker_client\.go
+      # gosec G103: SO_ORIGINAL_DST recovery requires unsafe.Pointer to
+      # pass a *RawSockaddrInet4 to syscall.Syscall6 — the canonical Linux
+      # idiom for raw socket-options not exposed by the stdlib syscall
+      # wrappers. Audited.
+      - linters:
+          - gosec
+        text: "G103"
+        path: internal/proxy/transparent_linux\.go
       # noctx: test/utils e2e helpers call exec.Command without context.
       # These are test-only utilities with no production DoS surface.
       - linters:

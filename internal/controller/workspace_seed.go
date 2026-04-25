@@ -672,7 +672,6 @@ func buildSeedNetworkPolicy(ws *paddockv1alpha1.Workspace, cfg networkPolicyConf
 	dnsPort := intstr.FromInt32(53)
 	httpsPort := intstr.FromInt32(443)
 	httpPort := intstr.FromInt32(80)
-	openCIDR := "0.0.0.0/0"
 	exceptCIDRs := buildExceptCIDRs(cfg)
 
 	rules := []networkingv1.NetworkPolicyEgressRule{

@@ -53,7 +53,7 @@ func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 
 	// Peek the ClientHello to extract SNI without consuming bytes.
 	peek := &peekConn{Conn: conn}
-	hello, err := peekClientHello(peek)
+	hello, err := peekClientHello(ctx, peek)
 	if err != nil {
 		s.log().V(1).Info("ClientHello peek failed", "err", err, "dst", origIP.String())
 		if aErr := s.recordEgress(ctx, EgressEvent{

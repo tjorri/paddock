@@ -215,6 +215,8 @@ var _ = Describe("HarnessRun output pipeline", func() {
 
 // pad renders a small int zero-padded so alphabetic comparison matches
 // numeric order in the ring-parse assertion.
+//
+//nolint:gosec // i is bounded by the test caller's small ring size; rune('0'+i) cannot overflow int32.
 func pad(i int) string {
 	if i < 10 {
 		return "0" + string(rune('0'+i))
