@@ -1,0 +1,13 @@
+# Kind cluster config used when Cilium is the CNI.
+#
+# - disableDefaultCNI: kindnet is removed; Cilium will install itself.
+# - kubeProxyMode: none — Cilium replaces kube-proxy.
+# - Worker node added so cross-node traffic is realistic for NP tests.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+  kubeProxyMode: none
+nodes:
+  - role: control-plane
+  - role: worker

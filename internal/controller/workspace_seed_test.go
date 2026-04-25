@@ -57,20 +57,21 @@ func TestBuildSeedNetworkPolicy_Shape(t *testing.T) {
 	// Three egress rules, same shape as run-pod NP: kube-dns, TCP 443
 	// excluding cluster CIDRs, TCP 80 excluding cluster CIDRs.
 	if len(np.Spec.Egress) != 3 {
-		t.Fatalf("egress rules = %d, want 3", len(np.Spec.Egress))
+		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80)", len(np.Spec.Egress))
 	}
 
-	// Both public-internet rules must have non-empty Except list.
-	for i, rule := range np.Spec.Egress[1:] {
+	// Public-internet rules (indexes 1, 2) must have non-empty Except list.
+	for i := 1; i <= 2; i++ {
+		rule := np.Spec.Egress[i]
 		if len(rule.To) != 1 || rule.To[0].IPBlock == nil {
-			t.Errorf("rule[%d] expected ipBlock; got %+v", i+1, rule.To)
+			t.Errorf("rule[%d] expected ipBlock; got %+v", i, rule.To)
 			continue
 		}
 		if rule.To[0].IPBlock.CIDR != "0.0.0.0/0" {
-			t.Errorf("rule[%d] CIDR = %q, want 0.0.0.0/0", i+1, rule.To[0].IPBlock.CIDR)
+			t.Errorf("rule[%d] CIDR = %q, want 0.0.0.0/0", i, rule.To[0].IPBlock.CIDR)
 		}
 		if len(rule.To[0].IPBlock.Except) == 0 {
-			t.Errorf("rule[%d] except is empty; expected RFC1918 + cluster CIDRs", i+1)
+			t.Errorf("rule[%d] except is empty; expected RFC1918 + cluster CIDRs", i)
 		}
 	}
 }

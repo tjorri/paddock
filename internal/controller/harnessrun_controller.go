@@ -477,13 +477,27 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// 4c. Per-run NetworkPolicy (ADR-0013 §7.4). Only emitted when the
-	// manager is configured to enforce (on or auto-detected); skipped
-	// silently on Kind/kindnet to avoid broken deploys for homelab
-	// operators. Failure to materialise the policy is a hard error —
-	// better to block the run than to start a Pod whose egress posture
-	// is weaker than declared.
-	if err := r.ensureRunNetworkPolicy(ctx, &run); err != nil {
-		return ctrl.Result{}, err
+	// manager is configured to enforce (on or auto-detected) AND the
+	// template declares non-empty `requires` (capabilities the NP would
+	// enforce). Templates with empty requires (test fixtures, smoke
+	// runs) skip NP emission so the collector + adapter sidecars retain
+	// their kube-apiserver access — host-network destinations cannot be
+	// matched by standard NetworkPolicy podSelectors, so a tightened NP
+	// without an apiserver allow rule breaks the AuditEvent + output-
+	// ConfigMap path. Phase 2c will add a CiliumNetworkPolicy variant
+	// (entity: kube-apiserver) that closes this hole for required-only
+	// runs as well. Failure to materialise the policy is a hard error
+	// when emission is required.
+	if !policy.RequiresEmpty(tpl.Spec.Requires) {
+		if err := r.ensureRunNetworkPolicy(ctx, &run); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else {
+		// Clean up any stale NP from a previous reconcile that did
+		// emit one (e.g., template was edited to drop requires).
+		if err := r.deleteRunNetworkPolicy(ctx, &run); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// 5. Ingest whatever the collector has already published. Safe to

@@ -37,14 +37,15 @@ import (
 // config/broker/deployment.yaml so `make deploy` wires the cluster
 // together without a kustomize image override.
 const (
-	managerImage      = "paddock-manager:dev"
-	echoImage         = "paddock-echo:dev"
-	adapterEchoImage  = "paddock-adapter-echo:dev"
-	collectorImage    = "paddock-collector:dev"
-	brokerImage       = "paddock-broker:dev"
-	proxyImage        = "paddock-proxy:dev"
-	iptablesInitImage = "paddock-iptables-init:dev"
-	e2eEgressImage    = "paddock-e2e-egress:dev"
+	managerImage         = "paddock-manager:dev"
+	echoImage            = "paddock-echo:dev"
+	adapterEchoImage     = "paddock-adapter-echo:dev"
+	collectorImage       = "paddock-collector:dev"
+	brokerImage          = "paddock-broker:dev"
+	proxyImage           = "paddock-proxy:dev"
+	iptablesInitImage    = "paddock-iptables-init:dev"
+	e2eEgressImage       = "paddock-e2e-egress:dev"
+	paddockEvilEchoImage = "paddock-evil-echo:dev"
 )
 
 var (
@@ -75,6 +76,9 @@ var _ = BeforeSuite(func() {
 	buildAndLoad(proxyImage, []string{"image-proxy"})
 	buildAndLoad(iptablesInitImage, []string{"image-iptables-init"})
 	buildAndLoad(e2eEgressImage, []string{"image-e2e-egress"})
+
+	By("building and loading paddock-evil-echo (hostile harness)")
+	buildAndLoad(paddockEvilEchoImage, []string{"image-evil-echo"})
 
 	if !skipCertManagerInstall {
 		By("checking if cert-manager is already installed")

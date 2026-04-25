@@ -10,14 +10,28 @@ Thanks for being here. Paddock is early. v0.1 shipped the core CRDs, controller,
 
 ## Dev setup
 
-Prerequisites: Go 1.26+, Docker, `kubectl`, Kind 0.25+, cert-manager handled by `make kind-up`, optional `tilt`, optional `helm`.
+Prerequisites: Go 1.26+, Docker, `kubectl`, Kind 0.25+, `helm` (required — used to install Cilium during `kind-up`), cert-manager handled by `make kind-up`, optional `tilt`.
 
 ```sh
-make kind-up                 # local cluster + cert-manager
-make images                  # build all five reference images
+make kind-up                 # local cluster + Cilium CNI + cert-manager
+make images                  # build all reference images
 make docker-build IMG=paddock-manager:dev
 # load images into kind (see README step 2)
 make install deploy IMG=paddock-manager:dev
+```
+
+### Cilium CNI in local development
+
+`make kind-up` installs Cilium 1.16.x as the cluster CNI by default,
+replacing kindnet. Cilium gives Paddock real NetworkPolicy enforcement,
+which the v0.4 security review's E2E tests rely on. Adds ~30 seconds to
+cluster bootstrap.
+
+If you need the kindnet default for some reason (e.g., debugging a
+non-NP-related issue, or your Helm install is broken):
+
+```sh
+KIND_NO_CNI=1 make kind-up
 ```
 
 For the inner loop:

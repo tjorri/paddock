@@ -1,0 +1,86 @@
+# Hostile-harness ClusterHarnessTemplates for adversarial E2E only.
+# Do not use in production. Three scenario-specific templates are defined
+# in this file — one per TG-2 and TG-7. TG-24 uses a directly-applied
+# Job and does not require a template.
+---
+apiVersion: paddock.dev/v1alpha1
+kind: ClusterHarnessTemplate
+metadata:
+  name: evil-echo-tg2
+  labels:
+    app.kubernetes.io/component: test-fixture
+    paddock.dev/test-only: "true"
+spec:
+  harness: evil-echo
+  image: paddock-evil-echo:dev
+  command: ["/usr/local/bin/evil-echo"]
+  # TG-2: bypass proxy env vars then attempt a raw TCP connection to the
+  # Kubernetes service IP (10.96.0.1:443). The per-run NetworkPolicy
+  # (F-19) is expected to block this even when HTTPS_PROXY is unset.
+  args:
+    - "--bypass-proxy-env"
+    - "--connect-raw-tcp"
+    - "10.96.0.1:443"
+  eventAdapter:
+    image: paddock-adapter-echo:dev
+    imagePullPolicy: IfNotPresent
+  # Non-empty requires triggers per-run NetworkPolicy emission (the
+  # controller skips NP for empty-requires runs since there's nothing
+  # to enforce). The BrokerPolicy fixture grants this exact host, so
+  # admission intersection passes.
+  requires:
+    egress:
+      - host: example.com
+        ports: [443]
+  defaults:
+    timeout: 60s
+    resources:
+      limits:
+        cpu: 200m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+  workspace:
+    required: true
+    mountPath: /workspace
+---
+apiVersion: paddock.dev/v1alpha1
+kind: ClusterHarnessTemplate
+metadata:
+  name: evil-echo-tg7
+  labels:
+    app.kubernetes.io/component: test-fixture
+    paddock.dev/test-only: "true"
+spec:
+  harness: evil-echo
+  image: paddock-evil-echo:dev
+  command: ["/usr/local/bin/evil-echo"]
+  # TG-7: read SA-token files (expect no mount, so denied) then probe the
+  # broker with a synthetic bearer (expect network-level denied because the
+  # BrokerPolicy cooperative interception means the proxy intercepts first
+  # and the broker host is not in the egress allowlist).
+  args:
+    - "--read-secret-files"
+    - "/var/run/secrets/kubernetes.io/serviceaccount/*"
+    - "--probe-broker"
+    - "https://paddock-broker.paddock-system.svc:8443/v1/issue"
+  eventAdapter:
+    image: paddock-adapter-echo:dev
+    imagePullPolicy: IfNotPresent
+  requires:
+    egress:
+      - host: example.com
+        ports: [443]
+  defaults:
+    timeout: 60s
+    resources:
+      limits:
+        cpu: 200m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+  workspace:
+    required: true
+    mountPath: /workspace

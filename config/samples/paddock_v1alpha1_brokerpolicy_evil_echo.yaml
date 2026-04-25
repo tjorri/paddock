@@ -1,0 +1,26 @@
+# BrokerPolicy fixture for evil-echo adversarial E2E.
+# Permissive enough to admit runs but doesn't grant credentials —
+# evil-echo doesn't need any (it tries to attack regardless).
+# Uses a glob so it covers both evil-echo-tg2 and evil-echo-tg7.
+apiVersion: paddock.dev/v1alpha1
+kind: BrokerPolicy
+metadata:
+  name: evil-echo-policy
+  labels:
+    paddock.dev/test-only: "true"
+spec:
+  # F-30 in the v0.4 audit: appliesToTemplates only does exact name or
+  # `*`, not glob — `evil-echo-*` would silently match nothing. Use
+  # `*` here so both evil-echo-tg2 and evil-echo-tg7 are covered.
+  appliesToTemplates: ["*"]
+  interception:
+    cooperativeAccepted:
+      accepted: true
+      reason: "Adversarial E2E test fixture; evil-echo intentionally exercises cooperative-mode bypass paths."
+  grants:
+    egress:
+      # Allow the harness to TRY common targets; the test asserts that
+      # the runtime defences (NetworkPolicy, etc.) deny the actual
+      # attempt. Without these grants, admission would reject the run
+      # entirely and we couldn't observe the runtime denial.
+      - { host: "example.com", ports: [443] }

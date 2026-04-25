@@ -17,8 +17,15 @@ command -v kubectl >/dev/null || { echo "kubectl not installed"; exit 1; }
 if kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
   echo "kind cluster '${CLUSTER_NAME}' already exists — skipping creation"
 else
-  echo "creating kind cluster '${CLUSTER_NAME}' (${KIND_IMAGE})"
-  kind create cluster --name "${CLUSTER_NAME}" --image "${KIND_IMAGE}" --wait 60s
+  if [ -n "${KIND_NO_CNI:-}" ]; then
+    echo "creating kind cluster '${CLUSTER_NAME}' with default CNI (kindnet) — KIND_NO_CNI is set"
+    kind create cluster --name "${CLUSTER_NAME}" --image "${KIND_IMAGE}" --wait 60s
+  else
+    echo "creating kind cluster '${CLUSTER_NAME}' with Cilium CNI"
+    kind create cluster --name "${CLUSTER_NAME}" --image "${KIND_IMAGE}" \
+      --config hack/kind-with-cilium.yaml --wait 60s
+    hack/install-cilium.sh
+  fi
 fi
 
 kubectl config use-context "kind-${CLUSTER_NAME}" >/dev/null

@@ -82,9 +82,10 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 		*"$(KIND_CLUSTER)"*) \
 			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
 		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
+			echo "Creating Kind cluster '$(KIND_CLUSTER)' with Cilium CNI..."; \
+			$(KIND) create cluster --name $(KIND_CLUSTER) --config hack/kind-with-cilium.yaml ;; \
 	esac
+	@CLUSTER_NAME=$(KIND_CLUSTER) hack/install-cilium.sh
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
@@ -176,6 +177,7 @@ docker-push: ## Push docker image with the manager.
 ##@ Reference images
 
 ECHO_IMG ?= paddock-echo:dev
+EVIL_ECHO_IMG ?= paddock-evil-echo:dev
 ADAPTER_ECHO_IMG ?= paddock-adapter-echo:dev
 COLLECTOR_IMG ?= paddock-collector:dev
 CLAUDE_CODE_IMG ?= paddock-claude-code:dev
@@ -188,6 +190,10 @@ E2E_EGRESS_IMG ?= paddock-e2e-egress:dev
 .PHONY: image-echo
 image-echo: ## Build the paddock-echo harness image.
 	$(CONTAINER_TOOL) build -t $(ECHO_IMG) images/harness-echo
+
+.PHONY: image-evil-echo
+image-evil-echo: ## Build the paddock-evil-echo hostile harness image (test-only).
+	$(CONTAINER_TOOL) build -t $(EVIL_ECHO_IMG) -f images/evil-echo/Dockerfile .
 
 .PHONY: image-adapter-echo
 image-adapter-echo: ## Build the paddock-adapter-echo sidecar image.
@@ -222,7 +228,7 @@ image-e2e-egress: ## Build the paddock-e2e-egress harness (e2e-only probe tool).
 	$(CONTAINER_TOOL) build -t $(E2E_EGRESS_IMG) images/harness-e2e-egress
 
 .PHONY: images
-images: image-echo image-adapter-echo image-collector image-claude-code image-adapter-claude-code image-broker image-proxy image-iptables-init ## Build all reference images.
+images: image-echo image-adapter-echo image-collector image-claude-code image-adapter-claude-code image-broker image-proxy image-iptables-init image-evil-echo ## Build all reference images.
 
 .PHONY: trivy-images
 trivy-images: ## Run trivy on all Paddock images. Fails on HIGH/CRITICAL.
