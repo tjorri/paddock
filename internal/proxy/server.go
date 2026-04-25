@@ -220,13 +220,19 @@ func (s *Server) mitm(ctx context.Context, clientConn net.Conn, host string, por
 	if decision.DiscoveryAllow {
 		kind = paddockv1alpha1.AuditKindEgressDiscoveryAllow
 	}
-	_ = s.recordEgress(ctx, EgressEvent{
+	if aErr := s.recordEgress(ctx, EgressEvent{
 		Host: host, Port: port,
 		Decision:      paddockv1alpha1.AuditDecisionGranted,
 		MatchedPolicy: decision.MatchedPolicy,
 		Kind:          kind,
 		Reason:        decision.Reason,
-	})
+	}); aErr != nil {
+		// Allow path proceeds despite audit failure — the connection's
+		// security posture is already enforced, and failing legit
+		// traffic on a transient etcd hiccup is worse than a missing
+		// audit record. paddock_audit_write_failures_total catches it.
+		s.log().Error(aErr, "audit write failed on allow path", "host", host, "port", port)
+	}
 
 	if decision.SubstituteAuth && s.Substituter != nil {
 		if err := handleSubstituted(ctx, clientTLS, upstreamConn, host, port, s.Substituter); err != nil {

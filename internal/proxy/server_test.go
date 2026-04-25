@@ -428,6 +428,57 @@ func TestProxy_ValidatorErrorFailsClosed(t *testing.T) {
 	}
 }
 
+// TestMITM_AuditFailureOnAllow_ProxiesAnyway verifies the fail-open
+// behaviour on the allow path (F-24): when the AuditSink returns an
+// error, the MITM must still proxy the connection and return 200.
+// Security posture is enforced by the deny path; blocking legit
+// traffic on a transient audit failure is worse than a missing record.
+func TestMITM_AuditFailureOnAllow_ProxiesAnyway(t *testing.T) {
+	upstream, host, port, upstreamPool := startUpstream(t)
+	_ = upstream
+
+	certPEM, keyPEM := generateTestCA(t)
+	ca, err := NewMITMCertificateAuthority(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("build CA: %v", err)
+	}
+
+	sink := &recordingSink{err: errors.New("etcd partition")}
+	validator, err := NewStaticValidatorFromEnv(fmt.Sprintf("%s:%d", host, port))
+	if err != nil {
+		t.Fatalf("build validator: %v", err)
+	}
+
+	srv := &Server{
+		CA:                ca,
+		Validator:         validator,
+		Audit:             sink,
+		UpstreamTLSConfig: &tls.Config{RootCAs: upstreamPool, MinVersion: tls.VersionTLS12},
+	}
+	proxyURL := startProxy(t, srv)
+	pu, _ := url.Parse(proxyURL)
+
+	clientPool := x509.NewCertPool()
+	clientPool.AppendCertsFromPEM(certPEM)
+	tr := &http.Transport{
+		Proxy:           http.ProxyURL(pu),
+		TLSClientConfig: &tls.Config{RootCAs: clientPool, MinVersion: tls.VersionTLS12},
+	}
+	defer tr.CloseIdleConnections()
+	c := &http.Client{Transport: tr, Timeout: 5 * time.Second}
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		fmt.Sprintf("https://%s:%d/", host, port), nil)
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v (allow path must proceed despite audit error)", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (allow-path proceeds despite audit error)", resp.StatusCode)
+	}
+}
+
 // denyAllValidator always returns Allowed=false, simulating a policy
 // that explicitly denies every destination.
 type denyAllValidator struct{}

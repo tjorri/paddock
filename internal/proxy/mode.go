@@ -153,13 +153,17 @@ func (s *Server) mitmTransparent(
 	if decision.DiscoveryAllow {
 		kind = paddockv1alpha1.AuditKindEgressDiscoveryAllow
 	}
-	_ = s.recordEgress(ctx, EgressEvent{
+	if aErr := s.recordEgress(ctx, EgressEvent{
 		Host: sni, Port: origPort,
 		Decision:      paddockv1alpha1.AuditDecisionGranted,
 		MatchedPolicy: decision.MatchedPolicy,
 		Kind:          kind,
 		Reason:        decision.Reason,
-	})
+	}); aErr != nil {
+		// Allow path proceeds despite audit failure — see comment in
+		// server.go's mitm() for the rationale.
+		s.log().Error(aErr, "audit write failed on allow path", "host", sni, "port", origPort)
+	}
 
 	if decision.SubstituteAuth && s.Substituter != nil {
 		if err := handleSubstituted(ctx, clientTLS, upstream, sni, origPort, s.Substituter); err != nil {
