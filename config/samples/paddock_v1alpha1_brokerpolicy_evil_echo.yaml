@@ -1,6 +1,7 @@
 # BrokerPolicy fixture for evil-echo adversarial E2E.
 # Permissive enough to admit runs but doesn't grant credentials —
 # evil-echo doesn't need any (it tries to attack regardless).
+# Uses a glob so it covers both evil-echo-tg2 and evil-echo-tg7.
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
 metadata:
@@ -8,7 +9,7 @@ metadata:
   labels:
     paddock.dev/test-only: "true"
 spec:
-  appliesToTemplates: ["evil-echo"]
+  appliesToTemplates: ["evil-echo-*"]
   interception:
     cooperativeAccepted:
       accepted: true
