@@ -134,6 +134,14 @@ type ValidateEgressResponse struct {
 	MatchedPolicy  string `json:"matchedPolicy,omitempty"`
 	Reason         string `json:"reason,omitempty"`
 	SubstituteAuth bool   `json:"substituteAuth,omitempty"`
+
+	// DiscoveryAllow is true when Allowed=true was reached only because
+	// at least one matching BrokerPolicy has an active egressDiscovery
+	// window. The proxy emits an egress-discovery-allow AuditEvent
+	// instead of egress-allow so the audit trail distinguishes
+	// intentional grants from discovery-window allows. See spec 0003 §3.6.
+	// +optional
+	DiscoveryAllow bool `json:"discoveryAllow,omitempty"`
 }
 
 // SubstituteAuthRequest is the proxy's per-request credential swap call,

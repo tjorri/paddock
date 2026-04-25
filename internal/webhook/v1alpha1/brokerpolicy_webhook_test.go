@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -420,5 +422,78 @@ var _ = Describe("BrokerPolicy Webhook", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("reason"))
 		Expect(err.Error()).To(ContainSubstring("20"))
+	})
+
+	// --- EgressDiscovery -------------------------------------------------
+
+	validDiscovery := func() *paddockv1alpha1.EgressDiscoverySpec {
+		return &paddockv1alpha1.EgressDiscoverySpec{
+			Accepted:  true,
+			Reason:    "Bootstrapping allowlist for new metrics-scraper harness",
+			ExpiresAt: metav1.NewTime(time.Now().Add(48 * time.Hour)),
+		}
+	}
+
+	It("admits a valid egressDiscovery (within 7 days)", func() {
+		spec := minimalSpec()
+		spec.EgressDiscovery = validDiscovery()
+		Expect(validate(spec)).To(Succeed())
+	})
+
+	It("admits absence of egressDiscovery", func() {
+		spec := minimalSpec()
+		Expect(validate(spec)).To(Succeed())
+	})
+
+	It("rejects egressDiscovery with accepted=false", func() {
+		spec := minimalSpec()
+		ed := validDiscovery()
+		ed.Accepted = false
+		spec.EgressDiscovery = ed
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("accepted must be true"))
+	})
+
+	It("rejects egressDiscovery with reason shorter than 20 chars", func() {
+		spec := minimalSpec()
+		ed := validDiscovery()
+		ed.Reason = "too short"
+		spec.EgressDiscovery = ed
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("reason"))
+		Expect(err.Error()).To(ContainSubstring("20"))
+	})
+
+	It("rejects egressDiscovery with expiresAt in the past", func() {
+		spec := minimalSpec()
+		ed := validDiscovery()
+		ed.ExpiresAt = metav1.NewTime(time.Now().Add(-1 * time.Minute))
+		spec.EgressDiscovery = ed
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("expiresAt"))
+		Expect(err.Error()).To(ContainSubstring("future"))
+	})
+
+	It("rejects egressDiscovery with expiresAt more than 7 days out", func() {
+		spec := minimalSpec()
+		ed := validDiscovery()
+		ed.ExpiresAt = metav1.NewTime(time.Now().Add(8 * 24 * time.Hour))
+		spec.EgressDiscovery = ed
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("7 days"))
+	})
+
+	It("rejects zero-value expiresAt (the field is required)", func() {
+		spec := minimalSpec()
+		ed := validDiscovery()
+		ed.ExpiresAt = metav1.Time{}
+		spec.EgressDiscovery = ed
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("expiresAt"))
 	})
 })

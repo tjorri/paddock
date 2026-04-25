@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -431,5 +432,97 @@ func TestIssue_WrongMethodRejected(t *testing.T) {
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d", rr.Code)
+	}
+}
+
+// postValidateEgress is a helper that sends a POST to /v1/validate-egress
+// on the given server with the supplied run identity and body.
+func postValidateEgress(t *testing.T, srv *broker.Server, runName, runNS, bearer string, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	req := httptest.NewRequest(http.MethodPost, brokerapi.PathValidateEgress, strings.NewReader(body))
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	req.Header.Set(brokerapi.HeaderRun, runName)
+	if runNS != "" {
+		req.Header.Set(brokerapi.HeaderNamespace, runNS)
+	}
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	return rr
+}
+
+// TestValidateEgress_DiscoveryAllow asserts that when no egress grant
+// covers the destination but a matching BrokerPolicy has an active
+// egressDiscovery window, the broker returns Allowed=true with
+// DiscoveryAllow=true so the proxy can emit an egress-discovery-allow
+// AuditEvent instead of denying.
+func TestValidateEgress_DiscoveryAllow(t *testing.T) {
+	const ns = "my-team"
+
+	tpl := &paddockv1alpha1.HarnessTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessTemplateSpec{
+			Harness: "echo",
+			Image:   "paddock-echo:v1",
+			Command: []string{"/bin/echo"},
+		},
+	}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hello", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Prompt:      "hi",
+		},
+	}
+	// BrokerPolicy with no egress grants but an active discovery window.
+	bp := &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "discovery-policy", Namespace: ns},
+		Spec: paddockv1alpha1.BrokerPolicySpec{
+			AppliesToTemplates: []string{"echo"},
+			EgressDiscovery: &paddockv1alpha1.EgressDiscoverySpec{
+				Accepted:  true,
+				Reason:    "testing discovery allow path in broker handleValidateEgress",
+				ExpiresAt: metav1.NewTime(time.Now().Add(time.Hour)),
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(buildScheme(t)).
+		WithObjects(tpl, run, bp).
+		Build()
+
+	registry, err := providers.NewRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	srv := &broker.Server{
+		Client:    c,
+		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
+		Providers: registry,
+		Audit:     &broker.AuditWriter{Client: c},
+	}
+
+	body, _ := json.Marshal(brokerapi.ValidateEgressRequest{Host: "example.com", Port: 443})
+	rr := postValidateEgress(t, srv, "hello", "", "token-abc", string(body))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got brokerapi.ValidateEgressResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Allowed {
+		t.Errorf("Allowed = false, want true (discovery window is active)")
+	}
+	if !got.DiscoveryAllow {
+		t.Errorf("DiscoveryAllow = false, want true")
+	}
+	if got.Reason == "" {
+		t.Errorf("Reason is empty, want non-empty discovery explanation")
 	}
 }

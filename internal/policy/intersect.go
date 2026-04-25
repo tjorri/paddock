@@ -103,7 +103,14 @@ func Intersect(ctx context.Context, c client.Client, namespace, templateName str
 	if err != nil {
 		return nil, err
 	}
+	return IntersectMatches(matching, requires), nil
+}
 
+// IntersectMatches is the matches-already-listed variant of Intersect.
+// Callers that need to filter the matching policy set (e.g. dropping
+// expired discovery policies) can pass in the filtered slice and avoid
+// re-querying. Behavior is otherwise identical to Intersect.
+func IntersectMatches(matching []*paddockv1alpha1.BrokerPolicy, requires paddockv1alpha1.RequireSpec) *IntersectionResult {
 	result := &IntersectionResult{
 		Admitted:           true,
 		CoveredCredentials: make(map[string]CoveredCredential),
@@ -127,9 +134,7 @@ func Intersect(ctx context.Context, c client.Client, namespace, templateName str
 		}
 		if cov == nil {
 			result.Admitted = false
-			result.MissingCredentials = append(result.MissingCredentials, CredentialShortfall{
-				Name: cred.Name,
-			})
+			result.MissingCredentials = append(result.MissingCredentials, CredentialShortfall{Name: cred.Name})
 			continue
 		}
 		result.CoveredCredentials[cred.Name] = *cov
@@ -143,14 +148,12 @@ func Intersect(ctx context.Context, c client.Client, namespace, templateName str
 		for _, port := range ports {
 			if !grantsCoverEgress(matching, eg.Host, port) {
 				result.Admitted = false
-				result.MissingEgress = append(result.MissingEgress, EgressShortfall{
-					Host: eg.Host, Port: port,
-				})
+				result.MissingEgress = append(result.MissingEgress, EgressShortfall{Host: eg.Host, Port: port})
 			}
 		}
 	}
 
-	return result, nil
+	return result
 }
 
 // DescribeShortfall formats an admission-diagnostic string from an

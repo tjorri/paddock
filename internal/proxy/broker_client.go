@@ -115,6 +115,7 @@ func (c *BrokerClient) ValidateEgress(ctx context.Context, host string, port int
 		MatchedPolicy:  out.MatchedPolicy,
 		Reason:         out.Reason,
 		SubstituteAuth: out.SubstituteAuth,
+		DiscoveryAllow: out.DiscoveryAllow,
 	}, nil
 }
 

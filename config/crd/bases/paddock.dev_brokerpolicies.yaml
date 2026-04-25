@@ -23,6 +23,10 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    - jsonPath: .spec.egressDiscovery.expiresAt
+      name: Discovery-Until
+      priority: 1
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -61,6 +65,40 @@ spec:
                   type: string
                 minItems: 1
                 type: array
+              egressDiscovery:
+                description: |-
+                  EgressDiscovery, when present, opens a time-bounded window during
+                  which denied egress is allowed-but-logged. Admission rejects
+                  expiresAt values in the past or more than 7 days in the future.
+                  After the window closes, the BrokerPolicy reconciler sets
+                  DiscoveryExpired=True and the HarnessRun admission webhook
+                  rejects new runs governed by this policy until the operator
+                  updates expiresAt or removes the field. See spec 0003 §3.6.
+                properties:
+                  accepted:
+                    description: |-
+                      Accepted must be true; setting it documents that the operator
+                      acknowledges egress will be allowed-but-logged rather than blocked
+                      for the duration of ExpiresAt.
+                    type: boolean
+                  expiresAt:
+                    description: |-
+                      ExpiresAt closes the discovery window. Admission rejects values
+                      in the past or more than 7 days in the future.
+                    format: date-time
+                    type: string
+                  reason:
+                    description: |-
+                      Reason explains why a discovery window is necessary instead of
+                      iterating per-denial via paddock policy suggest.
+                    maxLength: 500
+                    minLength: 20
+                    type: string
+                required:
+                - accepted
+                - expiresAt
+                - reason
+                type: object
               grants:
                 description: Grants enumerates the capabilities this policy is willing
                   to back.

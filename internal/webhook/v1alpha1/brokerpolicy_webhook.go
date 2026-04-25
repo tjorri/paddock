@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -30,6 +31,11 @@ import (
 )
 
 var brokerpolicylog = logf.Log.WithName("brokerpolicy-resource")
+
+// MaxDiscoveryWindow caps egressDiscovery.expiresAt to keep discovery
+// windows short-lived. Operators who want a different cap need an
+// operator-flag-tunable variant (deferred from v0.4).
+const MaxDiscoveryWindow = 7 * 24 * time.Hour
 
 // SetupBrokerPolicyWebhookWithManager registers the validating webhook
 // for BrokerPolicy with the manager.
@@ -52,26 +58,28 @@ func SetupBrokerPolicyWebhookWithManager(mgr ctrl.Manager) error {
 //   - every proxy-injected host is covered by an egress grant;
 //   - git repo tuples are complete;
 //   - spec.interception, when present, has exactly one of transparent
-//     or cooperativeAccepted (with accepted=true and a written reason).
+//     or cooperativeAccepted (with accepted=true and a written reason);
+//   - spec.egressDiscovery, when present, has accepted=true, a reason
+//     ≥20 chars, and expiresAt in (now, now+7d].
 type BrokerPolicyCustomValidator struct{}
 
 var _ admission.Validator[*paddockv1alpha1.BrokerPolicy] = &BrokerPolicyCustomValidator{}
 
 func (v *BrokerPolicyCustomValidator) ValidateCreate(_ context.Context, bp *paddockv1alpha1.BrokerPolicy) (admission.Warnings, error) {
 	brokerpolicylog.V(1).Info("validating BrokerPolicy create", "name", bp.GetName())
-	return nil, validateBrokerPolicySpec(&bp.Spec)
+	return nil, validateBrokerPolicySpec(&bp.Spec, time.Now())
 }
 
 func (v *BrokerPolicyCustomValidator) ValidateUpdate(_ context.Context, _, newBP *paddockv1alpha1.BrokerPolicy) (admission.Warnings, error) {
 	brokerpolicylog.V(1).Info("validating BrokerPolicy update", "name", newBP.GetName())
-	return nil, validateBrokerPolicySpec(&newBP.Spec)
+	return nil, validateBrokerPolicySpec(&newBP.Spec, time.Now())
 }
 
 func (v *BrokerPolicyCustomValidator) ValidateDelete(_ context.Context, _ *paddockv1alpha1.BrokerPolicy) (admission.Warnings, error) {
 	return nil, nil
 }
 
-func validateBrokerPolicySpec(spec *paddockv1alpha1.BrokerPolicySpec) error {
+func validateBrokerPolicySpec(spec *paddockv1alpha1.BrokerPolicySpec, now time.Time) error {
 	specPath := field.NewPath("spec")
 	var errs field.ErrorList
 
@@ -92,6 +100,7 @@ func validateBrokerPolicySpec(spec *paddockv1alpha1.BrokerPolicySpec) error {
 	errs = append(errs, validateGitRepoGrants(grantsPath.Child("gitRepos"), spec.Grants.GitRepos)...)
 	errs = append(errs, validateCredentialHostsCoveredByEgress(grantsPath, spec.Grants)...)
 	errs = append(errs, validateInterception(specPath.Child("interception"), spec.Interception)...)
+	errs = append(errs, validateEgressDiscovery(specPath.Child("egressDiscovery"), spec.EgressDiscovery, now)...)
 
 	if len(errs) == 0 {
 		return nil
@@ -299,6 +308,37 @@ func validateInterception(p *field.Path, i *paddockv1alpha1.InterceptionSpec) fi
 			errs = append(errs, field.Invalid(p.Child("cooperativeAccepted").Child("reason"), ca.Reason,
 				"reason must be at least 20 characters explaining why cooperative interception is needed"))
 		}
+	}
+	return errs
+}
+
+// validateEgressDiscovery enforces spec 0003 §3.6's bounded discovery
+// window opt-in. nil is valid (the feature is optional). When set, the
+// shape mirrors Plan A's InContainerDelivery + Plan B's
+// CooperativeAcceptedInterception accept+reason pattern, plus a hard
+// cap on expiresAt.
+func validateEgressDiscovery(p *field.Path, ed *paddockv1alpha1.EgressDiscoverySpec, now time.Time) field.ErrorList {
+	var errs field.ErrorList
+	if ed == nil {
+		return errs
+	}
+	if !ed.Accepted {
+		errs = append(errs, field.Invalid(p.Child("accepted"), ed.Accepted,
+			"accepted must be true to opt into a discovery window; "+
+				"omit spec.egressDiscovery to keep deny-by-default"))
+	}
+	if len(strings.TrimSpace(ed.Reason)) < 20 {
+		errs = append(errs, field.Invalid(p.Child("reason"), ed.Reason,
+			"reason must be at least 20 characters explaining why a discovery window is needed"))
+	}
+	expiry := ed.ExpiresAt.Time
+	if expiry.IsZero() || !expiry.After(now) {
+		errs = append(errs, field.Invalid(p.Child("expiresAt"), ed.ExpiresAt,
+			"expiresAt must be in the future"))
+	} else if expiry.After(now.Add(MaxDiscoveryWindow)) {
+		errs = append(errs, field.Invalid(p.Child("expiresAt"), ed.ExpiresAt,
+			fmt.Sprintf("expiresAt must be within %d days of now",
+				int(MaxDiscoveryWindow.Hours()/24))))
 	}
 	return errs
 }

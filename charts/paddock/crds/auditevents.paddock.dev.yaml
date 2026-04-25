@@ -12,95 +12,160 @@ spec:
     listKind: AuditEventList
     plural: auditevents
     shortNames:
-      - ae
+    - ae
     singular: auditevent
   scope: Namespaced
   versions:
-    - additionalPrinterColumns:
-        - jsonPath: .spec.kind
-          name: Kind
-          type: string
-        - jsonPath: .spec.decision
-          name: Decision
-          type: string
-        - jsonPath: .spec.runRef.name
-          name: Run
-          type: string
-        - jsonPath: .spec.timestamp
-          name: When
-          type: date
-      name: v1alpha1
-      schema:
-        openAPIV3Schema:
-          description: |-
-            AuditEvent records one security-relevant decision made by the broker,
-            proxy, webhook, or reconciler. Write-once: spec is set at creation and
-            immutable. A TTL reconciler in the controller-manager reaps events
-            older than --audit-retention-days (default 30). See ADR-0016.
-          properties:
-            apiVersion:
-              description: |-
-                APIVersion defines the versioned schema of this representation of an object.
-                Servers should convert recognized schemas to the latest internal value, and
-                may reject unrecognized values.
-                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
-              type: string
-            kind:
-              description: |-
-                Kind is a string value representing the REST resource this object represents.
-                Servers may infer this from the endpoint the client submits requests to.
-                Cannot be updated.
-                In CamelCase.
-                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-              type: string
-            metadata:
-              type: object
-            spec:
-              description: |-
-                AuditEventSpec records one security-relevant decision. Write-once:
-                the admission webhook rejects updates to spec. Status is intentionally
-                empty. See ADR-0016.
-              properties:
-                count:
-                  description: |-
-                    Count is the number of events collapsed into this record. Set
-                    only for egress-block-summary and similar summary kinds; otherwise
-                    implicitly 1.
-                  format: int32
-                  minimum: 1
-                  type: integer
-                credential:
-                  description: |-
-                    Credential is set for credential-* kinds; names the logical
-                    credential and the backing provider.
-                  properties:
-                    name:
-                      description: |-
-                        Name is the credential's logical name (matches the template's
-                        requires.credentials[*].name).
-                      type: string
-                    provider:
-                      description: |-
-                        Provider is the provider kind that handled (or would have handled)
-                        the request. See ADR-0015.
-                      type: string
-                    purpose:
-                      description: Purpose is the requested purpose ("llm", "gitforge", "generic").
-                      type: string
-                  required:
-                    - name
-                  type: object
-                decision:
-                  description: 'Decision is the outcome: granted, denied, or warned.'
-                  enum:
-                    - granted
-                    - denied
-                    - warned
-                  type: string
-                destination:
-                  description: |-
-                    Destination is set for egress-* and credential-* kinds that target
-                    an upstream service.
+  - additionalPrinterColumns:
+    - jsonPath: .spec.kind
+      name: Kind
+      type: string
+    - jsonPath: .spec.decision
+      name: Decision
+      type: string
+    - jsonPath: .spec.runRef.name
+      name: Run
+      type: string
+    - jsonPath: .spec.timestamp
+      name: When
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          AuditEvent records one security-relevant decision made by the broker,
+          proxy, webhook, or reconciler. Write-once: spec is set at creation and
+          immutable. A TTL reconciler in the controller-manager reaps events
+          older than --audit-retention-days (default 30). See ADR-0016.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              AuditEventSpec records one security-relevant decision. Write-once:
+              the admission webhook rejects updates to spec. Status is intentionally
+              empty. See ADR-0016.
+            properties:
+              count:
+                description: |-
+                  Count is the number of events collapsed into this record. Set
+                  only for egress-block-summary and similar summary kinds; otherwise
+                  implicitly 1.
+                format: int32
+                minimum: 1
+                type: integer
+              credential:
+                description: |-
+                  Credential is set for credential-* kinds; names the logical
+                  credential and the backing provider.
+                properties:
+                  name:
+                    description: |-
+                      Name is the credential's logical name (matches the template's
+                      requires.credentials[*].name).
+                    type: string
+                  provider:
+                    description: |-
+                      Provider is the provider kind that handled (or would have handled)
+                      the request. See ADR-0015.
+                    type: string
+                  purpose:
+                    description: Purpose is the requested purpose ("llm", "gitforge",
+                      "generic").
+                    type: string
+                required:
+                - name
+                type: object
+              decision:
+                description: 'Decision is the outcome: granted, denied, or warned.'
+                enum:
+                - granted
+                - denied
+                - warned
+                type: string
+              destination:
+                description: |-
+                  Destination is set for egress-* and credential-* kinds that target
+                  an upstream service.
+                properties:
+                  host:
+                    description: Host is the destination hostname.
+                    type: string
+                  port:
+                    description: Port is the destination TCP port.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                required:
+                - host
+                type: object
+              kind:
+                description: |-
+                  Kind categorises the event. Shape of Destination, Credential, and
+                  Policy fields depends on Kind.
+                enum:
+                - credential-issued
+                - credential-denied
+                - credential-renewed
+                - credential-revoked
+                - egress-allow
+                - egress-block
+                - egress-block-summary
+                - egress-discovery-allow
+                - policy-applied
+                - broker-unavailable
+                type: string
+              matchedPolicy:
+                description: |-
+                  MatchedPolicy is the BrokerPolicy whose grant covered this
+                  decision, or nil on a deny.
+                properties:
+                  name:
+                    description: Name of the referenced object.
+                    type: string
+                required:
+                - name
+                type: object
+              reason:
+                description: |-
+                  Reason is a human-readable explanation. For denials, includes the
+                  specific rule that failed.
+                maxLength: 1024
+                type: string
+              runRef:
+                description: |-
+                  RunRef identifies the HarnessRun this decision pertains to. May be
+                  empty for events emitted outside a run context (e.g. broker
+                  startup diagnostics — not currently emitted).
+                properties:
+                  name:
+                    description: Name of the referenced object.
+                    type: string
+                required:
+                - name
+                type: object
+              sampleDestinations:
+                description: |-
+                  SampleDestinations carries up to three example destinations when
+                  Kind is a summary. Purely diagnostic.
+                items:
+                  description: AuditDestination describes an upstream target.
                   properties:
                     host:
                       description: Host is the destination hostname.
@@ -112,97 +177,34 @@ spec:
                       minimum: 1
                       type: integer
                   required:
-                    - host
+                  - host
                   type: object
-                kind:
-                  description: |-
-                    Kind categorises the event. Shape of Destination, Credential, and
-                    Policy fields depends on Kind.
-                  enum:
-                    - credential-issued
-                    - credential-denied
-                    - credential-renewed
-                    - credential-revoked
-                    - egress-allow
-                    - egress-block
-                    - egress-block-summary
-                    - policy-applied
-                    - broker-unavailable
-                  type: string
-                matchedPolicy:
-                  description: |-
-                    MatchedPolicy is the BrokerPolicy whose grant covered this
-                    decision, or nil on a deny.
-                  properties:
-                    name:
-                      description: Name of the referenced object.
-                      type: string
-                  required:
-                    - name
-                  type: object
-                reason:
-                  description: |-
-                    Reason is a human-readable explanation. For denials, includes the
-                    specific rule that failed.
-                  maxLength: 1024
-                  type: string
-                runRef:
-                  description: |-
-                    RunRef identifies the HarnessRun this decision pertains to. May be
-                    empty for events emitted outside a run context (e.g. broker
-                    startup diagnostics — not currently emitted).
-                  properties:
-                    name:
-                      description: Name of the referenced object.
-                      type: string
-                  required:
-                    - name
-                  type: object
-                sampleDestinations:
-                  description: |-
-                    SampleDestinations carries up to three example destinations when
-                    Kind is a summary. Purely diagnostic.
-                  items:
-                    description: AuditDestination describes an upstream target.
-                    properties:
-                      host:
-                        description: Host is the destination hostname.
-                        type: string
-                      port:
-                        description: Port is the destination TCP port.
-                        format: int32
-                        maximum: 65535
-                        minimum: 1
-                        type: integer
-                    required:
-                      - host
-                    type: object
-                  maxItems: 3
-                  type: array
-                timestamp:
-                  description: |-
-                    Timestamp is when the decision was taken. Set by the emitter —
-                    not metadata.creationTimestamp, which records when the object
-                    landed in etcd (can lag materially under load).
-                  format: date-time
-                  type: string
-                windowEnd:
-                  format: date-time
-                  type: string
-                windowStart:
-                  description: |-
-                    WindowStart and WindowEnd delimit the time range a summary event
-                    covers. Set only for summary kinds.
-                  format: date-time
-                  type: string
-              required:
-                - decision
-                - kind
-                - timestamp
-              type: object
-          required:
-            - spec
-          type: object
-      served: true
-      storage: true
-      subresources: {}
+                maxItems: 3
+                type: array
+              timestamp:
+                description: |-
+                  Timestamp is when the decision was taken. Set by the emitter —
+                  not metadata.creationTimestamp, which records when the object
+                  landed in etcd (can lag materially under load).
+                format: date-time
+                type: string
+              windowEnd:
+                format: date-time
+                type: string
+              windowStart:
+                description: |-
+                  WindowStart and WindowEnd delimit the time range a summary event
+                  covers. Set only for summary kinds.
+                format: date-time
+                type: string
+            required:
+            - decision
+            - kind
+            - timestamp
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}
