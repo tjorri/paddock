@@ -51,9 +51,11 @@ func TestBuildRunNetworkPolicy_Shape(t *testing.T) {
 		t.Errorf("policyTypes = %v, want [Egress]", np.Spec.PolicyTypes)
 	}
 
-	// Three rules: kube-dns, TCP 443 (with except list), TCP 80 (same).
-	if len(np.Spec.Egress) != 3 {
-		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80)", len(np.Spec.Egress))
+	// Four rules: kube-dns, TCP 443 (with except list), TCP 80 (same),
+	// kube-apiserver. (Broker rule is conditional — not added when
+	// BrokerNamespace is unset.)
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + apiserver)", len(np.Spec.Egress))
 	}
 
 	// First rule: DNS to kube-dns with both UDP and TCP 53.
@@ -111,9 +113,9 @@ func TestBuildRunNetworkPolicy_ExcludesPrivateAndClusterCIDRs(t *testing.T) {
 	}
 	np := buildRunNetworkPolicy(run, cfg)
 
-	// Egress rules: kube-dns, TCP 443, TCP 80. Same count as before.
-	if len(np.Spec.Egress) != 3 {
-		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80)", len(np.Spec.Egress))
+	// Four rules: kube-dns, TCP 443, TCP 80, kube-apiserver.
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + apiserver)", len(np.Spec.Egress))
 	}
 
 	// Rules 2 and 3 are the public-internet rules; both should now have
@@ -127,16 +129,17 @@ func TestBuildRunNetworkPolicy_ExcludesPrivateAndClusterCIDRs(t *testing.T) {
 		"10.244.0.0/16",
 		"10.96.0.0/12",
 	}
-	for i, rule := range np.Spec.Egress[1:] {
+	for i := 1; i <= 2; i++ {
+		rule := np.Spec.Egress[i]
 		if len(rule.To) != 1 || rule.To[0].IPBlock == nil {
-			t.Fatalf("rule[%d] expected ipBlock peer; got %+v", i+1, rule.To)
+			t.Fatalf("rule[%d] expected ipBlock peer; got %+v", i, rule.To)
 		}
 		got := rule.To[0].IPBlock
 		if got.CIDR != "0.0.0.0/0" {
-			t.Errorf("rule[%d] CIDR = %q, want 0.0.0.0/0", i+1, got.CIDR)
+			t.Errorf("rule[%d] CIDR = %q, want 0.0.0.0/0", i, got.CIDR)
 		}
 		if !cidrSliceEqual(got.Except, wantExcept) {
-			t.Errorf("rule[%d] except = %v, want %v", i+1, got.Except, wantExcept)
+			t.Errorf("rule[%d] except = %v, want %v", i, got.Except, wantExcept)
 		}
 	}
 }
@@ -171,9 +174,9 @@ func TestBuildRunNetworkPolicy_BrokerEgressRule(t *testing.T) {
 	}
 	np := buildRunNetworkPolicy(run, cfg)
 
-	// Now expect 4 rules: DNS + 443 + 80 + broker.
-	if len(np.Spec.Egress) != 4 {
-		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + broker)", len(np.Spec.Egress))
+	// Now expect 5 rules: DNS + 443 + 80 + broker + apiserver.
+	if len(np.Spec.Egress) != 5 {
+		t.Fatalf("egress rules = %d, want 5 (DNS + 443 + 80 + broker + apiserver)", len(np.Spec.Egress))
 	}
 
 	// Find the broker rule (it's the one with paddock-system namespace selector
@@ -213,9 +216,9 @@ func TestBuildRunNetworkPolicy_NoBrokerRuleWhenNamespaceUnset(t *testing.T) {
 	}
 	np := buildRunNetworkPolicy(run, cfg)
 
-	// Expect 3 rules: no broker rule when namespace is empty.
-	if len(np.Spec.Egress) != 3 {
-		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80; no broker rule)", len(np.Spec.Egress))
+	// Expect 4 rules: DNS + 443 + 80 + apiserver (no broker rule when namespace is empty).
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + apiserver; no broker rule)", len(np.Spec.Egress))
 	}
 }
 

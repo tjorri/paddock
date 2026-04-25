@@ -714,6 +714,7 @@ func buildSeedNetworkPolicy(ws *paddockv1alpha1.Workspace, cfg networkPolicyConf
 	if brokerRule := buildBrokerEgressRule(cfg); brokerRule != nil {
 		rules = append(rules, *brokerRule)
 	}
+	rules = append(rules, buildAPIServerEgressRule())
 
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{

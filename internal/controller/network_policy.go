@@ -135,6 +135,42 @@ func buildBrokerEgressRule(cfg networkPolicyConfig) *networkingv1.NetworkPolicyE
 	}
 }
 
+// buildAPIServerEgressRule returns an egress rule allowing the run/seed
+// pod's sidecars (collector, adapter) to reach the Kubernetes API
+// server on TCP 443. Without this rule, the cluster-CIDR exclusion
+// from F-19/F-45's NP fix blocks the API server (the kubernetes.default
+// service IP lives in the cluster service CIDR), breaking the
+// collector's output-ConfigMap writes and AuditEvent emission.
+//
+// The rule selects the kube-apiserver static pod by its standard label
+// (component=kube-apiserver in kube-system); this matches Kind, kubeadm-
+// based clusters, and most managed Kubernetes distributions. Operators
+// in clusters where this label doesn't apply will need to add their
+// own egress rule.
+func buildAPIServerEgressRule() networkingv1.NetworkPolicyEgressRule {
+	tcp := corev1.ProtocolTCP
+	httpsPort := intstr.FromInt32(443)
+	return networkingv1.NetworkPolicyEgressRule{
+		To: []networkingv1.NetworkPolicyPeer{
+			{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"kubernetes.io/metadata.name": "kube-system",
+					},
+				},
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"component": "kube-apiserver",
+					},
+				},
+			},
+		},
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Protocol: &tcp, Port: &httpsPort},
+		},
+	}
+}
+
 // buildRunNetworkPolicy renders the defence-in-depth NetworkPolicy
 // that rides alongside the proxy sidecar. The policy targets the run's
 // Pod by label, permits:
@@ -204,6 +240,7 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyCon
 	if brokerRule := buildBrokerEgressRule(cfg); brokerRule != nil {
 		rules = append(rules, *brokerRule)
 	}
+	rules = append(rules, buildAPIServerEgressRule())
 
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{

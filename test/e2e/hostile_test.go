@@ -69,6 +69,24 @@ var _ = Describe("Phase 2a P0 hotfix validation (hostile harness)", Ordered, fun
 
 	BeforeAll(func() {
 		hostileNamespace = "paddock-hostile-e2e"
+
+		// The earlier "paddock v0.1-v0.3 pipeline" Ordered Describe's
+		// AfterAll runs `make undeploy` + `make uninstall`, so by the
+		// time we get here the CRDs and controller are gone. Re-install
+		// them here. Mirrors the existing pipeline's BeforeAll pattern.
+		By("installing CRDs")
+		_, err := utils.Run(exec.Command("make", "install"))
+		Expect(err).NotTo(HaveOccurred())
+
+		By("deploying the controller-manager")
+		_, err = utils.Run(exec.Command("make", "deploy", "IMG=paddock-manager:dev"))
+		Expect(err).NotTo(HaveOccurred())
+
+		By("waiting for the controller-manager to roll out")
+		_, err = utils.Run(exec.Command("kubectl", "-n", "paddock-system",
+			"rollout", "status", "deploy/paddock-controller-manager", "--timeout=180s"))
+		Expect(err).NotTo(HaveOccurred())
+
 		// Cluster-scoped templates only need to be applied once. Each
 		// scenario gets its own namespace + BrokerPolicy.
 		mustApply("config/samples/paddock_v1alpha1_clusterharnesstemplate_evil_echo.yaml")
