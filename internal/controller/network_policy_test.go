@@ -51,11 +51,10 @@ func TestBuildRunNetworkPolicy_Shape(t *testing.T) {
 		t.Errorf("policyTypes = %v, want [Egress]", np.Spec.PolicyTypes)
 	}
 
-	// Four rules: kube-dns, TCP 443 (with except list), TCP 80 (same),
-	// kube-apiserver. (Broker rule is conditional — not added when
-	// BrokerNamespace is unset.)
-	if len(np.Spec.Egress) != 4 {
-		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + apiserver)", len(np.Spec.Egress))
+	// Three rules: kube-dns, TCP 443 (with except list), TCP 80 (same).
+	// (Broker rule is conditional — not added when BrokerNamespace is unset.)
+	if len(np.Spec.Egress) != 3 {
+		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80)", len(np.Spec.Egress))
 	}
 
 	// First rule: DNS to kube-dns with both UDP and TCP 53.
@@ -113,9 +112,9 @@ func TestBuildRunNetworkPolicy_ExcludesPrivateAndClusterCIDRs(t *testing.T) {
 	}
 	np := buildRunNetworkPolicy(run, cfg)
 
-	// Four rules: kube-dns, TCP 443, TCP 80, kube-apiserver.
-	if len(np.Spec.Egress) != 4 {
-		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + apiserver)", len(np.Spec.Egress))
+	// Three rules: kube-dns, TCP 443, TCP 80.
+	if len(np.Spec.Egress) != 3 {
+		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80)", len(np.Spec.Egress))
 	}
 
 	// Rules 2 and 3 are the public-internet rules; both should now have
@@ -174,9 +173,9 @@ func TestBuildRunNetworkPolicy_BrokerEgressRule(t *testing.T) {
 	}
 	np := buildRunNetworkPolicy(run, cfg)
 
-	// Now expect 5 rules: DNS + 443 + 80 + broker + apiserver.
-	if len(np.Spec.Egress) != 5 {
-		t.Fatalf("egress rules = %d, want 5 (DNS + 443 + 80 + broker + apiserver)", len(np.Spec.Egress))
+	// Now expect 4 rules: DNS + 443 + 80 + broker.
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + broker)", len(np.Spec.Egress))
 	}
 
 	// Find the broker rule (it's the one with paddock-system namespace selector
@@ -216,9 +215,9 @@ func TestBuildRunNetworkPolicy_NoBrokerRuleWhenNamespaceUnset(t *testing.T) {
 	}
 	np := buildRunNetworkPolicy(run, cfg)
 
-	// Expect 4 rules: DNS + 443 + 80 + apiserver (no broker rule when namespace is empty).
-	if len(np.Spec.Egress) != 4 {
-		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + apiserver; no broker rule)", len(np.Spec.Egress))
+	// Expect 3 rules: DNS + 443 + 80 (no broker rule when namespace is empty).
+	if len(np.Spec.Egress) != 3 {
+		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80; no broker rule)", len(np.Spec.Egress))
 	}
 }
 

@@ -54,10 +54,10 @@ func TestBuildSeedNetworkPolicy_Shape(t *testing.T) {
 		t.Errorf("policyTypes = %v, want [Egress]", np.Spec.PolicyTypes)
 	}
 
-	// Four egress rules, same shape as run-pod NP: kube-dns, TCP 443
-	// excluding cluster CIDRs, TCP 80 excluding cluster CIDRs, kube-apiserver.
-	if len(np.Spec.Egress) != 4 {
-		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + apiserver)", len(np.Spec.Egress))
+	// Three egress rules, same shape as run-pod NP: kube-dns, TCP 443
+	// excluding cluster CIDRs, TCP 80 excluding cluster CIDRs.
+	if len(np.Spec.Egress) != 3 {
+		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80)", len(np.Spec.Egress))
 	}
 
 	// Public-internet rules (indexes 1, 2) must have non-empty Except list.
@@ -87,8 +87,8 @@ func TestBuildSeedNetworkPolicy_BrokerEgressRule(t *testing.T) {
 	}
 	np := buildSeedNetworkPolicy(ws, cfg)
 
-	if len(np.Spec.Egress) != 5 {
-		t.Fatalf("egress rules = %d, want 5 (DNS + 443 + 80 + broker + apiserver)", len(np.Spec.Egress))
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + broker)", len(np.Spec.Egress))
 	}
 }
 
