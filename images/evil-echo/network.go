@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -139,7 +139,7 @@ func cmdSmuggleHeaders(spec string) Output {
 		target = "https://example.com/"
 	}
 	req, _ := http.NewRequest("GET", target, nil) //nolint:gosec,noctx
-	parts := splitOnce(spec, "=")
+	parts := strings.SplitN(spec, "=", 2)
 	if len(parts) != 2 {
 		return Output{Flag: "--smuggle-headers", Result: "error", Error: "spec must be name=value"}
 	}
@@ -182,16 +182,6 @@ func cmdProbeProviderSubstitutionHost(target string) Output {
 		Detail: map[string]any{"http_status": resp.StatusCode}}
 }
 
-// splitOnce splits s at the first occurrence of sep.
-func splitOnce(s, sep string) []string {
-	for i := 0; i+len(sep) <= len(s); i++ {
-		if s[i:i+len(sep)] == sep {
-			return []string{s[:i], s[i+len(sep):]}
-		}
-	}
-	return []string{s}
-}
-
 // cmdBypassProxyEnv unsets the proxy-related env vars in the current
 // process. Subsequent flag handlers that rely on env vars (e.g., when
 // the harness is run via cooperative HTTPS_PROXY) will see them absent.
@@ -216,7 +206,3 @@ func cmdProbeEnvOverride() Output {
 	}
 	return Output{Flag: "--probe-env-override", Result: "success", Detail: envs}
 }
-
-// Ensure fmt is used (it is used via http.NewRequest error path but compiler
-// may not see it; add a compile-time reference).
-var _ = fmt.Sprintf
