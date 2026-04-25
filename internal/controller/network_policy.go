@@ -42,6 +42,10 @@ const (
 	NetworkPolicyEnforceOff  NetworkPolicyEnforceMode = "off"
 )
 
+// openCIDR is the IPv4 'allow everything' CIDR used as the base of
+// public-internet egress rules; the linked except list narrows it.
+const openCIDR = "0.0.0.0/0"
+
 // runNetworkPolicyName returns the per-run NP's name.
 func runNetworkPolicyName(runName string) string {
 	return runName + "-egress"
@@ -173,7 +177,6 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyCon
 	dnsPort := intstr.FromInt32(53)
 	httpsPort := intstr.FromInt32(443)
 	httpPort := intstr.FromInt32(80)
-	openCIDR := "0.0.0.0/0"
 	exceptCIDRs := buildExceptCIDRs(cfg)
 
 	rules := []networkingv1.NetworkPolicyEgressRule{
