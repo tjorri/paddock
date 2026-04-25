@@ -439,27 +439,24 @@ spec:
 `, tg19Namespace)
 			mustApplyManifest(templateManifest)
 
-			By("snapshotting the broker ClusterRole and patching it to remove auditevents:create")
-			origRoleYAML, err := utils.Run(exec.CommandContext(ctx, "kubectl",
-				"get", "clusterrole", "paddock-broker-role", "-o", "yaml"))
-			Expect(err).NotTo(HaveOccurred(), "kubectl get clusterrole paddock-broker-role: %s", origRoleYAML)
+			By("patching the broker ClusterRole to remove auditevents:create")
+			// Restoration is symmetric: a JSON-patch add appends the
+			// auditevents rule back to the rules slice in DeferCleanup.
+			// Avoids the resourceVersion-conflict trap of full-resource
+			// kubectl apply during cleanup.
 			DeferCleanup(func() {
-				By("restoring the broker ClusterRole")
-				cmd := exec.Command("kubectl", "apply", "-f", "-")
-				cmd.Stdin = strings.NewReader(origRoleYAML)
-				out, err := utils.Run(cmd)
-				Expect(err).NotTo(HaveOccurred(), "restoring clusterrole: %s", out)
+				By("restoring the broker ClusterRole's auditevents rule")
+				_, err := utils.Run(exec.Command("kubectl",
+					"patch", "clusterrole", "paddock-broker-role",
+					"--type=json",
+					`-p=[{"op":"add","path":"/rules/-","value":{"apiGroups":["paddock.dev"],"resources":["auditevents"],"verbs":["create"]}}]`))
+				Expect(err).NotTo(HaveOccurred(), "restoring clusterrole patch")
 			})
 
-			// Replace the rules entirely with one that grants everything
-			// the broker needs EXCEPT auditevents:create. The simplest
-			// approach: use kubectl patch with --type=json to delete the
-			// auditevents rule.
-			//
 			// The ClusterRole has 4 rules in order: tokenreviews, paddock
 			// CRDs read, secrets read, auditevents create. The
 			// auditevents rule is at index 3.
-			_, err = utils.Run(exec.CommandContext(ctx, "kubectl",
+			_, err := utils.Run(exec.CommandContext(ctx, "kubectl",
 				"patch", "clusterrole", "paddock-broker-role",
 				"--type=json",
 				`-p=[{"op":"remove","path":"/rules/3"}]`))
