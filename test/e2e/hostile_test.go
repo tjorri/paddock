@@ -141,6 +141,73 @@ spec:
 				connectEvent.Result, connectEvent.Error)
 		})
 	})
+
+	Context("F-38: agent container has no SA-token; broker rejects synthetic bearers", func() {
+		It("agent cannot read SA-token files; broker rejects forged tokens (TG-7)", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+
+			By("ensuring the namespace + policy are in place")
+			mustCreateNamespace(hostileNamespace)
+			mustApplyToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", hostileNamespace)
+
+			By("submitting a HarnessRun that probes for SA tokens and the broker")
+			runName := "tg7-sa-token-forgery"
+			brokerURL := "https://paddock-broker.paddock-system.svc:8443/v1/issue"
+			runManifest := fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  templateRef:
+    name: %s
+    kind: ClusterHarnessTemplate
+  prompt: "tg-7 sa-token forgery probe"
+  args:
+    - "--read-secret-files"
+    - "/var/run/secrets/kubernetes.io/serviceaccount/*"
+    - "--probe-broker"
+    - "%s"
+`, runName, hostileNamespace, hostileTemplateName, brokerURL)
+			mustApplyManifest(runManifest)
+
+			By("waiting for terminal phase")
+			Eventually(func() string {
+				return runPhase(ctx, hostileNamespace, runName)
+			}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
+
+			By("reading harness output")
+			output := readRunOutput(ctx, hostileNamespace, runName)
+			events := parseHostileEvents(output)
+			Expect(events).ToNot(BeEmpty(), "expected hostile-event JSON; got: %s", output)
+
+			By("asserting --read-secret-files found no matches (no SA token mount)")
+			var readEvent *hostileEvent
+			for i := range events {
+				if events[i].Flag == "--read-secret-files" {
+					readEvent = &events[i]
+					break
+				}
+			}
+			Expect(readEvent).ToNot(BeNil(), "no --read-secret-files event: %s", output)
+			Expect(readEvent.Result).To(Equal("denied"),
+				"agent container should have no SA-token mount (F-38); got %+v", readEvent)
+
+			By("asserting --probe-broker was rejected by the broker")
+			var probeEvent *hostileEvent
+			for i := range events {
+				if events[i].Flag == "--probe-broker" {
+					probeEvent = &events[i]
+					break
+				}
+			}
+			Expect(probeEvent).ToNot(BeNil(), "no --probe-broker event: %s", output)
+			Expect(probeEvent.Result).To(Equal("denied"),
+				"broker must reject synthetic bearers; got %+v", probeEvent)
+		})
+	})
 })
 
 // mustApply applies a YAML file at the cluster scope. Fails the test on
