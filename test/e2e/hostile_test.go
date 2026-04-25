@@ -367,6 +367,12 @@ spec:
 
 			By("creating a dedicated namespace + BrokerPolicy that grants DEMO_TOKEN")
 			tg19Namespace := "paddock-hostile-tg19"
+			// Ensure clean state: delete + wait for any prior namespace
+			// (e.g. left over from a failed previous run that successfully
+			// completed after DeferCleanup restored RBAC). Otherwise we'd
+			// observe a stale Succeeded HarnessRun on the first poll.
+			_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+				"delete", "ns", tg19Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 			mustCreateNamespace(tg19Namespace)
 
 			tg19Policy := fmt.Sprintf(`
@@ -516,6 +522,9 @@ spec:
 			defer cancel()
 
 			f32Namespace := "paddock-hostile-f32"
+			// Ensure clean state in case a prior run left the namespace.
+			_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+				"delete", "ns", f32Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 			mustCreateNamespace(f32Namespace)
 			DeferCleanup(func() {
 				_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
