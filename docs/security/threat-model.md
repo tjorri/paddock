@@ -223,7 +223,7 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | Tampering                  | Bearer issuance request modified on the wire              | mTLS broker server cert (cert-manager-issued)                  |
 | Repudiation                | Broker issues a bearer with no audit trail                | AuditEvent on every issuance; `kind: credential-issued`        |
 | Information disclosure     | Bearer or substitution mapping leaks                      | Bearer is opaque; mapping is broker-memory-only                |
-| Denial of service          | Tenant exhausts broker capacity                           | Per-run rate limiting (TBD audit finding)                      |
+| Denial of service          | Tenant exhausts broker capacity                           | Per-run rate limiting (see F-17)                               |
 | Elevation of privilege     | Bearer scope expands beyond grant                         | Per-request validation; intersection check at issuance         |
 
 ### B-4: run pod (agent) ↔ proxy sidecar
@@ -234,14 +234,14 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | Tampering                  | Agent unsets HTTPS_PROXY env (cooperative mode)           | Cooperative requires opt-in; transparent mode unbypassable     |
 | Repudiation                | Agent attempts ungranted egress without record            | Proxy logs every connection; AuditEvent on deny                |
 | Information disclosure     | Agent reads CA private key                                | CA key in proxy-only Secret; not mounted in agent              |
-| Denial of service          | Agent floods proxy with connections                       | Proxy connection limits (TBD audit finding)                    |
+| Denial of service          | Agent floods proxy with connections                       | Proxy connection limits (see F-26)                             |
 | Elevation of privilege     | Agent gains NET_ADMIN to bypass iptables                   | PSS restricted on tenant ns; iptables-init init-only          |
 
 ### B-5: run pod ↔ external internet
 
 | STRIDE                     | Threat                                                    | Defence                                                       |
 |----------------------------|-----------------------------------------------------------|---------------------------------------------------------------|
-| Spoofing                   | Agent connects to attacker-controlled DNS-rebound IP      | Proxy resolves SNI; allowlist matches host (TBD finding on rebinding) |
+| Spoofing                   | Agent connects to attacker-controlled DNS-rebound IP      | Proxy resolves SNI; allowlist matches host (see F-22)          |
 | Tampering                  | Agent modifies request after substitution                 | Proxy re-checks per request; agent doesn't see real cred        |
 | Repudiation                | External call lacks audit trail                           | AuditEvent on every connection                                 |
 | Information disclosure     | Allowlisted host receives substituted secret              | Trusted upstream; substitution targets declared in policy       |
