@@ -430,6 +430,7 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// with a clear reason — the Pod still proceeds (the broker has
 	// already been the gate on credential flow) but the agent has no
 	// MITM proxy in front of it.
+	var decision policy.InterceptionDecision
 	if r.proxyConfigured() {
 		ok, err := r.ensureProxyTLS(ctx, &run)
 		if err != nil {
@@ -471,7 +472,8 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			}
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
-		decision, mErr := r.resolveInterceptionMode(ctx, &run, tpl)
+		var mErr error
+		decision, mErr = r.resolveInterceptionMode(ctx, &run, tpl)
 		if mErr != nil {
 			return ctrl.Result{}, mErr
 		}
@@ -551,7 +553,7 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// 6. Ensure the Job.
-	job, err := r.ensureJob(ctx, &run, tpl, ws.Status.PVCName)
+	job, err := r.ensureJob(ctx, &run, tpl, ws.Status.PVCName, decision)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -1051,11 +1053,21 @@ func parseResultJSON(data string) (*paddockv1alpha1.HarnessRunOutputs, error) {
 
 // ensureJob builds and creates the backing Job. No-op when one already
 // exists (Job spec is immutable once the HarnessRun spec is).
+// ensureJob builds and creates the backing Job. No-op when one
+// already exists. The `decision` parameter is the resolved
+// interception mode for the proxy-enabled path; callers in the
+// non-proxy-configured path may pass a zero-value decision (it
+// won't be consulted). Resolving once at the top of Reconcile
+// (rather than recomputing here) avoids a duplicate
+// BrokerPolicy List + PSA-label read and closes a small TOCTOU
+// window where the EgressConfigured condition and the Job spec
+// could disagree if a BrokerPolicy changed between reads.
 func (r *HarnessRunReconciler) ensureJob(
 	ctx context.Context,
 	run *paddockv1alpha1.HarnessRun,
 	tpl *resolvedTemplate,
 	pvcName string,
+	decision policy.InterceptionDecision,
 ) (*batchv1.Job, error) {
 	in := podSpecInputs{
 		workspacePVC:    pvcName,
@@ -1071,10 +1083,6 @@ func (r *HarnessRunReconciler) ensureJob(
 		in.proxyImage = r.ProxyImage
 		in.proxyTLSSecret = proxyTLSSecretName(run.Name)
 		in.proxyAllowList = r.ProxyAllowList
-		decision, err := r.resolveInterceptionMode(ctx, run, tpl)
-		if err != nil {
-			return nil, err
-		}
 		if decision.Unavailable {
 			// The reconcile CA-ready path above already emitted the
 			// event and marked the run Failed. Defensive guard: refuse
