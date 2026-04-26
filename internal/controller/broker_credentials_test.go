@@ -17,9 +17,7 @@ limitations under the License.
 package controller
 
 import (
-	"context"
 	"fmt"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -33,41 +31,8 @@ import (
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 	"paddock.dev/paddock/internal/brokerclient"
+	"paddock.dev/paddock/internal/controller/testutil"
 )
-
-// fakeBroker is an in-memory BrokerIssuer for reconciler tests.
-type fakeBroker struct {
-	values map[string]string                  // credential name → value
-	errs   map[string]error                   // credential name → fatal error
-	meta   map[string]brokerapi.IssueResponse // credential name → per-credential metadata (Provider / DeliveryMode / Hosts / InContainerReason). Optional; when absent the response falls back to the Static/empty defaults.
-	calls  int
-}
-
-func (f *fakeBroker) Issue(_ context.Context, _ string, _ string, credentialName string) (*brokerapi.IssueResponse, error) {
-	f.calls++
-	if err, ok := f.errs[credentialName]; ok {
-		return nil, err
-	}
-	v, ok := f.values[credentialName]
-	if !ok {
-		return nil, &brokerclient.BrokerError{Status: 404, Code: brokerapi.CodeCredentialNotFound, Message: credentialName}
-	}
-	resp := brokerapi.IssueResponse{
-		Value:     v,
-		LeaseID:   "lease-" + credentialName,
-		ExpiresAt: time.Now().Add(1 * time.Hour),
-		Provider:  "Static",
-	}
-	if m, ok := f.meta[credentialName]; ok {
-		if m.Provider != "" {
-			resp.Provider = m.Provider
-		}
-		resp.DeliveryMode = m.DeliveryMode
-		resp.Hosts = m.Hosts
-		resp.InContainerReason = m.InContainerReason
-	}
-	return &resp, nil
-}
 
 var _ = Describe("ensureBrokerCredentials", func() {
 	const ns = "broker-creds-test"
@@ -126,7 +91,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 	})
 
 	It("materialises an owned Secret when the broker issues", func() {
-		fb := &fakeBroker{values: map[string]string{
+		fb := &testutil.FakeBroker{Values: map[string]string{
 			"TOKEN_A": "value-a",
 			"TOKEN_B": "value-b",
 		}}
@@ -136,7 +101,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		ok, _, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("TOKEN_A", "TOKEN_B"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
-		Expect(fb.calls).To(Equal(2))
+		Expect(fb.Calls).To(Equal(2))
 
 		var got corev1.Secret
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -149,12 +114,12 @@ var _ = Describe("ensureBrokerCredentials", func() {
 	})
 
 	It("returns per-credential delivery metadata alongside the Secret", func() {
-		fb := &fakeBroker{
-			values: map[string]string{
+		fb := &testutil.FakeBroker{
+			Values: map[string]string{
 				"ANTHROPIC_API_KEY":    "sk-ant-test",
 				"SLACK_SIGNING_SECRET": "slack-signing",
 			},
-			meta: map[string]brokerapi.IssueResponse{
+			Meta: map[string]brokerapi.IssueResponse{
 				"ANTHROPIC_API_KEY": {
 					Provider:     "AnthropicAPI",
 					DeliveryMode: "ProxyInjected",
@@ -193,7 +158,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 	})
 
 	It("returns a fatal reason on a PolicyMissing broker error", func() {
-		fb := &fakeBroker{errs: map[string]error{
+		fb := &testutil.FakeBroker{Errs: map[string]error{
 			"K": &brokerclient.BrokerError{Status: 403, Code: brokerapi.CodePolicyMissing, Message: "no grant"},
 		}}
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
@@ -207,7 +172,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 	})
 
 	It("swallows transient broker-unreachable failures so the caller sets BrokerUnavailable", func() {
-		fb := &fakeBroker{errs: map[string]error{"K": fmt.Errorf("connection refused")}}
+		fb := &testutil.FakeBroker{Errs: map[string]error{"K": fmt.Errorf("connection refused")}}
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("transient")
 
@@ -223,7 +188,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 	})
 
 	It("deletes a stale broker-creds Secret when requires goes empty", func() {
-		fb := &fakeBroker{values: map[string]string{"OLD": "v"}}
+		fb := &testutil.FakeBroker{Values: map[string]string{"OLD": "v"}}
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("stale")
 
@@ -254,7 +219,7 @@ var _ = Describe("reconcileCredentials", func() {
 	})
 
 	It("returns success outcome and sets BrokerReady=True when the broker issues all credentials", func() {
-		fb := &fakeBroker{values: map[string]string{"K": "v"}}
+		fb := &testutil.FakeBroker{Values: map[string]string{"K": "v"}}
 		r := &HarnessRunReconciler{
 			Client:       k8sClient,
 			Scheme:       k8sClient.Scheme(),
@@ -292,7 +257,7 @@ var _ = Describe("reconcileCredentials", func() {
 	})
 
 	It("returns requeue outcome when the broker is unavailable", func() {
-		fb := &fakeBroker{errs: map[string]error{"K": fmt.Errorf("connection refused")}}
+		fb := &testutil.FakeBroker{Errs: map[string]error{"K": fmt.Errorf("connection refused")}}
 		r := &HarnessRunReconciler{
 			Client:       k8sClient,
 			Scheme:       k8sClient.Scheme(),
@@ -332,9 +297,9 @@ var _ = Describe("reconcileCredentials", func() {
 	})
 
 	It("returns fatal outcome when the broker returns a permission error", func() {
-		fb := &fakeBroker{
-			errs: map[string]error{
-				"K": &BrokerError{Status: 403, Code: "PolicyMissing", Message: "no policy grant"},
+		fb := &testutil.FakeBroker{
+			Errs: map[string]error{
+				"K": &brokerclient.BrokerError{Status: 403, Code: brokerapi.CodePolicyMissing, Message: "no policy grant"},
 			},
 		}
 		r := &HarnessRunReconciler{
