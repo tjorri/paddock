@@ -32,6 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -723,6 +724,7 @@ func setupSubstituteAuth(t *testing.T, sub *stubSubstituter) (*broker.Server, cl
 	c := fake.NewClientBuilder().
 		WithScheme(buildScheme(t)).
 		WithObjects(tpl, run).
+		WithStatusSubresource(run).
 		Build()
 	registry, err := providers.NewRegistry(sub)
 	if err != nil {
@@ -825,6 +827,77 @@ func TestSubstituteAuth_BearerUnknownEmitsCredentialDeniedAudit(t *testing.T) {
 	}
 	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialDenied {
 		t.Errorf("kind = %q, want credential-denied", wrote[0].Spec.Kind)
+	}
+}
+
+func TestSubstituteAuth_RunNotFound_DeniesAndAudits(t *testing.T) {
+	sub := &stubSubstituter{name: "anthropic-stub", matched: true,
+		setHdrs: map[string]string{"x-api-key": "real-key"}}
+	srv, _ := setupSubstituteAuth(t, sub)
+	rec := &recordingAuditSink{}
+	srv.Audit = &broker.AuditWriter{Sink: rec}
+
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	body := `{"host":"api.anthropic.com","port":443,"incomingXApiKey":"paddock-bearer-x"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, brokerapi.PathSubstituteAuth, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer valid-token")
+	req.Header.Set(brokerapi.HeaderRun, "no-such-run")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (RunTerminated/no-such-run); body=%s", rr.Code, rr.Body.String())
+	}
+	wrote := rec.events()
+	if len(wrote) != 1 {
+		t.Fatalf("got %d events, want 1", len(wrote))
+	}
+	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialDenied {
+		t.Errorf("kind = %q, want credential-denied", wrote[0].Spec.Kind)
+	}
+	if !strings.Contains(wrote[0].Spec.Reason, "run not found") {
+		t.Errorf("reason = %q, want contains 'run not found'", wrote[0].Spec.Reason)
+	}
+}
+
+func TestSubstituteAuth_RunCancelled_DeniesAndAudits(t *testing.T) {
+	sub := &stubSubstituter{name: "anthropic-stub", matched: true,
+		setHdrs: map[string]string{"x-api-key": "real-key"}}
+	srv, c := setupSubstituteAuth(t, sub)
+	// Cancel the run that setupSubstituteAuth created.
+	var run paddockv1alpha1.HarnessRun
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "hr-1", Namespace: "team-a"}, &run); err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	run.Status.Phase = paddockv1alpha1.HarnessRunPhaseCancelled
+	if err := c.Status().Update(context.Background(), &run); err != nil {
+		t.Fatalf("update run status: %v", err)
+	}
+	rec := &recordingAuditSink{}
+	srv.Audit = &broker.AuditWriter{Sink: rec}
+
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	body := `{"host":"api.anthropic.com","port":443,"incomingXApiKey":"paddock-bearer-x"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, brokerapi.PathSubstituteAuth, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer valid-token")
+	req.Header.Set(brokerapi.HeaderRun, "hr-1")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (RunTerminated); body=%s", rr.Code, rr.Body.String())
+	}
+	wrote := rec.events()
+	if len(wrote) != 1 {
+		t.Fatalf("got %d events, want 1", len(wrote))
+	}
+	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialDenied {
+		t.Errorf("kind = %q, want credential-denied", wrote[0].Spec.Kind)
+	}
+	if !strings.Contains(strings.ToLower(wrote[0].Spec.Reason), "cancelled") {
+		t.Errorf("reason = %q, want contains 'cancelled'", wrote[0].Spec.Reason)
 	}
 }
 

@@ -467,6 +467,52 @@ func (s *Server) handleSubstituteAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// F-10: re-fetch HarnessRun on every SubstituteAuth call so a
+	// run that was deleted or transitioned to a terminal phase since
+	// the bearer was issued cannot continue substituting credentials.
+	// Cached client; sub-millisecond informer-cache lookup.
+	var run paddockv1alpha1.HarnessRun
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: runName, Namespace: runNamespace}, &run); err != nil {
+		if apierrors.IsNotFound(err) {
+			runTerminatedAudit := CredentialAudit{
+				RunName:        runName,
+				Namespace:      runNamespace,
+				CredentialName: req.Host,
+				Reason:         "run not found",
+			}
+			if wErr := s.Audit.CredentialDenied(ctx, runTerminatedAudit); wErr != nil {
+				logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
+				writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+					"paddock-broker: audit unavailable, please retry")
+				return
+			}
+			writeError(w, http.StatusNotFound, "RunTerminated", "run not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "ProviderFailure", err.Error())
+		return
+	}
+	switch run.Status.Phase {
+	case paddockv1alpha1.HarnessRunPhaseCancelled,
+		paddockv1alpha1.HarnessRunPhaseSucceeded,
+		paddockv1alpha1.HarnessRunPhaseFailed:
+		runTerminatedAudit := CredentialAudit{
+			RunName:        runName,
+			Namespace:      runNamespace,
+			CredentialName: req.Host,
+			Reason:         fmt.Sprintf("run terminated: %s", run.Status.Phase),
+		}
+		if wErr := s.Audit.CredentialDenied(ctx, runTerminatedAudit); wErr != nil {
+			logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
+			writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+				"paddock-broker: audit unavailable, please retry")
+			return
+		}
+		writeError(w, http.StatusForbidden, "RunTerminated",
+			fmt.Sprintf("run terminated: %s", run.Status.Phase))
+		return
+	}
+
 	pReq := providers.SubstituteRequest{
 		RunName:   runName,
 		Namespace: runNamespace,
