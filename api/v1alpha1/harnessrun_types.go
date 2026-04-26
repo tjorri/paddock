@@ -202,6 +202,15 @@ type HarnessRunStatus struct {
 	// +listMapKey=name
 	// +optional
 	Credentials []CredentialStatus `json:"credentials,omitempty"`
+
+	// NetworkPolicyEnforced records whether per-run NetworkPolicy
+	// enforcement was active when this run was admitted. Immutable after
+	// admission. The reconciler honours this for the run's lifetime, so a
+	// flag flip on the controller-manager
+	// (--networkpolicy-enforce=on → off) does not weaken running pods.
+	// F-43 / Phase 2d.
+	// +optional
+	NetworkPolicyEnforced *bool `json:"networkPolicyEnforced,omitempty"`
 }
 
 // PaddockEvent is a structured event emitted by an adapter sidecar and

@@ -22,12 +22,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -124,6 +126,12 @@ type HarnessRunReconciler struct {
 	// ClusterServiceCIDR is the cluster's service CIDR. Same purpose as
 	// ClusterPodCIDR; set via --cluster-service-cidr.
 	ClusterServiceCIDR string
+	// APIServerIPs is the set of IPv4 addresses the controller's
+	// kubeconfig resolves the kube-apiserver to. Set once at manager
+	// startup; per-run NetworkPolicies include a TCP/443 allow rule
+	// for each entry so sidecars (collector, adapter) can reach the
+	// apiserver. F-41 / Phase 2d.
+	APIServerIPs []net.IP
 
 	// BrokerEndpoint is the in-cluster broker URL the proxy sidecar
 	// calls for ValidateEgress + SubstituteAuth. Empty disables
@@ -195,14 +203,34 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Terminal phase: no further work; let TTL (if set) or explicit
-	// deletion handle cleanup.
+	// Terminal phase: short-circuit unless the Job still exists. While
+	// the Pod is draining within terminationGracePeriodSeconds, an edit
+	// to a mounted Secret / SA / Role would be read by the agent on next
+	// access; keep reconciling so the new Owns() watches can revert
+	// tampering. F-41 / Phase 2d.
 	if isTerminal(run.Status.Phase) {
-		return ctrl.Result{}, nil
+		if run.Status.JobName == "" {
+			return ctrl.Result{}, nil
+		}
+		var job batchv1.Job
+		err := r.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: run.Status.JobName}, &job)
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		// Job still exists; fall through to re-converge owned resources.
 	}
 
 	origStatus := run.Status.DeepCopy()
 	run.Status.ObservedGeneration = run.Generation
+
+	// Pin the NP-enforce decision at admission so flag flips don't
+	// weaken existing runs. F-43 / Phase 2d.
+	if err := r.pinNetworkPolicyEnforced(ctx, &run); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	// 1. Resolve template.
 	tpl, err := resolveTemplate(ctx, r.Client, &run)
@@ -480,25 +508,24 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	// 4c. Per-run NetworkPolicy (ADR-0013 §7.4). Only emitted when the
-	// manager is configured to enforce (on or auto-detected) AND the
+	// 4c. Per-run NetworkPolicy (ADR-0013 §7.4). Emitted only when the
 	// template declares non-empty `requires` (capabilities the NP would
 	// enforce). Templates with empty requires (test fixtures, smoke
 	// runs) skip NP emission so the collector + adapter sidecars retain
-	// their kube-apiserver access — host-network destinations cannot be
-	// matched by standard NetworkPolicy podSelectors, so a tightened NP
-	// without an apiserver allow rule breaks the AuditEvent + output-
-	// ConfigMap path. Phase 2c will add a CiliumNetworkPolicy variant
-	// (entity: kube-apiserver) that closes this hole for required-only
-	// runs as well. Failure to materialise the policy is a hard error
-	// when emission is required.
+	// their kube-apiserver access on Cilium clusters — Cilium does not
+	// enforce standard NetworkPolicy ipBlock rules against host-network
+	// destinations like the kube-apiserver static pod (the Phase 2d
+	// apiserver allow rule helps non-Cilium clusters but does not work
+	// for Cilium's host-network case). A proper fix uses Cilium-specific
+	// CiliumNetworkPolicy with toEntities: kube-apiserver and is queued
+	// for a future phase. F-41 / Phase 2d.
 	if !policy.RequiresEmpty(tpl.Spec.Requires) {
 		if err := r.ensureRunNetworkPolicy(ctx, &run); err != nil {
 			return ctrl.Result{}, err
 		}
 	} else {
-		// Clean up any stale NP from a previous reconcile that did
-		// emit one (e.g., template was edited to drop requires).
+		// Clean up any stale NP from a previous reconcile that did emit
+		// one (e.g., template was edited to drop requires).
 		if err := r.deleteRunNetworkPolicy(ctx, &run); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -1203,6 +1230,21 @@ func (r *HarnessRunReconciler) resolveInterceptionMode(
 	return decision, nil
 }
 
+// pinNetworkPolicyEnforced records the current --networkpolicy-enforce
+// decision on run.Status the first time it's called (when the field is
+// nil). Subsequent calls are no-ops, so flag flips on the manager
+// don't weaken existing runs. F-43 / Phase 2d.
+//
+//nolint:unparam // ctx is unused now; reserved for a future status patch via the sub-resource client.
+func (r *HarnessRunReconciler) pinNetworkPolicyEnforced(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
+	if run.Status.NetworkPolicyEnforced != nil {
+		return nil
+	}
+	v := r.networkPolicyEnforced()
+	run.Status.NetworkPolicyEnforced = &v
+	return nil
+}
+
 // fail sets a terminal Failed phase with the given condition reason.
 func (r *HarnessRunReconciler) fail(run *paddockv1alpha1.HarnessRun, condType, reason, message string) {
 	now := metav1.Now()
@@ -1306,6 +1348,13 @@ func (r *HarnessRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&batchv1.Job{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&paddockv1alpha1.Workspace{}).
+		// F-41 / Phase 2d: react to mid-run mutation of owned per-run
+		// resources so kubectl edit/delete is reverted via CreateOrUpdate.
+		Owns(&corev1.Secret{}).
+		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(&corev1.ServiceAccount{}).
+		Owns(&rbacv1.Role{}).
+		Owns(&rbacv1.RoleBinding{}).
 		Named("harnessrun").
 		Complete(r)
 }

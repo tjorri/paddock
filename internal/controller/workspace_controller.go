@@ -21,6 +21,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
 	"reflect"
 	"time"
 
@@ -80,6 +81,10 @@ type WorkspaceReconciler struct {
 	// BrokerNamespace mirrors HarnessRunReconciler.BrokerNamespace; used
 	// by the per-seed-Pod NetworkPolicy. See F-45.
 	BrokerNamespace string
+	// APIServerIPs mirrors HarnessRunReconciler.APIServerIPs; used by the
+	// per-seed-Pod NetworkPolicy to allow TCP/443 egress to the apiserver.
+	// F-41 / Phase 2d.
+	APIServerIPs []net.IP
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=workspaces,verbs=get;list;watch;create;update;patch;delete
@@ -434,6 +439,7 @@ func (r *WorkspaceReconciler) ensureSeedNetworkPolicy(ctx context.Context, ws *p
 		ClusterPodCIDR:     r.ClusterPodCIDR,
 		ClusterServiceCIDR: r.ClusterServiceCIDR,
 		BrokerNamespace:    r.BrokerNamespace,
+		APIServerIPs:       r.APIServerIPs,
 	}
 	desired := buildSeedNetworkPolicy(ws, cfg)
 	np := &networkingv1.NetworkPolicy{

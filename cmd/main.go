@@ -221,7 +221,18 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	cfg, err := ctrl.GetConfig()
+	if err != nil {
+		setupLog.Error(err, "unable to load kubeconfig")
+		os.Exit(1)
+	}
+	apiserverIPs, err := controller.APIServerIPsFromConfig(cfg)
+	if err != nil {
+		setupLog.Error(err, "unable to resolve kube-apiserver IPs for per-run NetworkPolicy")
+		os.Exit(1)
+	}
+	setupLog.Info("apiserver IPs resolved", "ips", apiserverIPs)
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
@@ -298,6 +309,7 @@ func main() {
 		NetworkPolicyAutoEnabled: npAuto,
 		ClusterPodCIDR:           clusterPodCIDR,
 		ClusterServiceCIDR:       clusterServiceCIDR,
+		APIServerIPs:             apiserverIPs,
 		BrokerEndpoint:           brokerEndpoint,
 		BrokerNamespace:          brokerNamespace,
 		ProxyCASource: controller.ProxyCASource{
@@ -357,6 +369,7 @@ func main() {
 		NetworkPolicyAutoEnabled: npAuto,
 		ClusterPodCIDR:           clusterPodCIDR,
 		ClusterServiceCIDR:       clusterServiceCIDR,
+		APIServerIPs:             apiserverIPs,
 		BrokerNamespace:          brokerNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Workspace")

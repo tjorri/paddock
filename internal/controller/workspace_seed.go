@@ -713,6 +713,26 @@ func buildSeedNetworkPolicy(ws *paddockv1alpha1.Workspace, cfg networkPolicyConf
 	if brokerRule := buildBrokerEgressRule(cfg); brokerRule != nil {
 		rules = append(rules, *brokerRule)
 	}
+	// Apiserver allow rule. Sidecars (collector for AuditEvent emission,
+	// adapter for status writes) need TCP/443 to the kube-apiserver.
+	// Pod-wide because NetworkPolicy operates at pod level; the agent
+	// container shares the network namespace with sidecars. F-38 (Phase
+	// 2a) ensures the agent has automountServiceAccountToken=false, so
+	// the apiserver rejects any request the agent might forge.
+	if len(cfg.APIServerIPs) > 0 {
+		apiPeers := make([]networkingv1.NetworkPolicyPeer, 0, len(cfg.APIServerIPs))
+		for _, ip := range cfg.APIServerIPs {
+			apiPeers = append(apiPeers, networkingv1.NetworkPolicyPeer{
+				IPBlock: &networkingv1.IPBlock{CIDR: ip.String() + "/32"},
+			})
+		}
+		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
+			To: apiPeers,
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: &httpsPort},
+			},
+		})
+	}
 
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{

@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -72,6 +73,11 @@ type networkPolicyConfig struct {
 	BrokerNamespace string
 	// BrokerPort is the broker's TLS service port (default 8443).
 	BrokerPort int32
+	// APIServerIPs is the set of IPv4 addresses the controller's
+	// kubeconfig resolves the kube-apiserver to. Each entry becomes a
+	// /32 ipBlock peer in the per-run NP's apiserver allow rule
+	// (TCP/443). Empty disables the rule. F-41 / Phase 2d.
+	APIServerIPs []net.IP
 }
 
 // rfc1918AndLinkLocalCIDRs are the always-excluded ranges. RFC1918
@@ -138,20 +144,6 @@ func buildBrokerEgressRule(cfg networkPolicyConfig) *networkingv1.NetworkPolicyE
 		},
 	}
 }
-
-// (No API-server egress rule. The kube-apiserver runs as a host-network
-// static pod and is therefore unreachable via standard NetworkPolicy
-// podSelectors — Cilium and other CNIs do not match host-network
-// destinations via pod selectors. For runs that genuinely need the
-// kube-apiserver from a sidecar (collector for AuditEvent emission;
-// adapter for status writes), the only portable solution is to *not*
-// emit the per-run NetworkPolicy at all. The HarnessRun reconciler
-// handles this by skipping NP emission for templates with empty
-// requires; runs that DO declare requires accept the trade-off that
-// kube-apiserver access from sidecars is brittle. A proper fix is
-// Phase 2c work — likely a CiliumNetworkPolicy variant using
-// `entity: kube-apiserver`, or backend-IP discovery via a manager flag
-// fed into an ipBlock rule.)
 
 // buildRunNetworkPolicy renders the defence-in-depth NetworkPolicy
 // that rides alongside the proxy sidecar. The policy targets the run's
@@ -221,6 +213,26 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyCon
 	if brokerRule := buildBrokerEgressRule(cfg); brokerRule != nil {
 		rules = append(rules, *brokerRule)
 	}
+	// Apiserver allow rule. Sidecars (collector for AuditEvent emission,
+	// adapter for status writes) need TCP/443 to the kube-apiserver.
+	// Pod-wide because NetworkPolicy operates at pod level; the agent
+	// container shares the network namespace with sidecars. F-38 (Phase
+	// 2a) ensures the agent has automountServiceAccountToken=false, so
+	// the apiserver rejects any request the agent might forge.
+	if len(cfg.APIServerIPs) > 0 {
+		apiPeers := make([]networkingv1.NetworkPolicyPeer, 0, len(cfg.APIServerIPs))
+		for _, ip := range cfg.APIServerIPs {
+			apiPeers = append(apiPeers, networkingv1.NetworkPolicyPeer{
+				IPBlock: &networkingv1.IPBlock{CIDR: ip.String() + "/32"},
+			})
+		}
+		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
+			To: apiPeers,
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp, Port: &httpsPort},
+			},
+		})
+	}
 
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -245,16 +257,26 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyCon
 }
 
 // ensureRunNetworkPolicy creates or updates the per-run NetworkPolicy
-// when NetworkPolicyEnforce is "on" (or resolved-auto=on). Deletes any
-// stale policy when enforcement flips off mid-run.
+// based on the admission-time decision pinned in Status.NetworkPolicyEnforced
+// (F-43 / Phase 2d). Reading from Status rather than the live flag means
+// a controller-manager flag flip (--networkpolicy-enforce=on → off) does
+// not delete the per-run NP out from under a running pod; new runs after
+// the flip get the new behaviour; existing runs keep theirs.
 func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
-	if !r.networkPolicyEnforced() {
-		return r.deleteRunNetworkPolicy(ctx, run)
+	// Phase 2d (F-43): read the pinned admission-time decision from
+	// Status, not the live flag. Flag flips on the manager affect new
+	// runs only; existing runs retain the policy they were admitted
+	// with. The pin is applied at the top of Reconcile via
+	// pinNetworkPolicyEnforced, so by the time we get here Status is
+	// authoritative.
+	if run.Status.NetworkPolicyEnforced == nil || !*run.Status.NetworkPolicyEnforced {
+		return nil
 	}
 	cfg := networkPolicyConfig{
 		ClusterPodCIDR:     r.ClusterPodCIDR,
 		ClusterServiceCIDR: r.ClusterServiceCIDR,
 		BrokerNamespace:    r.BrokerNamespace,
+		APIServerIPs:       r.APIServerIPs,
 	}
 	desired := buildRunNetworkPolicy(run, cfg)
 	np := &networkingv1.NetworkPolicy{
@@ -263,7 +285,7 @@ func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *
 			Namespace: desired.Namespace,
 		},
 	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
 		if err := controllerutil.SetControllerReference(run, np, r.Scheme); err != nil {
 			return err
 		}
@@ -274,9 +296,23 @@ func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *
 	if err != nil {
 		return fmt.Errorf("upserting run NetworkPolicy: %w", err)
 	}
+	// F-43: a Create on a run that already has Status set (i.e. has been
+	// reconciled before) means the NP was deleted out from under us
+	// (typically by an operator). The CreateOrUpdate call already
+	// re-created it — emit an audit so operators see the withdrawal.
+	if op == controllerutil.OperationResultCreated && run.Status.ObservedGeneration > 0 {
+		r.Audit.EmitNetworkPolicyEnforcementWithdrawn(ctx, run.Name, run.Namespace,
+			fmt.Sprintf("per-run NetworkPolicy %s was missing on reconcile; re-created", desired.Name))
+	}
 	return nil
 }
 
+// deleteRunNetworkPolicy deletes the per-run NetworkPolicy if it exists.
+// Called from the empty-`requires` branch in Reconcile to clean up any
+// stale NP from a previous reconcile that did emit one (e.g., template
+// edited to drop requires). Not called for the active flag-flip case
+// — the pinned Status.NetworkPolicyEnforced field makes that
+// unnecessary post-Phase-2d.
 func (r *HarnessRunReconciler) deleteRunNetworkPolicy(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
 	var np networkingv1.NetworkPolicy
 	key := client.ObjectKey{Namespace: run.Namespace, Name: runNetworkPolicyName(run.Name)}

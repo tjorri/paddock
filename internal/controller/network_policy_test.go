@@ -17,11 +17,15 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+	"net"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
@@ -218,6 +222,110 @@ func TestBuildRunNetworkPolicy_NoBrokerRuleWhenNamespaceUnset(t *testing.T) {
 	// Expect 3 rules: DNS + 443 + 80 (no broker rule when namespace is empty).
 	if len(np.Spec.Egress) != 3 {
 		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80; no broker rule)", len(np.Spec.Egress))
+	}
+}
+
+func TestBuildRunNetworkPolicy_APIServerEgressRule(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+	}
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     "10.244.0.0/16",
+		ClusterServiceCIDR: "10.96.0.0/12",
+		APIServerIPs:       []net.IP{net.ParseIP("10.96.0.1"), net.ParseIP("10.96.0.2")},
+	}
+	np := buildRunNetworkPolicy(run, cfg)
+
+	// Expect 4 rules: DNS + 443 + 80 + apiserver. (No broker rule —
+	// BrokerNamespace empty.) The apiserver rule is the new one and is
+	// last; assert the shape.
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + apiserver)", len(np.Spec.Egress))
+	}
+	apiRule := np.Spec.Egress[3]
+	if len(apiRule.To) != 2 {
+		t.Fatalf("apiserver rule To = %d peers, want 2", len(apiRule.To))
+	}
+	gotCIDRs := map[string]bool{}
+	for _, p := range apiRule.To {
+		if p.IPBlock == nil {
+			t.Fatalf("apiserver rule peer missing IPBlock: %+v", p)
+		}
+		gotCIDRs[p.IPBlock.CIDR] = true
+	}
+	if !gotCIDRs["10.96.0.1/32"] || !gotCIDRs["10.96.0.2/32"] {
+		t.Errorf("apiserver CIDRs = %v, want includes 10.96.0.1/32 + 10.96.0.2/32", gotCIDRs)
+	}
+	if len(apiRule.Ports) != 1 ||
+		apiRule.Ports[0].Port == nil ||
+		apiRule.Ports[0].Port.IntValue() != 443 {
+		t.Errorf("apiserver ports = %+v, want TCP/443", apiRule.Ports)
+	}
+}
+
+func TestBuildRunNetworkPolicy_NoAPIServerRuleWhenIPsEmpty(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+	}
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     "10.244.0.0/16",
+		ClusterServiceCIDR: "10.96.0.0/12",
+		// APIServerIPs deliberately empty.
+	}
+	np := buildRunNetworkPolicy(run, cfg)
+	if len(np.Spec.Egress) != 3 {
+		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80; no apiserver rule)", len(np.Spec.Egress))
+	}
+}
+
+func TestEnsureRunNetworkPolicy_EmitsWithdrawnOnRecreate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := paddockv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("corev1 scheme: %v", err)
+	}
+	if err := networkingv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("networkingv1 scheme: %v", err)
+	}
+
+	enforced := true
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a", ResourceVersion: "1"},
+		Status: paddockv1alpha1.HarnessRunStatus{
+			NetworkPolicyEnforced: &enforced,
+			ObservedGeneration:    1, // simulate "reconciled before"
+		},
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(run).WithStatusSubresource(run).Build()
+
+	rec := &capturedSink{}
+	r := &HarnessRunReconciler{
+		Client: cli,
+		Scheme: scheme,
+		Audit:  &ControllerAudit{Sink: rec},
+	}
+
+	// First call: NP doesn't exist; CreateOrUpdate returns Created;
+	// because Status was already set with ObservedGeneration>0, this
+	// is the operator-deleted-it case → emit one withdrawal.
+	if err := r.ensureRunNetworkPolicy(context.Background(), run); err != nil {
+		t.Fatalf("ensureRunNetworkPolicy: %v", err)
+	}
+	got := rec.events()
+	if len(got) != 1 || got[0].Spec.Kind != paddockv1alpha1.AuditKindNetworkPolicyEnforcementWithdrawn {
+		t.Fatalf("got %d events; want one network-policy-enforcement-withdrawn (events=%+v)", len(got), got)
+	}
+
+	// Second call: NP exists; CreateOrUpdate returns Unchanged →
+	// no emission.
+	rec.all = nil
+	if err := r.ensureRunNetworkPolicy(context.Background(), run); err != nil {
+		t.Fatalf("ensureRunNetworkPolicy (idempotent): %v", err)
+	}
+	if got := rec.events(); len(got) != 0 {
+		t.Errorf("got %d events on no-op reconcile; want 0", len(got))
 	}
 }
 

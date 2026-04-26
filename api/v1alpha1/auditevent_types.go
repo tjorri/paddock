@@ -42,24 +42,25 @@ const (
 
 // AuditKind names the category of a recorded decision. See spec 0002 §9
 // for the full taxonomy.
-// +kubebuilder:validation:Enum=credential-issued;credential-denied;credential-renewed;credential-revoked;egress-allow;egress-block;egress-block-summary;egress-discovery-allow;policy-applied;policy-rejected;broker-unavailable;run-failed;run-completed;ca-projected
+// +kubebuilder:validation:Enum=credential-issued;credential-denied;credential-renewed;credential-revoked;egress-allow;egress-block;egress-block-summary;egress-discovery-allow;policy-applied;policy-rejected;broker-unavailable;run-failed;run-completed;ca-projected;network-policy-enforcement-withdrawn
 type AuditKind string
 
 const (
-	AuditKindCredentialIssued     AuditKind = "credential-issued"
-	AuditKindCredentialDenied     AuditKind = "credential-denied"
-	AuditKindCredentialRenewed    AuditKind = "credential-renewed"
-	AuditKindCredentialRevoked    AuditKind = "credential-revoked"
-	AuditKindEgressAllow          AuditKind = "egress-allow"
-	AuditKindEgressBlock          AuditKind = "egress-block"
-	AuditKindEgressBlockSummary   AuditKind = "egress-block-summary"
-	AuditKindEgressDiscoveryAllow AuditKind = "egress-discovery-allow"
-	AuditKindPolicyApplied        AuditKind = "policy-applied"
-	AuditKindPolicyRejected       AuditKind = "policy-rejected"
-	AuditKindBrokerUnavailable    AuditKind = "broker-unavailable"
-	AuditKindRunFailed            AuditKind = "run-failed"
-	AuditKindRunCompleted         AuditKind = "run-completed"
-	AuditKindCAProjected          AuditKind = "ca-projected"
+	AuditKindCredentialIssued                  AuditKind = "credential-issued"
+	AuditKindCredentialDenied                  AuditKind = "credential-denied"
+	AuditKindCredentialRenewed                 AuditKind = "credential-renewed"
+	AuditKindCredentialRevoked                 AuditKind = "credential-revoked"
+	AuditKindEgressAllow                       AuditKind = "egress-allow"
+	AuditKindEgressBlock                       AuditKind = "egress-block"
+	AuditKindEgressBlockSummary                AuditKind = "egress-block-summary"
+	AuditKindEgressDiscoveryAllow              AuditKind = "egress-discovery-allow"
+	AuditKindPolicyApplied                     AuditKind = "policy-applied"
+	AuditKindPolicyRejected                    AuditKind = "policy-rejected"
+	AuditKindBrokerUnavailable                 AuditKind = "broker-unavailable"
+	AuditKindRunFailed                         AuditKind = "run-failed"
+	AuditKindRunCompleted                      AuditKind = "run-completed"
+	AuditKindCAProjected                       AuditKind = "ca-projected"
+	AuditKindNetworkPolicyEnforcementWithdrawn AuditKind = "network-policy-enforcement-withdrawn"
 )
 
 // AuditEventSpec records one security-relevant decision. Write-once:
