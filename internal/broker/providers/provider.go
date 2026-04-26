@@ -27,6 +27,7 @@ import (
 	"time"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	brokerapi "paddock.dev/paddock/internal/broker/api"
 )
 
 // Provider is the extensibility seam. All credentials — including
@@ -130,60 +131,12 @@ type SubstituteRequest struct {
 	IncomingBearer string
 }
 
-// SubstituteResult is the provider's instruction to the proxy.
-type SubstituteResult struct {
-	// Matched is true when the provider owns IncomingBearer. When
-	// false, the broker keeps looking through its provider list.
-	Matched bool
+// SubstituteResult is the canonical wire-shaped result type. Defined
+// in internal/broker/api; aliased here for backward compatibility
+// during the P-07 migration. Will be removed once all in-tree call
+// sites move to brokerapi.SubstituteResult.
+type SubstituteResult = brokerapi.SubstituteResult
 
-	// SetHeaders overrides or adds headers on the outbound request.
-	// Header names are canonicalised by net/http; providers may use any
-	// casing. Values are emitted as-is.
-	SetHeaders map[string]string
-
-	// RemoveHeaders drops headers entirely before the request is sent
-	// upstream. Use for stripping the Paddock-issued bearer the agent
-	// presented so upstream only ever sees the substituted credential.
-	RemoveHeaders []string
-
-	// SetQueryParam overrides URL query parameters on the outbound
-	// request. Used by UserSuppliedSecret with a queryParam pattern —
-	// e.g. Google APIs that key on ?key=<value>.
-	SetQueryParam map[string]string
-
-	// SetBasicAuth, when non-nil, instructs the proxy to set HTTP Basic
-	// authentication on the outbound request. The proxy overwrites any
-	// existing Authorization header with the encoded username:password.
-	SetBasicAuth *BasicAuth
-
-	// AllowedHeaders is the proxy-side allowlist of header names that
-	// may be forwarded to the upstream verbatim alongside the substituted
-	// credential. The proxy also keeps any header whose name appears in
-	// SetHeaders, plus a fixed mustKeep set covering HTTP/1.1 wire
-	// necessities (Host, Content-Length, Content-Type, Transfer-Encoding).
-	// Every other agent-supplied header is stripped before forwarding.
-	//
-	// Empty AllowedHeaders is fail-closed: the proxy strips everything
-	// except mustKeep + SetHeaders keys. Provider authors must populate
-	// this field; an unset/empty list never silently widens what reaches
-	// upstream. F-21.
-	AllowedHeaders []string
-
-	// AllowedQueryParams is the same shape for URL query parameters: keys
-	// not in this list (and not in SetQueryParam) are stripped before the
-	// request is forwarded. F-21.
-	AllowedQueryParams []string
-
-	// CredentialName is the logical credential name the broker handler
-	// uses to re-validate the matched BrokerPolicy grant per request. Set
-	// by the provider from its lease. Internal to broker handler use; not
-	// emitted on the proxy↔broker wire (the proxy doesn't need it).
-	// F-10.
-	CredentialName string
-}
-
-// BasicAuth carries an HTTP Basic username+password pair.
-type BasicAuth struct {
-	Username string
-	Password string
-}
+// BasicAuth is an alias for brokerapi.BasicAuth, mirroring the
+// SubstituteResult alias above.
+type BasicAuth = brokerapi.BasicAuth
