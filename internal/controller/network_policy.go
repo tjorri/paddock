@@ -145,25 +145,19 @@ func buildBrokerEgressRule(cfg networkPolicyConfig) *networkingv1.NetworkPolicyE
 	}
 }
 
-// buildRunNetworkPolicy renders the defence-in-depth NetworkPolicy
-// that rides alongside the proxy sidecar. The policy targets the run's
-// Pod by label, permits:
-//
-//   - DNS (UDP+TCP 53) to kube-dns in kube-system — name resolution has
-//     to work or the proxy cannot dial upstreams;
-//   - TCP 443 and TCP 80 to public-internet destinations excluding
-//     RFC1918, link-local, and the cluster's pod/service CIDRs. The
-//     proxy sidecar's outbound to public hosts continues to work; an
-//     agent that bypasses HTTPS_PROXY in cooperative mode cannot
-//     reach in-cluster targets, the kube API server, the broker, or
-//     the cloud metadata service. See finding F-19.
-//   - No other egress. Ingress is left permissive.
-//
-// The host-level allowlist the proxy enforces (from BrokerPolicy grants)
-// is not rendered into the NetworkPolicy as ipBlock rules — DNS-driven
-// upstream IPs rotate. Per-FQDN egress is a CNI-specific feature
-// (Cilium etc.) and is Phase 2b territory.
-func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyConfig) *networkingv1.NetworkPolicy {
+// buildEgressNetworkPolicy renders the shared defence-in-depth egress
+// NetworkPolicy used by both per-run pods (HarnessRun reconciler) and
+// per-workspace seed pods (Workspace reconciler). The selector,
+// object identity, and ObjectMeta labels differ between the two
+// callers; the egress rule list (DNS to kube-dns, TCP/443 + TCP/80
+// to public-internet excluding cluster CIDRs, optional broker rule,
+// optional apiserver rule) is identical. See findings F-19 and F-45.
+func buildEgressNetworkPolicy(
+	selector metav1.LabelSelector,
+	name, namespace string,
+	labels map[string]string,
+	cfg networkPolicyConfig,
+) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 	udp := corev1.ProtocolUDP
 	dnsPort := intstr.FromInt32(53)
@@ -190,8 +184,6 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyCon
 				{Protocol: &tcp, Port: &dnsPort},
 			},
 		},
-		// TCP 443 — public-internet egress, excluding private +
-		// link-local + cluster CIDRs (F-19).
 		{
 			To: []networkingv1.NetworkPolicyPeer{
 				{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR, Except: exceptCIDRs}},
@@ -200,7 +192,6 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyCon
 				{Protocol: &tcp, Port: &httpsPort},
 			},
 		},
-		// TCP 80 — same exclusions as 443.
 		{
 			To: []networkingv1.NetworkPolicyPeer{
 				{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR, Except: exceptCIDRs}},
@@ -215,10 +206,7 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyCon
 	}
 	// Apiserver allow rule. Sidecars (collector for AuditEvent emission,
 	// adapter for status writes) need TCP/443 to the kube-apiserver.
-	// Pod-wide because NetworkPolicy operates at pod level; the agent
-	// container shares the network namespace with sidecars. F-38 (Phase
-	// 2a) ensures the agent has automountServiceAccountToken=false, so
-	// the apiserver rejects any request the agent might forge.
+	// Pod-wide because NetworkPolicy operates at pod level. F-41.
 	if len(cfg.APIServerIPs) > 0 {
 		apiPeers := make([]networkingv1.NetworkPolicyPeer, 0, len(cfg.APIServerIPs))
 		for _, ip := range cfg.APIServerIPs {
@@ -233,27 +221,66 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyCon
 			},
 		})
 	}
-
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      runNetworkPolicyName(run.Name),
-			Namespace: run.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":      "paddock",
-				"app.kubernetes.io/component": "harnessrun-egress",
-				"paddock.dev/run":             run.Name,
-			},
+			Name:      name,
+			Namespace: namespace,
+			Labels:    labels,
 		},
 		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
-				MatchLabels: map[string]string{"paddock.dev/run": run.Name},
-			},
-			PolicyTypes: []networkingv1.PolicyType{
-				networkingv1.PolicyTypeEgress,
-			},
-			Egress: rules,
+			PodSelector: selector,
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+			Egress:      rules,
 		},
 	}
+}
+
+// buildRunNetworkPolicy renders the defence-in-depth NetworkPolicy
+// that rides alongside the proxy sidecar. The policy targets the run's
+// Pod by label, permits:
+//
+//   - DNS (UDP+TCP 53) to kube-dns in kube-system — name resolution has
+//     to work or the proxy cannot dial upstreams;
+//   - TCP 443 and TCP 80 to public-internet destinations excluding
+//     RFC1918, link-local, and the cluster's pod/service CIDRs. The
+//     proxy sidecar's outbound to public hosts continues to work; an
+//     agent that bypasses HTTPS_PROXY in cooperative mode cannot
+//     reach in-cluster targets, the kube API server, the broker, or
+//     the cloud metadata service. See finding F-19.
+//   - No other egress. Ingress is left permissive.
+//
+// The host-level allowlist the proxy enforces (from BrokerPolicy grants)
+// is not rendered into the NetworkPolicy as ipBlock rules — DNS-driven
+// upstream IPs rotate. Per-FQDN egress is a CNI-specific feature
+// (Cilium etc.) and is Phase 2b territory.
+func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyConfig) *networkingv1.NetworkPolicy {
+	return buildEgressNetworkPolicy(
+		metav1.LabelSelector{MatchLabels: map[string]string{"paddock.dev/run": run.Name}},
+		runNetworkPolicyName(run.Name), run.Namespace,
+		map[string]string{
+			"app.kubernetes.io/name":      "paddock",
+			"app.kubernetes.io/component": "harnessrun-egress",
+			"paddock.dev/run":             run.Name,
+		},
+		cfg,
+	)
+}
+
+// buildSeedNetworkPolicy mirrors buildRunNetworkPolicy for workspace
+// seed Pods. Selector matches the workspace's seed Pod (labeled
+// paddock.dev/workspace=<name>); egress shape is identical (delegates
+// to buildEgressNetworkPolicy). See finding F-45.
+func buildSeedNetworkPolicy(ws *paddockv1alpha1.Workspace, cfg networkPolicyConfig) *networkingv1.NetworkPolicy {
+	return buildEgressNetworkPolicy(
+		metav1.LabelSelector{MatchLabels: map[string]string{"paddock.dev/workspace": ws.Name}},
+		seedNetworkPolicyName(ws), ws.Namespace,
+		map[string]string{
+			"app.kubernetes.io/name":      "paddock",
+			"app.kubernetes.io/component": "workspace-seed-egress",
+			"paddock.dev/workspace":       ws.Name,
+		},
+		cfg,
+	)
 }
 
 // ensureRunNetworkPolicy creates or updates the per-run NetworkPolicy
