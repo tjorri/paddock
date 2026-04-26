@@ -1056,5 +1056,12 @@ func TestSubstituteAuth_EgressRevoked_DeniesAndAudits(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "EgressRevoked") {
 		t.Errorf("response body = %s, want contains EgressRevoked", rr.Body.String())
 	}
+	wrote := rec.events()
+	if len(wrote) != 1 {
+		t.Fatalf("got %d events, want 1", len(wrote))
+	}
+	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialDenied {
+		t.Errorf("kind = %q, want credential-denied", wrote[0].Spec.Kind)
+	}
 	_ = c
 }
