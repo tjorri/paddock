@@ -72,8 +72,8 @@ func (s *Server) dialUpstreamTLS(ctx context.Context, tcpAddr, serverName string
 	return tlsConn, nil
 }
 
-// joinHostPortInt is a small helper around net.JoinHostPort + strconv.Itoa
-// used by both wrappers. Inlined deliberately — keeps the call sites short.
+// joinHostPortInt is net.JoinHostPort + strconv.Itoa. Used inside this
+// file to keep dialUpstreamTLS callers a single line.
 func joinHostPortInt(host string, port int) string {
 	return net.JoinHostPort(host, strconv.Itoa(port))
 }
@@ -148,8 +148,7 @@ func (s *Server) doMITM(
 
 	if decision.SubstituteAuth && s.Substituter != nil {
 		if err := handleSubstituted(ctx, clientTLS, upstreamConn, sni, port, s.Substituter, s.idleTimeout()); err != nil {
-			s.log().V(1).Info("substitute-auth MITM ended", "host", sni, "err", err)
-			return err
+			return fmt.Errorf("substitute-auth MITM: %w", err)
 		}
 		return nil
 	}
