@@ -123,7 +123,7 @@ func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run 
 		secret.Data = data
 		return nil
 	})
-	if err != nil {
+	if err != nil && !apierrors.IsConflict(err) {
 		return false, nil, "", "", fmt.Errorf("upserting broker-creds secret: %w", err)
 	}
 	_ = op

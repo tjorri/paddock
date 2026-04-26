@@ -462,7 +462,7 @@ func (r *WorkspaceReconciler) ensureSeedNetworkPolicy(ctx context.Context, ws *p
 		np.Spec = desired.Spec
 		return nil
 	})
-	if err != nil {
+	if err != nil && !apierrors.IsConflict(err) {
 		return fmt.Errorf("upserting seed NetworkPolicy: %w", err)
 	}
 	return nil

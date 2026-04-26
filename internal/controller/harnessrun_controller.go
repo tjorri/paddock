@@ -931,7 +931,7 @@ func (r *HarnessRunReconciler) ensureCollectorRBAC(ctx context.Context, run *pad
 			},
 		}
 		return nil
-	}); err != nil {
+	}); err != nil && !apierrors.IsConflict(err) {
 		return fmt.Errorf("role: %w", err)
 	}
 

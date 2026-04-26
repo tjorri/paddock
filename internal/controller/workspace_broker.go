@@ -134,7 +134,7 @@ func (r *WorkspaceReconciler) ensureSeedBrokerCA(ctx context.Context, ws *paddoc
 		dst.Data = map[string][]byte{brokerCAKey: ca}
 		return nil
 	})
-	if err != nil {
+	if err != nil && !apierrors.IsConflict(err) {
 		return false, fmt.Errorf("upserting workspace broker-ca Secret: %w", err)
 	}
 	return true, nil

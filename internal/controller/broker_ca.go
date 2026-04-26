@@ -92,7 +92,7 @@ func (r *HarnessRunReconciler) ensureBrokerCA(ctx context.Context, run *paddockv
 		dst.Data = map[string][]byte{brokerCAKey: ca}
 		return nil
 	})
-	if err != nil {
+	if err != nil && !apierrors.IsConflict(err) {
 		return false, fmt.Errorf("upserting broker-ca secret: %w", err)
 	}
 	if op == controllerutil.OperationResultCreated {
