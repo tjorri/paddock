@@ -144,8 +144,10 @@ func (c *BrokerClient) SubstituteAuth(ctx context.Context, host string, port int
 		return providers.SubstituteResult{}, fmt.Errorf("decoding substitute-auth response: %w", err)
 	}
 	return providers.SubstituteResult{
-		SetHeaders:    out.SetHeaders,
-		RemoveHeaders: out.RemoveHeaders,
+		SetHeaders:         out.SetHeaders,
+		RemoveHeaders:      out.RemoveHeaders,
+		AllowedHeaders:     out.AllowedHeaders,
+		AllowedQueryParams: out.AllowedQueryParams,
 	}, nil
 }
 
