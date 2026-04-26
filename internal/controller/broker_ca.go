@@ -23,7 +23,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
@@ -39,6 +41,60 @@ func brokerCASecretName(runName string) string {
 // brokerCAKey is the key inside the per-run broker-ca Secret the proxy
 // reads. Matches the conventional naming cert-manager uses.
 const brokerCAKey = "ca.crt"
+
+// copyCAToSecret copies the ca.crt key out of the source Secret into a
+// destination Secret in the owner's namespace, owned by `owner`. Returns
+// (created, err):
+//   - created=false, err=nil: source Secret missing or its ca.crt key
+//     missing/empty. Caller flips its waiting condition + requeues.
+//   - created=false, err!=nil: transient API error.
+//   - created=true on the first reconcile pass that materialises dst;
+//     subsequent passes (including no-op updates) return false.
+//
+// Conflict errors on CreateOrUpdate are swallowed (the next reconcile
+// re-tries) per the optimistic-concurrency convention canonicalised in
+// ADR-0017.
+func copyCAToSecret(
+	ctx context.Context,
+	cli client.Client,
+	scheme *runtime.Scheme,
+	owner client.Object,
+	src types.NamespacedName,
+	dstName, dstNamespace string,
+	labels map[string]string,
+) (bool, error) {
+	var srcSec corev1.Secret
+	if err := cli.Get(ctx, src, &srcSec); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading CA source Secret %s/%s: %w",
+			src.Namespace, src.Name, err)
+	}
+	ca, ok := srcSec.Data[brokerCAKey]
+	if !ok || len(ca) == 0 {
+		return false, nil
+	}
+	dst := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      dstName,
+			Namespace: dstNamespace,
+			Labels:    labels,
+		},
+	}
+	op, err := controllerutil.CreateOrUpdate(ctx, cli, dst, func() error {
+		if err := controllerutil.SetControllerReference(owner, dst, scheme); err != nil {
+			return err
+		}
+		dst.Type = corev1.SecretTypeOpaque
+		dst.Data = map[string][]byte{brokerCAKey: ca}
+		return nil
+	})
+	if err != nil && !apierrors.IsConflict(err) {
+		return false, fmt.Errorf("upserting %s/%s: %w", dstNamespace, dstName, err)
+	}
+	return op == controllerutil.OperationResultCreated, nil
+}
 
 // ensureBrokerCA copies the ca.crt key from the source broker-serving-cert
 // Secret in paddock-system into a per-run <run>-broker-ca Secret. The
@@ -59,44 +115,34 @@ func (r *HarnessRunReconciler) ensureBrokerCA(ctx context.Context, run *paddockv
 	if !r.brokerProxyConfigured() {
 		return true, nil
 	}
-	var src corev1.Secret
-	srcKey := types.NamespacedName{Name: r.BrokerCASource.Name, Namespace: r.BrokerCASource.Namespace}
-	if err := r.Get(ctx, srcKey, &src); err != nil {
-		if apierrors.IsNotFound(err) {
+	dstName := brokerCASecretName(run.Name)
+	created, err := copyCAToSecret(ctx, r.Client, r.Scheme, run,
+		types.NamespacedName{Namespace: r.BrokerCASource.Namespace, Name: r.BrokerCASource.Name},
+		dstName, run.Namespace,
+		map[string]string{
+			"app.kubernetes.io/name":      "paddock",
+			"app.kubernetes.io/component": "harnessrun-broker-ca",
+			"paddock.dev/run":             run.Name,
+		})
+	if err != nil {
+		return false, err
+	}
+	if created {
+		r.Audit.EmitCAProjected(ctx, run.Name, run.Namespace, dstName)
+		return true, nil
+	}
+	// created=false, err=nil: either the source Secret is missing/empty
+	// (helper returned early) or this is a steady-state no-op update.
+	// Re-Get the destination to distinguish the two cases.
+	var dst corev1.Secret
+	if getErr := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: dstName}, &dst); getErr != nil {
+		if apierrors.IsNotFound(getErr) {
 			return false, nil
 		}
-		return false, fmt.Errorf("reading broker CA source Secret %s/%s: %w",
-			srcKey.Namespace, srcKey.Name, err)
+		return false, getErr
 	}
-	ca, ok := src.Data[brokerCAKey]
-	if !ok || len(ca) == 0 {
+	if len(dst.Data[brokerCAKey]) == 0 {
 		return false, nil
-	}
-
-	dst := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      brokerCASecretName(run.Name),
-			Namespace: run.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":      "paddock",
-				"app.kubernetes.io/component": "harnessrun-broker-ca",
-				"paddock.dev/run":             run.Name,
-			},
-		},
-	}
-	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, dst, func() error {
-		if err := controllerutil.SetControllerReference(run, dst, r.Scheme); err != nil {
-			return err
-		}
-		dst.Type = corev1.SecretTypeOpaque
-		dst.Data = map[string][]byte{brokerCAKey: ca}
-		return nil
-	})
-	if err != nil && !apierrors.IsConflict(err) {
-		return false, fmt.Errorf("upserting broker-ca secret: %w", err)
-	}
-	if op == controllerutil.OperationResultCreated {
-		r.Audit.EmitCAProjected(ctx, run.Name, run.Namespace, dst.Name)
 	}
 	return true, nil
 }

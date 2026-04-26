@@ -22,9 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
@@ -102,40 +100,33 @@ func (r *WorkspaceReconciler) ensureSeedProxyTLS(ctx context.Context, ws *paddoc
 // ensureSeedBrokerCA copies ca.crt from the broker-serving-cert
 // Secret into a per-workspace broker-ca Secret. Mirrors ensureBrokerCA.
 func (r *WorkspaceReconciler) ensureSeedBrokerCA(ctx context.Context, ws *paddockv1alpha1.Workspace) (bool, error) {
-	var src corev1.Secret
-	srcKey := types.NamespacedName{Name: r.BrokerCASource.Name, Namespace: r.BrokerCASource.Namespace}
-	if err := r.Get(ctx, srcKey, &src); err != nil {
-		if apierrors.IsNotFound(err) {
+	dstName := workspaceBrokerCASecretName(ws.Name)
+	created, err := copyCAToSecret(ctx, r.Client, r.Scheme, ws,
+		types.NamespacedName{Namespace: r.BrokerCASource.Namespace, Name: r.BrokerCASource.Name},
+		dstName, ws.Namespace,
+		map[string]string{
+			"app.kubernetes.io/name":      "paddock",
+			"app.kubernetes.io/component": "workspace-broker-ca",
+			"paddock.dev/workspace":       ws.Name,
+		})
+	if err != nil {
+		return false, err
+	}
+	if created {
+		return true, nil
+	}
+	// created=false, err=nil: either the source Secret is missing/empty
+	// (helper returned early) or this is a steady-state no-op update.
+	// Re-Get the destination to distinguish the two cases.
+	var dst corev1.Secret
+	if getErr := r.Get(ctx, types.NamespacedName{Namespace: ws.Namespace, Name: dstName}, &dst); getErr != nil {
+		if apierrors.IsNotFound(getErr) {
 			return false, nil
 		}
-		return false, fmt.Errorf("reading broker CA source Secret %s/%s: %w", srcKey.Namespace, srcKey.Name, err)
+		return false, getErr
 	}
-	ca, ok := src.Data[brokerCAKey]
-	if !ok || len(ca) == 0 {
+	if len(dst.Data[brokerCAKey]) == 0 {
 		return false, nil
-	}
-
-	dst := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      workspaceBrokerCASecretName(ws.Name),
-			Namespace: ws.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":      "paddock",
-				"app.kubernetes.io/component": "workspace-broker-ca",
-				"paddock.dev/workspace":       ws.Name,
-			},
-		},
-	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dst, func() error {
-		if err := controllerutil.SetControllerReference(ws, dst, r.Scheme); err != nil {
-			return err
-		}
-		dst.Type = corev1.SecretTypeOpaque
-		dst.Data = map[string][]byte{brokerCAKey: ca}
-		return nil
-	})
-	if err != nil && !apierrors.IsConflict(err) {
-		return false, fmt.Errorf("upserting workspace broker-ca Secret: %w", err)
 	}
 	return true, nil
 }
