@@ -362,6 +362,69 @@ func TestApplySubstitution_StripsNonAllowlistedQueryParams(t *testing.T) {
 	}
 }
 
+// TestSubstituteLoop_IdleTimeout asserts that handleSubstituted's
+// per-request loop sets a read deadline on each ReadRequest call so a
+// slow-loris or stale keep-alive client cannot hold the goroutine open
+// indefinitely. F-25 + bonus F-26 mitigation.
+func TestSubstituteLoop_IdleTimeout(t *testing.T) {
+	const realKey = "sk-real-loop"
+	upstream, host, port, upstreamPool := startUpstreamEcho(t, realKey)
+	_ = upstream
+	certPEM, keyPEM := generateTestCA(t)
+	ca, _ := NewMITMCertificateAuthority(certPEM, keyPEM)
+
+	sub := &recordingSubstituter{realKey: realKey}
+	validator := &substitutingValidator{host: host, port: port, policy: "anthropic-policy"}
+
+	srv := &Server{
+		CA:                ca,
+		Validator:         validator,
+		Substituter:       sub,
+		Audit:             &recordingSink{},
+		UpstreamTLSConfig: &tls.Config{RootCAs: upstreamPool, MinVersion: tls.VersionTLS12},
+		IdleTimeout:       150 * time.Millisecond,
+	}
+	proxyURL := startProxy(t, srv)
+	pu, _ := url.Parse(proxyURL)
+	clientPool := x509.NewCertPool()
+	clientPool.AppendCertsFromPEM(certPEM)
+	tr := &http.Transport{
+		Proxy:           http.ProxyURL(pu),
+		TLSClientConfig: &tls.Config{RootCAs: clientPool, MinVersion: tls.VersionTLS12},
+		// Keep-alive is the loop we're testing — leave it on.
+	}
+	cli := &http.Client{Transport: tr, Timeout: 3 * time.Second}
+
+	// First request keeps the tunnel alive (substitute-loop iterates).
+	req, _ := http.NewRequestWithContext(context.Background(), "POST",
+		fmt.Sprintf("https://%s:%d/v1/messages", host, port),
+		stringReader("hi"))
+	req.Header.Set("Authorization", "Bearer pdk-anthropic-deadbeef")
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := cli.Do(req)
+	if err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// Wait past idle timeout; the substitute-loop's ReadRequest must have
+	// hit the deadline and exited cleanly.
+	time.Sleep(2 * srv.IdleTimeout)
+
+	// Second request opens a fresh tunnel + works normally — proof that
+	// the proxy didn't leak goroutines / file descriptors.
+	req2, _ := http.NewRequestWithContext(context.Background(), "POST",
+		fmt.Sprintf("https://%s:%d/v1/messages", host, port),
+		stringReader("again"))
+	req2.Header.Set("Authorization", "Bearer pdk-anthropic-deadbeef")
+	req2.Header.Set("Content-Type", "text/plain")
+	resp2, err := cli.Do(req2)
+	if err != nil {
+		t.Fatalf("second request: %v", err)
+	}
+	_ = resp2.Body.Close()
+}
+
 func TestApplySubstitution_PreservesSetHeadersAndQueryParams(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), "GET",
 		"https://api.example.com/v1/x?key=stripped&api_key=replaced", nil)

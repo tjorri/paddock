@@ -244,7 +244,7 @@ func (s *Server) mitm(ctx context.Context, clientConn net.Conn, host string, por
 	}
 
 	if decision.SubstituteAuth && s.Substituter != nil {
-		if err := handleSubstituted(ctx, clientTLS, upstreamConn, host, port, s.Substituter); err != nil {
+		if err := handleSubstituted(ctx, clientTLS, upstreamConn, host, port, s.Substituter, s.idleTimeout()); err != nil {
 			s.log().V(1).Info("substitute-auth MITM ended", "host", host, "err", err)
 		}
 		return

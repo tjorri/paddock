@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"paddock.dev/paddock/internal/broker/providers"
 )
@@ -58,17 +59,30 @@ func handleSubstituted(
 	host string,
 	port int,
 	sub Substituter,
+	idleTimeout time.Duration,
 ) error {
 	clientReader := bufio.NewReader(clientConn)
 	upstreamReader := bufio.NewReader(upstreamConn)
 
 	for {
+		// F-25: idle deadline before the next request read. A slow-loris
+		// or stale keep-alive client gets timed out instead of holding the
+		// goroutine open indefinitely. idleTimeout=0 disables (used by
+		// tests that want unlimited blocking reads).
+		if idleTimeout > 0 {
+			_ = clientConn.SetReadDeadline(time.Now().Add(idleTimeout))
+		}
 		req, err := http.ReadRequest(clientReader)
 		if err != nil {
 			if err == io.EOF {
 				return nil
 			}
 			return fmt.Errorf("reading client request: %w", err)
+		}
+		// Clear the deadline once the request is fully read; the upstream
+		// hop has its own deadline-management via the bytes-shuttle wrap.
+		if idleTimeout > 0 {
+			_ = clientConn.SetReadDeadline(time.Time{})
 		}
 
 		// HTTP/1.1 via MITM carries only the path in the request-line.

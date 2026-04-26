@@ -167,7 +167,7 @@ func (s *Server) mitmTransparent(
 	}
 
 	if decision.SubstituteAuth && s.Substituter != nil {
-		if err := handleSubstituted(ctx, clientTLS, upstream, sni, origPort, s.Substituter); err != nil {
+		if err := handleSubstituted(ctx, clientTLS, upstream, sni, origPort, s.Substituter, s.idleTimeout()); err != nil {
 			s.log().V(1).Info("substitute-auth MITM ended", "host", sni, "err", err)
 		}
 		return
