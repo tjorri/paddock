@@ -55,8 +55,9 @@ func SetupHarnessRunWebhookWithManager(mgr ctrl.Manager, sink auditing.Sink) err
 //
 //   - exactly one of spec.prompt or spec.promptFrom;
 //   - spec.templateRef.name non-empty;
-//   - spec.extraEnv values do not source from Secrets (v0.3: credentials
-//     flow through the broker; see ADR-0015);
+//   - spec.extraEnv values do not use valueFrom in any shape (v0.3:
+//     runtime-resolved env values must flow through the broker or an
+//     explicit spec field; see ADR-0015 and spec 0002 §5.4);
 //   - spec immutable after creation;
 //   - (v0.3, M2 placeholder) the referenced template must not declare a
 //     non-empty requires block until the broker lands in M3. Admission
