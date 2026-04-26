@@ -16,7 +16,15 @@
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: paddock-proxy-ca-issuer
+  # Note: kustomize applies namePrefix `paddock-` from
+  # config/default/kustomization.yaml, so this becomes
+  # `paddock-proxy-ca-issuer` at apply time — matching the controller
+  # default flag value `--proxy-ca-cluster-issuer-name=paddock-proxy-ca-issuer`.
+  # spec.ca.secretName is left literal because kustomize doesn't
+  # transform it (same pattern as `proxy-ca` Certificate in
+  # config/proxy/certificate.yaml). Helm chart ships a separate copy
+  # using the literal `paddock-proxy-ca-issuer` name.
+  name: proxy-ca-issuer
   labels:
     app.kubernetes.io/name: paddock
     app.kubernetes.io/component: proxy-ca-issuer
