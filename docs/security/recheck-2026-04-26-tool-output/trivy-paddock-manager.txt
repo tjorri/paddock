@@ -1,0 +1,32 @@
+2026-04-26T21:09:40+03:00	INFO	[vulndb] Need to update DB
+2026-04-26T21:09:40+03:00	INFO	[vulndb] Downloading vulnerability DB...
+2026-04-26T21:09:40+03:00	INFO	[vulndb] Downloading artifact...	repo="mirror.gcr.io/aquasec/trivy-db:2"
+5.36 MiB / 91.44 MiB [--->___________________________________________________________] 5.86% ? p/s ?11.47 MiB / 91.44 MiB [------->_____________________________________________________] 12.54% ? p/s ?12.81 MiB / 91.44 MiB [-------->____________________________________________________] 14.01% ? p/s ?19.78 MiB / 91.44 MiB [---------->_____________________________________] 21.63% 24.04 MiB p/s ETA 2s24.72 MiB / 91.44 MiB [------------>___________________________________] 27.03% 24.04 MiB p/s ETA 2s30.97 MiB / 91.44 MiB [---------------->_______________________________] 33.87% 24.04 MiB p/s ETA 2s36.45 MiB / 91.44 MiB [------------------->____________________________] 39.86% 24.28 MiB p/s ETA 2s43.44 MiB / 91.44 MiB [---------------------->_________________________] 47.50% 24.28 MiB p/s ETA 1s49.20 MiB / 91.44 MiB [------------------------->______________________] 53.81% 24.28 MiB p/s ETA 1s55.47 MiB / 91.44 MiB [----------------------------->__________________] 60.66% 24.76 MiB p/s ETA 1s61.72 MiB / 91.44 MiB [-------------------------------->_______________] 67.49% 24.76 MiB p/s ETA 1s67.69 MiB / 91.44 MiB [----------------------------------->____________] 74.02% 24.76 MiB p/s ETA 0s74.06 MiB / 91.44 MiB [-------------------------------------->_________] 80.99% 25.16 MiB p/s ETA 0s80.37 MiB / 91.44 MiB [------------------------------------------>_____] 87.89% 25.16 MiB p/s ETA 0s86.56 MiB / 91.44 MiB [--------------------------------------------->__] 94.66% 25.16 MiB p/s ETA 0s91.44 MiB / 91.44 MiB [---------------------------------------------->] 100.00% 25.40 MiB p/s ETA 0s91.44 MiB / 91.44 MiB [---------------------------------------------->] 100.00% 25.40 MiB p/s ETA 0s91.44 MiB / 91.44 MiB [---------------------------------------------->] 100.00% 25.40 MiB p/s ETA 0s91.44 MiB / 91.44 MiB [---------------------------------------------->] 100.00% 23.76 MiB p/s ETA 0s91.44 MiB / 91.44 MiB [---------------------------------------------->] 100.00% 23.76 MiB p/s ETA 0s91.44 MiB / 91.44 MiB [---------------------------------------------->] 100.00% 23.76 MiB p/s ETA 0s91.44 MiB / 91.44 MiB [---------------------------------------------->] 100.00% 22.23 MiB p/s ETA 0s91.44 MiB / 91.44 MiB [---------------------------------------------->] 100.00% 22.23 MiB p/s ETA 0s91.44 MiB / 91.44 MiB [---------------------------------------------->] 100.00% 22.23 MiB p/s ETA 0s91.44 MiB / 91.44 MiB [-------------------------------------------------] 100.00% 19.52 MiB p/s 4.9s2026-04-26T21:09:46+03:00	INFO	[vulndb] Artifact successfully downloaded	repo="mirror.gcr.io/aquasec/trivy-db:2"
+2026-04-26T21:09:46+03:00	INFO	[vuln] Vulnerability scanning is enabled
+2026-04-26T21:09:46+03:00	INFO	[secret] Secret scanning is enabled
+2026-04-26T21:09:46+03:00	INFO	[secret] If your scanning is slow, please try '--scanners vuln' to disable secret scanning
+2026-04-26T21:09:46+03:00	INFO	[secret] Please see https://trivy.dev/docs/v0.69/guide/scanner/secret#recommendation for faster secret detection
+2026-04-26T21:09:47+03:00	INFO	Detected OS	family="debian" version="13.4"
+2026-04-26T21:09:47+03:00	INFO	[debian] Detecting vulnerabilities...	os_version="13" pkg_num=5
+2026-04-26T21:09:47+03:00	INFO	Number of language-specific files	num=1
+2026-04-26T21:09:47+03:00	INFO	[gobinary] Detecting vulnerabilities...
+
+Report Summary
+
+┌───────────────────────────────────┬──────────┬─────────────────┬─────────┐
+│              Target               │   Type   │ Vulnerabilities │ Secrets │
+├───────────────────────────────────┼──────────┼─────────────────┼─────────┤
+│ paddock-manager:dev (debian 13.4) │  debian  │        0        │    -    │
+├───────────────────────────────────┼──────────┼─────────────────┼─────────┤
+│ manager                           │ gobinary │        0        │    -    │
+└───────────────────────────────────┴──────────┴─────────────────┴─────────┘
+Legend:
+- '-': Not scanned
+- '0': Clean (no security findings detected)
+
+
+📣 [34mNotices:[0m
+  - Version 0.70.0 of Trivy is now available, current version is 0.69.3
+
+To suppress version checks, run Trivy scans with the --skip-version-check flag
+
