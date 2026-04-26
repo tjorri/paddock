@@ -129,6 +129,13 @@ func TestHandleTransparentConn_AllowsAndMITMs(t *testing.T) {
 	clientCh := make(chan clientResult, 1)
 	go func() {
 		body, err := driveTransparentClient(t, clientConn, sni, clientPool)
+		// Close our pipe end so the proxy's deferred clientTLS.Close (in
+		// mitm.go) doesn't block on the 5s hardcoded close_notify write
+		// deadline that (*tls.Conn).Close uses (crypto/tls/conn.go). Under
+		// net.Pipe's synchronous semantics with no reader on the other end,
+		// that write blocks the full 5s; real TCP doesn't hit this because
+		// the kernel socket buffer absorbs close_notify immediately.
+		_ = clientConn.Close()
 		clientCh <- clientResult{body, err}
 	}()
 
@@ -333,6 +340,13 @@ func TestHandleTransparentConn_EmitsDiscoveryAllowKind(t *testing.T) {
 	clientCh := make(chan error, 1)
 	go func() {
 		_, err := driveTransparentClient(t, clientConn, sni, clientPool)
+		// Close our pipe end so the proxy's deferred clientTLS.Close (in
+		// mitm.go) doesn't block on the 5s hardcoded close_notify write
+		// deadline that (*tls.Conn).Close uses (crypto/tls/conn.go). Under
+		// net.Pipe's synchronous semantics with no reader on the other end,
+		// that write blocks the full 5s; real TCP doesn't hit this because
+		// the kernel socket buffer absorbs close_notify immediately.
+		_ = clientConn.Close()
 		clientCh <- err
 	}()
 
