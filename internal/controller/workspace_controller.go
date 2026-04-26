@@ -112,6 +112,9 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !controllerutil.ContainsFinalizer(&ws, WorkspaceFinalizer) {
 		controllerutil.AddFinalizer(&ws, WorkspaceFinalizer)
 		if err := r.Update(ctx, &ws); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
@@ -312,7 +315,7 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	ws.Status.ObservedGeneration = ws.Generation
 
 	if !reflect.DeepEqual(origStatus, &ws.Status) {
-		if err := r.Status().Update(ctx, &ws); err != nil {
+		if err := r.Status().Update(ctx, &ws); err != nil && !apierrors.IsConflict(err) {
 			return ctrl.Result{}, err
 		}
 	}
@@ -356,6 +359,9 @@ func (r *WorkspaceReconciler) reconcileDelete(ctx context.Context, ws *paddockv1
 
 	controllerutil.RemoveFinalizer(ws, WorkspaceFinalizer)
 	if err := r.Update(ctx, ws); err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
