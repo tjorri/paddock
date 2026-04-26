@@ -355,8 +355,10 @@ func buildAgentContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemp
 	if proxyEnabled(in) {
 		// Mount the CA bundle as a single file so SSL_CERT_FILE and
 		// friends land on an actual file, not a directory of symlinks.
-		// subPath projection pulls just ca.crt out of the Secret —
-		// tls.crt/tls.key stay only on the proxy sidecar.
+		// subPath projection pulls just tls.crt out of the Secret —
+		// that's the per-run intermediate cert, the agent's trust
+		// anchor. tls.key (the intermediate's private key) stays only
+		// on the proxy sidecar. F-18 / Phase 2f.
 		c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{
 			Name:      proxyCAVolumeName,
 			MountPath: agentCABundleMountPath,
