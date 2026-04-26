@@ -99,7 +99,7 @@ func TestBrokerHTTPClient_Issue_BrokerError(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(brokerapi.ErrorResponse{
-			Code: "PolicyMissing", Message: "no grant",
+			Code: brokerapi.CodePolicyMissing, Message: "no grant",
 		})
 	})
 	defer stop()
@@ -112,7 +112,7 @@ func TestBrokerHTTPClient_Issue_BrokerError(t *testing.T) {
 	if !errors.As(err, &be) {
 		t.Fatalf("expected *BrokerError, got %T: %v", err, err)
 	}
-	if be.Code != "PolicyMissing" {
+	if be.Code != brokerapi.CodePolicyMissing {
 		t.Fatalf("Code = %q, want PolicyMissing", be.Code)
 	}
 	if !IsBrokerCodeFatal(err) {
@@ -218,7 +218,7 @@ func TestIsBrokerCodeFatal_UsesTypedConstants(t *testing.T) {
 		{brokerapi.CodeForbidden, true},
 		{brokerapi.CodeProviderFailure, false},
 		{brokerapi.CodeAuditUnavailable, false},
-		{"SomeFutureCode", false},
+		{"UnknownCode", false},
 	}
 	for _, tc := range cases {
 		err := &brokerclient.BrokerError{Status: 500, Code: tc.code}

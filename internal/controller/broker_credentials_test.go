@@ -49,7 +49,7 @@ func (f *fakeBroker) Issue(_ context.Context, _ string, _ string, credentialName
 	}
 	v, ok := f.values[credentialName]
 	if !ok {
-		return nil, &brokerclient.BrokerError{Status: 404, Code: "CredentialNotFound", Message: credentialName}
+		return nil, &brokerclient.BrokerError{Status: 404, Code: brokerapi.CodeCredentialNotFound, Message: credentialName}
 	}
 	resp := brokerapi.IssueResponse{
 		Value:     v,
@@ -193,7 +193,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 
 	It("returns a fatal reason on a PolicyMissing broker error", func() {
 		fb := &fakeBroker{errs: map[string]error{
-			"K": &brokerclient.BrokerError{Status: 403, Code: "PolicyMissing", Message: "no grant"},
+			"K": &brokerclient.BrokerError{Status: 403, Code: brokerapi.CodePolicyMissing, Message: "no grant"},
 		}}
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("denied")
@@ -202,7 +202,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeFalse())
 		Expect(reason).To(Equal("BrokerDenied"))
-		Expect(msg).To(ContainSubstring("PolicyMissing"))
+		Expect(msg).To(ContainSubstring(brokerapi.CodePolicyMissing))
 	})
 
 	It("swallows transient broker-unreachable failures so the caller sets BrokerUnavailable", func() {

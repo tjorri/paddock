@@ -49,8 +49,17 @@ const (
 
 // Symbolic broker error codes returned in ErrorResponse.Code. Kept
 // here so callers can compare against typed constants instead of
-// string literals (XC-02). The list mirrors the inline doc on
-// ErrorResponse — extend both together.
+// string literals (XC-02).
+//
+// When adding a code:
+//  1. Add the constant here.
+//  2. Add the bullet to the inline doc on ErrorResponse.Code below.
+//  3. Update IsBrokerCodeFatal in internal/controller/broker_client.go
+//     if the new code should fail the run rather than requeue.
+//
+// Note: internal/broker/server.go's writeError calls still use string
+// literals; migrating the emitter side is a future cleanup outside
+// XC-02's scope.
 const (
 	CodeBadRequest         = "BadRequest"
 	CodeUnauthorized       = "Unauthorized"
