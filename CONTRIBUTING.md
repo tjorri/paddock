@@ -6,6 +6,7 @@ Thanks for being here. Paddock is early. v0.1 shipped the core CRDs, controller,
 
 - **Issue or discussion first** for anything larger than a focused fix or doc tweak. Paddock has strong opinions about its pod shape and surface area; a 5-minute chat saves a rewrite.
 - **Check the specs and ADRs** for existing decisions. v0.1 architecture lives in [`docs/specs/0001-core-v0.1.md`](docs/specs/0001-core-v0.1.md); v0.3's broker + proxy work in [`docs/specs/0002-broker-proxy-v0.3.md`](docs/specs/0002-broker-proxy-v0.3.md). Every architectural choice has an ADR under [`docs/adr/`](docs/adr/). If your change contradicts one, update the ADR (or add a new one) as part of the same PR.
+- **Reconciler conflict handling.** Every `r.Update`, `r.Status().Update`, and `controllerutil.CreateOrUpdate` in `internal/controller/` must treat `apierrors.IsConflict` as benign — see [ADR-0017](docs/adr/0017-controller-conflict-handling.md) for the three call-site shapes.
 - **Small, topical commits.** One concern per PR. Split refactors from behaviour changes.
 
 ## Dev setup
