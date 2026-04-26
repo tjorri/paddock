@@ -166,7 +166,6 @@ func (s *Server) doMITM(
 	// deferred close-pair fires, the second goroutine's Read errors out
 	// against the closed conn (or the idle deadline), and it sends to
 	// errCh on its way out. The send doesn't block (errCh is buffered 2),
-	// the goroutine exits, and we don't leak. XC-04 in the engineering
-	// review tracks this comment.
+	// the goroutine exits, and we don't leak.
 	return <-errCh
 }
