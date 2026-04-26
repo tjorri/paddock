@@ -117,13 +117,17 @@ func (r *WorkspaceReconciler) ensureSeedBrokerCA(ctx context.Context, ws *paddoc
 	}
 	// created=false, err=nil: either the source Secret is missing/empty
 	// (helper returned early) or this is a steady-state no-op update.
-	// Re-Get the destination to distinguish the two cases.
+	// Re-Get the destination to distinguish the two cases. This also
+	// closes a latent bug in the pre-refactor path: the original returned
+	// true on a no-op CreateOrUpdate even when the destination's ca.crt
+	// was stale/empty (e.g. blanked by an external actor).
 	var dst corev1.Secret
 	if getErr := r.Get(ctx, types.NamespacedName{Namespace: ws.Namespace, Name: dstName}, &dst); getErr != nil {
 		if apierrors.IsNotFound(getErr) {
 			return false, nil
 		}
-		return false, getErr
+		return false, fmt.Errorf("re-reading broker-ca destination Secret %s/%s: %w",
+			ws.Namespace, dstName, getErr)
 	}
 	if len(dst.Data[brokerCAKey]) == 0 {
 		return false, nil

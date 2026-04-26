@@ -139,7 +139,8 @@ func (r *HarnessRunReconciler) ensureBrokerCA(ctx context.Context, run *paddockv
 		if apierrors.IsNotFound(getErr) {
 			return false, nil
 		}
-		return false, getErr
+		return false, fmt.Errorf("re-reading broker-ca destination Secret %s/%s: %w",
+			run.Namespace, dstName, getErr)
 	}
 	if len(dst.Data[brokerCAKey]) == 0 {
 		return false, nil
