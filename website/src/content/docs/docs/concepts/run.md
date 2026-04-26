@@ -33,6 +33,6 @@ losing trade.
 ## What runs against
 
 Runs execute against a workspace (a PVC). The workspace is optional: if
-omitted, a fresh emphemeral PVC is provisioned for the run alone. If
+omitted, a fresh ephemeral PVC is provisioned for the run alone. If
 specified, the workspace is serialised to one active run at a time so two
 HarnessRuns don't fight for the same files.
