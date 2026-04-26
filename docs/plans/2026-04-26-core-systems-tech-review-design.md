@@ -23,12 +23,16 @@ that don't show up in a CVE catalogue but compound as the codebase grows.
 
 ## 2. Deliverables
 
-Two paired files in `docs/plans/`, per project convention:
+Three files in `docs/plans/`, following project convention (paired
+`-design.md` + unsuffixed plan, plus a clearly-labeled output file for
+this work since the deliverable is a document rather than code):
 
-- **`2026-04-26-core-systems-tech-review-design.md`** — this document.
-- **`2026-04-26-core-systems-tech-review.md`** — the review itself,
-  produced by executing the implementation plan that `writing-plans` will
-  generate from this spec.
+- **`docs/plans/2026-04-26-core-systems-tech-review-design.md`** — this
+  document (the spec).
+- **`docs/plans/2026-04-26-core-systems-tech-review.md`** — the
+  implementation plan that `writing-plans` produces from this spec.
+- **`docs/plans/2026-04-26-core-systems-tech-review-findings.md`** — the
+  review document itself, produced by executing the plan.
 
 ## 3. Scope
 
@@ -177,8 +181,8 @@ recommendation.
 
 ## 9. Structure of the review document
 
-The review (`2026-04-26-core-systems-tech-review.md`) will follow this
-order:
+The review (`docs/plans/2026-04-26-core-systems-tech-review-findings.md`)
+will follow this order:
 
 1. **Context** — what is being reviewed, methodology, what is *not* in
    scope, cross-reference to the v0.4 audit and test-gaps docs.
