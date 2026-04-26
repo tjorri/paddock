@@ -1,0 +1,12 @@
+# Astro / Node
+node_modules/
+dist/
+.astro/
+
+# Lockfiles from other package managers
+package-lock.json
+yarn.lock
+
+# Editor noise
+.DS_Store
+*.log
