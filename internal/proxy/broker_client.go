@@ -47,6 +47,14 @@ type BrokerClient struct {
 	RunName      string
 	RunNamespace string
 
+	// TokenReader returns the SA bearer token to attach to every
+	// outbound request. Defaulted by NewBrokerClient to a closure that
+	// re-reads TokenPath on each call (the projected
+	// ServiceAccountToken file rotates on disk; an in-memory cache
+	// would invite expired-token failures). Tests inject inline byte
+	// slices.
+	TokenReader func() ([]byte, error)
+
 	hc *http.Client
 }
 
@@ -77,7 +85,7 @@ func NewBrokerClient(endpoint, tokenPath, caPath, runName, runNamespace string) 
 		}
 		tlsCfg.RootCAs = pool
 	}
-	return &BrokerClient{
+	c := &BrokerClient{
 		Endpoint:     strings.TrimRight(endpoint, "/"),
 		TokenPath:    tokenPath,
 		RunName:      runName,
@@ -89,7 +97,9 @@ func NewBrokerClient(endpoint, tokenPath, caPath, runName, runNamespace string) 
 			Timeout:   5 * time.Second,
 			Transport: &http.Transport{TLSClientConfig: tlsCfg},
 		},
-	}, nil
+	}
+	c.TokenReader = func() ([]byte, error) { return os.ReadFile(c.TokenPath) }
+	return c, nil
 }
 
 // ValidateEgress implements Validator by calling the broker's
@@ -156,7 +166,7 @@ func (c *BrokerClient) SubstituteAuth(ctx context.Context, host string, port int
 // rotate on disk, and any in-memory cache would invite expired-token
 // failures after Pod lifetime ≥ the token's 1h TTL.
 func (c *BrokerClient) do(ctx context.Context, path string, body []byte) (*http.Response, error) {
-	token, err := os.ReadFile(c.TokenPath)
+	token, err := c.TokenReader()
 	if err != nil {
 		return nil, fmt.Errorf("reading broker token: %w", err)
 	}
