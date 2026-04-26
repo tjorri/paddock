@@ -385,3 +385,17 @@ endef
 define gomodver
 $(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $(1) 2>/dev/null)
 endef
+
+##@ Website
+
+.PHONY: site-dev
+site-dev: ## Serve the website on http://localhost:4321/paddock/
+	cd website && pnpm install --frozen-lockfile && pnpm dev
+
+.PHONY: site-build
+site-build: ## Build the static website into website/dist/
+	cd website && pnpm install --frozen-lockfile && pnpm build
+
+.PHONY: site-preview
+site-preview: ## Preview the built website locally
+	cd website && pnpm preview

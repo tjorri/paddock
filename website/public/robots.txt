@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://tjorri.github.io/paddock/sitemap-index.xml

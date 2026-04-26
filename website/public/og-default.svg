@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="Paddock — open-source AI agent harness platform for Kubernetes">
+  <rect width="1200" height="630" fill="#2D5F6E"/>
+  <g transform="translate(280 165) scale(2.5)">
+    <defs>
+      <mask id="rails">
+        <rect width="256" height="256" fill="white"/>
+        <rect x="68" y="100" width="120" height="13" rx="3" fill="black"/>
+        <rect x="68" y="122" width="120" height="13" rx="3" fill="black"/>
+        <rect x="68" y="144" width="120" height="13" rx="3" fill="black"/>
+      </mask>
+    </defs>
+    <polygon points="128,28 215,78 215,178 128,228 41,178 41,78" fill="#FBFAF7" mask="url(#rails)"/>
+  </g>
+  <text x="280" y="555" fill="#FBFAF7" font-family="IBM Plex Sans, sans-serif" font-size="48" font-weight="600">paddock</text>
+  <text x="280" y="600" fill="#D9D3C7" font-family="IBM Plex Sans, sans-serif" font-size="22">Run AI agent harnesses as first-class Kubernetes workloads.</text>
+</svg>
