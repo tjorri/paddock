@@ -1,0 +1,52 @@
+---
+import "@fontsource/ibm-plex-sans/400.css";
+import "@fontsource/ibm-plex-sans/600.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/600.css";
+import "../styles/tokens.css";
+import "../styles/global.css";
+import SiteHeader from "../components/SiteHeader.astro";
+import SiteFooter from "../components/SiteFooter.astro";
+
+interface Props {
+  title: string;
+  description?: string;
+  /** Path of the current page relative to BASE_URL, e.g. "/about". */
+  pathname?: string;
+}
+
+const {
+  title,
+  description = "Run AI agent harnesses as first-class Kubernetes workloads, with the safety rails built in.",
+  pathname = "/",
+} = Astro.props;
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+const fullTitle = title === "Paddock" ? "Paddock" : `${title} — Paddock`;
+const canonical = new URL(`${base}${pathname}`, Astro.site).toString();
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+
+    <link rel="icon" type="image/svg+xml" href={`${base}/favicon.svg`} media="(prefers-color-scheme: light)" />
+    <link rel="icon" type="image/svg+xml" href={`${base}/favicon-dark.svg`} media="(prefers-color-scheme: dark)" />
+
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={`${base}/og-default.png`} />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <SiteHeader />
+    <main><slot /></main>
+    <SiteFooter />
+  </body>
+</html>

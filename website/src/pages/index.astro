@@ -1,14 +1,9 @@
 ---
-const tagline = "Hello, Paddock";
+import BaseLayout from "../layouts/BaseLayout.astro";
 ---
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width" />
-    <title>Paddock</title>
-  </head>
-  <body>
-    <h1>{tagline}</h1>
-  </body>
-</html>
+<BaseLayout title="Paddock" pathname="/">
+  <section class="container" style="padding-block: var(--space-7);">
+    <h1>Hello, Paddock</h1>
+    <p>Layout chrome wired up. Real content lands in Task 6.</p>
+  </section>
+</BaseLayout>
