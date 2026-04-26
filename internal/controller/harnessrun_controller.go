@@ -208,6 +208,9 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if !controllerutil.ContainsFinalizer(&run, HarnessRunFinalizer) {
 		controllerutil.AddFinalizer(&run, HarnessRunFinalizer)
 		if err := r.Update(ctx, &run); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
@@ -795,7 +798,9 @@ func (r *HarnessRunReconciler) ensurePromptSecret(ctx context.Context, run *padd
 	}
 	if !reflect.DeepEqual(existing.Data, desired.Data) {
 		existing.Data = desired.Data
-		return r.Update(ctx, &existing)
+		if err := r.Update(ctx, &existing); err != nil && !apierrors.IsConflict(err) {
+			return err
+		}
 	}
 	return nil
 }
@@ -1187,6 +1192,9 @@ func (r *HarnessRunReconciler) reconcileDelete(ctx context.Context, run *paddock
 	// 4. Remove finalizer and let cascade delete take over.
 	controllerutil.RemoveFinalizer(run, HarnessRunFinalizer)
 	if err := r.Update(ctx, run); err != nil && !apierrors.IsNotFound(err) {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
