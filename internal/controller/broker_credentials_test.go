@@ -279,7 +279,7 @@ var _ = Describe("reconcileCredentials", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out.fatal).To(BeFalse())
 		Expect(out.requeue).To(BeFalse())
-		Expect(out.credStatus).To(HaveLen(1))
+		Expect(run.Status.Credentials).To(HaveLen(1))
 
 		var ready *metav1.Condition
 		for i, c := range run.Status.Conditions {
@@ -317,5 +317,47 @@ var _ = Describe("reconcileCredentials", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out.fatal).To(BeFalse())
 		Expect(out.requeue).To(BeTrue())
+
+		Expect(run.Status.Phase).To(Equal(paddockv1alpha1.HarnessRunPhasePending))
+
+		var brokerReady *metav1.Condition
+		for i, c := range run.Status.Conditions {
+			if c.Type == paddockv1alpha1.HarnessRunConditionBrokerReady {
+				brokerReady = &run.Status.Conditions[i]
+			}
+		}
+		Expect(brokerReady).NotTo(BeNil())
+		Expect(brokerReady.Status).To(Equal(metav1.ConditionFalse))
+		Expect(brokerReady.Reason).To(Equal("BrokerUnavailable"))
+	})
+
+	It("returns fatal outcome when the broker returns a permission error", func() {
+		fb := &fakeBroker{
+			errs: map[string]error{
+				"K": &BrokerError{Status: 403, Code: "PolicyMissing", Message: "no policy grant"},
+			},
+		}
+		r := &HarnessRunReconciler{
+			Client:       k8sClient,
+			Scheme:       k8sClient.Scheme(),
+			Recorder:     record.NewFakeRecorder(8),
+			BrokerClient: fb,
+		}
+		run := &paddockv1alpha1.HarnessRun{
+			ObjectMeta: metav1.ObjectMeta{Name: "rc-fatal", Namespace: ns},
+			Spec:       paddockv1alpha1.HarnessRunSpec{TemplateRef: paddockv1alpha1.TemplateRef{Name: "tpl"}, Prompt: "hi"},
+		}
+		Expect(k8sClient.Create(ctx, run)).To(Succeed())
+
+		out, err := r.reconcileCredentials(ctx, run, &resolvedTemplate{
+			Spec: paddockv1alpha1.HarnessTemplateSpec{
+				Requires: paddockv1alpha1.RequireSpec{
+					Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "K"}},
+				},
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.fatal).To(BeTrue())
+		Expect(out.fatalReason).To(Equal("BrokerDenied"))
 	})
 })

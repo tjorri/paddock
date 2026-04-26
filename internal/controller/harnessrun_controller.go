@@ -539,7 +539,6 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // reconcileCredentials. The caller in Reconcile switches on it to
 // decide whether to fail+commit, requeue+commit, or proceed.
 type credentialsReconcileOutcome struct {
-	credStatus  []paddockv1alpha1.CredentialStatus
 	requeue     bool // when true, caller commits + requeues 10s
 	fatal       bool // when true, caller marks BrokerReady fatal and commits
 	fatalReason string
@@ -555,7 +554,9 @@ type credentialsReconcileOutcome struct {
 //     committing status changes the method has already written.
 //   - outcome.fatal == true: r.fail with outcome.fatalReason/Msg, then
 //     commitStatus.
-//   - outcome.requeue == true: commitStatus then requeue 10s.
+//   - outcome.requeue == true: commitStatus then requeue 10s. On requeue,
+//     the method has already written BrokerReady=False and Phase=Pending
+//     to the run; the caller need only commit.
 //   - otherwise: continue Reconcile.
 //
 // The method is idempotent: a steady-state reconcile loop with no
@@ -634,7 +635,7 @@ func (r *HarnessRunReconciler) reconcileCredentials(
 		Message:            brokerMsg,
 		ObservedGeneration: run.Generation,
 	})
-	return credentialsReconcileOutcome{credStatus: credStatus}, nil
+	return credentialsReconcileOutcome{}, nil
 }
 
 // ensureWorkspace returns the Workspace this run uses. If
