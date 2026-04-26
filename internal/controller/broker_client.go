@@ -39,9 +39,12 @@ type BrokerIssuer interface {
 // reconciler treats any template with requires.credentials as a hard
 // BrokerReady=False, useful for envtest setups without a broker.
 type BrokerHTTPClient struct {
-	// TokenReader, when non-nil, overrides the default closure that
-	// re-reads tokenPath on every call. Tests inject inline byte
-	// slices.
+	// TokenReader, when non-nil, overrides the inner client's TokenReader on
+	// every Issue call. NewBrokerHTTPClient initialises this field and the
+	// inner client's TokenReader to the same closure (re-reads tokenPath on
+	// every call), so production paths see no behavioural change. Tests can
+	// mutate this field after construction to inject inline byte slices,
+	// which the next Issue call propagates to the inner client.
 	TokenReader brokerclient.TokenReader
 
 	c *brokerclient.Client
@@ -75,11 +78,13 @@ func NewBrokerHTTPClient(endpoint, tokenPath, caPath string) (*BrokerHTTPClient,
 // Issue asks the broker for one named credential on behalf of the
 // given run. Wraps POST /v1/issue.
 func (b *BrokerHTTPClient) Issue(ctx context.Context, runName, runNamespace, credentialName string) (*brokerapi.IssueResponse, error) {
-	// Per-call run identity: this Client is reused across runs; mutating
-	// RunName/RunNamespace per call is safe because the reconcile loop
-	// serialises Issue calls per HarnessRun. A future parallel-call
-	// refactor will need a per-request Do overload taking run identity
-	// inline. See brokerclient.Client godoc for the invariant.
+	// Per-call: this Client is reused across runs, so RunName,
+	// RunNamespace, and (when overridden post-construction)
+	// TokenReader are mutated on the inner client per Issue call.
+	// Safe because the reconcile loop serialises Issue calls per
+	// HarnessRun. A future parallel-call refactor will need a
+	// per-request Do overload taking these inline. See
+	// brokerclient.Client godoc for the invariant.
 	b.c.RunName = runName
 	b.c.RunNamespace = runNamespace
 	if b.TokenReader != nil {
