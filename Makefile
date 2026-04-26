@@ -96,7 +96,12 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 	@#                         process, so CI logs always carry the
 	@#                         real failure reason (spec #24875514481
 	@#                         lost its summary to a Go-timeout panic).
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e -timeout=12m ./test/e2e/ -v -ginkgo.v -ginkgo.timeout=11m
+	@#
+	@# FAIL_FAST=1 → opt-in fast iteration: stop on the first failing
+	@#               spec instead of running all 10. Default off in CI
+	@#               so a single PR with two unrelated regressions
+	@#               surfaces both in one round-trip.
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e -timeout=12m ./test/e2e/ -v -ginkgo.v -ginkgo.timeout=11m $(if $(FAIL_FAST),-ginkgo.fail-fast,)
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
