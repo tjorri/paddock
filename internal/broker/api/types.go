@@ -104,9 +104,14 @@ type ErrorResponse struct {
 	//   - "Unauthorized"         401
 	//   - "Forbidden"            403
 	//   - "RunNotFound"          404
+	//   - "RunTerminated"        404 (run gone) / 403 (run in terminal phase)
 	//   - "CredentialNotFound"   404 (template does not declare it)
 	//   - "PolicyMissing"        403 (no BrokerPolicy grants the cred)
+	//   - "PolicyRevoked"        403 (BrokerPolicy match was lost mid-run)
+	//   - "EgressRevoked"        403 (egress grant for host:port lost mid-run)
+	//   - "HostNotAllowed"       403 (bearer presented for a host not in lease's AllowedHosts)
 	//   - "BearerUnknown"        404 (SubstituteAuth could not match bearer)
+	//   - "AuditUnavailable"     503 (audit write failed; see Phase 2c)
 	//   - "ProviderFailure"      500
 	Code string `json:"code"`
 
@@ -172,4 +177,18 @@ type SubstituteAuthRequest struct {
 type SubstituteAuthResponse struct {
 	SetHeaders    map[string]string `json:"setHeaders,omitempty"`
 	RemoveHeaders []string          `json:"removeHeaders,omitempty"`
+
+	// AllowedHeaders is the per-request allowlist of additional header
+	// names the proxy may forward alongside the substituted credential.
+	// Keys in SetHeaders are always allowed. Empty fails closed: the
+	// proxy strips every header not in SetHeaders or a fixed mustKeep
+	// set (Host, Content-Length, Content-Type, Transfer-Encoding). F-21.
+	// +optional
+	AllowedHeaders []string `json:"allowedHeaders,omitempty"`
+
+	// AllowedQueryParams is the same shape for URL query parameter
+	// keys: keys not in this list (and not in SetQueryParam) are
+	// stripped from the forwarded request URL. F-21.
+	// +optional
+	AllowedQueryParams []string `json:"allowedQueryParams,omitempty"`
 }
