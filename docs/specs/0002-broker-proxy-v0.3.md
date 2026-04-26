@@ -307,6 +307,10 @@ cert-manager issues a `paddock-proxy-ca` Certificate in `paddock-system` (self-s
 
 Rotation: cert-manager renews the CA on its own cadence; the controller rolls run Pods whose ca-bundle Secret is stale via a standard rolling-restart annotation.
 
+#### Phase 2f update (2026-04-26): per-run intermediate CA
+
+Each run now gets a unique intermediate CA issued by cert-manager via a `ClusterIssuer` of `kind: CA` named `paddock-proxy-ca-issuer` (which references the existing cluster-wide `paddock-proxy-ca` Secret as its signing root). The controller creates a per-run `Certificate` resource in the run's namespace with `isCA: true`; cert-manager produces the backing `<run>-proxy-tls` Secret with the per-run intermediate keypair. The agent's CA-trust env vars (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, etc.) now point at the per-run intermediate cert (`tls.crt`) — NOT the cluster root cert. The cluster root private key never leaves cert-manager's signing path; tenant A's agent does not trust leaves signed by tenant B's intermediate. The proxy sidecar's chain (`[leaf, intermediate]`) validates against the agent's intermediate trust anchor. The seed-Pod path (Workspaces) gets analogous per-Workspace treatment (1y duration / 30d renewBefore). See ADR-0013 "Phase 2f update" and `docs/plans/2026-04-26-v0.4-security-review-phase-2f-design.md`.
+
 ### 7.4 NetworkPolicy layer
 
 Opt-in via chart value `proxy.networkPolicy.enforce` (default `auto` — applied if the CNI advertises NetworkPolicy support; skipped silently otherwise). When enabled, run Pods get a `NetworkPolicy` that:
@@ -534,6 +538,7 @@ Parked as TODOs; answered in M0 ADRs or in-milestone:
 - **Broker HA mode.** Default 1 replica; leader election trivial since the broker is stateless. v0.3 ships `replicas: N` as a supported chart value but we don't write load tests.
 - **AuditEvent → external sink.** 30-day etcd retention is fine for demos; production wants S3 or a log pipeline. The shape should support a streaming export hook, but v0.3 ships only the CRD.
 - **Proxy `cooperative` mode threat disclosure.** Documented as weaker; what's the enforceable form? Add a BrokerPolicy field `minInterceptionMode: transparent` that rejects runs trying to weaken?
+- ~~**Per-run intermediate CA** so the cluster root key never leaves `paddock-system`.~~ Resolved in Phase 2f (2026-04-26); see `docs/plans/2026-04-26-v0.4-security-review-phase-2f-design.md`.
 
 ## 17. What's explicitly not v0.3
 

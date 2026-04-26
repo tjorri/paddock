@@ -99,10 +99,19 @@ const (
 	// conflict risk against typical agent container UIDs.
 	proxyRunAsUID = 1337
 	// agentCABundleMountPath is where the agent sees the MITM CA
-	// bundle. Points at a single file (ca.crt key of the per-run
-	// Secret), which is what SSL_CERT_FILE and friends want.
+	// bundle. Points at a single file (tls.crt key of the per-run
+	// Secret — the per-run intermediate cert; see agentCABundleSubPath
+	// below), which is what SSL_CERT_FILE and friends want.
 	agentCABundleMountPath = "/etc/ssl/certs/paddock-proxy-ca.crt"
-	agentCABundleSubPath   = "ca.crt"
+	// agentCABundleSubPath is the per-run intermediate cert — the
+	// agent's TLS trust anchor. Despite the conventional "tls.crt =
+	// serving cert" naming in cert-manager-issued Secrets, here that
+	// file IS the trust anchor (we issue an intermediate isCA
+	// Certificate; the proxy serves [leaf, intermediate] chains; the
+	// agent's ca-bundle = the intermediate). The cluster root cert is
+	// deliberately NOT mounted into the agent — it would re-introduce
+	// the F-18 cross-tenant trust regression. F-18 / Phase 2f.
+	agentCABundleSubPath = "tls.crt"
 
 	// paddockSAVolumeName is the explicit projected SA-token mount
 	// added to sidecars only. Pod-level AutomountServiceAccountToken
@@ -346,8 +355,10 @@ func buildAgentContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemp
 	if proxyEnabled(in) {
 		// Mount the CA bundle as a single file so SSL_CERT_FILE and
 		// friends land on an actual file, not a directory of symlinks.
-		// subPath projection pulls just ca.crt out of the Secret —
-		// tls.crt/tls.key stay only on the proxy sidecar.
+		// subPath projection pulls just tls.crt out of the Secret —
+		// that's the per-run intermediate cert, the agent's trust
+		// anchor. tls.key (the intermediate's private key) stays only
+		// on the proxy sidecar. F-18 / Phase 2f.
 		c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{
 			Name:      proxyCAVolumeName,
 			MountPath: agentCABundleMountPath,

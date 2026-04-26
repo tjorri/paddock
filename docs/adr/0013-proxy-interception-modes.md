@@ -63,3 +63,39 @@ that re-creates the NP and emits a `network-policy-enforcement-withdrawn`
 AuditEvent so the operator's trail records the withdrawal. Combined with
 F-41's `Owns(&networkingv1.NetworkPolicy{})` watch on the controller,
 this makes manual NP withdrawal observable and self-healing.
+
+## Phase 2f update (2026-04-26)
+
+The "per-run MITM CA" model is now actually delivered. Prior to Phase 2f,
+the controller copied the cluster-wide `paddock-proxy-ca` Secret bytes
+into each run's `<run>-proxy-tls` Secret — every tenant got the same
+keypair (F-18). After Phase 2f:
+
+- A new `cert-manager.io/v1 ClusterIssuer` of `kind: CA` named
+  `paddock-proxy-ca-issuer` references the existing `paddock-proxy-ca`
+  Secret as its signing root.
+- The controller creates a per-run `Certificate` resource (with
+  `isCA: true`, ECDSA P-256, 48h duration, no renewal) in the run's
+  namespace; cert-manager produces the per-run Secret with the
+  intermediate keypair. The controller never reads the intermediate's
+  private key.
+- The seed-Pod path (Workspaces) gets the analogous per-Workspace
+  treatment with a longer-lived intermediate (1y duration, 30d
+  renewBefore — matches the cluster root).
+- The agent container's `SSL_CERT_FILE` (and friends) point at the
+  per-run intermediate cert (`tls.crt` in the per-run Secret), NOT the
+  cluster root cert. Tenant A's agent does not trust leaves signed by
+  tenant B's intermediate.
+- Operator install requirement: cert-manager must run with
+  `--cluster-resource-namespace=paddock-system` so the ClusterIssuer
+  can read the source Secret. RBAC discipline: do not broadly grant
+  `certificates.cert-manager.io: create` to tenant ServiceAccounts —
+  the paddock-controller is the only legitimate creator referencing
+  this ClusterIssuer; a sample Kyverno policy is shipped at
+  `config/samples/kyverno-cluster-issuer-restriction.yaml`.
+
+Controller flag changes: `--proxy-ca-secret-name` and
+`--proxy-ca-secret-namespace` removed; `--proxy-ca-cluster-issuer-name`
+added (default `paddock-proxy-ca-issuer`).
+
+See `docs/plans/2026-04-26-v0.4-security-review-phase-2f-design.md`.

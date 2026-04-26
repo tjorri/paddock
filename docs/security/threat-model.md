@@ -50,7 +50,7 @@ What's worth protecting, where it lives, and who issues it.
 | Workspace contents (PVC)               | PVC in run namespace                          | Workspace controller     | Workspace lifetime           |
 | AuditEvent stream                      | Run namespace, TTL-reaped                     | Controller / broker      | Per ADR-0016 retention       |
 | Run prompts                            | Run-namespace Secrets (per ADR-0011)          | Controller (admission)   | Run lifetime                 |
-| MITM CA private key (per-run)          | Run-namespace Secret + projected into proxy   | Broker / cert-manager    | Run lifetime                 |
+| MITM CA private key (per-run)[^per-run-ca] | Run-namespace Secret + projected into proxy | Broker / cert-manager | Run lifetime |
 | Controller / broker / proxy SA tokens  | `paddock-system` (controller, broker), run ns (proxy) | Kubernetes        | Token rotation interval      |
 
 The most sensitive assets are: long-lived upstream secrets (compromise = full upstream account access), the substitution mapping (compromise = real-credential disclosure to the agent), and the MITM CA private key (compromise = the agent can forge upstream certs and bypass MITM substitution detection).
@@ -67,7 +67,7 @@ Actors are numbered `T-1` through `T-8`. Findings cite these IDs (`Threats: T-1,
 
 **Expected attacks.** Exfiltrate broker bearer to substitute it elsewhere; bypass proxy via raw TCP / IP literal / DNS rebinding; read other tenant's PVC if shared; forge MITM CA-signed certs; cause audit events to be dropped or backdated; attempt direct calls to broker gRPC.
 
-**Current defences.** Default-deny egress (transparent mode unbypassable); broker bearer scope limited to current run; per-run MITM CA (not shared); broker validates SA-token identity; AuditEvent CRD records every credential issuance and egress decision.
+**Current defences.** Default-deny egress (transparent mode unbypassable); broker bearer scope limited to current run; per-run MITM CA (not shared)[^per-run-ca]; broker validates SA-token identity; AuditEvent CRD records every credential issuance and egress decision.
 
 ### T-2: Untrusted prompt / workspace content
 
@@ -97,7 +97,7 @@ Actors are numbered `T-1` through `T-8`. Findings cite these IDs (`Threats: T-1,
 
 **Expected attacks.** Direct broker call presenting another tenant's SA token (if leaked or guessable); reading another tenant's PVC (via shared StorageClass reclaim policy or hostPath); guessing or replaying broker bearer tokens; exhausting broker capacity to deny service to others; exploiting shared MITM CA across runs.
 
-**Current defences.** Namespace RBAC default-deny; per-run MITM CA (not shared); broker authenticates SA-token presented by the run pod; PVC reclaim policy is `Delete` by default for dynamically-provisioned PVCs; opaque bearers are random and per-run.
+**Current defences.** Namespace RBAC default-deny; per-run MITM CA (not shared)[^per-run-ca]; broker authenticates SA-token presented by the run pod; PVC reclaim policy is `Delete` by default for dynamically-provisioned PVCs; opaque bearers are random and per-run.
 
 ### T-5: Compromised paddock-system component
 
@@ -269,3 +269,5 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | Information disclosure     | Seed Job's leased token leaks                             | Token short-lived; proxy-injected; not in env (proxy-mode)     |
 | Denial of service          | Slow-loris on git host                                    | Seed-Job timeout; pod activeDeadlineSeconds                    |
 | Elevation of privilege     | Seed Job gains write to a non-target repo                 | Token lease scope; broker validates per-call                   |
+
+[^per-run-ca]: Phase 2f (2026-04-26) makes this property factually accurate. Prior to Phase 2f, this row was a documentation/code mismatch — the per-run Secret content was a byte-for-byte copy of the cluster root keypair (F-18). After Phase 2f, each run has its own intermediate CA issued by cert-manager via a `ClusterIssuer` of `kind: CA`; the cluster root never leaves cert-manager's signing path; tenant A's agent does not trust leaves signed by tenant B's intermediate.

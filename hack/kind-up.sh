@@ -37,5 +37,14 @@ echo "waiting for cert-manager to become ready"
 kubectl -n cert-manager wait --for=condition=Available --timeout=180s \
   deployment/cert-manager deployment/cert-manager-webhook deployment/cert-manager-cainjector
 
+# Phase 2f / F-18: the per-run intermediate ClusterIssuer (kind: CA)
+# references the paddock-proxy-ca Secret in paddock-system. cert-manager
+# defaults --cluster-resource-namespace to its own ns; patch it to
+# paddock-system so the ClusterIssuer can read its source Secret.
+echo "patching cert-manager --cluster-resource-namespace=paddock-system (F-18 / Phase 2f)"
+kubectl -n cert-manager patch deployment cert-manager --type=json \
+  --patch='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--cluster-resource-namespace=paddock-system"}]'
+kubectl -n cert-manager rollout status deployment/cert-manager --timeout=120s
+
 echo "kind cluster '${CLUSTER_NAME}' ready"
 echo "next: tilt up"

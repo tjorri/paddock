@@ -19,122 +19,155 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
 
-// Standard keys on the per-run proxy-tls Secret. Matches the layout
-// cert-manager writes into Certificate-managed Secrets, so the proxy
-// sidecar's LoadMITMCertificateAuthorityFromDir works unchanged when
-// the Secret is volume-mounted.
-const (
-	proxyTLSSecretKeyCACert = "tls.crt"
-	proxyTLSSecretKeyCAKey  = "tls.key"
-	// caBundleKey is what the agent container sees on its CA-trust env
-	// vars (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, ...). It contains only
-	// the cert (never the key) so a compromised agent cannot use it to
-	// forge leaves. Same file as tls.crt today; extracted as a distinct
-	// key so the rotation-era "current + previous" concatenation lands
-	// in a single spot without touching the proxy's tls.crt expectation.
-	caBundleKey = "ca.crt"
-)
-
-// proxyTLSSecretName is the per-run Secret the controller materialises
-// with the MITM CA keypair + bundle. Consumed by the proxy sidecar
-// (keypair) and the agent container (ca.crt only).
+// proxyTLSSecretName is the per-run Secret holding the per-run
+// intermediate CA keypair. cert-manager creates this Secret directly
+// when it issues the per-run Certificate; the controller never reads
+// or writes the private key.
 func proxyTLSSecretName(runName string) string {
 	return runName + "-proxy-tls"
 }
 
-// ensureProxyTLS copies the paddock-system paddock-proxy-ca Secret into
-// a per-run Secret in the run's namespace. Returns (ok, err):
+// proxyCertDurationRun is the lifetime of a per-run intermediate CA.
+// 48h covers F-42's 24h cap on terminationGracePeriodSeconds plus
+// margin. No renewBefore — runs are bounded; the intermediate
+// outlives the run.
+const proxyCertDurationRun = 48 * time.Hour
+
+// proxyCertDurationWorkspace is the lifetime of a per-Workspace
+// intermediate CA. Matches the cluster root cert. cert-manager
+// auto-renews via renewBefore; kubelet projection refreshes the
+// mounted Secret.
+const (
+	proxyCertDurationWorkspace    = 8760 * time.Hour // 1y
+	proxyCertRenewBeforeWorkspace = 720 * time.Hour  // 30d
+)
+
+// ensureProxyTLS ensures a cert-manager Certificate resource exists
+// for this run and reports whether it is Ready. cert-manager produces
+// the backing per-run Secret directly in the run's namespace; the
+// controller never reads or writes the intermediate's private key.
 //
-//   - ok=false with err=nil when the source Secret is not present yet
-//     (cert-manager hasn't filled it). Caller flips EgressConfigured=False
-//     and requeues.
+//   - ok=false with err=nil when the Certificate exists but is not yet Ready
+//     (cert-manager hasn't finished issuing). Caller flips
+//     EgressConfigured=False and requeues.
 //   - ok=false with err!=nil on transient API errors — surface to the
 //     reconciler for requeue.
-//   - ok=true when the per-run Secret is present and populated.
+//   - ok=true when the Certificate's Ready condition is True.
 //
-// The per-run Secret is owner-referenced to the HarnessRun so it
-// cascades on deletion.
+// The Certificate is owner-referenced to the HarnessRun so it cascades
+// on deletion (cert-manager garbage-collects the backing Secret too).
 //
-// SECURITY TRADEOFF: the MITM CA *private key* is intentionally placed
-// in the tenant namespace. A compromised agent that reads the projected
-// Secret can forge leaf certs under the Paddock proxy CA — but those
-// leaves only matter if the attacker can also redirect traffic to their
-// own listener, which the proxy's loopback-only bind prevents. Future
-// hardening (tracked in spec 0002 §16 "open questions"): per-run
-// intermediate CA issued by cert-manager so the root key never leaves
-// paddock-system.
+// F-18 / Phase 2f: the cluster root private key never leaves
+// cert-manager's signing path; tenant namespaces never receive a copy.
 func (r *HarnessRunReconciler) ensureProxyTLS(ctx context.Context, run *paddockv1alpha1.HarnessRun) (bool, error) {
-	if r.ProxyCASource.Name == "" {
-		// Proxy integration disabled at manager startup — skip the
-		// Secret copy entirely. Runs still reach EgressConfigured=False
-		// in the caller, but with reason=ProxyNotConfigured.
+	if r.ProxyCAClusterIssuer == "" {
 		return false, nil
 	}
-	var src corev1.Secret
-	srcKey := types.NamespacedName{Name: r.ProxyCASource.Name, Namespace: r.ProxyCASource.Namespace}
-	if err := r.Get(ctx, srcKey, &src); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("reading proxy CA source Secret %s/%s: %w",
-			srcKey.Namespace, srcKey.Name, err)
+	created, ready, err := ensureProxyCACertificate(ctx, r.Client, r.Scheme, run, run.Namespace,
+		proxyTLSSecretName(run.Name),
+		fmt.Sprintf("paddock-proxy-%s", run.Name),
+		r.ProxyCAClusterIssuer,
+		proxyCertDurationRun, 0,
+		map[string]string{
+			"app.kubernetes.io/name":      "paddock",
+			"app.kubernetes.io/component": "harnessrun-proxy-tls",
+			"paddock.dev/run":             run.Name,
+		})
+	if err != nil {
+		return false, err
 	}
+	if created {
+		r.Audit.EmitCAProjected(ctx, run.Name, run.Namespace, proxyTLSSecretName(run.Name))
+	}
+	return ready, nil
+}
 
-	cert, ok := src.Data[proxyTLSSecretKeyCACert]
-	if !ok || len(cert) == 0 {
-		return false, nil
-	}
-	key, ok := src.Data[proxyTLSSecretKeyCAKey]
-	if !ok || len(key) == 0 {
-		return false, nil
-	}
-
-	dst := &corev1.Secret{
+// ensureProxyCACertificate is the shared cert-manager Certificate
+// upsert logic used by the run path (ensureProxyTLS) and the seed path
+// (ensureSeedProxyTLS in workspace_broker.go). Returns
+// (created, ready, err) — created=true on the first reconcile pass
+// where the Certificate is freshly created.
+//
+// owner is the parent CR (HarnessRun or Workspace); the Certificate
+// gets an OwnerReference to it so cascading delete works. ns is the
+// namespace where the Certificate is created (typically the parent's
+// own namespace). secretName is the name of the backing Secret
+// cert-manager will create. commonName is set on the Certificate
+// spec; clusterIssuer names the cert-manager ClusterIssuer that signs
+// the intermediate. duration is the per-Certificate validity;
+// renewBefore is set when non-zero (zero = no renewal, run-pod path).
+//
+// F-18 / Phase 2f.
+func ensureProxyCACertificate(
+	ctx context.Context,
+	cli client.Client,
+	scheme *runtime.Scheme,
+	owner client.Object,
+	ns, secretName, commonName, clusterIssuer string,
+	duration, renewBefore time.Duration,
+	labels map[string]string,
+) (created bool, ready bool, err error) {
+	cert := &cmapi.Certificate{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      proxyTLSSecretName(run.Name),
-			Namespace: run.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":      "paddock",
-				"app.kubernetes.io/component": "harnessrun-proxy-tls",
-				"paddock.dev/run":             run.Name,
-			},
+			Name:      secretName,
+			Namespace: ns,
+			Labels:    labels,
 		},
 	}
-	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, dst, func() error {
-		if err := controllerutil.SetControllerReference(run, dst, r.Scheme); err != nil {
+	op, err := controllerutil.CreateOrUpdate(ctx, cli, cert, func() error {
+		if err := controllerutil.SetControllerReference(owner, cert, scheme); err != nil {
 			return err
 		}
-		dst.Type = corev1.SecretTypeOpaque
-		dst.Data = map[string][]byte{
-			proxyTLSSecretKeyCACert: cert,
-			proxyTLSSecretKeyCAKey:  key,
-			caBundleKey:             cert,
+		cert.Spec.IsCA = true
+		cert.Spec.CommonName = commonName
+		cert.Spec.SecretName = secretName
+		cert.Spec.Duration = &metav1.Duration{Duration: duration}
+		if renewBefore > 0 {
+			cert.Spec.RenewBefore = &metav1.Duration{Duration: renewBefore}
+		} else {
+			cert.Spec.RenewBefore = nil
+		}
+		cert.Spec.PrivateKey = &cmapi.CertificatePrivateKey{
+			Algorithm: cmapi.ECDSAKeyAlgorithm,
+			Size:      256,
+		}
+		cert.Spec.Usages = []cmapi.KeyUsage{
+			cmapi.UsageDigitalSignature,
+			cmapi.UsageKeyEncipherment,
+			cmapi.UsageCertSign,
+		}
+		cert.Spec.IssuerRef = cmmeta.IssuerReference{
+			Kind: "ClusterIssuer",
+			Name: clusterIssuer,
 		}
 		return nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("upserting proxy-tls secret: %w", err)
+		return false, false, fmt.Errorf("upserting Certificate %s/%s: %w", ns, secretName, err)
 	}
-	if op == controllerutil.OperationResultCreated {
-		r.Audit.EmitCAProjected(ctx, run.Name, run.Namespace, dst.Name)
-	}
-	return true, nil
-}
 
-// ProxyCASource names the Secret in paddock-system whose tls.crt +
-// tls.key are copied into every run's proxy-tls Secret. Populated on
-// the reconciler at manager startup.
-type ProxyCASource struct {
-	Namespace string
-	Name      string
+	// Re-read to pick up status (CreateOrUpdate doesn't fetch status by default).
+	if err := cli.Get(ctx, types.NamespacedName{Name: secretName, Namespace: ns}, cert); err != nil {
+		return false, false, fmt.Errorf("re-reading Certificate %s/%s: %w", ns, secretName, err)
+	}
+	for _, c := range cert.Status.Conditions {
+		if c.Type == cmapi.CertificateConditionReady && c.Status == cmmeta.ConditionTrue {
+			ready = true
+			break
+		}
+	}
+	return op == controllerutil.OperationResultCreated, ready, nil
 }

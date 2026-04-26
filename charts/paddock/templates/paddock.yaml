@@ -285,6 +285,22 @@ rules:
       - patch
       - update
       - watch
+  # F-18 / Phase 2f: the controller creates per-run/per-Workspace
+  # cert-manager.io/v1 Certificate resources signed by the
+  # paddock-proxy-ca-issuer ClusterIssuer. controller-runtime's cache
+  # also list/watches Certificates cluster-wide because the type is
+  # registered in the manager's scheme.
+  - apiGroups:
+      - cert-manager.io
+    resources:
+      - certificates
+    verbs:
+      - create
+      - get
+      - list
+      - patch
+      - update
+      - watch
   - apiGroups:
       - ""
     resources:
@@ -737,8 +753,7 @@ spec:
             - --broker-token-path=/var/run/secrets/paddock-broker/token
             - --broker-ca-path=/etc/paddock-broker/ca/ca.crt
             - --proxy-image={{ if .Values.proxyImage.repository }}{{ .Values.proxyImage.repository }}:{{ .Values.proxyImage.tag | default .Chart.AppVersion }}{{ end }}
-            - --proxy-ca-secret-name=paddock-proxy-ca
-            - --proxy-ca-secret-namespace=paddock-system
+            - --proxy-ca-cluster-issuer-name=paddock-proxy-ca-issuer
             - --proxy-allow={{ .Values.proxyAllowList | default "" }}
             - --iptables-init-image={{ if .Values.iptablesInitImage.repository }}{{ .Values.iptablesInitImage.repository }}:{{ .Values.iptablesInitImage.tag | default .Chart.AppVersion }}{{ end }}
             - --networkpolicy-enforce={{ .Values.proxy.networkPolicy.enforce | default "auto" }}
@@ -878,6 +893,23 @@ spec:
     - digital signature
     - key encipherment
     - cert sign
+---
+# F-18 / Phase 2f: ClusterIssuer of kind: CA referencing the
+# paddock-proxy-ca Secret. Per-run/per-Workspace Certificate resources
+# created by the controller name this ClusterIssuer to receive
+# intermediate CAs signed by the cluster root. cert-manager must be
+# running with --cluster-resource-namespace=paddock-system so this
+# ClusterIssuer can read the source Secret.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: paddock-proxy-ca-issuer
+  labels:
+    app.kubernetes.io/name: paddock
+    app.kubernetes.io/component: proxy-ca-issuer
+spec:
+  ca:
+    secretName: paddock-proxy-ca
 ---
 ---
 apiVersion: cert-manager.io/v1

@@ -62,10 +62,10 @@ type WorkspaceReconciler struct {
 	// gains a proxy sidecar that MITM-swaps the Paddock bearer for
 	// the real upstream token. Empty fields mean seeds stay on the
 	// v0.2 credentialsSecretRef path (fallback).
-	ProxyImage     string
-	BrokerEndpoint string
-	ProxyCASource  ProxyCASource
-	BrokerCASource BrokerCASource
+	ProxyImage           string
+	BrokerEndpoint       string
+	ProxyCAClusterIssuer string
+	BrokerCASource       BrokerCASource
 
 	// NetworkPolicyEnforce controls whether the controller emits a
 	// per-seed-Pod NetworkPolicy. Mirrors HarnessRunReconciler.NetworkPolicyEnforce.

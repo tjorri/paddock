@@ -70,25 +70,10 @@ var _ = Describe("Phase 2a P0 hotfix validation (hostile harness)", Ordered, fun
 	BeforeAll(func() {
 		hostileNamespace = "paddock-hostile-e2e"
 
-		// The earlier "paddock v0.1-v0.3 pipeline" Ordered Describe's
-		// AfterAll runs `make undeploy` + `make uninstall`, so by the
-		// time we get here the CRDs and controller are gone. Re-install
-		// them here. Mirrors the existing pipeline's BeforeAll pattern.
-		By("installing CRDs")
-		_, err := utils.Run(exec.Command("make", "install"))
-		Expect(err).NotTo(HaveOccurred())
-
-		By("deploying the controller-manager")
-		_, err = utils.Run(exec.Command("make", "deploy", "IMG=paddock-manager:dev"))
-		Expect(err).NotTo(HaveOccurred())
-
-		By("waiting for the controller-manager to roll out")
-		_, err = utils.Run(exec.Command("kubectl", "-n", "paddock-system",
-			"rollout", "status", "deploy/paddock-controller-manager", "--timeout=180s"))
-		Expect(err).NotTo(HaveOccurred())
-
-		// Cluster-scoped templates only need to be applied once. Each
-		// scenario gets its own namespace + BrokerPolicy.
+		// The suite-level BeforeSuite installs CRDs + deploys the
+		// controller-manager once for the whole suite, so this
+		// BeforeAll only does Describe-specific setup: applying the
+		// cluster-scoped hostile template.
 		mustApply("config/samples/paddock_v1alpha1_clusterharnesstemplate_evil_echo.yaml")
 	})
 
@@ -485,9 +470,14 @@ spec:
 			// requeues. The fail-closed guarantee under test is that the
 			// credential never lands in <run>-broker-creds, NOT that the
 			// run fails terminally. F-12.
+			//
+			// 30s window with 5s poll = 6 polls; broker Issue retries
+			// fire every ~10s so we observe ~3 rejection cycles —
+			// enough to confirm the run cannot transition to Succeeded
+			// while the audit-write is broken.
 			Consistently(func() string {
 				return runPhase(ctx, tg19Namespace, runName)
-			}, 90*time.Second, 5*time.Second).ShouldNot(Equal("Succeeded"),
+			}, 30*time.Second, 5*time.Second).ShouldNot(Equal("Succeeded"),
 				"run must not reach Succeeded while broker's audit-write is failing")
 
 			By("dumping run state for diagnostic context")

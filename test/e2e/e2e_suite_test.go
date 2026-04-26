@@ -63,6 +63,13 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	// Builds run sequentially. An earlier attempt to fan out via
+	// goroutines was reverted: on a 2-vCPU CI runner, 9 concurrent
+	// Docker builds saturate the CPU and disk I/O, making the
+	// build phase ~75% slower than sequential (CI BeforeSuite
+	// climbed from ~150s to ~261s). The local laptop savings were
+	// only ~12s (2-3% of suite wall-clock) — not worth the CI
+	// regression. See also: tjorri/paddock PR #34 CI history.
 	By("building and loading paddock-manager")
 	buildAndLoad(managerImage, []string{"docker-build", fmt.Sprintf("IMG=%s", managerImage)})
 
@@ -90,9 +97,50 @@ var _ = BeforeSuite(func() {
 			_, _ = fmt.Fprintf(GinkgoWriter, "CertManager already installed; skipping\n")
 		}
 	}
+
+	// Suite-level controller-manager deploy. Both top-level Ordered
+	// Describes share this single install+deploy+rollout, instead of
+	// each one tearing down + reinstalling in its BeforeAll. Saves
+	// ~3-4 minutes of wall-clock time per suite run.
+	//
+	// Per-Describe state isolation is via tenant namespaces (each
+	// Describe owns its own namespace prefix); cluster-scoped
+	// resources are also disjoint by name. Each Describe's AfterAll
+	// drains its own state with the controller still alive so
+	// finalizers reconcile correctly. Suite teardown (AfterSuite)
+	// runs `make undeploy` + `make uninstall` after both Describes
+	// are done.
+	By("installing CRDs (suite-level)")
+	_, err := utils.Run(exec.Command("make", "install"))
+	Expect(err).NotTo(HaveOccurred(), "make install")
+
+	By("deploying the controller-manager (suite-level)")
+	_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage)))
+	Expect(err).NotTo(HaveOccurred(), "make deploy")
+
+	By("waiting for the controller-manager to roll out (suite-level)")
+	_, err = utils.Run(exec.Command("kubectl", "-n", "paddock-system",
+		"rollout", "status", "deploy/paddock-controller-manager", "--timeout=180s"))
+	Expect(err).NotTo(HaveOccurred(), "rollout status")
+	// Note: rollout status returning Ready does NOT guarantee the
+	// webhook is reachable — the Endpoints object is populated
+	// before kube-proxy finishes programming the ClusterIP rules,
+	// so the first ~hundreds of milliseconds of "Ready" still fail
+	// webhook calls with "connection refused". applyFromYAML in the
+	// suite's Describes handles that race with a targeted retry loop.
 })
 
 var _ = AfterSuite(func() {
+	// Suite-level controller-manager teardown. Runs after both
+	// Describe AfterAlls have drained their tenant state, so the
+	// controller is still alive while finalizers run and only this
+	// AfterSuite removes the controller itself.
+	By("undeploying the controller-manager (suite-level)")
+	_, _ = utils.Run(exec.Command("make", "undeploy", "ignore-not-found=true"))
+
+	By("uninstalling CRDs (suite-level)")
+	_, _ = utils.Run(exec.Command("make", "uninstall", "ignore-not-found=true"))
+
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
 		utils.UninstallCertManager()

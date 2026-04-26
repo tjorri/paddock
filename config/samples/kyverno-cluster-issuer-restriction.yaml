@@ -1,0 +1,55 @@
+# Sample Kyverno policy restricting cert-manager.io/v1 Certificate
+# resources that reference the paddock-proxy-ca-issuer ClusterIssuer to
+# the paddock-controller ServiceAccount.
+#
+# Without this restriction, any user/ServiceAccount with cluster-wide
+# `certificates.cert-manager.io: create` RBAC could request a CA-signed
+# intermediate from the Paddock root and forge leaves trusted by other
+# tenants' agents (the F-18 attack shape this phase addresses, in a
+# different form). Operators with strict multi-tenant requirements
+# should apply this policy.
+#
+# This is a SAMPLE — not applied by default. F-18 / Phase 2f.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: paddock-restrict-proxy-ca-issuer
+  annotations:
+    policies.kyverno.io/title: Restrict paddock-proxy-ca-issuer Certificate creation
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Certificate
+    policies.kyverno.io/description: >-
+      Only the paddock-controller ServiceAccount may create
+      cert-manager Certificate resources that reference the
+      paddock-proxy-ca-issuer ClusterIssuer. Tenants and other
+      operators get cluster-wide MITM forgery if this is not enforced.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: only-paddock-controller-may-use-issuer
+      match:
+        any:
+          - resources:
+              kinds:
+                - Certificate
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.issuerRef.kind }}"
+            operator: Equals
+            value: ClusterIssuer
+          - key: "{{ request.object.spec.issuerRef.name }}"
+            operator: Equals
+            value: paddock-proxy-ca-issuer
+      validate:
+        message: >-
+          Only the paddock-controller ServiceAccount in paddock-system may
+          create Certificate resources referencing the paddock-proxy-ca-issuer
+          ClusterIssuer. F-18 / Phase 2f.
+        deny:
+          conditions:
+            all:
+              - key: "{{ request.userInfo.username }}"
+                operator: NotEquals
+                value: system:serviceaccount:paddock-system:paddock-controller-manager

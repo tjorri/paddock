@@ -80,8 +80,13 @@ func (c *ControllerAudit) EmitRunCompleted(ctx context.Context, runName, namespa
 	}), "run-completed")
 }
 
-// EmitCAProjected records that the controller created the per-run
-// <run>-broker-ca or <run>-proxy-tls Secret.
+// EmitCAProjected records the controller's first touch of per-run CA
+// material in a tenant namespace — either creating the
+// <run>-broker-ca Secret directly (broker-ca path), or creating the
+// cert-manager Certificate that produces <run>-proxy-tls (proxy-tls
+// path). Same operator-visible audit semantics across both paths;
+// different K8s resource. F-18 / Phase 2f flipped the proxy-tls path
+// from a Secret-byte-copy to a Certificate-create.
 func (c *ControllerAudit) EmitCAProjected(ctx context.Context, runName, namespace, secretName string) {
 	c.write(ctx, auditing.NewCAProjected(auditing.CAProjectionInput{
 		RunName:    runName,

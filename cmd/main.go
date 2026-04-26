@@ -38,6 +38,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	"paddock.dev/paddock/internal/auditing"
 	"paddock.dev/paddock/internal/controller"
@@ -54,6 +56,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(paddockv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(cmapi.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -91,8 +94,7 @@ func main() {
 	var brokerTokenPath string
 	var brokerCAPath string
 	var proxyImage string
-	var proxyCAName string
-	var proxyCANamespace string
+	var proxyCAClusterIssuer string
 	var proxyAllowList string
 	var iptablesInitImage string
 	var networkPolicyEnforce string
@@ -120,10 +122,11 @@ func main() {
 	flag.StringVar(&proxyImage, "proxy-image", "",
 		"Image for the per-run egress proxy sidecar (ADR-0013). Empty disables the sidecar; EgressConfigured "+
 			"condition stays False with reason=ProxyNotConfigured.")
-	flag.StringVar(&proxyCAName, "proxy-ca-secret-name", "paddock-proxy-ca",
-		"Name of the cert-manager-issued MITM CA keypair Secret the controller copies into per-run proxy-tls Secrets.")
-	flag.StringVar(&proxyCANamespace, "proxy-ca-secret-namespace", "paddock-system",
-		"Namespace hosting the proxy CA Secret. Empty Name disables proxy integration regardless of --proxy-image.")
+	flag.StringVar(&proxyCAClusterIssuer, "proxy-ca-cluster-issuer-name", "paddock-proxy-ca-issuer",
+		"Name of the cert-manager ClusterIssuer (kind: CA) that signs per-run intermediate CAs. "+
+			"Empty disables proxy integration regardless of --proxy-image. "+
+			"cert-manager must be running with --cluster-resource-namespace=paddock-system. "+
+			"F-18 / Phase 2f.")
 	flag.StringVar(&proxyAllowList, "proxy-allow", "",
 		"Comma-separated host:port egress allow-list passed to every proxy sidecar via --allow. "+
 			"M7 replaces this with live broker.ValidateEgress.")
@@ -312,10 +315,7 @@ func main() {
 		APIServerIPs:             apiserverIPs,
 		BrokerEndpoint:           brokerEndpoint,
 		BrokerNamespace:          brokerNamespace,
-		ProxyCASource: controller.ProxyCASource{
-			Name:      proxyCAName,
-			Namespace: proxyCANamespace,
-		},
+		ProxyCAClusterIssuer:     proxyCAClusterIssuer,
 		BrokerCASource: controller.BrokerCASource{
 			Name:      brokerCAName,
 			Namespace: brokerCANamespace,
@@ -332,7 +332,7 @@ func main() {
 	} else {
 		setupLog.Info("proxy sidecar enabled",
 			"image", proxyImage,
-			"ca-secret", proxyCAName,
+			"ca-cluster-issuer", proxyCAClusterIssuer,
 			"transparent-mode", iptablesInitImage != "",
 		)
 	}
@@ -353,14 +353,11 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.WorkspaceReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		ProxyImage:     proxyImage,
-		BrokerEndpoint: brokerEndpoint,
-		ProxyCASource: controller.ProxyCASource{
-			Name:      proxyCAName,
-			Namespace: proxyCANamespace,
-		},
+		Client:               mgr.GetClient(),
+		Scheme:               mgr.GetScheme(),
+		ProxyImage:           proxyImage,
+		BrokerEndpoint:       brokerEndpoint,
+		ProxyCAClusterIssuer: proxyCAClusterIssuer,
 		BrokerCASource: controller.BrokerCASource{
 			Name:      brokerCAName,
 			Namespace: brokerCANamespace,

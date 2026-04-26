@@ -90,10 +90,14 @@ type HarnessRunReconciler struct {
 	// EgressConfigured stays False with reason=ProxyNotConfigured.
 	ProxyImage string
 
-	// ProxyCASource names the cert-manager-issued MITM CA Secret in
-	// paddock-system. Copied into a per-run Secret so the proxy can
-	// mount it (ADR-0013 §7.3). Zero Name disables proxy integration.
-	ProxyCASource ProxyCASource
+	// ProxyCAClusterIssuer is the name of a cert-manager ClusterIssuer
+	// (kind: CA) that signs per-run intermediate CAs. The controller
+	// creates a Certificate resource per HarnessRun in the run's
+	// namespace; cert-manager produces the per-run Secret with the
+	// intermediate keypair. Empty disables proxy integration. The
+	// cluster root private key never leaves cert-manager's signing
+	// path. F-18 / Phase 2f.
+	ProxyCAClusterIssuer string
 
 	// ProxyAllowList is a static comma-separated host:port allow-list
 	// passed to every run's proxy sidecar via --allow. Populated from
@@ -180,6 +184,12 @@ type HarnessRunReconciler struct {
 // path (the auditevent TTL reaper gets the remaining verbs via
 // auditevent_controller.go).
 // +kubebuilder:rbac:groups=paddock.dev,resources=auditevents,verbs=create
+// F-18 / Phase 2f: the controller creates per-run/per-Workspace
+// cert-manager.io/v1 Certificate resources (isCA: true) signed by the
+// paddock-proxy-ca-issuer ClusterIssuer. controller-runtime's cache
+// also list/watches Certificates cluster-wide because the type is
+// registered in the scheme.
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch
 
 // Reconcile drives a HarnessRun through its lifecycle. See
 // docs/specs/0001-core-v0.1.md §3.3 for the state machine.
@@ -1182,12 +1192,11 @@ func (r *HarnessRunReconciler) reconcileDelete(ctx context.Context, run *paddock
 	return ctrl.Result{}, nil
 }
 
-// proxyConfigured reports whether the manager has the three knobs
-// required to inject the proxy sidecar: image, CA-source Secret, and
-// optional allow-list. The allow-list is omitted from the check — an
-// empty list is a valid deny-all policy, not a disable signal.
+// proxyConfigured reports whether the manager has the two knobs
+// (image + CA ClusterIssuer name) needed to inject the proxy sidecar.
+// A run's proxy column stays empty when this is false.
 func (r *HarnessRunReconciler) proxyConfigured() bool {
-	return r.ProxyImage != "" && r.ProxyCASource.Name != ""
+	return r.ProxyImage != "" && r.ProxyCAClusterIssuer != ""
 }
 
 // resolveInterceptionMode picks between transparent and cooperative

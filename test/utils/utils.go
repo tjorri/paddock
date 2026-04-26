@@ -81,7 +81,11 @@ func UninstallCertManager() {
 	}
 }
 
-// InstallCertManager installs the cert manager bundle.
+// InstallCertManager installs the cert manager bundle. It also patches
+// the cert-manager controller Deployment to set
+// --cluster-resource-namespace=paddock-system so the Phase 2f
+// ClusterIssuer (kind: CA, references the paddock-proxy-ca Secret in
+// paddock-system) can read its source Secret. F-18 / Phase 2f.
 func InstallCertManager() error {
 	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
 	cmd := exec.Command("kubectl", "apply", "-f", url)
@@ -95,7 +99,29 @@ func InstallCertManager() error {
 		"--namespace", "cert-manager",
 		"--timeout", "5m",
 	)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
 
+	// Patch the cert-manager controller Deployment to add
+	// --cluster-resource-namespace=paddock-system. The Phase 2f
+	// ClusterIssuer of kind: CA references paddock-proxy-ca in
+	// paddock-system; without this flag cert-manager looks in its own
+	// namespace and the per-run Certificate fails to issue.
+	cmd = exec.Command("kubectl", "patch", "deployment", "cert-manager",
+		"--namespace", "cert-manager",
+		"--type", "json",
+		"--patch", `[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--cluster-resource-namespace=paddock-system"}]`,
+	)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+
+	// Wait for the patched cert-manager controller to roll out.
+	cmd = exec.Command("kubectl", "rollout", "status", "deployment/cert-manager",
+		"--namespace", "cert-manager",
+		"--timeout", "2m",
+	)
 	_, err := Run(cmd)
 	return err
 }
