@@ -1,0 +1,136 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+const agentNeverSees = [
+  "The actual provider API key (Anthropic, OpenAI, etc.) backing each request.",
+  "Long-lived GitHub App private keys, OAuth secrets, or PATs.",
+  "Static-provider master tokens or any secret declared in a BrokerPolicy.",
+  "The MITM CA private key issued per run.",
+];
+
+const operatorCanSee = [
+  "Every credential issuance, with provider, run identity, and outcome.",
+  "Every egress connection, validated against the run's allowlist.",
+  "Every authorization substitution, with the request envelope (not body) and outcome.",
+  "Per-run AuditEvent objects with TTL-controlled retention.",
+];
+
+const supplyChain = [
+  "Every image is built reproducibly from the monorepo and signed with Cosign (keyless, Sigstore).",
+  "SBOMs are attached to every release artifact and verifiable from the registry.",
+  "Helm charts are published as OCI artifacts to GHCR with the same signing posture.",
+  "Every push to main is published under :main and an immutable :main-<sha> tag for pinning.",
+];
+---
+<BaseLayout title="Security" pathname="/security">
+  <article class="container" style="padding-block: var(--space-8);">
+    <header class="prose">
+      <h1>Security model</h1>
+      <p class="lead">
+        Paddock is shaped by the assumption that the agent inside the container
+        is untrusted code. The security boundary is the line a credential, a
+        token, or an unscoped network connection cannot cross.
+      </p>
+    </header>
+
+    <section class="prose">
+      <h2>Threat model in three paragraphs</h2>
+      <p>
+        Coding agents are large, opaque programs that accept arbitrary natural
+        language input and produce arbitrary side effects. Treat them as
+        untrusted code that you nevertheless want to run useful work for you.
+        Containment, not trust, is the design centre.
+      </p>
+      <p>
+        Three actors define the security boundary: the operator (writes
+        policy), the platform (enforces it), and the agent (lives inside it).
+        Anything an operator declares — credentials, allowlisted FQDNs,
+        permissible repos, branch namespaces — becomes an admission contract
+        that the broker validates and the proxy enforces.
+      </p>
+      <p>
+        For the full detail, see
+        <a href="https://github.com/tjorri/paddock/blob/main/docs/security/threat-model.md">
+          docs/security/threat-model.md</a> in the repo.
+      </p>
+    </section>
+
+    <section>
+      <h2>The boundary in one diagram</h2>
+      <div class="diagram-slot" aria-label="Security boundary diagram (placeholder)">
+        <!-- Diagram lands in Task 9 -->
+        <p class="diagram-placeholder">Diagram pending — see Task 9.</p>
+      </div>
+    </section>
+
+    <section class="prose">
+      <h2>What the agent never sees</h2>
+      <ul>{agentNeverSees.map((it) => <li>{it}</li>)}</ul>
+    </section>
+
+    <section class="prose">
+      <h2>What the operator can see</h2>
+      <ul>{operatorCanSee.map((it) => <li>{it}</li>)}</ul>
+      <p>
+        Run <code>kubectl paddock audit --run &lt;name&gt;</code> to enumerate the
+        AuditEvents for any run.
+      </p>
+    </section>
+
+    <section class="prose">
+      <h2>Supply chain</h2>
+      <ul>{supplyChain.map((it) => <li>{it}</li>)}</ul>
+      <p>Verify a published image:</p>
+      <pre><code>{`cosign verify ghcr.io/tjorri/paddock-manager:v0.4.0 \\
+  --certificate-identity-regexp='^https://github\\.com/tjorri/paddock/' \\
+  --certificate-oidc-issuer='https://token.actions.githubusercontent.com'`}</code></pre>
+    </section>
+
+    <section class="prose">
+      <h2>Recent security work</h2>
+      <ul>
+        <li>
+          <a href="https://github.com/tjorri/paddock/blob/main/docs/security/2026-04-25-v0.4-audit-findings.md">
+            v0.4 audit findings (Phase 1)</a>
+        </li>
+        <li>
+          <a href="https://github.com/tjorri/paddock/blob/main/docs/security/2026-04-25-v0.4-test-gaps.md">
+            v0.4 test-gap analysis</a>
+        </li>
+        <li>
+          The Phase 2 series (a–g) on the
+          <a href="https://github.com/tjorri/paddock/commits/main">main commit log</a>:
+          P0 hotfix, audit completeness, adversarial test coverage, carry-over fixes,
+          pod-spec hardening, per-run intermediate CA, substitute-auth hygiene.
+        </li>
+      </ul>
+    </section>
+  </article>
+
+  <style>
+    .lead { font-size: var(--text-lg); color: var(--color-text-muted); }
+    .diagram-slot {
+      margin: var(--space-5) 0;
+      padding: var(--space-7);
+      border: 1px dashed var(--color-rule);
+      border-radius: var(--radius-md);
+      background: var(--color-bg-2);
+      text-align: center;
+    }
+    .diagram-placeholder {
+      margin: 0;
+      color: var(--color-text-muted);
+      font-style: italic;
+    }
+    pre {
+      background: var(--color-bg-2);
+      border: 1px solid var(--color-rule);
+      border-radius: var(--radius-md);
+      padding: var(--space-4);
+      overflow-x: auto;
+      max-width: var(--prose-max-w);
+    }
+    pre code { background: transparent; }
+  </style>
+</BaseLayout>
