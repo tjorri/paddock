@@ -184,6 +184,8 @@ func buildEgressNetworkPolicy(
 				{Protocol: &tcp, Port: &dnsPort},
 			},
 		},
+		// TCP 443 — public-internet egress, excluding private +
+		// link-local + cluster CIDRs (F-19).
 		{
 			To: []networkingv1.NetworkPolicyPeer{
 				{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR, Except: exceptCIDRs}},
@@ -192,6 +194,7 @@ func buildEgressNetworkPolicy(
 				{Protocol: &tcp, Port: &httpsPort},
 			},
 		},
+		// TCP 80 — same exclusions as 443.
 		{
 			To: []networkingv1.NetworkPolicyPeer{
 				{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR, Except: exceptCIDRs}},
@@ -206,7 +209,10 @@ func buildEgressNetworkPolicy(
 	}
 	// Apiserver allow rule. Sidecars (collector for AuditEvent emission,
 	// adapter for status writes) need TCP/443 to the kube-apiserver.
-	// Pod-wide because NetworkPolicy operates at pod level. F-41.
+	// Pod-wide because NetworkPolicy operates at pod level; the agent
+	// container shares the network namespace with sidecars. F-38 (Phase
+	// 2a) ensures the agent has automountServiceAccountToken=false, so
+	// the apiserver rejects any request the agent might forge.
 	if len(cfg.APIServerIPs) > 0 {
 		apiPeers := make([]networkingv1.NetworkPolicyPeer, 0, len(cfg.APIServerIPs))
 		for _, ip := range cfg.APIServerIPs {
@@ -256,7 +262,8 @@ func buildEgressNetworkPolicy(
 func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyConfig) *networkingv1.NetworkPolicy {
 	return buildEgressNetworkPolicy(
 		metav1.LabelSelector{MatchLabels: map[string]string{"paddock.dev/run": run.Name}},
-		runNetworkPolicyName(run.Name), run.Namespace,
+		runNetworkPolicyName(run.Name),
+		run.Namespace,
 		map[string]string{
 			"app.kubernetes.io/name":      "paddock",
 			"app.kubernetes.io/component": "harnessrun-egress",
@@ -273,7 +280,8 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyCon
 func buildSeedNetworkPolicy(ws *paddockv1alpha1.Workspace, cfg networkPolicyConfig) *networkingv1.NetworkPolicy {
 	return buildEgressNetworkPolicy(
 		metav1.LabelSelector{MatchLabels: map[string]string{"paddock.dev/workspace": ws.Name}},
-		seedNetworkPolicyName(ws), ws.Namespace,
+		seedNetworkPolicyName(ws),
+		ws.Namespace,
 		map[string]string{
 			"app.kubernetes.io/name":      "paddock",
 			"app.kubernetes.io/component": "workspace-seed-egress",
