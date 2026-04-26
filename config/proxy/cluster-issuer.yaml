@@ -1,0 +1,26 @@
+# cert-manager ClusterIssuer of kind: CA, signing per-run/per-Workspace
+# intermediate CAs from the existing paddock-proxy-ca Secret.
+#
+# IMPORTANT: cert-manager must be running with
+#   --cluster-resource-namespace=paddock-system
+# so that this ClusterIssuer can read the paddock-proxy-ca Secret. This
+# is a cluster-wide cert-manager flag — it affects every other CA-type
+# ClusterIssuer in the cluster too. Documented in the install README.
+#
+# RBAC discipline: do NOT broadly grant `certificates.cert-manager.io: create`
+# to tenant ServiceAccounts. The paddock-controller's existing ClusterRole is
+# the only legitimate creator referencing this ClusterIssuer. A sample
+# Kyverno policy is shipped at config/samples/kyverno-cluster-issuer-restriction.yaml.
+#
+# F-18 / Phase 2f.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: paddock-proxy-ca-issuer
+  labels:
+    app.kubernetes.io/name: paddock
+    app.kubernetes.io/component: proxy-ca-issuer
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  ca:
+    secretName: paddock-proxy-ca
