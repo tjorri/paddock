@@ -82,13 +82,13 @@ spec:
           - --broker-endpoint=https://paddock-broker.paddock-system.svc:8443
           - --broker-token-path=/var/run/secrets/paddock-broker/token
           - --broker-ca-path=/etc/paddock-broker/ca/ca.crt
-          # Proxy sidecar wiring (M4, ADR-0013). The chart generator
-          # rewrites --proxy-image into a .Values.proxyImage template;
-          # --proxy-ca-secret-name/-namespace point at the cert-manager-
-          # issued Secret in paddock-system.
+          # Proxy sidecar wiring (M4, ADR-0013, F-18 / Phase 2f). The
+          # chart generator rewrites --proxy-image into a
+          # .Values.proxyImage template; --proxy-ca-cluster-issuer-name
+          # points at the cert-manager ClusterIssuer (kind: CA) that
+          # signs per-run intermediate CAs.
           - --proxy-image=paddock-proxy:dev
-          - --proxy-ca-secret-name=paddock-proxy-ca
-          - --proxy-ca-secret-namespace=paddock-system
+          - --proxy-ca-cluster-issuer-name=paddock-proxy-ca-issuer
           - --proxy-allow=
           # Transparent-mode init container (ADR-0013 §7.2). Only
           # injected when the run's namespace PSA admits NET_ADMIN.
