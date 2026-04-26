@@ -1,15 +1,16 @@
 # Core-systems technical-quality review — findings
 
 **Date:** 2026-04-26
-**Status:** final
+**Status:** draft (pending merge)
+**Spec:** `docs/plans/2026-04-26-core-systems-tech-review-design.md`
 **Scope:** `internal/controller/`, `internal/broker/`, `internal/proxy/` and their
   respective `cmd/` entry-points. Secondary scope: `internal/auditing/`,
   `internal/policy/` where a finding originates there.
 
-**Method:** Per-subsystem deep read (architecture, reuse, testing quality) followed
-by targeted sampling (code organization, error handling, concurrency, dependency
-hygiene, documentation). Largest subsystem first so cross-cutting observations
-accumulate before smaller subsystems are reached.
+**Method:** Eight lenses total — three applied per-subsystem in depth (architecture,
+reuse, testing quality) and five sampled lightly (code organization, error handling,
+concurrency, dependency hygiene, documentation). Largest subsystem first so
+cross-cutting observations accumulate before smaller subsystems are reached.
 
 **Cross-references:** This review is the engineering-quality counterpart to the v0.4
 security audit (`docs/security/2026-04-25-v0.4-audit-findings.md`, citations `F-NN`)
@@ -35,9 +36,10 @@ Paddock's three core subsystems are:
 - **Proxy** (~1,743 source LOC across 11 non-test files) — the per-run MITM
   proxy sidecar. Smallest subsystem; most security-critical per unit of code.
 
-The review was performed in mid-to-late April 2026 against the `docs/core-systems-tech-review`
-branch, which contains the Phase 2g security hardening. All F-NN security findings
-mentioned in this document are listed in `docs/security/2026-04-25-v0.4-audit-findings.md`.
+The review was performed against the `docs/core-systems-tech-review` branch, which
+contains the Phase 2g security hardening. All F-NN security findings mentioned in
+this document are listed in `docs/security/2026-04-25-v0.4-audit-findings.md`;
+TG-NN test-gap entries are in `docs/security/2026-04-25-v0.4-test-gaps.md`.
 
 ---
 
