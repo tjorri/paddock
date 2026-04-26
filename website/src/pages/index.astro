@@ -1,9 +1,13 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
+import Hero from "../components/Hero.astro";
+import ValueProps from "../components/ValueProps.astro";
+import WhatsInRelease from "../components/WhatsInRelease.astro";
+import GetInvolved from "../components/GetInvolved.astro";
 ---
 <BaseLayout title="Paddock" pathname="/">
-  <section class="container" style="padding-block: var(--space-7);">
-    <h1>Hello, Paddock</h1>
-    <p>Layout chrome wired up. Real content lands in Task 6.</p>
-  </section>
+  <Hero />
+  <ValueProps />
+  <WhatsInRelease />
+  <GetInvolved />
 </BaseLayout>

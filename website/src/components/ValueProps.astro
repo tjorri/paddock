@@ -1,0 +1,57 @@
+---
+const props = [
+  {
+    title: "Kubernetes-native",
+    body: "Runs are CRDs. Jobs are Jobs. Workspaces are PVCs. You debug Paddock with kubectl, not a new CLI.",
+  },
+  {
+    title: "Secure by default",
+    body: "No long-lived credentials in agent containers. Default-deny egress. Per-run branch namespaces. The easy path is the safe path.",
+  },
+  {
+    title: "Harness-agnostic",
+    body: "If it runs in a container and accepts a prompt, it works. No harness gets privileged treatment in the core.",
+  },
+];
+---
+<section class="vprops">
+  <div class="container">
+    <ul class="vprops__grid">
+      {props.map((p) => (
+        <li class="vprop">
+          <h3>{p.title}</h3>
+          <p>{p.body}</p>
+        </li>
+      ))}
+    </ul>
+  </div>
+</section>
+
+<style>
+  .vprops {
+    padding-block: var(--space-8);
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .vprops__grid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: var(--space-5);
+    grid-template-columns: 1fr;
+  }
+  @media (min-width: 60rem) {
+    .vprops__grid { grid-template-columns: repeat(3, 1fr); }
+  }
+  .vprop {
+    border: 1px solid var(--color-rule);
+    border-radius: var(--radius-md);
+    padding: var(--space-5);
+    background: var(--color-bg-2);
+  }
+  .vprop h3 {
+    color: var(--color-accent);
+    margin-bottom: var(--space-3);
+  }
+  .vprop p { color: var(--color-text); margin: 0; }
+</style>

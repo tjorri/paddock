@@ -1,0 +1,51 @@
+---
+const items = [
+  {
+    title: "Open an issue",
+    href: "https://github.com/tjorri/paddock/issues",
+    body: "Bug reports, design discussion, RFCs.",
+  },
+  {
+    title: "Read CONTRIBUTING.md",
+    href: "https://github.com/tjorri/paddock/blob/main/CONTRIBUTING.md",
+    body: "Dev setup, commit conventions, ADR process.",
+  },
+  {
+    title: "License",
+    href: "https://github.com/tjorri/paddock/blob/main/LICENSE",
+    body: "Apache 2.0. Use, fork, ship.",
+  },
+];
+---
+<section class="involved">
+  <div class="container">
+    <h2>Get involved</h2>
+    <ul class="involved__grid">
+      {items.map((it) => (
+        <li>
+          <a href={it.href}><h3>{it.title}</h3></a>
+          <p>{it.body}</p>
+        </li>
+      ))}
+    </ul>
+  </div>
+</section>
+
+<style>
+  .involved { padding-block: var(--space-8); }
+  .involved__grid {
+    list-style: none;
+    margin: var(--space-5) 0 0;
+    padding: 0;
+    display: grid;
+    gap: var(--space-5);
+    grid-template-columns: 1fr;
+  }
+  @media (min-width: 60rem) {
+    .involved__grid { grid-template-columns: repeat(3, 1fr); }
+  }
+  .involved__grid h3 { margin: 0 0 var(--space-2); color: var(--color-accent); }
+  .involved__grid p  { margin: 0; color: var(--color-text-muted); }
+  .involved__grid a  { text-decoration: none; }
+  .involved__grid a:hover h3 { color: var(--color-accent-strong); }
+</style>

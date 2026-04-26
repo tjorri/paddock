@@ -1,0 +1,36 @@
+---
+const release = "v0.4";
+const items = [
+  "Per-run intermediate CA — every run gets a fresh-baked CA the proxy uses to MITM upstream TLS, scoped to that run only.",
+  "Pod-spec hardening — read-only root filesystem, dropped capabilities, non-root UID/GID, seccomp RuntimeDefault.",
+  "Substitute-auth hygiene — broker-issued bearers are never logged, leaked into env, or persisted past the request.",
+  "Egress discovery window — bounded learning mode for callers building their first allowlist, with audit trail.",
+  "Operator cookbooks — eight runnable recipes for the common provider, secret, and policy patterns.",
+];
+---
+<section class="release">
+  <div class="container">
+    <h2>What's in {release}</h2>
+    <ul class="release__list">
+      {items.map((it) => <li>{it}</li>)}
+    </ul>
+    <p class="release__more">
+      Full notes:
+      <a href="https://github.com/tjorri/paddock/blob/main/CHANGELOG.md">CHANGELOG.md</a>.
+    </p>
+  </div>
+</section>
+
+<style>
+  .release {
+    padding-block: var(--space-8);
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .release__list {
+    margin: var(--space-4) 0 var(--space-5);
+    padding-left: var(--space-5);
+    max-width: var(--prose-max-w);
+  }
+  .release__list li { margin-bottom: var(--space-2); }
+  .release__more { color: var(--color-text-muted); font-size: var(--text-sm); }
+</style>
