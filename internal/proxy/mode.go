@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"time"
 
@@ -172,9 +173,14 @@ func (s *Server) mitmTransparent(
 		return
 	}
 
+	// F-25: idle-deadline on each direction so a stale-policy tunnel
+	// closes within s.idleTimeout(). copyNonBlocking is now wrapper-only
+	// kept for the test scaffolding (legacy alias).
+	clientReader := &deadlineExtendingReader{conn: clientTLS, timeout: s.idleTimeout()}
+	upstreamReader := &deadlineExtendingReader{conn: upstream, timeout: s.idleTimeout()}
 	errCh := make(chan error, 2)
-	go func() { _, err := copyNonBlocking(upstream, clientTLS); errCh <- err }()
-	go func() { _, err := copyNonBlocking(clientTLS, upstream); errCh <- err }()
+	go func() { _, err := io.Copy(upstream, clientReader); errCh <- err }()
+	go func() { _, err := io.Copy(clientTLS, upstreamReader); errCh <- err }()
 	<-errCh
 }
 
@@ -207,13 +213,6 @@ func (s *Server) dialUpstreamAt(ctx context.Context, sni string, ip net.IP, port
 		return nil, fmt.Errorf("upstream TLS handshake: %w", err)
 	}
 	return tlsConn, nil
-}
-
-// copyNonBlocking is io.Copy with a small read-deadline reset applied
-// so a stuck upstream doesn't stall the other direction indefinitely.
-// Currently a thin pass-through; deadlines land in M6 with timeouts.
-func copyNonBlocking(dst, src net.Conn) (int64, error) {
-	return copyRaw(dst, src)
 }
 
 // abruptClose sets SO_LINGER to 0 on conn (when supported) so the

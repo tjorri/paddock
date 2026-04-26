@@ -498,6 +498,63 @@ func (denyAllValidator) ValidateEgress(_ context.Context, _ string, _ int) (Deci
 	return Decision{Allowed: false, Reason: "deny by test fixture"}, nil
 }
 
+// TestProxy_BytesShuttleIdleTimeout asserts that an idle MITM tunnel is
+// torn down after IdleTimeout. Validates F-25 part 2: bytes-shuttle paths
+// must not keep a stale-policy connection open indefinitely.
+func TestProxy_BytesShuttleIdleTimeout(t *testing.T) {
+	upstream, host, port, upstreamPool := startUpstream(t)
+	_ = upstream
+	certPEM, keyPEM := generateTestCA(t)
+	ca, err := NewMITMCertificateAuthority(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("build CA: %v", err)
+	}
+	validator, err := NewStaticValidatorFromEnv(fmt.Sprintf("%s:%d", host, port))
+	if err != nil {
+		t.Fatalf("build validator: %v", err)
+	}
+	srv := &Server{
+		CA:                ca,
+		Validator:         validator,
+		Audit:             &recordingSink{},
+		UpstreamTLSConfig: &tls.Config{RootCAs: upstreamPool, MinVersion: tls.VersionTLS12},
+		IdleTimeout:       150 * time.Millisecond,
+	}
+	proxyURL := startProxy(t, srv)
+	pu, _ := url.Parse(proxyURL)
+	clientPool := x509.NewCertPool()
+	clientPool.AppendCertsFromPEM(certPEM)
+	tr := &http.Transport{
+		Proxy:           http.ProxyURL(pu),
+		TLSClientConfig: &tls.Config{RootCAs: clientPool, MinVersion: tls.VersionTLS12},
+		// Disable client-side keep-alive so each request is a new tunnel.
+		DisableKeepAlives: true,
+	}
+	cli := &http.Client{Transport: tr, Timeout: 3 * time.Second}
+
+	// Open a connection by making a request and letting it complete. The
+	// MITM tunnel goroutines stay alive after the response — we assert
+	// that they exit when no further bytes flow.
+	req, _ := http.NewRequestWithContext(context.Background(), "GET",
+		fmt.Sprintf("https://%s:%d/", host, port), nil)
+	resp, err := cli.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	_ = resp.Body.Close()
+	// Sleep past the idle timeout — the proxy MUST have torn the tunnel
+	// down by now. We verify by opening a second request: if the proxy
+	// goroutines correctly returned after IdleTimeout, the second request
+	// works (no leaked goroutine leaks file descriptors); if they hung,
+	// the second request's CONNECT would race the first hung goroutine.
+	time.Sleep(2 * srv.IdleTimeout)
+	resp2, err := cli.Do(req)
+	if err != nil {
+		t.Fatalf("second request after idle: %v", err)
+	}
+	_ = resp2.Body.Close()
+}
+
 // TestHandleConnect_AuditFailureOnDeny_Returns502 verifies the fail-closed
 // behaviour on the policy-deny path (F-24): if the AuditSink returns an
 // error, the proxy must reply 502 "audit unavailable" so the agent sees

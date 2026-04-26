@@ -81,6 +81,15 @@ type Server struct {
 	// upstream-side). Defaults to 30s.
 	HandshakeTimeout time.Duration
 
+	// IdleTimeout caps the idle-read interval on the bytes-shuttle and
+	// substitute-loop paths. When no data arrives within IdleTimeout the
+	// proxy closes the connection so a revoked BrokerPolicy takes effect
+	// within IdleTimeout on opaque tunnels too. Defaults to
+	// defaultProxyIdleTimeout (60s). Zero is treated as "use default";
+	// callers wanting to disable the timeout pass a deliberately-large
+	// duration. F-25 part 2.
+	IdleTimeout time.Duration
+
 	// Logger, if set, receives per-connection diagnostic lines. nil
 	// disables logging (tests typically pass logr.Discard()).
 	Logger logr.Logger
@@ -241,11 +250,16 @@ func (s *Server) mitm(ctx context.Context, clientConn net.Conn, host string, por
 		return
 	}
 
-	// Full-duplex copy. Exit as soon as either direction closes — the
-	// proxy does not add buffering beyond the kernel socket buffers.
+	// Full-duplex copy with idle deadline on each direction. Exit as
+	// soon as either direction closes — the proxy does not add buffering
+	// beyond the kernel socket buffers. F-25: a tunnel that goes idle
+	// for s.idleTimeout() is torn down so a revoked BrokerPolicy takes
+	// effect within that window even on opaque (no-MITM-decrypt) flows.
+	clientReader := &deadlineExtendingReader{conn: clientTLS, timeout: s.idleTimeout()}
+	upstreamReader := &deadlineExtendingReader{conn: upstreamConn, timeout: s.idleTimeout()}
 	errCh := make(chan error, 2)
-	go func() { _, err := io.Copy(upstreamConn, clientTLS); errCh <- err }()
-	go func() { _, err := io.Copy(clientTLS, upstreamConn); errCh <- err }()
+	go func() { _, err := io.Copy(upstreamConn, clientReader); errCh <- err }()
+	go func() { _, err := io.Copy(clientTLS, upstreamReader); errCh <- err }()
 	<-errCh
 }
 
@@ -282,6 +296,13 @@ func (s *Server) handshakeTimeout() time.Duration {
 		return s.HandshakeTimeout
 	}
 	return 30 * time.Second
+}
+
+func (s *Server) idleTimeout() time.Duration {
+	if s.IdleTimeout > 0 {
+		return s.IdleTimeout
+	}
+	return defaultProxyIdleTimeout
 }
 
 // recordEgress emits one EgressEvent via the configured AuditSink.
