@@ -92,6 +92,14 @@ type Server struct {
 	// Logger, if set, receives per-connection diagnostic lines. nil
 	// disables logging (tests typically pass logr.Discard()).
 	Logger logr.Logger
+
+	// OriginalDestination, if non-nil, replaces the SO_ORIGINAL_DST
+	// syscall path in HandleTransparentConn. Tests use this to inject
+	// pre-determined IP/port pairs against net.Pipe() conns that aren't
+	// *net.TCPConn. Production callers leave it nil; the package-level
+	// originalDestination from transparent_linux.go (or the no-op stub
+	// in transparent_other.go) is used.
+	OriginalDestination func(net.Conn) (net.IP, int, error)
 }
 
 // ServeHTTP dispatches CONNECT (MITM path) from plain HTTP requests
@@ -211,6 +219,17 @@ func (s *Server) idleTimeout() time.Duration {
 		return s.IdleTimeout
 	}
 	return defaultProxyIdleTimeout
+}
+
+// origDest returns the original (pre-NAT) destination of conn. Honours
+// the test-injected OriginalDestination field when set; otherwise calls
+// the platform-specific originalDestination defined in
+// transparent_linux.go / transparent_other.go.
+func (s *Server) origDest(conn net.Conn) (net.IP, int, error) {
+	if s.OriginalDestination != nil {
+		return s.OriginalDestination(conn)
+	}
+	return originalDestination(conn)
 }
 
 // recordEgress emits one EgressEvent via the configured AuditSink.

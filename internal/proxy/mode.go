@@ -43,7 +43,7 @@ import (
 func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 
-	origIP, origPort, err := originalDestination(conn)
+	origIP, origPort, err := s.origDest(conn)
 	if err != nil {
 		s.log().V(1).Info("SO_ORIGINAL_DST failed", "err", err)
 		return
