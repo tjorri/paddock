@@ -64,10 +64,10 @@ func (e *BrokerError) Error() string {
 	return fmt.Sprintf("broker %d %s: %s", e.Status, e.Code, e.Message)
 }
 
-// DecodeBrokerError reads resp.Body as a brokerapi.ErrorResponse and
+// decodeBrokerError reads resp.Body as a brokerapi.ErrorResponse and
 // returns a *BrokerError. Falls back to "HTTP%d" when the body is not
 // a valid envelope. Caller is responsible for closing resp.Body.
-func DecodeBrokerError(resp *http.Response) error {
+func decodeBrokerError(resp *http.Response) error {
 	var env brokerapi.ErrorResponse
 	_ = json.NewDecoder(resp.Body).Decode(&env)
 	if env.Code == "" {
@@ -81,6 +81,13 @@ func DecodeBrokerError(resp *http.Response) error {
 // / SubstituteAuth) — this struct only owns the plumbing.
 //
 // Zero value not usable; construct via New.
+//
+// Concurrency: Client itself is not safe for concurrent use. RunName
+// and RunNamespace may be updated between calls when the same Client
+// instance is reused across multiple runs (the controller reconcile
+// loop does this); the surrounding call site must serialise such
+// mutations. The proxy holds a Client per run and does not mutate
+// these fields.
 type Client struct {
 	Endpoint     string
 	TokenReader  TokenReader
@@ -125,6 +132,9 @@ func New(opts Options) (*Client, error) {
 	}
 	if opts.TokenReader == nil {
 		return nil, fmt.Errorf("brokerclient: TokenReader is required")
+	}
+	if opts.Timeout <= 0 {
+		return nil, fmt.Errorf("brokerclient: Timeout is required")
 	}
 
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
@@ -179,7 +189,7 @@ func (c *Client) Do(ctx context.Context, path string, body []byte) (*http.Respon
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
-		return nil, DecodeBrokerError(resp)
+		return nil, decodeBrokerError(resp)
 	}
 	return resp, nil
 }

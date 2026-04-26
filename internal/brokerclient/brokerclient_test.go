@@ -42,7 +42,7 @@ func TestDecodeBrokerError_ParsesEnvelope(t *testing.T) {
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 
-	err := DecodeBrokerError(resp)
+	err := decodeBrokerError(resp)
 	var be *BrokerError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected *BrokerError, got %T", err)
@@ -57,7 +57,7 @@ func TestDecodeBrokerError_NoEnvelope(t *testing.T) {
 		StatusCode: http.StatusBadGateway,
 		Body:       io.NopCloser(strings.NewReader("not json")),
 	}
-	err := DecodeBrokerError(resp)
+	err := decodeBrokerError(resp)
 	var be *BrokerError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected *BrokerError, got %T", err)
@@ -182,9 +182,11 @@ func TestClient_Do_BrokerErrorEnvelope(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(brokerapi.ErrorResponse{Code: "Forbidden", Message: "no"})
 	})
 	c, err := New(Options{
-		Endpoint: srv.URL, CABundlePath: caPath,
-		TokenReader: FileTokenReader(tokenPath),
-		RunName:     "demo", Timeout: 2 * time.Second,
+		Endpoint:     srv.URL,
+		CABundlePath: caPath,
+		TokenReader:  FileTokenReader(tokenPath),
+		RunName:      "demo",
+		Timeout:      2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -204,12 +206,31 @@ func TestNew_RequiresEndpoint(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
+	if !strings.Contains(err.Error(), "endpoint is required") {
+		t.Fatalf("error does not name endpoint guard: %v", err)
+	}
 }
 
 func TestNew_RequiresTokenReader(t *testing.T) {
 	_, err := New(Options{Endpoint: "https://example", Timeout: time.Second})
 	if err == nil {
 		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "TokenReader is required") {
+		t.Fatalf("error does not name TokenReader guard: %v", err)
+	}
+}
+
+func TestNew_RequiresTimeout(t *testing.T) {
+	_, err := New(Options{
+		Endpoint:    "https://example",
+		TokenReader: func() ([]byte, error) { return nil, nil },
+	})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "Timeout is required") {
+		t.Fatalf("error does not name Timeout guard: %v", err)
 	}
 }
 
@@ -243,9 +264,10 @@ func TestClient_Do_TokenReaderError(t *testing.T) {
 		t.Fatalf("server should not be called when token-read fails")
 	})
 	c, err := New(Options{
-		Endpoint: srv.URL, CABundlePath: caPath,
-		TokenReader: func() ([]byte, error) { return nil, errors.New("boom") },
-		Timeout:     2 * time.Second,
+		Endpoint:     srv.URL,
+		CABundlePath: caPath,
+		TokenReader:  func() ([]byte, error) { return nil, errors.New("boom") },
+		Timeout:      2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
