@@ -179,3 +179,104 @@ func TestAnthropicAPIProvider_IssueMissingSecret(t *testing.T) {
 		t.Fatalf("expected Issue to fail on missing Secret")
 	}
 }
+
+func TestAnthropicAPIProvider_SubstituteHostNotAllowed_Default(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(anthropicSecret("sk-real")).Build()
+	p := &AnthropicAPIProvider{Client: c}
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "demo", Namespace: "my-team",
+		CredentialName: "ANTHROPIC_API_KEY",
+		Grant:          anthropicGrant(),
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	// Default hosts is [api.anthropic.com]; calling for evil.com must fail-closed.
+	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName: "demo", Namespace: "my-team",
+		Host: "evil.com", Port: 443,
+		IncomingBearer: res.Value,
+	})
+	if !sub.Matched {
+		t.Fatalf("Matched = false; want true (provider must short-circuit, not fall through)")
+	}
+	if err == nil {
+		t.Fatalf("expected HostNotAllowed error for evil.com against default-host bearer")
+	}
+	if !strings.Contains(err.Error(), "evil.com") {
+		t.Errorf("error must name the offending host; got %q", err)
+	}
+}
+
+func TestAnthropicAPIProvider_SubstituteHostAllowed_Override(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(anthropicSecret("sk-real")).Build()
+	p := &AnthropicAPIProvider{Client: c}
+	grant := anthropicGrant()
+	grant.Provider.Hosts = []string{"api.example.internal"}
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "demo", Namespace: "my-team",
+		CredentialName: "ANTHROPIC_API_KEY",
+		Grant:          grant,
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	// The default host (api.anthropic.com) is replaced by the override; substituting
+	// against api.anthropic.com now must fail.
+	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName: "demo", Namespace: "my-team",
+		Host: "api.anthropic.com", Port: 443,
+		IncomingBearer: res.Value,
+	})
+	if !sub.Matched || err == nil {
+		t.Fatalf("Matched=%v err=%v; want Matched=true with HostNotAllowed error", sub.Matched, err)
+	}
+	// The override host succeeds.
+	sub, err = p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName: "demo", Namespace: "my-team",
+		Host: "api.example.internal", Port: 443,
+		IncomingBearer: res.Value,
+	})
+	if err != nil {
+		t.Fatalf("SubstituteAuth: %v", err)
+	}
+	if !sub.Matched {
+		t.Fatalf("Matched = false; want true on override-host match")
+	}
+}
+
+func TestAnthropicAPIProvider_SubstituteResultFieldsPopulated(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(anthropicSecret("sk-real")).Build()
+	p := &AnthropicAPIProvider{Client: c}
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "demo", Namespace: "my-team",
+		CredentialName: "ANTHROPIC_API_KEY",
+		Grant:          anthropicGrant(),
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName: "demo", Namespace: "my-team",
+		Host: "api.anthropic.com", Port: 443,
+		IncomingBearer: res.Value,
+	})
+	if err != nil {
+		t.Fatalf("SubstituteAuth: %v", err)
+	}
+	if sub.CredentialName != "ANTHROPIC_API_KEY" {
+		t.Errorf("CredentialName = %q, want ANTHROPIC_API_KEY", sub.CredentialName)
+	}
+	wantHdrs := []string{"Content-Type", "Content-Length", "Accept", "Accept-Encoding", "User-Agent", "Anthropic-Version", "Anthropic-Beta"}
+	if len(sub.AllowedHeaders) != len(wantHdrs) {
+		t.Fatalf("AllowedHeaders = %v, want %v", sub.AllowedHeaders, wantHdrs)
+	}
+	for i, h := range wantHdrs {
+		if sub.AllowedHeaders[i] != h {
+			t.Errorf("AllowedHeaders[%d] = %q, want %q", i, sub.AllowedHeaders[i], h)
+		}
+	}
+	if len(sub.AllowedQueryParams) != 0 {
+		t.Errorf("AllowedQueryParams = %v, want empty", sub.AllowedQueryParams)
+	}
+}

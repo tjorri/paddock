@@ -120,6 +120,10 @@ type patLease struct {
 	RunName        string
 	CredentialName string
 	ExpiresAt      time.Time
+	// AllowedHosts is the list of hostnames this lease may be substituted
+	// for. Populated at Issue from grant.Provider.Hosts (admission
+	// requires non-empty for PATPool — see brokerpolicy_webhook.go). F-09.
+	AllowedHosts []string
 }
 
 // Prom metrics. Registered with the process default registerer so
@@ -216,6 +220,7 @@ func (p *PATPoolProvider) Issue(ctx context.Context, req IssueRequest) (IssueRes
 		RunName:        req.RunName,
 		CredentialName: req.CredentialName,
 		ExpiresAt:      expires,
+		AllowedHosts:   cfg.Hosts,
 	}
 	patPoolLeased.WithLabelValues(key.Namespace, key.Secret, key.Key).Set(float64(countLeased(pool.leased)))
 
@@ -270,6 +275,10 @@ func (p *PATPoolProvider) SubstituteAuth(ctx context.Context, req SubstituteRequ
 		p.releaseLocked(matchedKey, matchedPool, bearer)
 		return SubstituteResult{Matched: true}, fmt.Errorf("patpool shrank; bearer's lease index is stale")
 	}
+	if !hostMatchesGlobs(req.Host, matchedLease.AllowedHosts) {
+		return SubstituteResult{Matched: true},
+			fmt.Errorf("bearer host %q not in lease's allowed hosts %v", req.Host, matchedLease.AllowedHosts)
+	}
 
 	pat := matchedPool.entries[matchedLease.Index]
 	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + pat))
@@ -278,6 +287,14 @@ func (p *PATPoolProvider) SubstituteAuth(ctx context.Context, req SubstituteRequ
 		SetHeaders: map[string]string{
 			"Authorization": "Basic " + basic,
 		},
+		// F-21: same allowlist as GitHubApp — both back GitHub-shaped traffic.
+		AllowedHeaders: []string{
+			"Content-Type", "Content-Length",
+			"Accept", "Accept-Encoding", "User-Agent",
+			"X-GitHub-Api-Version",
+		},
+		AllowedQueryParams: nil,
+		CredentialName:     matchedLease.CredentialName,
 	}, nil
 }
 

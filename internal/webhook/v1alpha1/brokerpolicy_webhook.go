@@ -202,7 +202,7 @@ func validateProviderConfig(p *field.Path, cfg paddockv1alpha1.ProviderConfig) f
 				"for UserSuppliedSecret, hosts live under deliveryMode.proxyInjected.hosts"))
 		}
 		errs = append(errs, validateDeliveryMode(p.Child("deliveryMode"), cfg.DeliveryMode)...)
-	case "AnthropicAPI", "PATPool":
+	case "AnthropicAPI":
 		if cfg.SecretRef == nil {
 			errs = append(errs, field.Required(p.Child("secretRef"),
 				fmt.Sprintf("provider kind %q requires secretRef", cfg.Kind)))
@@ -210,6 +210,23 @@ func validateProviderConfig(p *field.Path, cfg paddockv1alpha1.ProviderConfig) f
 		if cfg.AppID != "" || cfg.InstallationID != "" {
 			errs = append(errs, field.Forbidden(p,
 				fmt.Sprintf("provider kind %q must not set appId or installationId", cfg.Kind)))
+		}
+	case "PATPool":
+		if cfg.SecretRef == nil {
+			errs = append(errs, field.Required(p.Child("secretRef"),
+				fmt.Sprintf("provider kind %q requires secretRef", cfg.Kind)))
+		}
+		if cfg.AppID != "" || cfg.InstallationID != "" {
+			errs = append(errs, field.Forbidden(p,
+				fmt.Sprintf("provider kind %q must not set appId or installationId", cfg.Kind)))
+		}
+		if len(cfg.Hosts) == 0 {
+			// F-09: PATPool has no built-in default host (PATs are git-account-
+			// scoped, not service-scoped); operators must declare which hosts
+			// the leased PATs may be substituted on so a leaked bearer can't
+			// be replayed against an unrelated upstream.
+			errs = append(errs, field.Required(p.Child("hosts"),
+				"PATPool requires hosts: list the destinations these PATs may be substituted on"))
 		}
 	case "GitHubApp":
 		if cfg.AppID == "" {

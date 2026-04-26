@@ -70,8 +70,9 @@ func (r *recordingSubstituter) SubstituteAuth(_ context.Context, _ string, _ int
 	defer r.mu.Unlock()
 	r.seenHeaders = headers.Clone()
 	return providers.SubstituteResult{
-		SetHeaders:    map[string]string{"x-api-key": r.realKey},
-		RemoveHeaders: []string{"Authorization"},
+		SetHeaders:     map[string]string{"x-api-key": r.realKey},
+		RemoveHeaders:  []string{"Authorization"},
+		AllowedHeaders: []string{"Content-Type", "Content-Length", "User-Agent"},
 	}, nil
 }
 
@@ -237,8 +238,9 @@ func (b *stringBody) Read(p []byte) (int, error) {
 func TestApplySubstitution_QueryParam(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/v1/thing?access_token=pdk-usersecret-abc&other=keep", nil)
 	res := providers.SubstituteResult{
-		Matched:       true,
-		SetQueryParam: map[string]string{"access_token": "real-token"},
+		Matched:            true,
+		SetQueryParam:      map[string]string{"access_token": "real-token"},
+		AllowedQueryParams: []string{"other"},
 	}
 	applySubstitutionToRequest(req, res)
 	q := req.URL.Query()
@@ -264,5 +266,186 @@ func TestApplySubstitution_BasicAuth(t *testing.T) {
 	}
 	if u != "oauth2" || pw != "real-pat" {
 		t.Fatalf("BasicAuth: got (%q,%q), want (oauth2,real-pat)", u, pw)
+	}
+}
+
+func TestApplySubstitution_StripsNonAllowlistedHeaders(t *testing.T) {
+	req, _ := http.NewRequestWithContext(context.Background(), "POST",
+		"https://api.example.com/v1/messages", stringReader("{}"))
+	req.Header.Set("Authorization", "Bearer pdk-anthropic-test")
+	req.Header.Set("Cookie", "session=stolen")
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.Header.Set("X-Anthropic-Account", "evil")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "agent/1")
+
+	res := providers.SubstituteResult{
+		Matched:        true,
+		SetHeaders:     map[string]string{"x-api-key": "real"},
+		RemoveHeaders:  []string{"Authorization"},
+		AllowedHeaders: []string{"Content-Type", "Content-Length", "User-Agent"},
+	}
+	applySubstitutionToRequest(req, res)
+
+	if got := req.Header.Get("Cookie"); got != "" {
+		t.Errorf("Cookie should be stripped; got %q", got)
+	}
+	if got := req.Header.Get("X-Forwarded-For"); got != "" {
+		t.Errorf("X-Forwarded-For should be stripped; got %q", got)
+	}
+	if got := req.Header.Get("X-Anthropic-Account"); got != "" {
+		t.Errorf("X-Anthropic-Account should be stripped; got %q", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Errorf("Authorization should be removed; got %q", got)
+	}
+	if got := req.Header.Get("X-Api-Key"); got != "real" {
+		t.Errorf("x-api-key should be set to %q; got %q", "real", got)
+	}
+	if got := req.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type should be preserved; got %q", got)
+	}
+	if got := req.Header.Get("User-Agent"); got != "agent/1" {
+		t.Errorf("User-Agent should be preserved; got %q", got)
+	}
+}
+
+func TestApplySubstitution_EmptyAllowlistFailsClosed(t *testing.T) {
+	req, _ := http.NewRequestWithContext(context.Background(), "GET",
+		"https://api.example.com/", nil)
+	req.Header.Set("Authorization", "Bearer pdk-anthropic-test")
+	req.Header.Set("Cookie", "session=stolen")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "agent/1")
+
+	// Provider returned no AllowedHeaders. The proxy must strip everything
+	// except mustKeep + SetHeaders keys.
+	res := providers.SubstituteResult{
+		Matched:    true,
+		SetHeaders: map[string]string{"x-api-key": "real"},
+	}
+	applySubstitutionToRequest(req, res)
+
+	if got := req.Header.Get("Cookie"); got != "" {
+		t.Errorf("Cookie should be stripped; got %q", got)
+	}
+	if got := req.Header.Get("User-Agent"); got != "" {
+		t.Errorf("User-Agent should be stripped (not in mustKeep, not in SetHeaders); got %q", got)
+	}
+	// Content-Type is in mustKeep — preserved even with empty allowlist.
+	if got := req.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type should be preserved (mustKeep); got %q", got)
+	}
+	// SetHeaders key is preserved.
+	if got := req.Header.Get("X-Api-Key"); got != "real" {
+		t.Errorf("x-api-key should be set; got %q", got)
+	}
+}
+
+func TestApplySubstitution_StripsNonAllowlistedQueryParams(t *testing.T) {
+	req, _ := http.NewRequestWithContext(context.Background(), "GET",
+		"https://api.example.com/v1/thing?access_token=leaked&other=keep&allowed=yes", nil)
+	res := providers.SubstituteResult{
+		Matched:            true,
+		AllowedQueryParams: []string{"allowed"},
+	}
+	applySubstitutionToRequest(req, res)
+	q := req.URL.Query()
+	if q.Get("access_token") != "" {
+		t.Errorf("access_token should be stripped; got %q", q.Get("access_token"))
+	}
+	if q.Get("other") != "" {
+		t.Errorf("other should be stripped; got %q", q.Get("other"))
+	}
+	if q.Get("allowed") != "yes" {
+		t.Errorf("allowed should be preserved; got %q", q.Get("allowed"))
+	}
+}
+
+// TestSubstituteLoop_IdleTimeout asserts that handleSubstituted's
+// per-request loop sets a read deadline on each ReadRequest call so a
+// slow-loris or stale keep-alive client cannot hold the goroutine open
+// indefinitely. F-25 + bonus F-26 mitigation.
+func TestSubstituteLoop_IdleTimeout(t *testing.T) {
+	const realKey = "sk-real-loop"
+	upstream, host, port, upstreamPool := startUpstreamEcho(t, realKey)
+	_ = upstream
+	certPEM, keyPEM := generateTestCA(t)
+	ca, _ := NewMITMCertificateAuthority(certPEM, keyPEM)
+
+	sub := &recordingSubstituter{realKey: realKey}
+	validator := &substitutingValidator{host: host, port: port, policy: "anthropic-policy"}
+
+	srv := &Server{
+		CA:                ca,
+		Validator:         validator,
+		Substituter:       sub,
+		Audit:             &recordingSink{},
+		UpstreamTLSConfig: &tls.Config{RootCAs: upstreamPool, MinVersion: tls.VersionTLS12},
+		IdleTimeout:       150 * time.Millisecond,
+	}
+	proxyURL := startProxy(t, srv)
+	pu, _ := url.Parse(proxyURL)
+	clientPool := x509.NewCertPool()
+	clientPool.AppendCertsFromPEM(certPEM)
+	tr := &http.Transport{
+		Proxy:           http.ProxyURL(pu),
+		TLSClientConfig: &tls.Config{RootCAs: clientPool, MinVersion: tls.VersionTLS12},
+		// Keep-alive is the loop we're testing — leave it on.
+	}
+	cli := &http.Client{Transport: tr, Timeout: 3 * time.Second}
+
+	// First request keeps the tunnel alive (substitute-loop iterates).
+	req, _ := http.NewRequestWithContext(context.Background(), "POST",
+		fmt.Sprintf("https://%s:%d/v1/messages", host, port),
+		stringReader("hi"))
+	req.Header.Set("Authorization", "Bearer pdk-anthropic-deadbeef")
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := cli.Do(req)
+	if err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// Wait past idle timeout; the substitute-loop's ReadRequest must have
+	// hit the deadline and exited cleanly.
+	time.Sleep(2 * srv.IdleTimeout)
+
+	// Second request opens a fresh tunnel + works normally — proof that
+	// the proxy didn't leak goroutines / file descriptors.
+	req2, _ := http.NewRequestWithContext(context.Background(), "POST",
+		fmt.Sprintf("https://%s:%d/v1/messages", host, port),
+		stringReader("again"))
+	req2.Header.Set("Authorization", "Bearer pdk-anthropic-deadbeef")
+	req2.Header.Set("Content-Type", "text/plain")
+	resp2, err := cli.Do(req2)
+	if err != nil {
+		t.Fatalf("second request: %v", err)
+	}
+	_ = resp2.Body.Close()
+}
+
+func TestApplySubstitution_PreservesSetHeadersAndQueryParams(t *testing.T) {
+	req, _ := http.NewRequestWithContext(context.Background(), "GET",
+		"https://api.example.com/v1/x?key=stripped&api_key=replaced", nil)
+	req.Header.Set("Authorization", "Bearer pdk-test")
+
+	res := providers.SubstituteResult{
+		Matched:       true,
+		SetHeaders:    map[string]string{"X-Custom-Auth": "value"},
+		SetQueryParam: map[string]string{"api_key": "real-key"},
+		// Even with empty allowlists, SetHeaders/SetQueryParam keys are kept.
+	}
+	applySubstitutionToRequest(req, res)
+
+	if got := req.Header.Get("X-Custom-Auth"); got != "value" {
+		t.Errorf("X-Custom-Auth (a SetHeaders key) should be preserved; got %q", got)
+	}
+	q := req.URL.Query()
+	if q.Get("api_key") != "real-key" {
+		t.Errorf("api_key (a SetQueryParam key) should be replaced; got %q", q.Get("api_key"))
+	}
+	if q.Get("key") != "" {
+		t.Errorf("key (not allowed, not in SetQueryParam) should be stripped; got %q", q.Get("key"))
 	}
 }

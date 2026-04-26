@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"paddock.dev/paddock/internal/broker/providers"
 )
@@ -58,17 +59,30 @@ func handleSubstituted(
 	host string,
 	port int,
 	sub Substituter,
+	idleTimeout time.Duration,
 ) error {
 	clientReader := bufio.NewReader(clientConn)
 	upstreamReader := bufio.NewReader(upstreamConn)
 
 	for {
+		// F-25: idle deadline before the next request read. A slow-loris
+		// or stale keep-alive client gets timed out instead of holding the
+		// goroutine open indefinitely. idleTimeout=0 disables (used by
+		// tests that want unlimited blocking reads).
+		if idleTimeout > 0 {
+			_ = clientConn.SetReadDeadline(time.Now().Add(idleTimeout))
+		}
 		req, err := http.ReadRequest(clientReader)
 		if err != nil {
 			if err == io.EOF {
 				return nil
 			}
 			return fmt.Errorf("reading client request: %w", err)
+		}
+		// Clear the deadline once the request is fully read; the upstream
+		// hop has its own deadline-management via the bytes-shuttle wrap.
+		if idleTimeout > 0 {
+			_ = clientConn.SetReadDeadline(time.Time{})
 		}
 
 		// HTTP/1.1 via MITM carries only the path in the request-line.
@@ -121,11 +135,31 @@ func handleSubstituted(
 	}
 }
 
+// mustKeepHeaders is the fixed minimum set of header names that the
+// proxy never strips even when the broker returns an empty AllowedHeaders.
+// These cover HTTP/1.1 wire necessities; net/http will refuse to write
+// requests that drop them. Authorization is deliberately NOT in this
+// list — providers that need to emit it use SetHeaders, and any agent-
+// supplied Authorization is stripped because it would carry the Paddock
+// bearer.
+var mustKeepHeaders = map[string]struct{}{
+	"host":              {},
+	"content-length":    {},
+	"content-type":      {},
+	"transfer-encoding": {},
+}
+
 // applySubstitutionToRequest mutates req in place according to the
 // broker's SubstituteResult. RemoveHeaders is applied first so that
 // SetHeaders and SetBasicAuth can cleanly overwrite whatever the agent
-// presented. SetQueryParam rewrites URL query parameters before the
-// request is forwarded upstream.
+// presented. After that, every header not in (AllowedHeaders ∪
+// keys(SetHeaders) ∪ mustKeepHeaders) is stripped — F-21's allowlist
+// enforcement boundary. Same shape applies to query parameters.
+//
+// Empty AllowedHeaders / AllowedQueryParams is fail-closed: the proxy
+// strips everything except mustKeepHeaders + SetHeaders / SetQueryParam
+// keys. A buggy or unconfigured provider cannot accidentally widen what
+// reaches upstream.
 func applySubstitutionToRequest(req *http.Request, res providers.SubstituteResult) {
 	for _, h := range res.RemoveHeaders {
 		req.Header.Del(h)
@@ -133,13 +167,45 @@ func applySubstitutionToRequest(req *http.Request, res providers.SubstituteResul
 	for k, v := range res.SetHeaders {
 		req.Header.Set(k, v)
 	}
-	if len(res.SetQueryParam) > 0 {
-		q := req.URL.Query()
-		for k, v := range res.SetQueryParam {
-			q.Set(k, v)
-		}
-		req.URL.RawQuery = q.Encode()
+
+	// Build the lower-cased allowlist union for header enforcement.
+	allowedHdr := make(map[string]struct{}, len(res.AllowedHeaders)+len(res.SetHeaders)+len(mustKeepHeaders))
+	for k := range mustKeepHeaders {
+		allowedHdr[k] = struct{}{}
 	}
+	for _, h := range res.AllowedHeaders {
+		allowedHdr[strings.ToLower(h)] = struct{}{}
+	}
+	for k := range res.SetHeaders {
+		allowedHdr[strings.ToLower(k)] = struct{}{}
+	}
+	for name := range req.Header {
+		if _, ok := allowedHdr[strings.ToLower(name)]; !ok {
+			req.Header.Del(name)
+		}
+	}
+
+	// Query-parameter allowlist: case-sensitive (URL query keys are case-
+	// sensitive per RFC 3986). SetQueryParam values are applied AFTER the
+	// strip so we can rewrite a key that was stripped from the original.
+	allowedQP := make(map[string]struct{}, len(res.AllowedQueryParams)+len(res.SetQueryParam))
+	for _, k := range res.AllowedQueryParams {
+		allowedQP[k] = struct{}{}
+	}
+	for k := range res.SetQueryParam {
+		allowedQP[k] = struct{}{}
+	}
+	q := req.URL.Query()
+	for k := range q {
+		if _, ok := allowedQP[k]; !ok {
+			q.Del(k)
+		}
+	}
+	for k, v := range res.SetQueryParam {
+		q.Set(k, v)
+	}
+	req.URL.RawQuery = q.Encode()
+
 	if res.SetBasicAuth != nil {
 		req.Header.Del("Authorization")
 		req.SetBasicAuth(res.SetBasicAuth.Username, res.SetBasicAuth.Password)

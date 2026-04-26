@@ -65,6 +65,7 @@ func main() {
 		allowList        string
 		mode             string
 		shutdownGrace    time.Duration
+		idleTimeout      time.Duration
 		disableAudit     bool
 		upstreamCABundle string
 		brokerEndpoint   string
@@ -92,6 +93,10 @@ func main() {
 			"Selected at Pod-build time by the reconciler; the binary is otherwise identical.")
 	flag.DurationVar(&shutdownGrace, "shutdown-grace", 10*time.Second,
 		"Time to wait for in-flight connections to drain on SIGTERM.")
+	flag.DurationVar(&idleTimeout, "idle-timeout", 60*time.Second,
+		"Idle deadline applied to MITM bytes-shuttle and substitute-auth keep-alive loops. "+
+			"A connection with no traffic for this duration is closed so a revoked BrokerPolicy "+
+			"takes effect within this window on opaque tunnels too. Set to 0 to disable. F-25.")
 	flag.BoolVar(&disableAudit, "disable-audit", false,
 		"Skip AuditEvent creation. Useful for local development without cluster credentials.")
 	flag.StringVar(&upstreamCABundle, "upstream-ca-bundle", "",
@@ -164,6 +169,7 @@ func main() {
 		Substituter:       substituter,
 		Audit:             audit,
 		UpstreamTLSConfig: upstreamCfg,
+		IdleTimeout:       idleTimeout,
 		Logger:            logger,
 	}
 

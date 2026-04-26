@@ -103,11 +103,3 @@ type teeNetConn struct {
 // Conn's. The default Go promotion rule picks the most-recently
 // embedded method, but we want to be defensive.
 func (t teeNetConn) Read(b []byte) (int, error) { return t.Reader.Read(b) }
-
-// copyRaw is the bytes-both-ways shuttle the MITM path uses once
-// handshaking is done. Lives here instead of server.go so the
-// transparent-mode flow and the CONNECT flow share the exact same
-// copy semantics.
-func copyRaw(dst io.Writer, src io.Reader) (int64, error) {
-	return io.Copy(dst, src)
-}

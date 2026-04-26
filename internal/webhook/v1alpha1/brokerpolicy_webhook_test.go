@@ -496,4 +496,67 @@ var _ = Describe("BrokerPolicy Webhook", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("expiresAt"))
 	})
+
+	It("admits PATPool with hosts", func() {
+		spec := minimalSpec()
+		spec.Grants.Egress = append(spec.Grants.Egress,
+			paddockv1alpha1.EgressGrant{Host: "github.com", Ports: []int32{443}},
+		)
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "GIT_TOKEN",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "PATPool",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "pool", Key: "tokens"},
+				Hosts:     []string{"github.com"},
+			},
+		}}
+		Expect(validate(spec)).To(Succeed())
+	})
+
+	It("admits PATPool with multiple hosts", func() {
+		spec := minimalSpec()
+		spec.Grants.Egress = append(spec.Grants.Egress,
+			paddockv1alpha1.EgressGrant{Host: "github.com", Ports: []int32{443}},
+			paddockv1alpha1.EgressGrant{Host: "api.github.com", Ports: []int32{443}},
+		)
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "GIT_TOKEN",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "PATPool",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "pool", Key: "tokens"},
+				Hosts:     []string{"github.com", "api.github.com"},
+			},
+		}}
+		Expect(validate(spec)).To(Succeed())
+	})
+
+	It("rejects PATPool without hosts", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "GIT_TOKEN",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "PATPool",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "pool", Key: "tokens"},
+				// Hosts deliberately omitted.
+			},
+		}}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("PATPool requires hosts"))
+	})
+
+	It("rejects PATPool with empty hosts list", func() {
+		spec := minimalSpec()
+		spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+			Name: "GIT_TOKEN",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "PATPool",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "pool", Key: "tokens"},
+				Hosts:     []string{},
+			},
+		}}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("PATPool requires hosts"))
+	})
 })

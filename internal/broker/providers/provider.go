@@ -155,6 +155,31 @@ type SubstituteResult struct {
 	// authentication on the outbound request. The proxy overwrites any
 	// existing Authorization header with the encoded username:password.
 	SetBasicAuth *BasicAuth
+
+	// AllowedHeaders is the proxy-side allowlist of header names that
+	// may be forwarded to the upstream verbatim alongside the substituted
+	// credential. The proxy also keeps any header whose name appears in
+	// SetHeaders, plus a fixed mustKeep set covering HTTP/1.1 wire
+	// necessities (Host, Content-Length, Content-Type, Transfer-Encoding).
+	// Every other agent-supplied header is stripped before forwarding.
+	//
+	// Empty AllowedHeaders is fail-closed: the proxy strips everything
+	// except mustKeep + SetHeaders keys. Provider authors must populate
+	// this field; an unset/empty list never silently widens what reaches
+	// upstream. F-21.
+	AllowedHeaders []string
+
+	// AllowedQueryParams is the same shape for URL query parameters: keys
+	// not in this list (and not in SetQueryParam) are stripped before the
+	// request is forwarded. F-21.
+	AllowedQueryParams []string
+
+	// CredentialName is the logical credential name the broker handler
+	// uses to re-validate the matched BrokerPolicy grant per request. Set
+	// by the provider from its lease. Internal to broker handler use; not
+	// emitted on the proxy↔broker wire (the proxy doesn't need it).
+	// F-10.
+	CredentialName string
 }
 
 // BasicAuth carries an HTTP Basic username+password pair.
