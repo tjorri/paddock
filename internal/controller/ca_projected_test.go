@@ -29,42 +29,21 @@ import (
 )
 
 func TestEnsureProxyTLS_EmitsCAProjectedOnCreate(t *testing.T) {
-	scheme := runtime.NewScheme()
-	if err := paddockv1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatalf("paddock scheme: %v", err)
-	}
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatalf("corev1 scheme: %v", err)
-	}
-
-	srcSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "paddock-proxy-ca", Namespace: "paddock-system"},
-		Data: map[string][]byte{
-			"tls.crt": []byte("FAKE-CERT"),
-			"tls.key": []byte("FAKE-KEY"),
-		},
-	}
+	scheme := schemeWithCertManager(t)
 	run := &paddockv1alpha1.HarnessRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
 	}
-	cli := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(srcSecret).
-		Build()
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(run).Build()
 	rec := &capturedSink{}
 	r := &HarnessRunReconciler{
-		Client:        cli,
-		Scheme:        scheme,
-		Audit:         &ControllerAudit{Sink: rec},
-		ProxyCASource: ProxyCASource{Name: "paddock-proxy-ca", Namespace: "paddock-system"},
+		Client:               cli,
+		Scheme:               scheme,
+		Audit:                &ControllerAudit{Sink: rec},
+		ProxyCAClusterIssuer: "paddock-proxy-ca-issuer",
 	}
 
-	ok, err := r.ensureProxyTLS(context.Background(), run)
-	if err != nil {
+	if _, err := r.ensureProxyTLS(context.Background(), run); err != nil {
 		t.Fatalf("ensureProxyTLS: %v", err)
-	}
-	if !ok {
-		t.Fatal("ensureProxyTLS returned ok=false on create")
 	}
 
 	// First create: one ca-projected event.

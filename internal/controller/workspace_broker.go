@@ -54,7 +54,7 @@ func brokerSeedRepos(ws *paddockv1alpha1.Workspace) []paddockv1alpha1.WorkspaceG
 // whole point of routing the seed through the proxy.
 func (r *WorkspaceReconciler) workspaceProxyConfigured() bool {
 	return r.ProxyImage != "" &&
-		r.ProxyCASource.Name != "" &&
+		r.ProxyCAClusterIssuer != "" &&
 		r.BrokerEndpoint != "" &&
 		r.BrokerCASource.Name != ""
 }
@@ -74,55 +74,29 @@ func workspaceBrokerCASecretName(wsName string) string {
 	return wsName + "-broker-ca"
 }
 
-// ensureSeedProxyTLS copies the paddock-system proxy CA keypair into
-// a per-workspace Secret, same shape as ensureProxyTLS on the run
-// path. Returns (ok=false, err=nil) when the source Secret isn't
-// present yet; caller requeues.
+// ensureSeedProxyTLS ensures a per-Workspace cert-manager Certificate
+// resource exists and reports whether it is Ready. cert-manager
+// produces the backing <workspace>-proxy-tls Secret directly in the
+// Workspace's namespace with the per-Workspace intermediate keypair.
+// F-18 / Phase 2f.
 func (r *WorkspaceReconciler) ensureSeedProxyTLS(ctx context.Context, ws *paddockv1alpha1.Workspace) (bool, error) {
-	var src corev1.Secret
-	srcKey := types.NamespacedName{Name: r.ProxyCASource.Name, Namespace: r.ProxyCASource.Namespace}
-	if err := r.Get(ctx, srcKey, &src); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("reading proxy CA source Secret %s/%s: %w", srcKey.Namespace, srcKey.Name, err)
-	}
-	cert, ok := src.Data[proxyTLSSecretKeyCACert]
-	if !ok || len(cert) == 0 {
+	if r.ProxyCAClusterIssuer == "" {
 		return false, nil
 	}
-	key, ok := src.Data[proxyTLSSecretKeyCAKey]
-	if !ok || len(key) == 0 {
-		return false, nil
-	}
-
-	dst := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      workspaceProxyTLSSecretName(ws.Name),
-			Namespace: ws.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":      "paddock",
-				"app.kubernetes.io/component": "workspace-proxy-tls",
-				"paddock.dev/workspace":       ws.Name,
-			},
-		},
-	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dst, func() error {
-		if err := controllerutil.SetControllerReference(ws, dst, r.Scheme); err != nil {
-			return err
-		}
-		dst.Type = corev1.SecretTypeOpaque
-		dst.Data = map[string][]byte{
-			proxyTLSSecretKeyCACert: cert,
-			proxyTLSSecretKeyCAKey:  key,
-			caBundleKey:             cert,
-		}
-		return nil
-	})
+	_, ready, err := ensureProxyCACertificate(ctx, r.Client, r.Scheme, ws, ws.Namespace,
+		workspaceProxyTLSSecretName(ws.Name),
+		fmt.Sprintf("paddock-proxy-ws-%s", ws.Name),
+		r.ProxyCAClusterIssuer,
+		proxyCertDurationWorkspace, proxyCertRenewBeforeWorkspace,
+		map[string]string{
+			"app.kubernetes.io/name":      "paddock",
+			"app.kubernetes.io/component": "workspace-proxy-tls",
+			"paddock.dev/workspace":       ws.Name,
+		})
 	if err != nil {
-		return false, fmt.Errorf("upserting workspace proxy-tls Secret: %w", err)
+		return false, err
 	}
-	return true, nil
+	return ready, nil
 }
 
 // ensureSeedBrokerCA copies ca.crt from the broker-serving-cert

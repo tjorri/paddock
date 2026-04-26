@@ -102,7 +102,15 @@ const (
 	// bundle. Points at a single file (ca.crt key of the per-run
 	// Secret), which is what SSL_CERT_FILE and friends want.
 	agentCABundleMountPath = "/etc/ssl/certs/paddock-proxy-ca.crt"
-	agentCABundleSubPath   = "ca.crt"
+	// agentCABundleSubPath is the per-run intermediate cert — the
+	// agent's TLS trust anchor. Despite the conventional "tls.crt =
+	// serving cert" naming in cert-manager-issued Secrets, here that
+	// file IS the trust anchor (we issue an intermediate isCA
+	// Certificate; the proxy serves [leaf, intermediate] chains; the
+	// agent's ca-bundle = the intermediate). The cluster root cert is
+	// deliberately NOT mounted into the agent — it would re-introduce
+	// the F-18 cross-tenant trust regression. F-18 / Phase 2f.
+	agentCABundleSubPath = "tls.crt"
 
 	// paddockSAVolumeName is the explicit projected SA-token mount
 	// added to sidecars only. Pod-level AutomountServiceAccountToken
