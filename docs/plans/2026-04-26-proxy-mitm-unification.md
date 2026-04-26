@@ -217,7 +217,7 @@ func (s *Server) dialUpstreamAt(ctx context.Context, sni string, ip net.IP, port
 }
 ```
 
-Then remove the now-unused imports from `mode.go`. Specifically, after this edit `mode.go` no longer needs `crypto/tls`, `time`, or the original-destination-related parts that referenced them. Confirm by running:
+Then remove the now-unused imports from `mode.go`. After this edit `mode.go` no longer needs `time` (it was only used by the dialer fallback inside `dialUpstreamAt`); `crypto/tls` is still in use by `mitmTransparent`'s `tls.Server`/`tls.Config` so leave it. Confirm by running:
 
 ```bash
 go build ./internal/proxy/...
