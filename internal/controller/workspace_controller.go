@@ -468,26 +468,6 @@ func (r *WorkspaceReconciler) ensureSeedNetworkPolicy(ctx context.Context, ws *p
 	return nil
 }
 
-// setCondition sets or replaces the condition of the given type on the
-// slice. Preserves LastTransitionTime when Status doesn't change.
-func setCondition(conds *[]metav1.Condition, c metav1.Condition) {
-	now := metav1.Now()
-	for i, existing := range *conds {
-		if existing.Type != c.Type {
-			continue
-		}
-		if existing.Status == c.Status {
-			c.LastTransitionTime = existing.LastTransitionTime
-		} else {
-			c.LastTransitionTime = now
-		}
-		(*conds)[i] = c
-		return
-	}
-	c.LastTransitionTime = now
-	*conds = append(*conds, c)
-}
-
 // SetupWithManager registers the reconciler with the manager and wires
 // up watches for owned resources.
 func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
