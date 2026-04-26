@@ -23,7 +23,7 @@ const items = [
     <ul class="involved__grid">
       {items.map((it) => (
         <li>
-          <a href={it.href}><h3>{it.title}</h3></a>
+          <h3><a href={it.href}>{it.title}</a></h3>
           <p>{it.body}</p>
         </li>
       ))}
@@ -46,6 +46,6 @@ const items = [
   }
   .involved__grid h3 { margin: 0 0 var(--space-2); color: var(--color-accent); }
   .involved__grid p  { margin: 0; color: var(--color-text-muted); }
-  .involved__grid a  { text-decoration: none; }
-  .involved__grid a:hover h3 { color: var(--color-accent-strong); }
+  .involved__grid h3 a { color: inherit; text-decoration: none; }
+  .involved__grid h3 a:hover { color: var(--color-accent-strong); }
 </style>
