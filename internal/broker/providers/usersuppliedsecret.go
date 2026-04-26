@@ -197,7 +197,20 @@ func (p *UserSuppliedSecretProvider) SubstituteAuth(ctx context.Context, req Sub
 	}
 	value := string(data)
 
-	res := SubstituteResult{Matched: true}
+	res := SubstituteResult{
+		Matched: true,
+		// F-21: minimal protocol-relevant header allowlist. UserSuppliedSecret
+		// has no per-grant override yet (deferred); operators wanting custom
+		// headers should declare them via deliveryMode.proxyInjected.header
+		// which then lands in SetHeaders below.
+		AllowedHeaders: []string{
+			"Content-Type", "Content-Length",
+			"Accept", "Accept-Encoding", "User-Agent",
+		},
+		AllowedQueryParams: nil,
+		// F-10: handler re-validates matchPolicyGrant against this name.
+		CredentialName: lease.CredentialName,
+	}
 	switch {
 	case lease.ProxyInjected.Header != nil:
 		res.SetHeaders = map[string]string{
@@ -207,6 +220,9 @@ func (p *UserSuppliedSecretProvider) SubstituteAuth(ctx context.Context, req Sub
 		res.SetQueryParam = map[string]string{
 			lease.ProxyInjected.QueryParam.Name: value,
 		}
+		// The grant explicitly declared this query parameter as the
+		// substitution target; allow the upstream to receive it.
+		res.AllowedQueryParams = []string{lease.ProxyInjected.QueryParam.Name}
 	case lease.ProxyInjected.BasicAuth != nil:
 		res.SetBasicAuth = &BasicAuth{
 			Username: lease.ProxyInjected.BasicAuth.Username,

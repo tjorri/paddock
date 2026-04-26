@@ -254,3 +254,36 @@ func TestUserSuppliedSecret_SubstituteAuth_UnknownBearerReturnsMatchedFalse(t *t
 		t.Fatal("bearer with non-usersecret prefix must be Matched=false so the broker tries other providers")
 	}
 }
+
+func TestUserSuppliedSecret_SubstituteResultFieldsPopulated(t *testing.T) {
+	c := newFakeClientWithSecret(t, "ns", "s", "k", "real-token").Build()
+	p := &UserSuppliedSecretProvider{Client: c}
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "demo", Namespace: "ns",
+		CredentialName: "PROXY",
+		Grant:          grantHeader("Bearer "),
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName: "demo", Namespace: "ns",
+		Host: "api.example.com", Port: 443,
+		IncomingBearer: res.Value,
+	})
+	if err != nil {
+		t.Fatalf("SubstituteAuth: %v", err)
+	}
+	if sub.CredentialName != "PROXY" {
+		t.Errorf("CredentialName = %q, want PROXY", sub.CredentialName)
+	}
+	wantHdrs := []string{"Content-Type", "Content-Length", "Accept", "Accept-Encoding", "User-Agent"}
+	if len(sub.AllowedHeaders) != len(wantHdrs) {
+		t.Fatalf("AllowedHeaders = %v, want %v", sub.AllowedHeaders, wantHdrs)
+	}
+	for i, h := range wantHdrs {
+		if sub.AllowedHeaders[i] != h {
+			t.Errorf("AllowedHeaders[%d] = %q, want %q", i, sub.AllowedHeaders[i], h)
+		}
+	}
+}
