@@ -31,6 +31,7 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
+	"paddock.dev/paddock/internal/brokerclient"
 )
 
 // fakeBroker is an in-memory BrokerIssuer for reconciler tests.
@@ -48,7 +49,7 @@ func (f *fakeBroker) Issue(_ context.Context, _ string, _ string, credentialName
 	}
 	v, ok := f.values[credentialName]
 	if !ok {
-		return nil, &BrokerError{Status: 404, Code: "CredentialNotFound", Message: credentialName}
+		return nil, &brokerclient.BrokerError{Status: 404, Code: "CredentialNotFound", Message: credentialName}
 	}
 	resp := brokerapi.IssueResponse{
 		Value:     v,
@@ -192,7 +193,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 
 	It("returns a fatal reason on a PolicyMissing broker error", func() {
 		fb := &fakeBroker{errs: map[string]error{
-			"K": &BrokerError{Status: 403, Code: "PolicyMissing", Message: "no grant"},
+			"K": &brokerclient.BrokerError{Status: 403, Code: "PolicyMissing", Message: "no grant"},
 		}}
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("denied")

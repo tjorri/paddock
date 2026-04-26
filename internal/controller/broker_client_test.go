@@ -29,6 +29,7 @@ import (
 	"time"
 
 	brokerapi "paddock.dev/paddock/internal/broker/api"
+	"paddock.dev/paddock/internal/brokerclient"
 )
 
 // startTestBroker spins up a TLS httptest server that serves
@@ -107,7 +108,7 @@ func TestBrokerHTTPClient_Issue_BrokerError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	var be *BrokerError
+	var be *brokerclient.BrokerError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected *BrokerError, got %T: %v", err, err)
 	}

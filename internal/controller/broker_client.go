@@ -17,19 +17,14 @@ limitations under the License.
 package controller
 
 import (
-	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"os"
-	"strings"
 	"time"
 
 	brokerapi "paddock.dev/paddock/internal/broker/api"
+	"paddock.dev/paddock/internal/brokerclient"
 )
 
 // BrokerIssuer is the reconciler's view of the broker. Injected so
@@ -39,26 +34,17 @@ type BrokerIssuer interface {
 }
 
 // BrokerHTTPClient talks to the broker over mTLS-secured HTTPS,
-// authenticating with a ProjectedServiceAccountToken mounted at
-// TokenPath. CABundlePath is the CA that signed the broker's serving
-// cert (typically mounted from the broker-serving-cert Secret that
-// cert-manager renews). Set Endpoint to "" to disable — the reconciler
-// then treats any template with requires.credentials as a hard
+// authenticating with a ProjectedServiceAccountToken. Set Endpoint to
+// "" to disable — NewBrokerHTTPClient then returns nil + nil and the
+// reconciler treats any template with requires.credentials as a hard
 // BrokerReady=False, useful for envtest setups without a broker.
 type BrokerHTTPClient struct {
-	Endpoint     string
-	TokenPath    string
-	CABundlePath string
-
-	// TokenReader returns the SA bearer token to attach to every
-	// outbound request. Defaulted by NewBrokerHTTPClient to a closure
-	// that re-reads TokenPath on each call (the projected
-	// ServiceAccountToken file rotates on disk; an in-memory cache
-	// would invite expired-token failures). Tests inject inline byte
+	// TokenReader, when non-nil, overrides the default closure that
+	// re-reads tokenPath on every call. Tests inject inline byte
 	// slices.
-	TokenReader func() ([]byte, error)
+	TokenReader brokerclient.TokenReader
 
-	hc *http.Client
+	c *brokerclient.Client
 }
 
 // Compile-time check.
@@ -70,63 +56,43 @@ func NewBrokerHTTPClient(endpoint, tokenPath, caPath string) (*BrokerHTTPClient,
 	if endpoint == "" {
 		return nil, nil
 	}
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
-	if caPath != "" {
-		pem, err := os.ReadFile(caPath)
-		if err != nil {
-			return nil, fmt.Errorf("reading broker CA at %s: %w", caPath, err)
-		}
-		roots := x509.NewCertPool()
-		if !roots.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("broker CA at %s has no valid certificates", caPath)
-		}
-		tlsCfg.RootCAs = roots
-	}
-	c := &BrokerHTTPClient{
-		Endpoint:     strings.TrimRight(endpoint, "/"),
-		TokenPath:    tokenPath,
+	tr := brokerclient.FileTokenReader(tokenPath)
+	c, err := brokerclient.New(brokerclient.Options{
+		Endpoint:     endpoint,
 		CABundlePath: caPath,
-		hc: &http.Client{
-			Timeout:   10 * time.Second,
-			Transport: &http.Transport{TLSClientConfig: tlsCfg},
-		},
+		TokenReader:  tr,
+		// Controller calls don't carry the run identity in the
+		// constructor — they're attached per-call by Issue from its
+		// runName / runNamespace arguments.
+		Timeout: 10 * time.Second,
+	})
+	if err != nil {
+		return nil, err
 	}
-	c.TokenReader = func() ([]byte, error) { return os.ReadFile(c.TokenPath) }
-	return c, nil
+	return &BrokerHTTPClient{TokenReader: tr, c: c}, nil
 }
 
 // Issue asks the broker for one named credential on behalf of the
 // given run. Wraps POST /v1/issue.
 func (b *BrokerHTTPClient) Issue(ctx context.Context, runName, runNamespace, credentialName string) (*brokerapi.IssueResponse, error) {
-	token, err := b.TokenReader()
-	if err != nil {
-		return nil, fmt.Errorf("reading broker token: %w", err)
+	// Per-call run identity: this Client is reused across runs; mutating
+	// RunName/RunNamespace per call is safe because the reconcile loop
+	// serialises Issue calls per HarnessRun. A future parallel-call
+	// refactor will need a per-request Do overload taking run identity
+	// inline. See brokerclient.Client godoc for the invariant.
+	b.c.RunName = runName
+	b.c.RunNamespace = runNamespace
+	if b.TokenReader != nil {
+		b.c.TokenReader = b.TokenReader
 	}
 
 	payload, _ := json.Marshal(brokerapi.IssueRequest{Name: credentialName})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.Endpoint+brokerapi.PathIssue, bytes.NewReader(payload))
+	resp, err := b.c.Do(ctx, brokerapi.PathIssue, payload)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(brokerapi.HeaderRun, runName)
-	req.Header.Set(brokerapi.HeaderNamespace, runNamespace)
+	defer func() { _ = resp.Body.Close() }()
 
-	resp, err := b.hc.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		var errResp brokerapi.ErrorResponse
-		_ = json.NewDecoder(resp.Body).Decode(&errResp)
-		if errResp.Code == "" {
-			errResp.Code = fmt.Sprintf("HTTP%d", resp.StatusCode)
-		}
-		return nil, &BrokerError{Status: resp.StatusCode, Code: errResp.Code, Message: errResp.Message}
-	}
 	var out brokerapi.IssueResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decoding broker response: %w", err)
@@ -134,22 +100,10 @@ func (b *BrokerHTTPClient) Issue(ctx context.Context, runName, runNamespace, cre
 	return &out, nil
 }
 
-// BrokerError is returned by Issue for non-2xx responses. The Code
-// field is the broker's symbolic code (see brokerapi.ErrorResponse).
-type BrokerError struct {
-	Status  int
-	Code    string
-	Message string
-}
-
-func (e *BrokerError) Error() string {
-	return fmt.Sprintf("broker %d %s: %s", e.Status, e.Code, e.Message)
-}
-
 // IsBrokerCodeFatal reports whether a broker error is user-actionable
 // (should fail the run) vs transient (should requeue).
 func IsBrokerCodeFatal(err error) bool {
-	var be *BrokerError
+	var be *brokerclient.BrokerError
 	if !errors.As(err, &be) {
 		return false
 	}
