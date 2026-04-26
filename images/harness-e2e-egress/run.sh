@@ -7,11 +7,11 @@
 # egress-allow to egress-block.
 #
 # Env inputs (all optional):
-#   PADDOCK_E2E_EGRESS_TARGETS  Comma-separated URLs. Probed once at start.
-#   PADDOCK_E2E_EGRESS_LOOP     Single URL probed every PADDOCK_E2E_LOOP_SECONDS
-#                               until PADDOCK_E2E_HOLD_SECONDS elapses.
-#   PADDOCK_E2E_LOOP_SECONDS    Loop interval (default 3).
-#   PADDOCK_E2E_HOLD_SECONDS    Total hold duration (default 0 = no hold).
+#   E2E_EGRESS_TARGETS  Comma-separated URLs. Probed once at start.
+#   E2E_EGRESS_LOOP     Single URL probed every E2E_LOOP_SECONDS
+#                               until E2E_HOLD_SECONDS elapses.
+#   E2E_LOOP_SECONDS    Loop interval (default 3).
+#   E2E_HOLD_SECONDS    Total hold duration (default 0 = no hold).
 #
 # Emits echo-compatible JSONL events (kind ∈ {message,tool,result}) so
 # paddock-adapter-echo can translate them unchanged.
@@ -21,10 +21,10 @@ set -eu
 : "${PADDOCK_PROMPT_PATH:=/paddock/prompt/prompt.txt}"
 : "${PADDOCK_RAW_PATH:=/paddock/raw/out}"
 : "${PADDOCK_RUN_NAME:=e2e-egress}"
-: "${PADDOCK_E2E_EGRESS_TARGETS:=}"
-: "${PADDOCK_E2E_EGRESS_LOOP:=}"
-: "${PADDOCK_E2E_LOOP_SECONDS:=3}"
-: "${PADDOCK_E2E_HOLD_SECONDS:=0}"
+: "${E2E_EGRESS_TARGETS:=}"
+: "${E2E_EGRESS_LOOP:=}"
+: "${E2E_LOOP_SECONDS:=3}"
+: "${E2E_HOLD_SECONDS:=0}"
 
 mkdir -p "$(dirname "$PADDOCK_RAW_PATH")"
 : >"$PADDOCK_RAW_PATH"
@@ -59,30 +59,30 @@ probe_once() {
 }
 
 probed=0
-if [ -n "$PADDOCK_E2E_EGRESS_TARGETS" ]; then
+if [ -n "$E2E_EGRESS_TARGETS" ]; then
   emit_msg "starting egress probes"
   # POSIX shell word-splitting on commas. No filenames involved, so the
   # usual IFS disclaimer doesn't apply.
   old_ifs="$IFS"
   IFS=,
-  for t in $PADDOCK_E2E_EGRESS_TARGETS; do
+  for t in $E2E_EGRESS_TARGETS; do
     probe_once "$t"
     probed=$((probed + 1))
   done
   IFS="$old_ifs"
 fi
 
-if [ -n "$PADDOCK_E2E_EGRESS_LOOP" ] && [ "$PADDOCK_E2E_HOLD_SECONDS" -gt 0 ]; then
-  emit_msg "loop-probing $PADDOCK_E2E_EGRESS_LOOP for ${PADDOCK_E2E_HOLD_SECONDS}s"
-  end=$(( $(date +%s) + PADDOCK_E2E_HOLD_SECONDS ))
+if [ -n "$E2E_EGRESS_LOOP" ] && [ "$E2E_HOLD_SECONDS" -gt 0 ]; then
+  emit_msg "loop-probing $E2E_EGRESS_LOOP for ${E2E_HOLD_SECONDS}s"
+  end=$(( $(date +%s) + E2E_HOLD_SECONDS ))
   while [ "$(date +%s)" -lt "$end" ]; do
-    probe_once "$PADDOCK_E2E_EGRESS_LOOP"
+    probe_once "$E2E_EGRESS_LOOP"
     probed=$((probed + 1))
-    sleep "$PADDOCK_E2E_LOOP_SECONDS"
+    sleep "$E2E_LOOP_SECONDS"
   done
-elif [ "$PADDOCK_E2E_HOLD_SECONDS" -gt 0 ]; then
-  emit_msg "holding for ${PADDOCK_E2E_HOLD_SECONDS}s"
-  sleep "$PADDOCK_E2E_HOLD_SECONDS"
+elif [ "$E2E_HOLD_SECONDS" -gt 0 ]; then
+  emit_msg "holding for ${E2E_HOLD_SECONDS}s"
+  sleep "$E2E_HOLD_SECONDS"
 fi
 
 emit_result "egress probe complete: $probed target(s)"

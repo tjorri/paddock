@@ -525,7 +525,7 @@ spec:
     kind: ClusterHarnessTemplate
   prompt: "e2e egress-block"
   extraEnv:
-    - name: PADDOCK_E2E_EGRESS_TARGETS
+    - name: E2E_EGRESS_TARGETS
       value: "https://evil.com"
 `, v3EgressRunName, v3EgressNamespace, v3EgressTemplate))
 
@@ -729,11 +729,11 @@ spec:
     kind: ClusterHarnessTemplate
   prompt: "e2e policy-delete"
   extraEnv:
-    - name: PADDOCK_E2E_EGRESS_LOOP
+    - name: E2E_EGRESS_LOOP
       value: "https://evil.com"
-    - name: PADDOCK_E2E_HOLD_SECONDS
+    - name: E2E_HOLD_SECONDS
       value: "45"
-    - name: PADDOCK_E2E_LOOP_SECONDS
+    - name: E2E_LOOP_SECONDS
       value: "3"
 `, v3PolicyDelRunName, v3PolicyDelNamespace, v3EgressTemplate))
 
