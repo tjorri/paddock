@@ -84,3 +84,122 @@ spec:
   workspace:
     required: true
     mountPath: /workspace
+---
+apiVersion: paddock.dev/v1alpha1
+kind: ClusterHarnessTemplate
+metadata:
+  name: evil-echo-tg10a
+  labels:
+    app.kubernetes.io/component: test-fixture
+    paddock.dev/test-only: "true"
+spec:
+  harness: evil-echo
+  image: paddock-evil-echo:dev
+  command: ["/usr/local/bin/evil-echo"]
+  # TG-10a (Phase 2g, F-21): smuggle multiple agent-supplied headers via the
+  # --smuggle-headers flag. The proxy now strips every header not on the
+  # broker-supplied AllowedHeaders list (Phase 2g). The harness target
+  # (example.com) is in the BrokerPolicy egress grant, so the connect itself
+  # succeeds; the test asserts the harness reports denied/success based on
+  # whether the upstream returned a non-2xx (the strip happens before the
+  # proxy forwards). The load-bearing per-header strip assertion lives in
+  # the unit test internal/proxy/substitute_test.go::TestApplySubstitution_*.
+  args:
+    - "--smuggle-headers"
+    - "Cookie=session=stolen,X-Forwarded-For=1.2.3.4,X-Anthropic-Account=evil"
+  eventAdapter:
+    image: paddock-adapter-echo:dev
+    imagePullPolicy: IfNotPresent
+  requires:
+    egress:
+      - host: example.com
+        ports: [443]
+  defaults:
+    timeout: 60s
+    resources:
+      limits:
+        cpu: 200m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+  workspace:
+    required: true
+    mountPath: /workspace
+---
+apiVersion: paddock.dev/v1alpha1
+kind: ClusterHarnessTemplate
+metadata:
+  name: evil-echo-tg13a
+  labels:
+    app.kubernetes.io/component: test-fixture
+    paddock.dev/test-only: "true"
+spec:
+  harness: evil-echo
+  image: paddock-evil-echo:dev
+  command: ["/usr/local/bin/evil-echo"]
+  # TG-13a (Phase 2g, F-09): probe vertical-provider host scoping by sending
+  # a forged Anthropic-shaped bearer to a host the policy doesn't grant for
+  # that bearer. The proxy/broker substitute path now rejects the request
+  # via SubstituteAuth's host check. The harness reports denied because the
+  # request fails at the proxy layer (no egress grant for evil.com:443).
+  args:
+    - "--probe-provider-substitution-host"
+    - "https://evil.com/"
+  eventAdapter:
+    image: paddock-adapter-echo:dev
+    imagePullPolicy: IfNotPresent
+  requires:
+    egress:
+      - host: example.com
+        ports: [443]
+  defaults:
+    timeout: 60s
+    resources:
+      limits:
+        cpu: 200m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+  workspace:
+    required: true
+    mountPath: /workspace
+---
+apiVersion: paddock.dev/v1alpha1
+kind: ClusterHarnessTemplate
+metadata:
+  name: evil-echo-tg25a
+  labels:
+    app.kubernetes.io/component: test-fixture
+    paddock.dev/test-only: "true"
+spec:
+  harness: evil-echo
+  image: paddock-evil-echo:dev
+  command: ["/usr/local/bin/evil-echo"]
+  # TG-25a (Phase 2g, F-25): smoke-check that the suite still runs end-to-end
+  # with the new Phase 2g code. The load-bearing idle-timeout assertion lives
+  # in unit tests (TestProxy_BytesShuttleIdleTimeout, TestSubstituteLoop_IdleTimeout).
+  # The e2e here just runs a benign harness flag and asserts the run reaches
+  # terminal phase cleanly with the new code path.
+  args:
+    - "--probe-env-override"
+  eventAdapter:
+    image: paddock-adapter-echo:dev
+    imagePullPolicy: IfNotPresent
+  requires:
+    egress:
+      - host: example.com
+        ports: [443]
+  defaults:
+    timeout: 60s
+    resources:
+      limits:
+        cpu: 200m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+  workspace:
+    required: true
+    mountPath: /workspace

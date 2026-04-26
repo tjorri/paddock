@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -125,25 +126,24 @@ func cmdFloodConnectRawTCP(target string) Output {
 }
 
 func cmdSmuggleHeaders(spec string) Output {
-	// spec is "name=value"; we don't actually have a substitution-eligible
-	// upstream to test against here. Mark as skipped — the e2e test
-	// pipes this through the proxy and reads the proxy's audit log.
 	if spec == "" {
 		return Output{Flag: "--smuggle-headers", Result: "error", Error: "missing spec"}
 	}
-	// Attempt an HTTPS request to a placeholder upstream with the
-	// smuggled header. The proxy is expected to scrub or proxy this.
-	// In v0.4.1 there's no scrubbing — see F-21.
 	target := os.Getenv("SMUGGLE_TARGET_URL")
 	if target == "" {
 		target = "https://example.com/"
 	}
 	req, _ := http.NewRequest("GET", target, nil) //nolint:gosec,noctx
-	parts := strings.SplitN(spec, "=", 2)
-	if len(parts) != 2 {
-		return Output{Flag: "--smuggle-headers", Result: "error", Error: "spec must be name=value"}
+	headerNames := []string{}
+	for _, pair := range strings.Split(spec, ",") {
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			return Output{Flag: "--smuggle-headers", Result: "error",
+				Error: fmt.Sprintf("spec entry %q must be name=value", pair)}
+		}
+		req.Header.Set(parts[0], parts[1])
+		headerNames = append(headerNames, parts[0])
 	}
-	req.Header.Set(parts[0], parts[1])
 	client := &http.Client{Timeout: dialTimeout}
 	resp, err := client.Do(req) //nolint:gosec
 	if err != nil {
@@ -151,7 +151,7 @@ func cmdSmuggleHeaders(spec string) Output {
 	}
 	defer resp.Body.Close()
 	return Output{Flag: "--smuggle-headers", Target: target, Result: "success",
-		Detail: map[string]any{"http_status": resp.StatusCode, "header_name": parts[0]}}
+		Detail: map[string]any{"http_status": resp.StatusCode, "header_names": headerNames}}
 }
 
 func cmdProbeProviderSubstitutionHost(target string) Output {
