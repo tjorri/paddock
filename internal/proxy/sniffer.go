@@ -54,7 +54,10 @@ func peekClientHello(ctx context.Context, p *peekConn) (*tls.ClientHelloInfo, er
 	// way stdlib lets us inspect the ClientHello without committing to
 	// an actual handshake is to abort mid-handshake.
 	tee := &teeReader{upstream: p.Conn, buf: &p.buffered}
-	dummy := &peekConn{Conn: teeNetConn{Reader: tee, Conn: p.Conn}}
+	// nullWriterConn discards writes from the throwaway tls.Server so its
+	// fatal alert (sent when GetConfigForClient returns errFinishedPeeking)
+	// does not corrupt the conn for the real tls.Server that follows.
+	dummy := &nullWriterConn{Conn: p.Conn, r: tee}
 	cfg := &tls.Config{
 		GetConfigForClient: func(h *tls.ClientHelloInfo) (*tls.Config, error) {
 			hi := *h
@@ -91,15 +94,16 @@ func (t *teeReader) Read(b []byte) (int, error) {
 	return n, err
 }
 
-// teeNetConn wraps an io.Reader + net.Conn into a net.Conn whose
-// Read method uses the supplied reader (for the tee) but delegates
-// every other net.Conn method to the real connection.
-type teeNetConn struct {
-	io.Reader
+// nullWriterConn wraps a net.Conn so all Writes are silently dropped
+// while Reads delegate to a caller-supplied io.Reader. Used by
+// peekClientHello to feed the ClientHello to a throwaway tls.Server
+// without letting that server's fatal-alert response (sent when
+// GetConfigForClient returns a non-nil error) reach the agent and
+// poison the subsequent real TLS handshake.
+type nullWriterConn struct {
 	net.Conn
+	r io.Reader
 }
 
-// Read must be explicit so the embedded Reader's method wins over
-// Conn's. The default Go promotion rule picks the most-recently
-// embedded method, but we want to be defensive.
-func (t teeNetConn) Read(b []byte) (int, error) { return t.Reader.Read(b) }
+func (n *nullWriterConn) Read(b []byte) (int, error)  { return n.r.Read(b) }
+func (n *nullWriterConn) Write(b []byte) (int, error) { return len(b), nil }

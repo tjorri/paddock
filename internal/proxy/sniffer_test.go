@@ -19,6 +19,7 @@ package proxy
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net"
@@ -154,6 +155,78 @@ func TestPeekClientHello_BuffersClientHelloForReplay(t *testing.T) {
 	case <-clientErr:
 	case <-time.After(2 * time.Second):
 		t.Fatal("client goroutine did not exit after serverConn close")
+	}
+}
+
+func TestPeekClientHello_LeavesConnUsableForFollowupHandshake(t *testing.T) {
+	// After peekClientHello returns, the conn must still be usable for a
+	// real tls.Server.HandshakeContext to complete with the original client.
+	// Before the fix, peekClientHello's throwaway tls.Server wrote a fatal
+	// alert (15 03 01 00 02 02 50) to the underlying conn when its
+	// GetConfigForClient callback returned errFinishedPeeking, which broke
+	// every transparent-mode handshake in production.
+
+	serverConn, clientConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = serverConn.Close()
+		_ = clientConn.Close()
+	})
+
+	// Generate an in-memory CA + leaf so we can build a real tls.Server
+	// certificate.
+	certPEM, keyPEM := generateTestCA(t)
+	ca, err := NewMITMCertificateAuthority(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("build CA: %v", err)
+	}
+	leaf, err := ca.ForgeFor("example.com")
+	if err != nil {
+		t.Fatalf("forge: %v", err)
+	}
+
+	clientPool := x509.NewCertPool()
+	clientPool.AppendCertsFromPEM(certPEM)
+
+	// Drive a real tls.Client that performs a full handshake.
+	handshakeErr := make(chan error, 1)
+	go func() {
+		cfg := &tls.Config{
+			ServerName: "example.com",
+			RootCAs:    clientPool,
+			MinVersion: tls.VersionTLS12,
+		}
+		c := tls.Client(clientConn, cfg)
+		handshakeErr <- c.HandshakeContext(context.Background())
+	}()
+
+	// Server side: peek SNI, then perform the *real* handshake on the
+	// same conn (the way HandleTransparentConn does in production).
+	peek := &peekConn{Conn: serverConn}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	t.Cleanup(cancel)
+	hello, err := peekClientHello(ctx, peek)
+	if err != nil {
+		t.Fatalf("peekClientHello: %v", err)
+	}
+	if hello.ServerName != "example.com" {
+		t.Errorf("ServerName = %q, want example.com", hello.ServerName)
+	}
+
+	realCfg := &tls.Config{
+		Certificates: []tls.Certificate{*leaf},
+		MinVersion:   tls.VersionTLS12,
+	}
+	if err := tls.Server(peek, realCfg).HandshakeContext(ctx); err != nil {
+		t.Fatalf("follow-up tls.Server.HandshakeContext: %v", err)
+	}
+
+	select {
+	case err := <-handshakeErr:
+		if err != nil {
+			t.Fatalf("client handshake: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("client handshake did not return")
 	}
 }
 
