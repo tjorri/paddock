@@ -99,8 +99,9 @@ const (
 	// conflict risk against typical agent container UIDs.
 	proxyRunAsUID = 1337
 	// agentCABundleMountPath is where the agent sees the MITM CA
-	// bundle. Points at a single file (ca.crt key of the per-run
-	// Secret), which is what SSL_CERT_FILE and friends want.
+	// bundle. Points at a single file (tls.crt key of the per-run
+	// Secret — the per-run intermediate cert; see agentCABundleSubPath
+	// below), which is what SSL_CERT_FILE and friends want.
 	agentCABundleMountPath = "/etc/ssl/certs/paddock-proxy-ca.crt"
 	// agentCABundleSubPath is the per-run intermediate cert — the
 	// agent's TLS trust anchor. Despite the conventional "tls.crt =
