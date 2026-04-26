@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"reflect"
 	"strings"
 	"time"
@@ -85,20 +84,6 @@ type HarnessRunReconciler struct {
 	// are held with BrokerReady=False.
 	BrokerClient BrokerIssuer
 
-	// ProxyImage is the image used for the per-run egress proxy
-	// sidecar. When empty, no proxy sidecar is injected and
-	// EgressConfigured stays False with reason=ProxyNotConfigured.
-	ProxyImage string
-
-	// ProxyCAClusterIssuer is the name of a cert-manager ClusterIssuer
-	// (kind: CA) that signs per-run intermediate CAs. The controller
-	// creates a Certificate resource per HarnessRun in the run's
-	// namespace; cert-manager produces the per-run Secret with the
-	// intermediate keypair. Empty disables proxy integration. The
-	// cluster root private key never leaves cert-manager's signing
-	// path. F-18 / Phase 2f.
-	ProxyCAClusterIssuer string
-
 	// ProxyAllowList is a static comma-separated host:port allow-list
 	// passed to every run's proxy sidecar via --allow. Populated from
 	// --proxy-allow at manager startup. M7 replaces the static list
@@ -111,53 +96,14 @@ type HarnessRunReconciler struct {
 	// every run resolves to cooperative regardless of PSA labels.
 	IPTablesInitImage string
 
-	// NetworkPolicyEnforce selects whether per-run NetworkPolicy
-	// objects are emitted (ADR-0013 §7.4). "auto" defers to the CNI
-	// probe result stored in NetworkPolicyAutoEnabled.
-	NetworkPolicyEnforce NetworkPolicyEnforceMode
-
-	// NetworkPolicyAutoEnabled is set at manager startup from
-	// DetectNetworkPolicyCNI when NetworkPolicyEnforce="auto". True
-	// means "auto" resolves to on; false means off. Ignored when
-	// NetworkPolicyEnforce is on or off explicitly.
-	NetworkPolicyAutoEnabled bool
-
-	// ClusterPodCIDR is the cluster's pod CIDR (e.g. 10.244.0.0/16).
-	// Excluded from per-run NetworkPolicy public-internet egress so a
-	// hostile agent cannot reach co-tenant pods. Set via
-	// --cluster-pod-cidr manager flag. See finding F-19.
-	ClusterPodCIDR string
-	// ClusterServiceCIDR is the cluster's service CIDR. Same purpose as
-	// ClusterPodCIDR; set via --cluster-service-cidr.
-	ClusterServiceCIDR string
-	// APIServerIPs is the set of IPv4 addresses the controller's
-	// kubeconfig resolves the kube-apiserver to. Set once at manager
-	// startup; per-run NetworkPolicies include a TCP/443 allow rule
-	// for each entry so sidecars (collector, adapter) can reach the
-	// apiserver. F-41 / Phase 2d.
-	APIServerIPs []net.IP
-
-	// BrokerEndpoint is the in-cluster broker URL the proxy sidecar
-	// calls for ValidateEgress + SubstituteAuth. Empty disables
-	// broker-backed proxy enforcement — the proxy then falls back to
-	// the static --proxy-allow list. Set from the same --broker-endpoint
-	// flag the reconciler uses for credential issuance.
-	BrokerEndpoint string
-
-	// BrokerNamespace is the namespace where the broker is deployed
-	// (default `paddock-system`). Used by the per-run NetworkPolicy
-	// to allow broker egress when NP enforcement is on. See F-19.
-	BrokerNamespace string
-
-	// BrokerCASource names the cert-manager-issued broker-serving-cert
-	// Secret whose ca.crt is copied into per-run broker-ca Secrets so
-	// the proxy can verify the broker's TLS. Zero Name disables the
-	// broker-CA copy regardless of BrokerEndpoint.
-	BrokerCASource BrokerCASource
-
 	// Audit emits per-decision AuditEvents. Nil-safe — when unset (e.g.
 	// in unit tests), all emits are no-ops. F-40.
 	Audit *ControllerAudit
+
+	// ProxyBrokerConfig carries the shared cluster-and-manager config
+	// used to render run-pod proxy sidecars and per-run NetworkPolicies.
+	// Populated once in cmd/main.go and embedded in both reconcilers.
+	ProxyBrokerConfig
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=harnessruns,verbs=get;list;watch;create;update;patch;delete

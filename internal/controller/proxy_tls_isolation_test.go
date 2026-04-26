@@ -48,10 +48,12 @@ func TestEnsureProxyTLS_PerRunIsolation(t *testing.T) {
 	}
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(runA, runB).Build()
 	r := &HarnessRunReconciler{
-		Client:               cli,
-		Scheme:               scheme,
-		Audit:                &ControllerAudit{Sink: &capturedSink{}},
-		ProxyCAClusterIssuer: "paddock-proxy-ca-issuer",
+		Client: cli,
+		Scheme: scheme,
+		Audit:  &ControllerAudit{Sink: &capturedSink{}},
+		ProxyBrokerConfig: ProxyBrokerConfig{
+			ProxyCAClusterIssuer: "paddock-proxy-ca-issuer",
+		},
 	}
 
 	if _, err := r.ensureProxyTLS(context.Background(), runA); err != nil {

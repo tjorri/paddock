@@ -39,9 +39,11 @@ func TestReconcile_PinsNetworkPolicyEnforcedAtFirstReconcile(t *testing.T) {
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(run).WithStatusSubresource(run).Build()
 
 	r := &HarnessRunReconciler{
-		Client:               cli,
-		Scheme:               scheme,
-		NetworkPolicyEnforce: NetworkPolicyEnforceOn,
+		Client: cli,
+		Scheme: scheme,
+		ProxyBrokerConfig: ProxyBrokerConfig{
+			NetworkPolicyEnforce: NetworkPolicyEnforceOn,
+		},
 	}
 
 	// First reconcile-pass equivalent: caller invokes the pin helper.

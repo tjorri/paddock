@@ -61,10 +61,12 @@ func TestEnsureProxyTLS_CreatesCertificate(t *testing.T) {
 	}
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(run).Build()
 	r := &HarnessRunReconciler{
-		Client:               cli,
-		Scheme:               scheme,
-		Audit:                &ControllerAudit{Sink: &capturedSink{}},
-		ProxyCAClusterIssuer: "paddock-proxy-ca-issuer",
+		Client: cli,
+		Scheme: scheme,
+		Audit:  &ControllerAudit{Sink: &capturedSink{}},
+		ProxyBrokerConfig: ProxyBrokerConfig{
+			ProxyCAClusterIssuer: "paddock-proxy-ca-issuer",
+		},
 	}
 
 	if _, err := r.ensureProxyTLS(context.Background(), run); err != nil {
@@ -115,10 +117,12 @@ func TestEnsureProxyTLS_PendingWhenCertNotReady(t *testing.T) {
 	}
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(run).Build()
 	r := &HarnessRunReconciler{
-		Client:               cli,
-		Scheme:               scheme,
-		Audit:                &ControllerAudit{Sink: &capturedSink{}},
-		ProxyCAClusterIssuer: "paddock-proxy-ca-issuer",
+		Client: cli,
+		Scheme: scheme,
+		Audit:  &ControllerAudit{Sink: &capturedSink{}},
+		ProxyBrokerConfig: ProxyBrokerConfig{
+			ProxyCAClusterIssuer: "paddock-proxy-ca-issuer",
+		},
 	}
 
 	ok, err := r.ensureProxyTLS(context.Background(), run)
@@ -143,10 +147,12 @@ func TestEnsureProxyTLS_ReadyAfterCertIssued(t *testing.T) {
 		WithStatusSubresource(&cmapi.Certificate{}).
 		Build()
 	r := &HarnessRunReconciler{
-		Client:               cli,
-		Scheme:               scheme,
-		Audit:                &ControllerAudit{Sink: &capturedSink{}},
-		ProxyCAClusterIssuer: "paddock-proxy-ca-issuer",
+		Client: cli,
+		Scheme: scheme,
+		Audit:  &ControllerAudit{Sink: &capturedSink{}},
+		ProxyBrokerConfig: ProxyBrokerConfig{
+			ProxyCAClusterIssuer: "paddock-proxy-ca-issuer",
+		},
 	}
 
 	// First pass: creates the Certificate; ok=false because not Ready.

@@ -303,33 +303,6 @@ func main() {
 		setupLog.Error(err, "unable to resolve --networkpolicy-enforce")
 		os.Exit(1)
 	}
-	hrReconciler := &controller.HarnessRunReconciler{
-		Client:                   mgr.GetClient(),
-		Scheme:                   mgr.GetScheme(),
-		CollectorImage:           collectorImage,
-		RingMaxEvents:            ringMaxEvents,
-		ProxyImage:               proxyImage,
-		ProxyAllowList:           proxyAllowList,
-		IPTablesInitImage:        iptablesInitImage,
-		NetworkPolicyEnforce:     npEnforce,
-		NetworkPolicyAutoEnabled: npAuto,
-		ClusterPodCIDR:           clusterPodCIDR,
-		ClusterServiceCIDR:       clusterServiceCIDR,
-		APIServerIPs:             apiserverIPs,
-		BrokerEndpoint:           brokerEndpoint,
-		BrokerNamespace:          brokerNamespace,
-		ProxyCAClusterIssuer:     proxyCAClusterIssuer,
-		BrokerCASource: controller.BrokerCASource{
-			Name:      brokerCAName,
-			Namespace: brokerCANamespace,
-		},
-		Audit: &controller.ControllerAudit{
-			Sink: &auditing.KubeSink{Client: mgr.GetClient(), Component: "controller"},
-		},
-	}
-	if brokerClient != nil {
-		hrReconciler.BrokerClient = brokerClient
-	}
 	if proxyImage == "" {
 		setupLog.Info("proxy sidecar disabled (no --proxy-image); runs will proceed with EgressConfigured=False")
 	} else {
@@ -344,16 +317,12 @@ func main() {
 		if probeErr != nil {
 			setupLog.Error(probeErr, "CNI probe failed; defaulting NetworkPolicy enforcement to off")
 		}
-		hrReconciler.NetworkPolicyAutoEnabled = enabled
 		npAuto = enabled
 		setupLog.Info("NetworkPolicy auto-detection complete", "enforced", enabled, "reason", reason)
 	}
-	setupLog.Info("NetworkPolicy enforcement", "mode", npEnforce,
-		"effective", hrReconciler.NetworkPolicyEnforce == controller.NetworkPolicyEnforceOn ||
-			(hrReconciler.NetworkPolicyEnforce == controller.NetworkPolicyEnforceAuto && hrReconciler.NetworkPolicyAutoEnabled))
 	// Construct the shared config after the CNI probe so npAuto reflects the
-	// post-probe value. HarnessRunReconciler still carries its own copies of
-	// these fields; Task 6b will embed ProxyBrokerConfig there too.
+	// post-probe value. Both reconcilers receive the same struct, so a single
+	// populate site is the only place that needs updating when flags change.
 	if brokerPort < 1 || brokerPort > 65535 {
 		setupLog.Error(fmt.Errorf("invalid --broker-port=%d (want 1-65535)", brokerPort), "invalid flag")
 		os.Exit(1)
@@ -370,6 +339,24 @@ func main() {
 		ClusterPodCIDR:           clusterPodCIDR,
 		ClusterServiceCIDR:       clusterServiceCIDR,
 		APIServerIPs:             apiserverIPs,
+	}
+	setupLog.Info("NetworkPolicy enforcement", "mode", npEnforce,
+		"effective", npEnforce == controller.NetworkPolicyEnforceOn ||
+			(npEnforce == controller.NetworkPolicyEnforceAuto && npAuto))
+	hrReconciler := &controller.HarnessRunReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		CollectorImage:    collectorImage,
+		RingMaxEvents:     ringMaxEvents,
+		ProxyAllowList:    proxyAllowList,
+		IPTablesInitImage: iptablesInitImage,
+		ProxyBrokerConfig: proxyBrokerCfg,
+		Audit: &controller.ControllerAudit{
+			Sink: &auditing.KubeSink{Client: mgr.GetClient(), Component: "controller"},
+		},
+	}
+	if brokerClient != nil {
+		hrReconciler.BrokerClient = brokerClient
 	}
 	if err := hrReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HarnessRun")

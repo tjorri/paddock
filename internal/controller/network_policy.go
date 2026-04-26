@@ -311,6 +311,7 @@ func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *
 		ClusterPodCIDR:     r.ClusterPodCIDR,
 		ClusterServiceCIDR: r.ClusterServiceCIDR,
 		BrokerNamespace:    r.BrokerNamespace,
+		BrokerPort:         r.BrokerPort,
 		APIServerIPs:       r.APIServerIPs,
 	}
 	desired := buildRunNetworkPolicy(run, cfg)
