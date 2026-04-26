@@ -213,7 +213,7 @@ var _ = Describe("HarnessRun Webhook", func() {
 		}
 		_, err := validator.ValidateCreate(ctx, obj)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("broker"))
+		Expect(err.Error()).To(ContainSubstring("valueFrom"))
 	})
 
 	It("admits spec.extraEnv entries with literal values", func() {
@@ -226,6 +226,138 @@ var _ = Describe("HarnessRun Webhook", func() {
 		}
 		_, err := validator.ValidateCreate(ctx, obj)
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rejects spec.extraEnv entries whose name collides with a Paddock-reserved literal", func() {
+		reservedKeys := []string{
+			"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
+			"SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
+			"REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO",
+		}
+		for _, key := range reservedKeys {
+			obj := &paddockv1alpha1.HarnessRun{
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+					Prompt:      "hi",
+					ExtraEnv:    []corev1.EnvVar{{Name: key, Value: "tenant-set"}},
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred(), "expected reject for reserved key %q", key)
+			Expect(err.Error()).To(ContainSubstring("reserved"), "expected reserved-error message for %q", key)
+		}
+	})
+
+	It("rejects spec.extraEnv entries whose name has the PADDOCK_ prefix", func() {
+		for _, key := range []string{"PADDOCK_PROMPT_PATH", "PADDOCK_RUN_NAME", "PADDOCK_FUTURE"} {
+			obj := &paddockv1alpha1.HarnessRun{
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+					Prompt:      "hi",
+					ExtraEnv:    []corev1.EnvVar{{Name: key, Value: "tenant-set"}},
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred(), "expected reject for prefixed key %q", key)
+			Expect(err.Error()).To(ContainSubstring("reserved"), "expected reserved-error message for %q", key)
+		}
+	})
+
+	It("admits spec.extraEnv entries whose name is not reserved (positive control)", func() {
+		obj := &paddockv1alpha1.HarnessRun{
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+				Prompt:      "hi",
+				ExtraEnv:    []corev1.EnvVar{{Name: "MY_VAR", Value: "ok"}},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rejects spec.extraEnv entries with a configMapKeyRef", func() {
+		obj := &paddockv1alpha1.HarnessRun{
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+				Prompt:      "hi",
+				ExtraEnv: []corev1.EnvVar{{
+					Name: "FROM_CM",
+					ValueFrom: &corev1.EnvVarSource{
+						ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "some-cm"},
+							Key:                  "data",
+						},
+					},
+				}},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("valueFrom"))
+	})
+
+	It("rejects spec.extraEnv entries with a fieldRef", func() {
+		obj := &paddockv1alpha1.HarnessRun{
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+				Prompt:      "hi",
+				ExtraEnv: []corev1.EnvVar{{
+					Name: "POD_NAME",
+					ValueFrom: &corev1.EnvVarSource{
+						FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
+					},
+				}},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("valueFrom"))
+	})
+
+	It("rejects spec.extraEnv entries with a resourceFieldRef", func() {
+		obj := &paddockv1alpha1.HarnessRun{
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+				Prompt:      "hi",
+				ExtraEnv: []corev1.EnvVar{{
+					Name: "MEM_LIMIT",
+					ValueFrom: &corev1.EnvVarSource{
+						ResourceFieldRef: &corev1.ResourceFieldSelector{
+							Resource: "limits.memory",
+						},
+					},
+				}},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("valueFrom"))
+	})
+
+	It("emits both reserved-name AND valueFrom errors when an extraEnv entry violates both rules", func() {
+		obj := &paddockv1alpha1.HarnessRun{
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+				Prompt:      "hi",
+				ExtraEnv: []corev1.EnvVar{{
+					Name: "HTTPS_PROXY",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "leak"},
+							Key:                  "token",
+						},
+					},
+				}},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		// Both error substrings must appear in the aggregate — the
+		// two checks inside the extraEnv loop intentionally both run
+		// (no early-return between them) so a future change that
+		// adds a `continue` would silently drop one of the errors.
+		Expect(err.Error()).To(ContainSubstring("reserved"))
+		Expect(err.Error()).To(ContainSubstring("valueFrom"))
 	})
 
 	// The client-backed path runs the ADR-0014 intersection: a run

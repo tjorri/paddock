@@ -34,3 +34,37 @@ Three postures were considered:
 - **Mandate `restricted` on run namespaces via a validating webhook.** Rejected: moves a cluster-wide policy choice into Paddock's admission control, which a cluster admin already has better tools for (PSA itself, Kyverno). Also blocks Claude Code today because `@anthropic-ai/claude-code`'s node image does not pass `restricted` out of the box.
 - **A `Paddock` CR field `spec.podSecurity: restricted|baseline`.** Tempting for self-contained policy, but duplicates what PSA already expresses at the namespace level. Two knobs, same lever.
 - **Ship a separate `paddock-runs` CRD policy layer.** Premature. No user has asked for it. If namespace-level PSA turns out to be too coarse (e.g. different harnesses needing different profiles in the same namespace), reconsider.
+
+## Phase 2e update (2026-04-26)
+
+The controller now authors a per-container `SecurityContext` on every
+run-pod container, so first-party container hardening does not depend
+on operator PodSecurity Admission labelling on tenant namespaces (PSA
+still recommended for the tenant agent image envelope).
+
+**Pod overall:** PSS-baseline. The pod-level `SecurityContext` sets
+`seccompProfile=RuntimeDefault` (covers all containers by inheritance).
+`RunAsNonRoot:true` is deliberately NOT set at the pod level: the agent
+is a tenant-supplied image and may run as UID 0; forcing non-root at
+the pod level would break compatibility, and overriding at the agent
+container level would in turn violate PSS-restricted there too.
+
+**First-party containers (collector, proxy, iptables-init):**
+individually satisfy PSS-restricted. The collector adds
+`runAsNonRoot=true`, `readOnlyRootFilesystem=true`, drop ALL caps, no
+privilege escalation. The proxy already had the rest of the restricted
+envelope and gains explicit container-level seccomp + `runAsNonRoot=true`
+for parity. The iptables-init container legitimately needs
+`CAP_NET_ADMIN` / `CAP_NET_RAW` and is documented in this ADR (and
+spec 0002) as the exception.
+
+**Adapter:** template-author-supplied (`template.Spec.EventAdapter.Image`).
+Brainstorm Q1 chose to apply the same baseline envelope as the agent —
+drop caps + no priv-esc, but no forced `runAsNonRoot` or RO root — to
+avoid breaking template authors who pick adapter images that need a
+writable rootfs or run as UID 0.
+
+Unit tests use `k8s.io/pod-security-admission/policy` to validate the
+built pod spec at PSS-baseline (pod overall) and each first-party
+container at PSS-restricted. See
+`docs/plans/2026-04-26-v0.4-security-review-phase-2e-design.md` §3, §7.

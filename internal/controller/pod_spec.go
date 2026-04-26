@@ -269,6 +269,16 @@ func buildPodSpec(
 		InitContainers:                initContainers,
 		Containers:                    []corev1.Container{buildAgentContainer(run, template, in)},
 		Volumes:                       buildPodVolumes(in),
+		// Pod-level SecurityContext satisfies the PSS-restricted seccomp
+		// rule for all containers in one place. RunAsNonRoot is
+		// deliberately unset — the agent is tenant-supplied and may run
+		// as root; per-container SecurityContext on first-party
+		// sidecars enforces non-root individually. See F-37 / Phase 2e.
+		SecurityContext: &corev1.PodSecurityContext{
+			SeccompProfile: &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
+			},
+		},
 	}
 }
 
@@ -281,22 +291,52 @@ func proxyEnabled(in podSpecInputs) bool {
 	return in.proxyImage != "" && in.proxyTLSSecret != ""
 }
 
-// TODO(security): agent / adapter / collector containers do not
-// currently set a SecurityContext. Agent images are user-supplied so
-// dropping caps here would break some harnesses; adapter + collector
-// are first-party and could be tightened (RunAsNonRoot, drop ALL caps,
-// no privilege escalation) matching the seed Job's posture in
-// workspace_seed.go. Scoped out for a future ADR — ADR-0010 covers the
-// overall PSS stance but not the sidecars explicitly.
+// runContainerSecurityContextBaseline returns the PSS-baseline envelope
+// applied to containers whose image is not first-party (agent: tenant
+// image; adapter: template-author image). Drop ALL caps + no privilege
+// escalation are non-breaking; we deliberately leave RunAsNonRoot and
+// ReadOnlyRootFilesystem unset so existing third-party images keep
+// working. SeccompProfile is set explicitly even though the pod-level
+// default covers it — keeps the per-container envelope self-documenting.
+// See design Section 3.2.
+func runContainerSecurityContextBaseline() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+}
+
+// runContainerSecurityContextRestricted returns the PSS-restricted
+// envelope applied to first-party containers (collector). Adds
+// RunAsNonRoot:true and ReadOnlyRootFilesystem:true on top of the
+// baseline. The collector writes only to mounted volumes (shared
+// emptyDir, workspace PVC, projected SA token), so RO root is safe.
+// See design Section 3.2.
+func runContainerSecurityContextRestricted() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		RunAsNonRoot:             ptr.To(true),
+		ReadOnlyRootFilesystem:   ptr.To(true),
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+}
+
 func buildAgentContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in podSpecInputs) corev1.Container {
 	mountPath := effectiveWorkspaceMount(template)
 	c := corev1.Container{
-		Name:      agentContainerName,
-		Image:     template.Spec.Image,
-		Command:   template.Spec.Command,
-		Args:      template.Spec.Args,
-		Env:       buildEnv(run, template, in),
-		Resources: effectiveResources(run, template),
+		Name:            agentContainerName,
+		Image:           template.Spec.Image,
+		Command:         template.Spec.Command,
+		Args:            template.Spec.Args,
+		Env:             buildEnv(run, template, in),
+		Resources:       effectiveResources(run, template),
+		SecurityContext: runContainerSecurityContextBaseline(),
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: sharedVolumeName, MountPath: sharedMountPath},
 			{Name: promptVolumeName, MountPath: promptMountPath, ReadOnly: true},
@@ -331,9 +371,10 @@ func buildAgentContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemp
 func buildAdapterContainer(template *resolvedTemplate) corev1.Container {
 	always := corev1.ContainerRestartPolicyAlways
 	c := corev1.Container{
-		Name:          adapterContainerName,
-		Image:         template.Spec.EventAdapter.Image,
-		RestartPolicy: &always,
+		Name:            adapterContainerName,
+		Image:           template.Spec.EventAdapter.Image,
+		RestartPolicy:   &always,
+		SecurityContext: runContainerSecurityContextBaseline(),
 		Env: []corev1.EnvVar{
 			{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
 			{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
@@ -361,9 +402,10 @@ func buildCollectorContainer(
 	always := corev1.ContainerRestartPolicyAlways
 	mountPath := effectiveWorkspaceMount(template)
 	return corev1.Container{
-		Name:          collectorContainerName,
-		Image:         image,
-		RestartPolicy: &always,
+		Name:            collectorContainerName,
+		Image:           image,
+		RestartPolicy:   &always,
+		SecurityContext: runContainerSecurityContextRestricted(),
 		Env: []corev1.EnvVar{
 			{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
 			{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
@@ -582,10 +624,17 @@ func buildProxyContainer(run *paddockv1alpha1.HarnessRun, in podSpecInputs) core
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser:                &uid,
 			RunAsGroup:               &uid,
+			RunAsNonRoot:             ptrBool(true),
 			AllowPrivilegeEscalation: ptrBool(false),
 			ReadOnlyRootFilesystem:   ptrBool(true),
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
+			},
+			// Explicit seccomp at container level for parity with the
+			// other first-party containers; the pod-level RuntimeDefault
+			// would cover it but explicit is self-documenting. F-37.
+			SeccompProfile: &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
 			},
 		},
 	}
@@ -636,6 +685,16 @@ func ptrBool(v bool) *bool { return &v }
 func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in podSpecInputs) []corev1.EnvVar {
 	const paddockStdEnvCount = 8
 	env := make([]corev1.EnvVar, 0, paddockStdEnvCount+7+len(run.Spec.ExtraEnv))
+
+	// F-39 defense in depth: tenant extraEnv goes FIRST so any
+	// duplicate key gets last-wins-overridden by the controller's value
+	// below. The webhook is the authoritative gate for reserved keys
+	// (see internal/webhook/v1alpha1/harnessrun_webhook.go), but if a
+	// future webhook bug or an in-cluster path that bypasses admission
+	// emits a colliding key, the resulting Pod spec still carries the
+	// controller's authoritative HTTPS_PROXY / SSL_CERT_FILE / etc.
+	env = append(env, run.Spec.ExtraEnv...)
+
 	mount := effectiveWorkspaceMount(template)
 	env = append(env,
 		corev1.EnvVar{Name: "PADDOCK_PROMPT_PATH", Value: promptMountPath + "/" + promptFileName},
@@ -672,7 +731,6 @@ func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in po
 		)
 	}
 
-	env = append(env, run.Spec.ExtraEnv...)
 	return env
 }
 

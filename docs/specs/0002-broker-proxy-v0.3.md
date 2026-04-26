@@ -206,7 +206,11 @@ status: {}                              # intentionally empty; AuditEvent is wri
 
 ### 5.4 `HarnessRun`
 
-`spec.extraEnv` can no longer inject values that read from `Secret`s (blocked at admission). Credential access flows through the broker; env-var injection of broker-issued values happens at Pod build time using a per-run `projected` volume (see §7.3).
+`spec.extraEnv` cannot inject values via `valueFrom` in any shape — `secretKeyRef`, `configMapKeyRef`, `fieldRef`, and `resourceFieldRef` are all rejected at admission (Phase 2e / F-31). Credential access flows through the broker; env-var injection of broker-issued values happens at Pod build time using a per-run `projected` volume (see §7.3). If a future use case needs e.g. `fieldRef` for pod-name passthrough, the contract is to surface it as an explicit `HarnessRun` spec field rather than a `valueFrom` passthrough.
+
+`spec.extraEnv` keys may not collide with the Paddock-reserved set (Phase 2e / F-39). Reserved set: the seven proxy/CA literals (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`) plus the entire `PADDOCK_*` prefix. These envs are load-bearing for cooperative-mode interception (HTTPS_PROXY / CA-trust) and for the agent contract (`PADDOCK_*`); tenant overrides bypass the audit trail and the proxy MITM. Defense in depth: the controller appends `extraEnv` *first* so K8s last-wins resolution preserves the controller's value if a key sneaks past admission.
+
+The controller authors `SecurityContext` on every run-pod container (Phase 2e / F-37); PSA labelling on the run namespace is not required to obtain first-party container hardening (still recommended for the tenant agent image envelope). Pod overall passes PSS-baseline; first-party containers (collector, proxy, iptables-init) individually satisfy PSS-restricted. See ADR-0010 "Phase 2e update" for the per-container envelope details.
 
 `status.conditions` gains `BrokerReady` (broker issued all required credentials) and `EgressConfigured` (proxy CA mounted, interception mode selected). These join the existing `TemplateResolved`, `WorkspaceBound`, `JobCreated`, `PodReady`, `Completed`.
 

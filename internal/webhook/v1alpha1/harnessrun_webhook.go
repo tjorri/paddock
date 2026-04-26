@@ -55,8 +55,9 @@ func SetupHarnessRunWebhookWithManager(mgr ctrl.Manager, sink auditing.Sink) err
 //
 //   - exactly one of spec.prompt or spec.promptFrom;
 //   - spec.templateRef.name non-empty;
-//   - spec.extraEnv values do not source from Secrets (v0.3: credentials
-//     flow through the broker; see ADR-0015);
+//   - spec.extraEnv values do not use valueFrom in any shape (v0.3:
+//     runtime-resolved env values must flow through the broker or an
+//     explicit spec field; see ADR-0015 and spec 0002 §5.4);
 //   - spec immutable after creation;
 //   - (v0.3, M2 placeholder) the referenced template must not declare a
 //     non-empty requires block until the broker lands in M3. Admission
@@ -208,6 +209,25 @@ func (v *HarnessRunCustomValidator) validateAgainstTemplate(ctx context.Context,
 // fail later at the reconciler's materialise step.
 const MaxInlinePromptBytes = 256 * 1024
 
+// reservedExtraEnvLiterals are env var names the controller authors
+// itself on the agent container. Tenant overrides via spec.extraEnv
+// are rejected at admission — HTTPS_PROXY / SSL_CERT_FILE in particular
+// are load-bearing for cooperative-mode interception (F-39 / Phase 2e).
+var reservedExtraEnvLiterals = map[string]struct{}{
+	"HTTPS_PROXY":         {},
+	"HTTP_PROXY":          {},
+	"NO_PROXY":            {},
+	"SSL_CERT_FILE":       {},
+	"NODE_EXTRA_CA_CERTS": {},
+	"REQUESTS_CA_BUNDLE":  {},
+	"GIT_SSL_CAINFO":      {},
+}
+
+// reservedExtraEnvPrefix reserves the entire PADDOCK_ namespace for the
+// controller. New PADDOCK_* envs added to buildEnv inherit this
+// protection without requiring the literal set above to be updated.
+const reservedExtraEnvPrefix = "PADDOCK_"
+
 func validateHarnessRunSpec(spec *paddockv1alpha1.HarnessRunSpec) error {
 	specPath := field.NewPath("spec")
 	var errs field.ErrorList
@@ -245,15 +265,32 @@ func validateHarnessRunSpec(spec *paddockv1alpha1.HarnessRunSpec) error {
 		}
 	}
 
-	// v0.3: spec.extraEnv may not source values from Secrets. The broker
-	// is the only path for credential injection — a SecretKeyRef here
-	// bypasses the audit trail. See spec 0002 §5.4.
+	// The two checks below intentionally both run for each extraEnv
+	// entry (no early-return between them) so a single entry that
+	// violates both rules — e.g. {Name: "HTTPS_PROXY", ValueFrom:
+	// {SecretKeyRef: ...}} — produces both errors in the aggregate.
+	// The webhook contract is "report all violations at once" so an
+	// operator can fix the spec in one round-trip. See the dual-error
+	// Ginkgo test in harnessrun_webhook_test.go.
 	for i, e := range spec.ExtraEnv {
-		if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+		if _, reserved := reservedExtraEnvLiterals[e.Name]; reserved ||
+			strings.HasPrefix(e.Name, reservedExtraEnvPrefix) {
 			errs = append(errs, field.Forbidden(
-				specPath.Child("extraEnv").Index(i).Child("valueFrom").Child("secretKeyRef"),
-				"secret-valued env vars must flow through the broker; "+
-					"declare the credential on the template's requires and grant it via a BrokerPolicy"))
+				specPath.Child("extraEnv").Index(i).Child("name"),
+				"env name is reserved by the controller; "+
+					"see docs/specs/0002-broker-proxy-v0.3.md §5.4"))
+		}
+		if e.ValueFrom != nil {
+			// F-31 closes valueFrom to any non-nil shape (was: secretKeyRef
+			// only). The broker is the only legitimate channel for
+			// runtime-resolved values; if a future use case needs e.g.
+			// fieldRef for pod name passthrough, surface it as an explicit
+			// HarnessRun spec field. See spec 0002 §5.4.
+			errs = append(errs, field.Forbidden(
+				specPath.Child("extraEnv").Index(i).Child("valueFrom"),
+				"valueFrom is not permitted on extraEnv; use a literal value, "+
+					"or declare a credential on the template's requires and grant "+
+					"via a BrokerPolicy (see spec 0002 §5.4)"))
 		}
 	}
 

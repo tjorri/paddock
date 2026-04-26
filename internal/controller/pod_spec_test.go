@@ -17,12 +17,25 @@ limitations under the License.
 package controller
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	psapi "k8s.io/pod-security-admission/api"
+	pspolicy "k8s.io/pod-security-admission/policy"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+)
+
+// testProxyImage, testProxyTLSSecret and testProxyAllowList are the
+// canonical test-fixture values used by all proxy-wiring tests.
+// Extracted as constants to satisfy goconst (5+ occurrences across
+// the file).
+const (
+	testProxyImage     = "paddock-proxy:test"
+	testProxyTLSSecret = "run-echo-proxy-tls"
+	testProxyAllowList = "api.anthropic.com:443"
 )
 
 // echoTemplateFixture returns a resolvedTemplate that mirrors the
@@ -266,9 +279,9 @@ func TestBuildPodSpec_ProxySidecar(t *testing.T) {
 	tpl := echoTemplateFixture()
 
 	in := defaultInputs()
-	in.proxyImage = "paddock-proxy:test"
-	in.proxyTLSSecret = "run-echo-proxy-tls"
-	in.proxyAllowList = "api.anthropic.com:443"
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+	in.proxyAllowList = testProxyAllowList
 
 	ps := buildPodSpec(run, tpl, in)
 
@@ -280,8 +293,8 @@ func TestBuildPodSpec_ProxySidecar(t *testing.T) {
 	if proxy.Name != proxyContainerName {
 		t.Errorf("initContainers[2] = %q, want %q", proxy.Name, proxyContainerName)
 	}
-	if proxy.Image != "paddock-proxy:test" {
-		t.Errorf("proxy image = %q, want paddock-proxy:test", proxy.Image)
+	if proxy.Image != testProxyImage {
+		t.Errorf("proxy image = %q, want %q", proxy.Image, testProxyImage)
 	}
 	if proxy.RestartPolicy == nil || *proxy.RestartPolicy != corev1.ContainerRestartPolicyAlways {
 		t.Errorf("proxy sidecar must be a native sidecar (restartPolicy=Always)")
@@ -315,7 +328,7 @@ func TestBuildPodSpec_ProxySidecar(t *testing.T) {
 	if tlsVol == nil {
 		t.Fatalf("expected proxy-tls volume %q on pod", proxyCAVolumeName)
 	}
-	if tlsVol.Secret == nil || tlsVol.Secret.SecretName != "run-echo-proxy-tls" {
+	if tlsVol.Secret == nil || tlsVol.Secret.SecretName != testProxyTLSSecret {
 		t.Errorf("proxy-tls volume must reference per-run Secret; got %+v", tlsVol.Secret)
 	}
 
@@ -368,8 +381,8 @@ func TestBuildPodSpec_TransparentMode(t *testing.T) {
 	tpl := echoTemplateFixture()
 
 	in := defaultInputs()
-	in.proxyImage = "paddock-proxy:test"
-	in.proxyTLSSecret = "run-echo-proxy-tls"
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
 	in.interceptionMode = paddockv1alpha1.InterceptionModeTransparent
 	in.iptablesInitImage = "paddock-iptables-init:test"
 
@@ -450,12 +463,12 @@ func TestBuildPodSpec_ProxyBrokerWiring(t *testing.T) {
 	tpl := echoTemplateFixture()
 
 	in := defaultInputs()
-	in.proxyImage = "paddock-proxy:test"
-	in.proxyTLSSecret = "run-echo-proxy-tls"
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
 	in.brokerEndpoint = "https://paddock-broker.paddock-system.svc:8443"
 	in.brokerCASecret = "run-echo-broker-ca"
 	// Allow-list must be ignored in favour of broker-backed validation.
-	in.proxyAllowList = "api.anthropic.com:443"
+	in.proxyAllowList = testProxyAllowList
 
 	ps := buildPodSpec(run, tpl, in)
 
@@ -622,4 +635,318 @@ func mapsEqualBool(a, b map[string]bool) bool {
 		}
 	}
 	return true
+}
+
+// TestBuildPodSpec_PodLevelSecurityContext asserts the pod-level
+// envelope: seccomp=RuntimeDefault for all containers (inheritable),
+// and crucially RunAsNonRoot is unset so a tenant agent image that
+// runs as root is not rejected at the kubelet runtime check.
+// See design Section 3.1.
+func TestBuildPodSpec_PodLevelSecurityContext(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+	ps := buildPodSpec(run, tpl, defaultInputs())
+
+	if ps.SecurityContext == nil {
+		t.Fatalf("pod-level SecurityContext = nil, want set")
+	}
+	if ps.SecurityContext.SeccompProfile == nil ||
+		ps.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("pod SeccompProfile.Type = %v, want RuntimeDefault", ps.SecurityContext.SeccompProfile)
+	}
+	if ps.SecurityContext.RunAsNonRoot != nil {
+		t.Errorf("pod RunAsNonRoot = %v, want nil (tenant agent compatibility)", *ps.SecurityContext.RunAsNonRoot)
+	}
+}
+
+// TestBuildPodSpec_AgentSecurityContext asserts the baseline envelope
+// is set on the agent container (tenant image): drop caps, no priv-esc,
+// seccomp=RuntimeDefault. RunAsNonRoot and ReadOnlyRootFilesystem are
+// deliberately unset for tenant-image compatibility.
+func TestBuildPodSpec_AgentSecurityContext(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+	ps := buildPodSpec(run, tpl, defaultInputs())
+
+	agent := ps.Containers[0]
+	sc := agent.SecurityContext
+	if sc == nil {
+		t.Fatalf("agent SecurityContext = nil, want baseline envelope")
+	}
+	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Errorf("agent AllowPrivilegeEscalation = %v, want false", sc.AllowPrivilegeEscalation)
+	}
+	if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
+		t.Errorf("agent Capabilities.Drop = %v, want [ALL]", sc.Capabilities)
+	}
+	if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("agent SeccompProfile = %v, want RuntimeDefault", sc.SeccompProfile)
+	}
+	if sc.RunAsNonRoot != nil {
+		t.Errorf("agent RunAsNonRoot = %v, want nil (tenant compat)", *sc.RunAsNonRoot)
+	}
+	if sc.ReadOnlyRootFilesystem != nil {
+		t.Errorf("agent ReadOnlyRootFilesystem = %v, want nil (tenant compat)", *sc.ReadOnlyRootFilesystem)
+	}
+}
+
+// TestBuildPodSpec_AdapterSecurityContext asserts the baseline envelope
+// is set on the adapter container (template-author image). Same shape
+// as agent — drop caps, no priv-esc, seccomp=RuntimeDefault, no forced
+// non-root or RO root.
+func TestBuildPodSpec_AdapterSecurityContext(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture() // declares EventAdapter, so adapter is present
+	ps := buildPodSpec(run, tpl, defaultInputs())
+
+	var adapter *corev1.Container
+	for i := range ps.InitContainers {
+		if ps.InitContainers[i].Name == adapterContainerName {
+			adapter = &ps.InitContainers[i]
+			break
+		}
+	}
+	if adapter == nil {
+		t.Fatalf("adapter container not found in InitContainers")
+	}
+	sc := adapter.SecurityContext
+	if sc == nil {
+		t.Fatalf("adapter SecurityContext = nil, want baseline envelope")
+	}
+	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Errorf("adapter AllowPrivilegeEscalation = %v, want false", sc.AllowPrivilegeEscalation)
+	}
+	if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
+		t.Errorf("adapter Capabilities.Drop = %v, want [ALL]", sc.Capabilities)
+	}
+	if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("adapter SeccompProfile = %v, want RuntimeDefault", sc.SeccompProfile)
+	}
+	if sc.RunAsNonRoot != nil {
+		t.Errorf("adapter RunAsNonRoot = %v, want nil (template-author image compat)", *sc.RunAsNonRoot)
+	}
+	if sc.ReadOnlyRootFilesystem != nil {
+		t.Errorf("adapter ReadOnlyRootFilesystem = %v, want nil (template-author image compat)", *sc.ReadOnlyRootFilesystem)
+	}
+}
+
+// TestBuildPodSpec_CollectorSecurityContext asserts the restricted
+// envelope on the collector (first-party): RunAsNonRoot:true,
+// ReadOnlyRootFilesystem:true, drop caps, no priv-esc, seccomp.
+func TestBuildPodSpec_CollectorSecurityContext(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+	ps := buildPodSpec(run, tpl, defaultInputs())
+
+	var collector *corev1.Container
+	for i := range ps.InitContainers {
+		if ps.InitContainers[i].Name == collectorContainerName {
+			collector = &ps.InitContainers[i]
+			break
+		}
+	}
+	if collector == nil {
+		t.Fatalf("collector container not found in InitContainers")
+	}
+	sc := collector.SecurityContext
+	if sc == nil {
+		t.Fatalf("collector SecurityContext = nil, want restricted envelope")
+	}
+	if sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+		t.Errorf("collector RunAsNonRoot = %v, want true", sc.RunAsNonRoot)
+	}
+	if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+		t.Errorf("collector ReadOnlyRootFilesystem = %v, want true", sc.ReadOnlyRootFilesystem)
+	}
+	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Errorf("collector AllowPrivilegeEscalation = %v, want false", sc.AllowPrivilegeEscalation)
+	}
+	if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
+		t.Errorf("collector Capabilities.Drop = %v, want [ALL]", sc.Capabilities)
+	}
+	if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("collector SeccompProfile = %v, want RuntimeDefault", sc.SeccompProfile)
+	}
+}
+
+// TestBuildPodSpec_PassesPSSBaseline runs the built pod spec through
+// the kubernetes/pod-security-admission policy package at level
+// `baseline`. We assert baseline (not restricted) at the pod level
+// because the agent is tenant-supplied and we do not force
+// RunAsNonRoot — see design Section 3.1 and the pod-level test above.
+func TestBuildPodSpec_PassesPSSBaseline(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+	in.proxyAllowList = testProxyAllowList
+
+	ps := buildPodSpec(run, tpl, in)
+
+	// nil emulationVersion = evaluate against the newest registered
+	// PSS ruleset. A future k8s.io/pod-security-admission bump that
+	// tightens baseline/restricted will surface here on dependabot
+	// upgrade — that's the intended early-warning channel.
+	evaluator, err := pspolicy.NewEvaluator(pspolicy.DefaultChecks(), nil)
+	if err != nil {
+		t.Fatalf("pss evaluator: %v", err)
+	}
+
+	podMeta := &metav1.ObjectMeta{Name: run.Name, Namespace: run.Namespace}
+	results := evaluator.EvaluatePod(
+		psapi.LevelVersion{Level: psapi.LevelBaseline, Version: psapi.LatestVersion()},
+		podMeta, &ps,
+	)
+
+	for _, r := range results {
+		if !r.Allowed {
+			t.Errorf("PSS baseline violation: %s — %s",
+				r.ForbiddenReason, r.ForbiddenDetail)
+		}
+	}
+}
+
+// TestBuildPodSpec_FirstPartyContainersPassPSSRestricted asserts each
+// first-party container, viewed in isolation, satisfies the PSS
+// `restricted` profile. We construct a synthetic single-container
+// PodSpec around the container under test (re-using the pod-level
+// SecurityContext that the real pod spec ships with) so the evaluator
+// sees a well-formed pod for each check.
+//
+// First-party containers: collector, proxy, iptables-init.
+// (Agent + adapter intentionally only target baseline; see Section 3.1.)
+func TestBuildPodSpec_FirstPartyContainersPassPSSRestricted(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+	in.proxyAllowList = testProxyAllowList
+	in.interceptionMode = paddockv1alpha1.InterceptionModeTransparent
+	in.iptablesInitImage = "paddock-iptables-init:test"
+
+	ps := buildPodSpec(run, tpl, in)
+
+	evaluator, err := pspolicy.NewEvaluator(pspolicy.DefaultChecks(), nil)
+	if err != nil {
+		t.Fatalf("pss evaluator: %v", err)
+	}
+	level := psapi.LevelVersion{Level: psapi.LevelRestricted, Version: psapi.LatestVersion()}
+	podMeta := &metav1.ObjectMeta{Name: run.Name, Namespace: run.Namespace}
+
+	firstParty := map[string]bool{
+		collectorContainerName:    true,
+		proxyContainerName:        true,
+		iptablesInitContainerName: true,
+	}
+
+	allContainers := append([]corev1.Container{}, ps.InitContainers...)
+	allContainers = append(allContainers, ps.Containers...)
+	for _, c := range allContainers {
+		if !firstParty[c.Name] {
+			continue
+		}
+		// Synthetic single-container pod, preserving the real pod-level
+		// SecurityContext so the evaluator sees seccomp=RuntimeDefault.
+		isolatedPod := corev1.PodSpec{
+			Containers:      []corev1.Container{c},
+			SecurityContext: ps.SecurityContext,
+		}
+		results := evaluator.EvaluatePod(level, podMeta, &isolatedPod)
+		for _, r := range results {
+			if r.Allowed {
+				continue
+			}
+			// iptables-init is exempted from three PSS restricted rule
+			// families: capabilities (must be in allowed list), runAsNonRoot,
+			// and runAsUser. It legitimately needs CAP_NET_ADMIN/NET_RAW and
+			// UID 0 to install iptables REDIRECT rules in the pod netns
+			// (ADR-0013). Exempt only these specific violations for iptables-init;
+			if c.Name == iptablesInitContainerName &&
+				(strings.Contains(r.ForbiddenReason, "capabilit") ||
+					strings.Contains(r.ForbiddenReason, "runAsNonRoot") ||
+					strings.Contains(r.ForbiddenReason, "runAsUser")) {
+				continue
+			}
+			t.Errorf("container %q PSS restricted violation: %s — %s",
+				c.Name, r.ForbiddenReason, r.ForbiddenDetail)
+		}
+	}
+}
+
+// TestBuildPodSpec_ProxySeccompParity asserts the proxy container has
+// SeccompProfile=RuntimeDefault explicitly set at container level
+// (parity addition; pod-level setting would cover it but explicit is
+// clearer per the "every first-party container declares its full
+// envelope" convention). Existing fields RunAsUser/AllowPrivilegeEscalation/
+// ReadOnlyRootFilesystem/Capabilities are covered by the existing
+// TestBuildPodSpec_ProxySidecar test.
+func TestBuildPodSpec_ProxySeccompParity(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+	in.proxyAllowList = testProxyAllowList
+
+	ps := buildPodSpec(run, tpl, in)
+
+	var proxy *corev1.Container
+	for i := range ps.InitContainers {
+		if ps.InitContainers[i].Name == proxyContainerName {
+			proxy = &ps.InitContainers[i]
+			break
+		}
+	}
+	if proxy == nil {
+		t.Fatalf("proxy container not found in InitContainers")
+	}
+	sc := proxy.SecurityContext
+	if sc == nil {
+		t.Fatalf("proxy SecurityContext = nil, want existing restricted envelope + seccomp")
+	}
+	if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("proxy SeccompProfile = %v, want RuntimeDefault (parity addition, F-37)", sc.SeccompProfile)
+	}
+}
+
+// TestBuildEnv_ExtraEnvLastWinsOnControllerSide asserts F-39 defense in
+// depth: even if a tenant submits an extraEnv entry whose name collides
+// with a Paddock-reserved key (bypassing the webhook), the controller
+// appends it FIRST and the controller-authored env LAST, so K8s
+// last-wins resolution leaves the controller's value in effect.
+//
+// We exercise this by calling buildEnv directly with a HarnessRun whose
+// ExtraEnv contains HTTPS_PROXY="" — a known cooperative-mode bypass
+// vector. The resulting env slice's last HTTPS_PROXY entry must be the
+// proxy address, not the empty string.
+func TestBuildEnv_ExtraEnvLastWinsOnControllerSide(t *testing.T) {
+	run := echoRunFixture()
+	run.Spec.ExtraEnv = []corev1.EnvVar{
+		{Name: "HTTPS_PROXY", Value: ""},
+		{Name: "SSL_CERT_FILE", Value: "/etc/ssl/certs/ca-certificates.crt"},
+	}
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+	in.proxyAllowList = testProxyAllowList
+
+	envs := buildEnv(run, tpl, in)
+
+	// envToMap keeps the last value per key — that's what K8s does too.
+	em := envToMap(envs)
+	if got := em["HTTPS_PROXY"]; got != proxyHTTPSProxy {
+		t.Errorf("HTTPS_PROXY (last-wins) = %q, want %q (controller value)",
+			got, proxyHTTPSProxy)
+	}
+	if got := em["SSL_CERT_FILE"]; got != agentCABundleMountPath {
+		t.Errorf("SSL_CERT_FILE (last-wins) = %q, want %q (controller value)",
+			got, agentCABundleMountPath)
+	}
 }
