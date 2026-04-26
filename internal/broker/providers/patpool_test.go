@@ -47,6 +47,11 @@ func patPoolGrant() paddockv1alpha1.CredentialGrant {
 			SecretRef: &paddockv1alpha1.SecretKeyReference{
 				Name: "paddock-pat-pool", Key: "pool",
 			},
+			// Phase 2g: post-F-09 the PATPool provider rejects substitute
+			// calls whose Host is not in this list. Tests that exercise
+			// the substitute path use Host: "github.com" against this
+			// default; tests that need different hosts override.
+			Hosts: []string{"github.com"},
 		},
 	}
 }
@@ -113,10 +118,10 @@ func TestPATPool_ParallelLeasesPickDifferentEntries(t *testing.T) {
 	}
 	// Each lease must pick a different entry.
 	sub1, _ := p.SubstituteAuth(context.Background(), SubstituteRequest{
-		RunName: "cc-1", Namespace: "my-team", IncomingBearer: first.Value,
+		RunName: "cc-1", Namespace: "my-team", Host: "github.com", IncomingBearer: first.Value,
 	})
 	sub2, _ := p.SubstituteAuth(context.Background(), SubstituteRequest{
-		RunName: "cc-2", Namespace: "my-team", IncomingBearer: second.Value,
+		RunName: "cc-2", Namespace: "my-team", Host: "github.com", IncomingBearer: second.Value,
 	})
 	if sub1.SetHeaders["Authorization"] == sub2.SetHeaders["Authorization"] {
 		t.Fatalf("two parallel leases resolved to the same PAT")
@@ -218,7 +223,7 @@ func TestPATPool_PoolShrinkDropsStaleLease(t *testing.T) {
 
 	// Figure out which bearer holds ghp_alice vs ghp_bob.
 	sub1, _ := p.SubstituteAuth(context.Background(), SubstituteRequest{
-		Namespace: "my-team", IncomingBearer: first.Value,
+		Namespace: "my-team", Host: "github.com", IncomingBearer: first.Value,
 	})
 	aliceBearer := first.Value
 	bobBearer := second.Value
@@ -249,7 +254,7 @@ func TestPATPool_PoolShrinkDropsStaleLease(t *testing.T) {
 
 	// Bob's bearer must still resolve to ghp_bob.
 	subBob, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
-		Namespace: ns, IncomingBearer: bobBearer,
+		Namespace: ns, Host: "github.com", IncomingBearer: bobBearer,
 	})
 	if err != nil {
 		t.Fatalf("bob substitute: %v", err)
@@ -259,7 +264,7 @@ func TestPATPool_PoolShrinkDropsStaleLease(t *testing.T) {
 	}
 	// Alice's bearer is now stale — the PAT is gone.
 	subAlice, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
-		Namespace: ns, IncomingBearer: aliceBearer,
+		Namespace: ns, Host: "github.com", IncomingBearer: aliceBearer,
 	})
 	if !subAlice.Matched {
 		t.Fatalf("alice Matched = false; want true (still our prefix)")
@@ -295,5 +300,65 @@ func TestPATPool_EmptyPool(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("expected empty-pool error, got %v", err)
+	}
+}
+
+func TestPATPoolProvider_SubstituteHostNotAllowed(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
+		WithObjects(patPoolSecret("ghp_pool_a\nghp_pool_b\n")).Build()
+	p := &PATPoolProvider{Client: c}
+	grant := patPoolGrant()
+	// patPoolGrant() defaults hosts to [github.com] post-Task-4. Override
+	// to a different host to verify the check is data-driven, not hardcoded.
+	grant.Provider.Hosts = []string{"github.com"}
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "demo", Namespace: "my-team",
+		CredentialName: "GIT_TOKEN", Grant: grant,
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName: "demo", Namespace: "my-team",
+		Host: "evil.com", Port: 443,
+		IncomingBearer: res.Value,
+	})
+	if !sub.Matched {
+		t.Fatalf("Matched = false; want true so broker short-circuits")
+	}
+	if err == nil {
+		t.Fatalf("expected HostNotAllowed error")
+	}
+	if !strings.Contains(err.Error(), "evil.com") {
+		t.Errorf("error must name the offending host; got %q", err)
+	}
+}
+
+func TestPATPoolProvider_SubstituteResultFieldsPopulated(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
+		WithObjects(patPoolSecret("ghp_pool_a\n")).Build()
+	p := &PATPoolProvider{Client: c}
+	grant := patPoolGrant()
+	grant.Provider.Hosts = []string{"github.com", "api.github.com"}
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "demo", Namespace: "my-team",
+		CredentialName: "GIT_TOKEN", Grant: grant,
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName: "demo", Namespace: "my-team",
+		Host: "github.com", Port: 443,
+		IncomingBearer: res.Value,
+	})
+	if err != nil {
+		t.Fatalf("SubstituteAuth: %v", err)
+	}
+	if sub.CredentialName != "GIT_TOKEN" {
+		t.Errorf("CredentialName = %q, want GIT_TOKEN", sub.CredentialName)
+	}
+	if len(sub.AllowedHeaders) == 0 {
+		t.Errorf("AllowedHeaders empty; want non-empty allowlist")
 	}
 }
