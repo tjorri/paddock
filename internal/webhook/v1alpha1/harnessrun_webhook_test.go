@@ -228,6 +228,53 @@ var _ = Describe("HarnessRun Webhook", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("rejects spec.extraEnv entries whose name collides with a Paddock-reserved literal", func() {
+		reservedKeys := []string{
+			"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
+			"SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS",
+			"REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO",
+		}
+		for _, key := range reservedKeys {
+			obj := &paddockv1alpha1.HarnessRun{
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+					Prompt:      "hi",
+					ExtraEnv:    []corev1.EnvVar{{Name: key, Value: "tenant-set"}},
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred(), "expected reject for reserved key %q", key)
+			Expect(err.Error()).To(ContainSubstring("reserved"), "expected reserved-error message for %q", key)
+		}
+	})
+
+	It("rejects spec.extraEnv entries whose name has the PADDOCK_ prefix", func() {
+		for _, key := range []string{"PADDOCK_PROMPT_PATH", "PADDOCK_RUN_NAME", "PADDOCK_FUTURE"} {
+			obj := &paddockv1alpha1.HarnessRun{
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+					Prompt:      "hi",
+					ExtraEnv:    []corev1.EnvVar{{Name: key, Value: "tenant-set"}},
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred(), "expected reject for prefixed key %q", key)
+			Expect(err.Error()).To(ContainSubstring("reserved"), "expected reserved-error message for %q", key)
+		}
+	})
+
+	It("admits spec.extraEnv entries whose name is not reserved (positive control)", func() {
+		obj := &paddockv1alpha1.HarnessRun{
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: "codex-default"},
+				Prompt:      "hi",
+				ExtraEnv:    []corev1.EnvVar{{Name: "MY_VAR", Value: "ok"}},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	// The client-backed path runs the ADR-0014 intersection: a run
 	// is admitted only when matching BrokerPolicies cover every
 	// template.requires entry.

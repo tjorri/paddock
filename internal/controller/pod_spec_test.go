@@ -913,3 +913,40 @@ func TestBuildPodSpec_ProxySeccompParity(t *testing.T) {
 		t.Errorf("proxy SeccompProfile = %v, want RuntimeDefault (parity addition, F-37)", sc.SeccompProfile)
 	}
 }
+
+// TestBuildEnv_ExtraEnvLastWinsOnControllerSide asserts F-39 defense in
+// depth: even if a tenant submits an extraEnv entry whose name collides
+// with a Paddock-reserved key (bypassing the webhook), the controller
+// appends it FIRST and the controller-authored env LAST, so K8s
+// last-wins resolution leaves the controller's value in effect.
+//
+// We exercise this by calling buildEnv directly with a HarnessRun whose
+// ExtraEnv contains HTTPS_PROXY="" — a known cooperative-mode bypass
+// vector. The resulting env slice's last HTTPS_PROXY entry must be the
+// proxy address, not the empty string.
+func TestBuildEnv_ExtraEnvLastWinsOnControllerSide(t *testing.T) {
+	run := echoRunFixture()
+	run.Spec.ExtraEnv = []corev1.EnvVar{
+		{Name: "HTTPS_PROXY", Value: ""},
+		{Name: "SSL_CERT_FILE", Value: "/etc/ssl/certs/ca-certificates.crt"},
+	}
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+	in.proxyAllowList = testProxyAllowList
+
+	envs := buildEnv(run, tpl, in)
+
+	// envToMap keeps the last value per key — that's what K8s does too.
+	em := envToMap(envs)
+	if got := em["HTTPS_PROXY"]; got != proxyHTTPSProxy {
+		t.Errorf("HTTPS_PROXY (last-wins) = %q, want %q (controller value)",
+			got, proxyHTTPSProxy)
+	}
+	if got := em["SSL_CERT_FILE"]; got != agentCABundleMountPath {
+		t.Errorf("SSL_CERT_FILE (last-wins) = %q, want %q (controller value)",
+			got, agentCABundleMountPath)
+	}
+}

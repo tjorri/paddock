@@ -685,6 +685,16 @@ func ptrBool(v bool) *bool { return &v }
 func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in podSpecInputs) []corev1.EnvVar {
 	const paddockStdEnvCount = 8
 	env := make([]corev1.EnvVar, 0, paddockStdEnvCount+7+len(run.Spec.ExtraEnv))
+
+	// F-39 defense in depth: tenant extraEnv goes FIRST so any
+	// duplicate key gets last-wins-overridden by the controller's value
+	// below. The webhook is the authoritative gate for reserved keys
+	// (see internal/webhook/v1alpha1/harnessrun_webhook.go), but if a
+	// future webhook bug or an in-cluster path that bypasses admission
+	// emits a colliding key, the resulting Pod spec still carries the
+	// controller's authoritative HTTPS_PROXY / SSL_CERT_FILE / etc.
+	env = append(env, run.Spec.ExtraEnv...)
+
 	mount := effectiveWorkspaceMount(template)
 	env = append(env,
 		corev1.EnvVar{Name: "PADDOCK_PROMPT_PATH", Value: promptMountPath + "/" + promptFileName},
@@ -721,7 +731,6 @@ func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in po
 		)
 	}
 
-	env = append(env, run.Spec.ExtraEnv...)
 	return env
 }
 

@@ -208,6 +208,25 @@ func (v *HarnessRunCustomValidator) validateAgainstTemplate(ctx context.Context,
 // fail later at the reconciler's materialise step.
 const MaxInlinePromptBytes = 256 * 1024
 
+// reservedExtraEnvLiterals are env var names the controller authors
+// itself on the agent container. Tenant overrides via spec.extraEnv
+// are rejected at admission — HTTPS_PROXY / SSL_CERT_FILE in particular
+// are load-bearing for cooperative-mode interception (F-39 / Phase 2e).
+var reservedExtraEnvLiterals = map[string]struct{}{
+	"HTTPS_PROXY":         {},
+	"HTTP_PROXY":          {},
+	"NO_PROXY":            {},
+	"SSL_CERT_FILE":       {},
+	"NODE_EXTRA_CA_CERTS": {},
+	"REQUESTS_CA_BUNDLE":  {},
+	"GIT_SSL_CAINFO":      {},
+}
+
+// reservedExtraEnvPrefix reserves the entire PADDOCK_ namespace for the
+// controller. New PADDOCK_* envs added to buildEnv inherit this
+// protection without requiring the literal set above to be updated.
+const reservedExtraEnvPrefix = "PADDOCK_"
+
 func validateHarnessRunSpec(spec *paddockv1alpha1.HarnessRunSpec) error {
 	specPath := field.NewPath("spec")
 	var errs field.ErrorList
@@ -249,6 +268,13 @@ func validateHarnessRunSpec(spec *paddockv1alpha1.HarnessRunSpec) error {
 	// is the only path for credential injection — a SecretKeyRef here
 	// bypasses the audit trail. See spec 0002 §5.4.
 	for i, e := range spec.ExtraEnv {
+		if _, reserved := reservedExtraEnvLiterals[e.Name]; reserved ||
+			strings.HasPrefix(e.Name, reservedExtraEnvPrefix) {
+			errs = append(errs, field.Forbidden(
+				specPath.Child("extraEnv").Index(i).Child("name"),
+				"env name is reserved by the controller; "+
+					"see docs/specs/0002-broker-proxy-v0.3.md §5.4"))
+		}
 		if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
 			errs = append(errs, field.Forbidden(
 				specPath.Child("extraEnv").Index(i).Child("valueFrom").Child("secretKeyRef"),
