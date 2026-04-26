@@ -29,6 +29,7 @@ import (
 	"time"
 
 	brokerapi "paddock.dev/paddock/internal/broker/api"
+	"paddock.dev/paddock/internal/brokerclient"
 )
 
 // startTestBroker spins up a TLS httptest server that serves
@@ -98,7 +99,7 @@ func TestBrokerHTTPClient_Issue_BrokerError(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(brokerapi.ErrorResponse{
-			Code: "PolicyMissing", Message: "no grant",
+			Code: brokerapi.CodePolicyMissing, Message: "no grant",
 		})
 	})
 	defer stop()
@@ -107,11 +108,11 @@ func TestBrokerHTTPClient_Issue_BrokerError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	var be *BrokerError
+	var be *brokerclient.BrokerError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected *BrokerError, got %T: %v", err, err)
 	}
-	if be.Code != "PolicyMissing" {
+	if be.Code != brokerapi.CodePolicyMissing {
 		t.Fatalf("Code = %q, want PolicyMissing", be.Code)
 	}
 	if !IsBrokerCodeFatal(err) {
@@ -172,4 +173,57 @@ func testContext(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+func TestBrokerHTTPClient_Issue_UsesInjectedTokenReader(t *testing.T) {
+	client, stop := startTestBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer injected-token" {
+			t.Errorf("Authorization = %q, want Bearer injected-token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(brokerapi.IssueResponse{Value: "v"})
+	})
+	defer stop()
+
+	client.TokenReader = func() ([]byte, error) { return []byte("injected-token"), nil }
+
+	if _, err := client.Issue(testContext(t), "demo", "ns", "X"); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+}
+
+func TestBrokerHTTPClient_Issue_TokenReaderError(t *testing.T) {
+	client, stop := startTestBroker(t, func(http.ResponseWriter, *http.Request) {
+		t.Fatalf("broker should not be called when token-read fails")
+	})
+	defer stop()
+
+	client.TokenReader = func() ([]byte, error) { return nil, errors.New("token unreadable") }
+
+	_, err := client.Issue(testContext(t), "demo", "ns", "X")
+	if err == nil {
+		t.Fatalf("expected token-reader error")
+	}
+}
+
+func TestIsBrokerCodeFatal_UsesTypedConstants(t *testing.T) {
+	cases := []struct {
+		code  string
+		fatal bool
+	}{
+		{brokerapi.CodeRunNotFound, true},
+		{brokerapi.CodeCredentialNotFound, true},
+		{brokerapi.CodePolicyMissing, true},
+		{brokerapi.CodeBadRequest, true},
+		{brokerapi.CodeForbidden, true},
+		{brokerapi.CodeProviderFailure, false},
+		{brokerapi.CodeAuditUnavailable, false},
+		{"UnknownCode", false},
+	}
+	for _, tc := range cases {
+		err := &brokerclient.BrokerError{Status: 500, Code: tc.code}
+		if got := IsBrokerCodeFatal(err); got != tc.fatal {
+			t.Errorf("IsBrokerCodeFatal(%q) = %v, want %v", tc.code, got, tc.fatal)
+		}
+	}
 }

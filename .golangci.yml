@@ -137,6 +137,13 @@ linters:
           - gosec
         text: "G304"
         path: internal/(controller|proxy)/broker_client\.go
+      # gosec G304: internal/brokerclient/brokerclient.go reads CA bundle
+      # and SA token from paths specified in operator configuration (mounted
+      # Secret / projected SA token volumes). Neither path is user-tainted.
+      - linters:
+          - gosec
+        text: "G304"
+        path: internal/brokerclient/brokerclient\.go
       # gosec G304: internal/proxy/ca.go reads cert-manager-generated TLS
       # cert + key from paths specified in operator configuration (mounted
       # Secret volume). cmd/proxy reads an optional extra CA bundle from an

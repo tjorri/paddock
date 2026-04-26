@@ -47,6 +47,35 @@ const (
 	PathReadyz         = "/readyz"
 )
 
+// Symbolic broker error codes returned in ErrorResponse.Code. Kept
+// here so callers can compare against typed constants instead of
+// string literals (XC-02).
+//
+// When adding a code:
+//  1. Add the constant here.
+//  2. Add the bullet to the inline doc on ErrorResponse.Code below.
+//  3. Update IsBrokerCodeFatal in internal/controller/broker_client.go
+//     if the new code should fail the run rather than requeue.
+//
+// Note: internal/broker/server.go's writeError calls still use string
+// literals; migrating the emitter side is a future cleanup outside
+// XC-02's scope.
+const (
+	CodeBadRequest         = "BadRequest"
+	CodeUnauthorized       = "Unauthorized"
+	CodeForbidden          = "Forbidden"
+	CodeRunNotFound        = "RunNotFound"
+	CodeRunTerminated      = "RunTerminated"
+	CodeCredentialNotFound = "CredentialNotFound"
+	CodePolicyMissing      = "PolicyMissing"
+	CodePolicyRevoked      = "PolicyRevoked"
+	CodeEgressRevoked      = "EgressRevoked"
+	CodeHostNotAllowed     = "HostNotAllowed"
+	CodeBearerUnknown      = "BearerUnknown"
+	CodeAuditUnavailable   = "AuditUnavailable"
+	CodeProviderFailure    = "ProviderFailure"
+)
+
 // IssueRequest asks the broker to issue a value for one of the named
 // credentials declared on the run's template.
 type IssueRequest struct {
@@ -191,4 +220,61 @@ type SubstituteAuthResponse struct {
 	// stripped from the forwarded request URL. F-21.
 	// +optional
 	AllowedQueryParams []string `json:"allowedQueryParams,omitempty"`
+}
+
+// SubstituteResult is the per-request substitution decision returned
+// by the broker's /v1/substitute-auth handler (and assembled by the
+// matching provider's Substituter implementation). Lives in
+// internal/broker/api so both the broker server and the proxy depend
+// only on wire types — see XC-01 / P-07.
+type SubstituteResult struct {
+	// Matched is true when a provider owned the incoming bearer.
+	// When false, the broker keeps looking through its provider
+	// list. Internal to the broker handler; the proxy never reads
+	// this field on the wire.
+	Matched bool
+
+	// SetHeaders overrides or adds headers on the outbound request.
+	// Header names are canonicalised by net/http; providers may use
+	// any casing.
+	SetHeaders map[string]string `json:"setHeaders,omitempty"`
+
+	// RemoveHeaders drops headers entirely before the request is
+	// sent upstream. Use for stripping the Paddock-issued bearer the
+	// agent presented so upstream only ever sees the substituted
+	// credential.
+	RemoveHeaders []string `json:"removeHeaders,omitempty"`
+
+	// SetQueryParam overrides URL query parameters on the outbound
+	// request. Used by UserSuppliedSecret with a queryParam pattern
+	// — e.g. Google APIs that key on ?key=<value>.
+	SetQueryParam map[string]string `json:"setQueryParam,omitempty"`
+
+	// SetBasicAuth, when non-nil, instructs the proxy to set HTTP
+	// Basic authentication on the outbound request.
+	SetBasicAuth *BasicAuth `json:"setBasicAuth,omitempty"`
+
+	// AllowedHeaders is the proxy-side allowlist of header names
+	// that may be forwarded to the upstream verbatim alongside the
+	// substituted credential. Empty fails closed: the proxy strips
+	// every header not in SetHeaders or a fixed mustKeep set
+	// (Host, Content-Length, Content-Type, Transfer-Encoding). F-21.
+	AllowedHeaders []string `json:"allowedHeaders,omitempty"`
+
+	// AllowedQueryParams is the same shape for URL query parameters:
+	// keys not in this list (and not in SetQueryParam) are stripped
+	// before the request is forwarded. F-21.
+	AllowedQueryParams []string `json:"allowedQueryParams,omitempty"`
+
+	// CredentialName is the logical credential name the broker
+	// handler uses to re-validate the matched BrokerPolicy grant per
+	// request. Set by the provider from its lease. Internal to the
+	// broker handler; not emitted on the proxy↔broker wire. F-10.
+	CredentialName string `json:"-"`
+}
+
+// BasicAuth carries an HTTP Basic username+password pair.
+type BasicAuth struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }

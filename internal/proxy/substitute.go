@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"paddock.dev/paddock/internal/broker/providers"
+	brokerapi "paddock.dev/paddock/internal/broker/api"
 )
 
 // Substituter rewrites outbound request headers just before the proxy
@@ -37,7 +37,7 @@ import (
 // forward the agent's Paddock-issued bearer upstream (spec 0002 §7.1
 // "no credential reaches upstream except through the broker").
 type Substituter interface {
-	SubstituteAuth(ctx context.Context, host string, port int, headers http.Header) (providers.SubstituteResult, error)
+	SubstituteAuth(ctx context.Context, host string, port int, headers http.Header) (brokerapi.SubstituteResult, error)
 }
 
 // handleSubstituted terminates TLS with the client, and then for each
@@ -160,7 +160,7 @@ var mustKeepHeaders = map[string]struct{}{
 // strips everything except mustKeepHeaders + SetHeaders / SetQueryParam
 // keys. A buggy or unconfigured provider cannot accidentally widen what
 // reaches upstream.
-func applySubstitutionToRequest(req *http.Request, res providers.SubstituteResult) {
+func applySubstitutionToRequest(req *http.Request, res brokerapi.SubstituteResult) {
 	for _, h := range res.RemoveHeaders {
 		req.Header.Del(h)
 	}

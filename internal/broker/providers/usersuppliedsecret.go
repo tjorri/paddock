@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	brokerapi "paddock.dev/paddock/internal/broker/api"
 )
 
 const userSuppliedBearerPrefix = "pdk-usersecret-"
@@ -151,31 +152,31 @@ func (p *UserSuppliedSecretProvider) Issue(ctx context.Context, req IssueRequest
 	}, nil
 }
 
-func (p *UserSuppliedSecretProvider) SubstituteAuth(ctx context.Context, req SubstituteRequest) (SubstituteResult, error) {
+func (p *UserSuppliedSecretProvider) SubstituteAuth(ctx context.Context, req SubstituteRequest) (brokerapi.SubstituteResult, error) {
 	bearer := ExtractBearer(req.IncomingBearer)
 	if !strings.HasPrefix(bearer, userSuppliedBearerPrefix) {
-		return SubstituteResult{Matched: false}, nil
+		return brokerapi.SubstituteResult{Matched: false}, nil
 	}
 
 	p.mu.Lock()
 	lease, ok := p.bearers[bearer]
 	p.mu.Unlock()
 	if !ok {
-		return SubstituteResult{Matched: true},
+		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("UserSuppliedSecret bearer not recognised")
 	}
 	if req.Namespace != "" && lease.Namespace != req.Namespace {
-		return SubstituteResult{Matched: true},
+		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("bearer lease namespace %q does not match caller namespace %q", lease.Namespace, req.Namespace)
 	}
 	if p.now().After(lease.ExpiresAt) {
 		p.mu.Lock()
 		delete(p.bearers, bearer)
 		p.mu.Unlock()
-		return SubstituteResult{Matched: true}, fmt.Errorf("UserSuppliedSecret bearer expired")
+		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("UserSuppliedSecret bearer expired")
 	}
 	if !hostMatchesGlobs(req.Host, lease.ProxyInjected.Hosts) {
-		return SubstituteResult{Matched: true},
+		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("bearer host %q not in grant's allowed hosts %v", req.Host, lease.ProxyInjected.Hosts)
 	}
 
@@ -186,18 +187,18 @@ func (p *UserSuppliedSecretProvider) SubstituteAuth(ctx context.Context, req Sub
 	var secret corev1.Secret
 	key := types.NamespacedName{Name: lease.SecretRef.Name, Namespace: lease.Namespace}
 	if err := p.Client.Get(ctx, key, &secret); err != nil {
-		return SubstituteResult{Matched: true},
+		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("reading secret %s/%s: %w", lease.Namespace, lease.SecretRef.Name, err)
 	}
 	data, ok := secret.Data[lease.SecretRef.Key]
 	if !ok || len(data) == 0 {
-		return SubstituteResult{Matched: true},
+		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("key %q missing or empty in secret %s/%s",
 				lease.SecretRef.Key, lease.Namespace, lease.SecretRef.Name)
 	}
 	value := string(data)
 
-	res := SubstituteResult{
+	res := brokerapi.SubstituteResult{
 		Matched: true,
 		// F-21: minimal protocol-relevant header allowlist. UserSuppliedSecret
 		// has no per-grant override yet (deferred); operators wanting custom
@@ -224,12 +225,12 @@ func (p *UserSuppliedSecretProvider) SubstituteAuth(ctx context.Context, req Sub
 		// substitution target; allow the upstream to receive it.
 		res.AllowedQueryParams = []string{lease.ProxyInjected.QueryParam.Name}
 	case lease.ProxyInjected.BasicAuth != nil:
-		res.SetBasicAuth = &BasicAuth{
+		res.SetBasicAuth = &brokerapi.BasicAuth{
 			Username: lease.ProxyInjected.BasicAuth.Username,
 			Password: value,
 		}
 	default:
-		return SubstituteResult{Matched: true},
+		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("lease for %s has no substitution pattern set", bearer)
 	}
 	return res, nil

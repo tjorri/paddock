@@ -701,11 +701,11 @@ func (s *stubSubstituter) Issue(_ context.Context, _ providers.IssueRequest) (pr
 	return providers.IssueResult{}, errors.New("stub does not implement Issue")
 }
 
-func (s *stubSubstituter) SubstituteAuth(_ context.Context, _ providers.SubstituteRequest) (providers.SubstituteResult, error) {
+func (s *stubSubstituter) SubstituteAuth(_ context.Context, _ providers.SubstituteRequest) (brokerapi.SubstituteResult, error) {
 	if !s.matched {
-		return providers.SubstituteResult{Matched: false}, nil
+		return brokerapi.SubstituteResult{Matched: false}, nil
 	}
-	return providers.SubstituteResult{
+	return brokerapi.SubstituteResult{
 		Matched:        true,
 		SetHeaders:     s.setHdrs,
 		RemoveHeaders:  s.removeHdr,

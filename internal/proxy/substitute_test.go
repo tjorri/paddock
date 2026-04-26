@@ -31,7 +31,7 @@ import (
 	"testing"
 	"time"
 
-	"paddock.dev/paddock/internal/broker/providers"
+	brokerapi "paddock.dev/paddock/internal/broker/api"
 )
 
 // substitutingValidator mirrors the shape the BrokerClient will have at
@@ -65,11 +65,11 @@ type recordingSubstituter struct {
 	seenHeaders http.Header
 }
 
-func (r *recordingSubstituter) SubstituteAuth(_ context.Context, _ string, _ int, headers http.Header) (providers.SubstituteResult, error) {
+func (r *recordingSubstituter) SubstituteAuth(_ context.Context, _ string, _ int, headers http.Header) (brokerapi.SubstituteResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seenHeaders = headers.Clone()
-	return providers.SubstituteResult{
+	return brokerapi.SubstituteResult{
 		SetHeaders:     map[string]string{"x-api-key": r.realKey},
 		RemoveHeaders:  []string{"Authorization"},
 		AllowedHeaders: []string{"Content-Type", "Content-Length", "User-Agent"},
@@ -177,8 +177,8 @@ func TestProxy_SubstituteAuthErrorDropsConnection(t *testing.T) {
 	certPEM, keyPEM := generateTestCA(t)
 	ca, _ := NewMITMCertificateAuthority(certPEM, keyPEM)
 
-	failSub := subFunc(func(_ context.Context, _ string, _ int, _ http.Header) (providers.SubstituteResult, error) {
-		return providers.SubstituteResult{}, errors.New("simulated broker denial")
+	failSub := subFunc(func(_ context.Context, _ string, _ int, _ http.Header) (brokerapi.SubstituteResult, error) {
+		return brokerapi.SubstituteResult{}, errors.New("simulated broker denial")
 	})
 
 	srv := &Server{
@@ -210,9 +210,9 @@ func TestProxy_SubstituteAuthErrorDropsConnection(t *testing.T) {
 
 // subFunc is a one-liner adapter used by tests that supply a
 // one-shot Substituter implementation.
-type subFunc func(context.Context, string, int, http.Header) (providers.SubstituteResult, error)
+type subFunc func(context.Context, string, int, http.Header) (brokerapi.SubstituteResult, error)
 
-func (f subFunc) SubstituteAuth(ctx context.Context, host string, port int, headers http.Header) (providers.SubstituteResult, error) {
+func (f subFunc) SubstituteAuth(ctx context.Context, host string, port int, headers http.Header) (brokerapi.SubstituteResult, error) {
 	return f(ctx, host, port, headers)
 }
 
@@ -237,7 +237,7 @@ func (b *stringBody) Read(p []byte) (int, error) {
 
 func TestApplySubstitution_QueryParam(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/v1/thing?access_token=pdk-usersecret-abc&other=keep", nil)
-	res := providers.SubstituteResult{
+	res := brokerapi.SubstituteResult{
 		Matched:            true,
 		SetQueryParam:      map[string]string{"access_token": "real-token"},
 		AllowedQueryParams: []string{"other"},
@@ -255,9 +255,9 @@ func TestApplySubstitution_QueryParam(t *testing.T) {
 func TestApplySubstitution_BasicAuth(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/repo.git", nil)
 	req.Header.Set("Authorization", "Bearer pdk-usersecret-abc")
-	res := providers.SubstituteResult{
+	res := brokerapi.SubstituteResult{
 		Matched:      true,
-		SetBasicAuth: &providers.BasicAuth{Username: "oauth2", Password: "real-pat"},
+		SetBasicAuth: &brokerapi.BasicAuth{Username: "oauth2", Password: "real-pat"},
 	}
 	applySubstitutionToRequest(req, res)
 	u, pw, ok := req.BasicAuth()
@@ -279,7 +279,7 @@ func TestApplySubstitution_StripsNonAllowlistedHeaders(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "agent/1")
 
-	res := providers.SubstituteResult{
+	res := brokerapi.SubstituteResult{
 		Matched:        true,
 		SetHeaders:     map[string]string{"x-api-key": "real"},
 		RemoveHeaders:  []string{"Authorization"},
@@ -320,7 +320,7 @@ func TestApplySubstitution_EmptyAllowlistFailsClosed(t *testing.T) {
 
 	// Provider returned no AllowedHeaders. The proxy must strip everything
 	// except mustKeep + SetHeaders keys.
-	res := providers.SubstituteResult{
+	res := brokerapi.SubstituteResult{
 		Matched:    true,
 		SetHeaders: map[string]string{"x-api-key": "real"},
 	}
@@ -345,7 +345,7 @@ func TestApplySubstitution_EmptyAllowlistFailsClosed(t *testing.T) {
 func TestApplySubstitution_StripsNonAllowlistedQueryParams(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), "GET",
 		"https://api.example.com/v1/thing?access_token=leaked&other=keep&allowed=yes", nil)
-	res := providers.SubstituteResult{
+	res := brokerapi.SubstituteResult{
 		Matched:            true,
 		AllowedQueryParams: []string{"allowed"},
 	}
@@ -430,7 +430,7 @@ func TestApplySubstitution_PreservesSetHeadersAndQueryParams(t *testing.T) {
 		"https://api.example.com/v1/x?key=stripped&api_key=replaced", nil)
 	req.Header.Set("Authorization", "Bearer pdk-test")
 
-	res := providers.SubstituteResult{
+	res := brokerapi.SubstituteResult{
 		Matched:       true,
 		SetHeaders:    map[string]string{"X-Custom-Auth": "value"},
 		SetQueryParam: map[string]string{"api_key": "real-key"},
