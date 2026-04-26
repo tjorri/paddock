@@ -263,32 +263,12 @@ func (s *Server) mitm(ctx context.Context, clientConn net.Conn, host string, por
 	<-errCh
 }
 
-// dialUpstream opens a TLS connection to host:port with the caller-
-// provided dialer + TLSConfig.
+// dialUpstream opens a TLS connection to host:port for cooperative
+// (CONNECT) mode. The dial target and the cert hostname coincide.
+// All shared logic (dialer fallback, TLS-config clone, ServerName
+// injection, handshake timeout) lives in dialUpstreamTLS.
 func (s *Server) dialUpstream(ctx context.Context, host string, port int) (net.Conn, error) {
-	dialer := s.UpstreamDialer
-	if dialer == nil {
-		d := &net.Dialer{Timeout: 10 * time.Second}
-		dialer = d.DialContext
-	}
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	raw, err := dialer(ctx, "tcp", addr)
-	if err != nil {
-		return nil, err
-	}
-	cfg := s.UpstreamTLSConfig.Clone()
-	if cfg == nil {
-		cfg = &tls.Config{MinVersion: tls.VersionTLS12}
-	}
-	cfg.ServerName = host
-	tlsConn := tls.Client(raw, cfg)
-	hsCtx, cancel := context.WithTimeout(ctx, s.handshakeTimeout())
-	defer cancel()
-	if err := tlsConn.HandshakeContext(hsCtx); err != nil {
-		_ = raw.Close()
-		return nil, fmt.Errorf("upstream TLS handshake: %w", err)
-	}
-	return tlsConn, nil
+	return s.dialUpstreamTLS(ctx, joinHostPortInt(host, port), host)
 }
 
 func (s *Server) handshakeTimeout() time.Duration {

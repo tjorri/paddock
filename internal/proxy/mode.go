@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"time"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
@@ -188,31 +187,9 @@ func (s *Server) mitmTransparent(
 // directly — i.e. the SO_ORIGINAL_DST target — but verifies the peer
 // certificate against the SNI the agent requested. This preserves the
 // agent's intent (connect to hostname X) while respecting the kernel's
-// original routing decision.
+// original routing decision. All shared logic lives in dialUpstreamTLS.
 func (s *Server) dialUpstreamAt(ctx context.Context, sni string, ip net.IP, port int) (net.Conn, error) {
-	dialer := s.UpstreamDialer
-	if dialer == nil {
-		d := &net.Dialer{Timeout: 10 * time.Second}
-		dialer = d.DialContext
-	}
-	addr := net.JoinHostPort(ip.String(), fmt.Sprintf("%d", port))
-	raw, err := dialer(ctx, "tcp", addr)
-	if err != nil {
-		return nil, err
-	}
-	cfg := s.UpstreamTLSConfig.Clone()
-	if cfg == nil {
-		cfg = &tls.Config{MinVersion: tls.VersionTLS12}
-	}
-	cfg.ServerName = sni
-	tlsConn := tls.Client(raw, cfg)
-	hsCtx, cancel := context.WithTimeout(ctx, s.handshakeTimeout())
-	defer cancel()
-	if err := tlsConn.HandshakeContext(hsCtx); err != nil {
-		_ = raw.Close()
-		return nil, fmt.Errorf("upstream TLS handshake: %w", err)
-	}
-	return tlsConn, nil
+	return s.dialUpstreamTLS(ctx, joinHostPortInt(ip.String(), port), sni)
 }
 
 // abruptClose sets SO_LINGER to 0 on conn (when supported) so the
