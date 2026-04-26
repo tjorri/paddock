@@ -50,6 +50,14 @@ type BrokerHTTPClient struct {
 	TokenPath    string
 	CABundlePath string
 
+	// TokenReader returns the SA bearer token to attach to every
+	// outbound request. Defaulted by NewBrokerHTTPClient to a closure
+	// that re-reads TokenPath on each call (the projected
+	// ServiceAccountToken file rotates on disk; an in-memory cache
+	// would invite expired-token failures). Tests inject inline byte
+	// slices.
+	TokenReader func() ([]byte, error)
+
 	hc *http.Client
 }
 
@@ -74,7 +82,7 @@ func NewBrokerHTTPClient(endpoint, tokenPath, caPath string) (*BrokerHTTPClient,
 		}
 		tlsCfg.RootCAs = roots
 	}
-	return &BrokerHTTPClient{
+	c := &BrokerHTTPClient{
 		Endpoint:     strings.TrimRight(endpoint, "/"),
 		TokenPath:    tokenPath,
 		CABundlePath: caPath,
@@ -82,13 +90,15 @@ func NewBrokerHTTPClient(endpoint, tokenPath, caPath string) (*BrokerHTTPClient,
 			Timeout:   10 * time.Second,
 			Transport: &http.Transport{TLSClientConfig: tlsCfg},
 		},
-	}, nil
+	}
+	c.TokenReader = func() ([]byte, error) { return os.ReadFile(c.TokenPath) }
+	return c, nil
 }
 
 // Issue asks the broker for one named credential on behalf of the
 // given run. Wraps POST /v1/issue.
 func (b *BrokerHTTPClient) Issue(ctx context.Context, runName, runNamespace, credentialName string) (*brokerapi.IssueResponse, error) {
-	token, err := os.ReadFile(b.TokenPath)
+	token, err := b.TokenReader()
 	if err != nil {
 		return nil, fmt.Errorf("reading broker token: %w", err)
 	}

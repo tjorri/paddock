@@ -173,3 +173,34 @@ func testContext(t *testing.T) context.Context {
 	t.Cleanup(cancel)
 	return ctx
 }
+
+func TestBrokerHTTPClient_Issue_UsesInjectedTokenReader(t *testing.T) {
+	client, stop := startTestBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer injected-token" {
+			t.Errorf("Authorization = %q, want Bearer injected-token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(brokerapi.IssueResponse{Value: "v"})
+	})
+	defer stop()
+
+	client.TokenReader = func() ([]byte, error) { return []byte("injected-token"), nil }
+
+	if _, err := client.Issue(testContext(t), "demo", "ns", "X"); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+}
+
+func TestBrokerHTTPClient_Issue_TokenReaderError(t *testing.T) {
+	client, stop := startTestBroker(t, func(http.ResponseWriter, *http.Request) {
+		t.Fatalf("broker should not be called when token-read fails")
+	})
+	defer stop()
+
+	client.TokenReader = func() ([]byte, error) { return nil, errors.New("token unreadable") }
+
+	_, err := client.Issue(testContext(t), "demo", "ns", "X")
+	if err == nil {
+		t.Fatalf("expected token-reader error")
+	}
+}
