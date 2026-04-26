@@ -67,7 +67,7 @@ Actors are numbered `T-1` through `T-8`. Findings cite these IDs (`Threats: T-1,
 
 **Expected attacks.** Exfiltrate broker bearer to substitute it elsewhere; bypass proxy via raw TCP / IP literal / DNS rebinding; read other tenant's PVC if shared; forge MITM CA-signed certs; cause audit events to be dropped or backdated; attempt direct calls to broker gRPC.
 
-**Current defences.** Default-deny egress (transparent mode unbypassable); broker bearer scope limited to current run; per-run MITM CA (not shared)[^per-run-ca]; broker validates SA-token identity; AuditEvent CRD records every credential issuance and egress decision.
+**Current defences.** Default-deny egress (transparent mode unbypassable); broker bearer scope limited to current run; per-run MITM CA (not shared, enforced by Phase 2f cert-manager `ClusterIssuer` per-run intermediate — tenant A's intermediate cannot forge leaves trusted by tenant B)[^per-run-ca]; broker validates SA-token identity; AuditEvent CRD records every credential issuance and egress decision (writes fail-closed — broker returns 503 on audit-write failure since Phase 2c); substitute-auth per-request re-validation of run phase + policy grant + egress grant + `AllowedHosts` (Phase 2g); proxy strips non-allowlisted headers and query params on substituted requests (Phase 2g); per-run NetworkPolicy excludes RFC1918 / link-local / cluster pod+service CIDRs from the public-internet allow rule (Phase 2a); pod-level `seccompProfile=RuntimeDefault`, agent at PSS-baseline with `automountServiceAccountToken: false`, proxy/collector at PSS-restricted (Phase 2a/2e).
 
 ### T-2: Untrusted prompt / workspace content
 
@@ -77,7 +77,7 @@ Actors are numbered `T-1` through `T-8`. Findings cite these IDs (`Threats: T-1,
 
 **Expected attacks.** Coerce the agent into attempting T-1's attacks; coerce the agent into writing malicious code into the workspace; coerce the agent into committing/pushing to a non-target branch; influence the agent's tool calls to leak information through legitimate channels.
 
-**Current defences.** Capability-scoped admission (template `requires` × policy `grants`) limits what the agent can do regardless of what the prompt says; runtime enforcement is independent of the prompt; the agent cannot reach hosts the template didn't declare; the proxy denies non-allowlisted hosts even if the agent decides to try them.
+**Current defences.** Capability-scoped admission (template `requires` × policy `grants`) limits what the agent can do regardless of what the prompt says; runtime enforcement is independent of the prompt; the agent cannot reach hosts the template didn't declare; the proxy denies non-allowlisted hosts even if the agent decides to try them; substitute-auth per-request revalidation (Phase 2g) means a policy narrowed mid-run takes effect within the idle-timeout window even if the agent already holds a bearer.
 
 ### T-3: Operator misconfiguration
 
@@ -97,7 +97,7 @@ Actors are numbered `T-1` through `T-8`. Findings cite these IDs (`Threats: T-1,
 
 **Expected attacks.** Direct broker call presenting another tenant's SA token (if leaked or guessable); reading another tenant's PVC (via shared StorageClass reclaim policy or hostPath); guessing or replaying broker bearer tokens; exhausting broker capacity to deny service to others; exploiting shared MITM CA across runs.
 
-**Current defences.** Namespace RBAC default-deny; per-run MITM CA (not shared)[^per-run-ca]; broker authenticates SA-token presented by the run pod; PVC reclaim policy is `Delete` by default for dynamically-provisioned PVCs; opaque bearers are random and per-run.
+**Current defences.** Namespace RBAC default-deny; per-run MITM CA (not shared — enforced by Phase 2f cert-manager `ClusterIssuer` per-run intermediate; tenant A's intermediate cannot be used to forge leaves trusted by tenant B)[^per-run-ca]; broker authenticates SA-token presented by the run pod; PVC reclaim policy is `Delete` by default for dynamically-provisioned PVCs; opaque bearers are random and per-run; substitute-auth `AllowedHosts` per-lease scoping prevents cross-tenant bearer replay (Phase 2g).
 
 ### T-5: Compromised paddock-system component
 
@@ -107,7 +107,7 @@ Actors are numbered `T-1` through `T-8`. Findings cite these IDs (`Threats: T-1,
 
 **Expected attacks.** Exfiltrate long-lived upstream secrets from the broker; modify or suppress AuditEvents; read run prompts; mint bearers for grants no policy authorises; downgrade interception silently.
 
-**Current defences.** `paddock-system` enforces PSS `restricted`; broker has its own ServiceAccount with minimal RBAC; controller and broker are separate Deployments (compromise of one ≠ compromise of the other); govulncheck in CI (Phase 1 deliverable); image baseline scanning in CI (Phase 1 deliverable).
+**Current defences.** `paddock-system` enforces PSS `restricted`; broker has its own ServiceAccount with minimal RBAC; controller and broker are separate Deployments (compromise of one ≠ compromise of the other); govulncheck in CI (Phase 1 deliverable); image baseline scanning in CI (Phase 1 deliverable); broker audit-writes fail-closed (returns 503 on failure, Phase 2c) so a compromised component cannot silently suppress audit records; substitute-auth per-request revalidation (Phase 2g) limits the blast radius of a compromised broker that has already issued bearers.
 
 ### T-6: Supply-chain attacker
 
@@ -137,7 +137,7 @@ Actors are numbered `T-1` through `T-8`. Findings cite these IDs (`Threats: T-1,
 
 **Expected attacks.** Trigger a run-deletion race that leaves a credential active past `Run.status.phase=Succeeded`; coerce a finalizer into running with elevated permissions; modify a BrokerPolicy in a way the broker's 10-second cache hasn't picked up; cause an audit event to be lost during a controller restart.
 
-**Current defences.** Broker re-validates per-request, not just per-run; AuditEvents are committed before the run-pod operation completes (write-then-act ordering); finalizers are scoped to specific resources, not the namespace.
+**Current defences.** Broker re-validates per-request, not just per-run (Phase 2g adds re-fetch of `HarnessRun` + re-call of `matchPolicyGrant`/`matchEgressGrant` on every `handleSubstituteAuth`); AuditEvents are committed before the run-pod operation completes (write-then-act ordering, fail-closed since Phase 2c); finalizers are scoped to specific resources, not the namespace; idle-timeout on substitute connections (Phase 2g) bounds how long a revoked credential can continue to be proxied.
 
 ## 4. Trust boundaries
 
@@ -182,12 +182,12 @@ Seven boundaries are tracked. Each carries data and identity across a privilege 
 | #   | Boundary                                | What crosses                                                | What enforces                                                            |
 |-----|-----------------------------------------|-------------------------------------------------------------|---------------------------------------------------------------------------|
 | B-1 | cluster operator ↔ paddock-system        | kubectl manifests; controller image deployment              | RBAC; PSA `restricted` on `paddock-system`                                |
-| B-2 | paddock-system ↔ run namespace           | Pod specs (controller → tenant ns); status updates back     | RBAC scoping; admission webhooks; namespace-level PSA                     |
-| B-3 | run pod ↔ broker                         | Bearer-issuance gRPC; SA-token authn; opaque bearers back   | mTLS on broker; SA-token validation; BrokerPolicy cache (10 s)            |
-| B-4 | run pod (agent) ↔ proxy sidecar          | Outbound HTTPS via loopback or iptables redirect; ALPN/CONNECT | iptables (transparent); HTTPS_PROXY env (cooperative, opt-in only)        |
-| B-5 | run pod ↔ external internet              | Allowlisted egress only; substituted-credential requests    | Proxy `ValidateEgress` per-connection; broker `SubstituteAuth` per-request|
+| B-2 | paddock-system ↔ run namespace           | Pod specs (controller → tenant ns); status updates back     | RBAC scoping; admission webhooks; namespace-level PSA; pod-level `seccompProfile=RuntimeDefault` + PSS-baseline/restricted per container role (Phase 2a/2e); ExtraEnv reserved-set rejected at admission (Phase 2e) |
+| B-3 | run pod ↔ broker                         | Bearer-issuance gRPC; SA-token authn; opaque bearers back   | mTLS on broker; SA-token validation; BrokerPolicy cache (10 s); audit-write fail-closed — broker returns 503 on audit-write failure (Phase 2c); `credential-issued` AuditEvent on every issuance |
+| B-4 | run pod (agent) ↔ proxy sidecar          | Outbound HTTPS via loopback or iptables redirect; ALPN/CONNECT | iptables (transparent); HTTPS_PROXY env (cooperative, opt-in only); per-run intermediate CA via cert-manager `ClusterIssuer` (Phase 2f) — tenant isolation enforced at CA level |
+| B-5 | run pod ↔ external internet              | Allowlisted egress only; substituted-credential requests    | Proxy `ValidateEgress` per-connection; broker `SubstituteAuth` per-request with per-request re-validation of run phase + policy + egress + `AllowedHosts` (Phase 2g); proxy strips non-allowlisted headers/query params (Phase 2g); per-run NP excludes RFC1918/link-local/cluster CIDRs (Phase 2a); idle timeout bounds revocation reaction (Phase 2g); residual: 0.0.0.0/0:443 still allowed in cooperative mode (Theme C) |
 | B-6 | broker ↔ upstream Secrets                | API-server reads of long-lived secrets in `paddock-system`  | RBAC on broker SA; namespace boundary; etcd encryption (operator-config)  |
-| B-7 | workspace seed Job ↔ git host             | git-HTTPS; broker-leased token via proxy sidecar            | Proxy on the seed Job; broker token lease; allowlist on git host          |
+| B-7 | workspace seed Job ↔ git host             | git-HTTPS; broker-leased token via proxy sidecar            | Proxy on the seed Job; broker token lease; allowlist on git host; per-seed NetworkPolicy mirrors per-run shape (Phase 2a); residual: F-46/F-47/F-48/F-49/F-50/F-52 open |
 
 ## 5. STRIDE-per-boundary table
 
@@ -204,6 +204,8 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | Denial of service          | Operator deletes paddock-system namespace                 | Trusted (T-7); not defended against                           |
 | Elevation of privilege     | n/a — operator is the privileged actor                    | n/a                                                           |
 
+**Phase 2 update (2026-04-26).** The B-1 STRIDE picture is substantially unchanged by Phase 2 — the cluster operator remains fully trusted and Paddock does not defend against T-7. Phase 2e adds admission-webhook rejection of ExtraEnv reserved-key names, which provides a minor misconfiguration guard for operators. No residuals introduced at this boundary.
+
 ### B-2: paddock-system ↔ run namespace
 
 | STRIDE                     | Threat                                                    | Defence                                                       |
@@ -214,6 +216,8 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | Information disclosure     | Controller leaks data across tenant namespaces            | Namespace-scoped reconciliation; status-only writes back       |
 | Denial of service          | Tenant submits unbounded HarnessRuns                       | Admission limits (configurable); k8s ResourceQuota             |
 | Elevation of privilege     | Tenant gains paddock-system access via Pod creation       | PSA on tenant ns; controller does not run privileged Pods      |
+
+**Phase 2 update (2026-04-26).** Phase 2a and 2e significantly strengthened B-2 defences. Run pods now carry pod-level `seccompProfile=RuntimeDefault`; agent and adapter containers run at PSS-baseline; collector and proxy containers run at PSS-restricted. Agent containers have `automountServiceAccountToken: false`. ExtraEnv reserved-key names are rejected at admission (Phase 2e). The Repudiation cell now holds more strongly — controller emits `credential-issued`, `run-completed`, `run-failed`, and `ca-projected` AuditEvents at all key decision points (Phase 2c/2d). The per-run intermediate CA (Phase 2f) ensures that a tenant cannot use the MITM CA bundle projected into their run pod to forge certs trusted by another run's proxy.
 
 ### B-3: run pod ↔ broker
 
@@ -226,6 +230,8 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | Denial of service          | Tenant exhausts broker capacity                           | Per-run rate limiting (see F-17)                               |
 | Elevation of privilege     | Bearer scope expands beyond grant                         | Per-request validation; intersection check at issuance         |
 
+**Phase 2 update (2026-04-26).** Phase 2c strengthened the Repudiation cell: broker `handleIssue` and `handleSubstituteAuth` now return 503 on audit-write failure rather than proceeding silently (fail-closed). Phase 2g strengthened the Elevation-of-privilege and Information-disclosure cells: `handleSubstituteAuth` now re-fetches `HarnessRun` and re-calls `matchPolicyGrant`/`matchEgressGrant` on every request, so a policy narrowed or revoked mid-run takes effect within the idle-timeout window. Each provider's lease records `AllowedHosts` at issue-time; a bearer cannot be substituted against a host the policy didn't declare. Residual: F-11 (bearer not actively revoked at run completion — the re-validation shrinks the window but does not eliminate it) and F-15 (broker TLS has no ClientAuth) remain Open.
+
 ### B-4: run pod (agent) ↔ proxy sidecar
 
 | STRIDE                     | Threat                                                    | Defence                                                       |
@@ -236,6 +242,8 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | Information disclosure     | Agent reads CA private key                                | CA key in proxy-only Secret; not mounted in agent              |
 | Denial of service          | Agent floods proxy with connections                       | Proxy connection limits (see F-26)                             |
 | Elevation of privilege     | Agent gains NET_ADMIN to bypass iptables                   | PSS restricted on tenant ns; iptables-init init-only          |
+
+**Phase 2 update (2026-04-26).** Phase 2f substantially strengthened the Spoofing cell: each run now has its own intermediate CA issued by cert-manager via a `ClusterIssuer` of `kind: CA`. The cluster root CA private key never leaves cert-manager's signing path; tenant A's agent does not trust leaves signed by tenant B's intermediate. Prior to Phase 2f, the per-run Secret was a byte-for-byte copy of the cluster root keypair (F-18 finding). The Information-disclosure cell also improves: the CA private key is now generated by cert-manager and stored in a run-namespace Secret mounted only in the proxy sidecar — the agent container cannot access it.
 
 ### B-5: run pod ↔ external internet
 
@@ -248,6 +256,8 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | Denial of service          | Agent floods upstream                                     | Proxy connection limits; upstream-side rate limit              |
 | Elevation of privilege     | n/a (agent is already the lowest privilege)               | n/a                                                            |
 
+**Phase 2 update (2026-04-26).** Phase 2a hardened the Spoofing and Tampering cells: the per-run NetworkPolicy now explicitly excludes RFC1918 / link-local / cluster pod+service CIDRs from the public-internet allow rule (run pods and seed pods). Phase 2g hardened the Tampering and Information-disclosure cells: every `SubstituteAuth` call re-validates run phase + policy grant + egress grant + per-lease `AllowedHosts`; the proxy strips any non-allowlisted headers and query params from substituted requests before forwarding; an idle timeout (default 60 s) ensures revocation takes effect within that window even on opaque kept-alive connections. Phase 2c strengthened the Repudiation cell: AuditEvent records every connection via `RecordEgress`, fail-closed on write failure. Residuals: public-internet direct-egress (0.0.0.0/0:443) still allowed in cooperative mode (Theme C remediation pending, F-19 residual); DNS rebinding undetected (F-22 Open); connection limit and back-pressure not yet implemented (F-26 Partially resolved).
+
 ### B-6: broker ↔ upstream Secrets
 
 | STRIDE                     | Threat                                                    | Defence                                                       |
@@ -258,6 +268,8 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | Information disclosure     | Compromised broker exfiltrates upstream secrets           | T-5 — defence in depth: image scanning, govulncheck            |
 | Denial of service          | API-server unavailable                                    | Broker fails closed; runs marked Pending                       |
 | Elevation of privilege     | Broker gains permissions beyond Secrets/get               | RBAC review (audit finding candidate)                          |
+
+**Phase 2 update (2026-04-26).** The B-6 STRIDE picture is largely unchanged by Phase 2 — the broker's access to upstream Secrets is still governed by its RBAC grant, and etcd encryption remains operator-configured. The Denial-of-service cell is unchanged (broker still fails closed when the API server is unavailable). No new defences or residuals introduced at this boundary by Phase 2 changes.
 
 ### B-7: workspace seed Job ↔ git host
 
@@ -270,6 +282,13 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | Denial of service          | Slow-loris on git host                                    | Seed-Job timeout; pod activeDeadlineSeconds                    |
 | Elevation of privilege     | Seed Job gains write to a non-target repo                 | Token lease scope; broker validates per-call                   |
 
+**Phase 2 update (2026-04-26).** Phase 2a introduced a per-seed NetworkPolicy that mirrors the per-run shape, narrowing the seed Job's inbound and outbound network surface. The Tampering and Spoofing cells benefit modestly from the RFC1918/link-local/cluster-CIDR exclusion now applied to the seed NP's public-internet allow rule. Residuals are significant: F-46 (arbitrary URL schemes in `gitRepos`), F-47 (no `activeDeadlineSeconds`), F-48 (default service-account token mounted), F-49 (harness image not verified), F-50 (cleartext credentials in env), and F-52 (audit disabled during seeding) remain Open.
+
 [^per-run-ca]: Phase 2f (2026-04-26) makes this property factually accurate. Prior to Phase 2f, this row was a documentation/code mismatch — the per-run Secret content was a byte-for-byte copy of the cluster root keypair (F-18). After Phase 2f, each run has its own intermediate CA issued by cert-manager via a `ClusterIssuer` of `kind: CA`; the cluster root never leaves cert-manager's signing path; tenant A's agent does not trust leaves signed by tenant B's intermediate.
 
 [^per-request-recheck]: Phase 2g (2026-04-26) makes this property factually hold. Prior to Phase 2g, the broker's `handleSubstituteAuth` did not re-fetch `HarnessRun` or re-call `matchPolicyGrant` per request (F-10); the proxy did not re-call `ValidateEgress` per request inside a kept-alive substitute connection (F-25); and vertical providers did not host-scope `SubstituteAuth` (F-09). After Phase 2g, every `SubstituteAuth` call re-validates run phase + policy grant + egress grant + per-lease `AllowedHosts`, and bytes-shuttle / substitute-loop paths enforce a manager-flag idle deadline (default 60s) so revocation takes effect within that window even on opaque tunnels.
+
+## Revision history
+
+- 2026-04-26 — Phase 2 recheck. Updated defence claims affected by Phase 2a/2c/2e/2f/2g (per-run intermediate CA, audit fail-closed, NetworkPolicy hardening, substitute-auth host scoping, run-pod hardening, seed-pod NP). See `docs/plans/2026-04-26-v0.4-security-recheck-design.md` for the recheck spec and `docs/security/2026-04-25-v0.4-audit-findings.md` Recheck history for per-finding state.
+- 2026-04-25 — Initial threat model produced as part of Phase 1 audit (PR #21).

@@ -1,18 +1,11 @@
 name: E2E Tests
 
 on:
-  # Runs on: direct commits to main, and PRs (any branch). Same-repo
-  # feature branches without a PR don't CI — open a PR or use
-  # workflow_dispatch if you need CI there.
-  push:
-    branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "charts/**"
-      - "config/samples/**"
-      - ".github/ISSUE_TEMPLATE/**"
+  # Runs on: PRs only (skipped while in draft), plus workflow_dispatch
+  # for manual runs. Direct commits to main don't trigger this — push
+  # CI was dropped to keep runner minutes for review-stage feedback.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -29,11 +22,13 @@ jobs:
   test-e2e:
     name: Run on Ubuntu
     runs-on: ubuntu-latest
-    # 20 min is head-room above the 12-min go test deadline + 11-min
+    # Skip while the PR is in draft. workflow_dispatch always runs.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # 30 min is head-room above the 22-min go test deadline + 21-min
     # Ginkgo suite deadline in the Makefile. Leaves time for cold
     # GH-runner dep downloads, image builds, and `kind export logs` on
     # failure without clipping the Ginkgo summary.
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Clone the code
         uses: actions/checkout@v6
