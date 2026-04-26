@@ -128,26 +128,10 @@ type auditEvent struct {
 }
 
 var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
-	BeforeAll(func() {
-		By("installing CRDs")
-		_, err := utils.Run(exec.Command("make", "install"))
-		Expect(err).NotTo(HaveOccurred())
-
-		By("deploying the controller-manager")
-		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage)))
-		Expect(err).NotTo(HaveOccurred())
-
-		By("waiting for the controller-manager to roll out")
-		_, err = utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-			"rollout", "status", "deploy/paddock-controller-manager", "--timeout=180s"))
-		Expect(err).NotTo(HaveOccurred())
-		// Note: rollout status returning Ready does NOT guarantee the
-		// webhook is reachable — the Endpoints object is populated
-		// before kube-proxy finishes programming the ClusterIP rules,
-		// so the first ~hundreds of milliseconds of "Ready" still fail
-		// webhook calls with "connection refused". applyFromYAML below
-		// handles that race with a targeted retry loop.
-	})
+	// The suite-level BeforeSuite installs CRDs + deploys the
+	// controller-manager; this Describe does not redeploy. Per-Describe
+	// state isolation is via the tenant namespaces declared below; the
+	// AfterAll drains them while the controller is still alive.
 
 	AfterAll(func() {
 		// Leave the ns/run behind when KEEP_E2E_RUN=1 so a contributor
@@ -208,11 +192,10 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3EgressTemplate, "--ignore-not-found=true")
 		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3BrokerDownTemplate, "--ignore-not-found=true")
 
-		// 4. Now safe to kill the controller — no tenant CR needs
-		//    its finalizer reconciled. 90s runWithTimeout remains as
-		//    belt-and-suspenders for any future surprise.
-		runWithTimeout(90*time.Second, "make", "undeploy", "ignore-not-found=true")
-		runWithTimeout(90*time.Second, "make", "uninstall", "ignore-not-found=true")
+		// Suite-level AfterSuite handles `make undeploy` + `make
+		// uninstall` after every Describe finishes — the controller
+		// stays alive across Describes so the next one's tenant-state
+		// reconciliation just works.
 	})
 
 	AfterEach(func() {

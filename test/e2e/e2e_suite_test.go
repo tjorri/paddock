@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -63,22 +64,25 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	By("building and loading paddock-manager")
-	buildAndLoad(managerImage, []string{"docker-build", fmt.Sprintf("IMG=%s", managerImage)})
-
-	By("building and loading paddock-echo + adapter-echo + collector")
-	buildAndLoad(echoImage, []string{"image-echo"})
-	buildAndLoad(adapterEchoImage, []string{"image-adapter-echo"})
-	buildAndLoad(collectorImage, []string{"image-collector"})
-
-	By("building and loading broker + proxy + iptables-init + e2e-egress (v0.3)")
-	buildAndLoad(brokerImage, []string{"image-broker"})
-	buildAndLoad(proxyImage, []string{"image-proxy"})
-	buildAndLoad(iptablesInitImage, []string{"image-iptables-init"})
-	buildAndLoad(e2eEgressImage, []string{"image-e2e-egress"})
-
-	By("building and loading paddock-evil-echo (hostile harness)")
-	buildAndLoad(paddockEvilEchoImage, []string{"image-evil-echo"})
+	By("building and loading all images in parallel")
+	// Build + kind-load all 9 images concurrently. Each `make image-*`
+	// is independent (separate Dockerfile, no shared writable state);
+	// Docker serializes builds around its daemon but interleaves
+	// layer caches across them. `kind load docker-image` self-locks
+	// against the kind CLI so the load step naturally serializes
+	// without explicit coordination. Wall-clock saving on a warm
+	// cache: ~30-50% of the build phase vs sequential.
+	buildAndLoadAll([]buildJob{
+		{managerImage, []string{"docker-build", fmt.Sprintf("IMG=%s", managerImage)}},
+		{echoImage, []string{"image-echo"}},
+		{adapterEchoImage, []string{"image-adapter-echo"}},
+		{collectorImage, []string{"image-collector"}},
+		{brokerImage, []string{"image-broker"}},
+		{proxyImage, []string{"image-proxy"}},
+		{iptablesInitImage, []string{"image-iptables-init"}},
+		{e2eEgressImage, []string{"image-e2e-egress"}},
+		{paddockEvilEchoImage, []string{"image-evil-echo"}},
+	})
 
 	if !skipCertManagerInstall {
 		By("checking if cert-manager is already installed")
@@ -90,22 +94,98 @@ var _ = BeforeSuite(func() {
 			_, _ = fmt.Fprintf(GinkgoWriter, "CertManager already installed; skipping\n")
 		}
 	}
+
+	// Suite-level controller-manager deploy. Both top-level Ordered
+	// Describes share this single install+deploy+rollout, instead of
+	// each one tearing down + reinstalling in its BeforeAll. Saves
+	// ~3-4 minutes of wall-clock time per suite run.
+	//
+	// Per-Describe state isolation is via tenant namespaces (each
+	// Describe owns its own namespace prefix); cluster-scoped
+	// resources are also disjoint by name. Each Describe's AfterAll
+	// drains its own state with the controller still alive so
+	// finalizers reconcile correctly. Suite teardown (AfterSuite)
+	// runs `make undeploy` + `make uninstall` after both Describes
+	// are done.
+	By("installing CRDs (suite-level)")
+	_, err := utils.Run(exec.Command("make", "install"))
+	Expect(err).NotTo(HaveOccurred(), "make install")
+
+	By("deploying the controller-manager (suite-level)")
+	_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage)))
+	Expect(err).NotTo(HaveOccurred(), "make deploy")
+
+	By("waiting for the controller-manager to roll out (suite-level)")
+	_, err = utils.Run(exec.Command("kubectl", "-n", "paddock-system",
+		"rollout", "status", "deploy/paddock-controller-manager", "--timeout=180s"))
+	Expect(err).NotTo(HaveOccurred(), "rollout status")
+	// Note: rollout status returning Ready does NOT guarantee the
+	// webhook is reachable — the Endpoints object is populated
+	// before kube-proxy finishes programming the ClusterIP rules,
+	// so the first ~hundreds of milliseconds of "Ready" still fail
+	// webhook calls with "connection refused". applyFromYAML in the
+	// suite's Describes handles that race with a targeted retry loop.
 })
 
 var _ = AfterSuite(func() {
+	// Suite-level controller-manager teardown. Runs after both
+	// Describe AfterAlls have drained their tenant state, so the
+	// controller is still alive while finalizers run and only this
+	// AfterSuite removes the controller itself.
+	By("undeploying the controller-manager (suite-level)")
+	_, _ = utils.Run(exec.Command("make", "undeploy", "ignore-not-found=true"))
+
+	By("uninstalling CRDs (suite-level)")
+	_, _ = utils.Run(exec.Command("make", "uninstall", "ignore-not-found=true"))
+
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
 		utils.UninstallCertManager()
 	}
 })
 
-// buildAndLoad runs `make <targets>` then kind-loads the resulting
-// image. Fails the suite on either step so BeforeSuite reports the
-// upstream failure cause.
-func buildAndLoad(image string, makeTargets []string) {
+// buildJob describes a single image build + kind-load.
+type buildJob struct {
+	image       string
+	makeTargets []string
+}
+
+// buildAndLoadE runs `make <targets>` then kind-loads the resulting
+// image, returning any error rather than asserting via Gomega. Used by
+// buildAndLoadAll's goroutine fan-out where Gomega expectations would
+// not be safely captured outside the test goroutine.
+func buildAndLoadE(image string, makeTargets []string) error {
 	cmd := exec.Command("make", makeTargets...)
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "build %s via %v", image, makeTargets)
-	ExpectWithOffset(1, utils.LoadImageToKindClusterWithName(image)).To(Succeed(),
-		"load %s into Kind", image)
+	if _, err := utils.Run(cmd); err != nil {
+		return fmt.Errorf("build %s via %v: %w", image, makeTargets, err)
+	}
+	if err := utils.LoadImageToKindClusterWithName(image); err != nil {
+		return fmt.Errorf("load %s into Kind: %w", image, err)
+	}
+	return nil
+}
+
+// buildAndLoadAll runs every job's build + kind-load concurrently and
+// aggregates errors. Fails the suite if any job errors.
+func buildAndLoadAll(jobs []buildJob) {
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
+	wg.Add(len(jobs))
+	for _, j := range jobs {
+		go func(j buildJob) {
+			defer wg.Done()
+			if err := buildAndLoadE(j.image, j.makeTargets); err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+			}
+		}(j)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	}
 }
