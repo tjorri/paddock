@@ -184,6 +184,12 @@ type HarnessRunReconciler struct {
 // path (the auditevent TTL reaper gets the remaining verbs via
 // auditevent_controller.go).
 // +kubebuilder:rbac:groups=paddock.dev,resources=auditevents,verbs=create
+// F-18 / Phase 2f: the controller creates per-run/per-Workspace
+// cert-manager.io/v1 Certificate resources (isCA: true) signed by the
+// paddock-proxy-ca-issuer ClusterIssuer. controller-runtime's cache
+// also list/watches Certificates cluster-wide because the type is
+// registered in the scheme.
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch
 
 // Reconcile drives a HarnessRun through its lifecycle. See
 // docs/specs/0001-core-v0.1.md §3.3 for the state machine.

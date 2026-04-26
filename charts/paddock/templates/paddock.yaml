@@ -285,6 +285,22 @@ rules:
       - patch
       - update
       - watch
+  # F-18 / Phase 2f: the controller creates per-run/per-Workspace
+  # cert-manager.io/v1 Certificate resources signed by the
+  # paddock-proxy-ca-issuer ClusterIssuer. controller-runtime's cache
+  # also list/watches Certificates cluster-wide because the type is
+  # registered in the manager's scheme.
+  - apiGroups:
+      - cert-manager.io
+    resources:
+      - certificates
+    verbs:
+      - create
+      - get
+      - list
+      - patch
+      - update
+      - watch
   - apiGroups:
       - ""
     resources:
