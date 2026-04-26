@@ -28,6 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
@@ -240,5 +241,81 @@ var _ = Describe("ensureBrokerCredentials", func() {
 			Name: brokerCredsSecretName("stale"), Namespace: ns,
 		}, &got)
 		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	})
+})
+
+var _ = Describe("reconcileCredentials", func() {
+	const ns = "rc-creds-test"
+
+	BeforeEach(func() {
+		Expect(k8sClient.Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: ns},
+		})).To(SatisfyAny(Succeed(), WithTransform(apierrors.IsAlreadyExists, BeTrue())))
+	})
+
+	It("returns success outcome and sets BrokerReady=True when the broker issues all credentials", func() {
+		fb := &fakeBroker{values: map[string]string{"K": "v"}}
+		r := &HarnessRunReconciler{
+			Client:       k8sClient,
+			Scheme:       k8sClient.Scheme(),
+			Recorder:     record.NewFakeRecorder(8),
+			BrokerClient: fb,
+		}
+		run := &paddockv1alpha1.HarnessRun{
+			ObjectMeta: metav1.ObjectMeta{Name: "rc-success", Namespace: ns},
+			Spec:       paddockv1alpha1.HarnessRunSpec{TemplateRef: paddockv1alpha1.TemplateRef{Name: "tpl"}, Prompt: "hi"},
+		}
+		Expect(k8sClient.Create(ctx, run)).To(Succeed())
+		// Re-fetch so UID is populated.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: run.Name, Namespace: ns}, run)).To(Succeed())
+
+		out, err := r.reconcileCredentials(ctx, run, &resolvedTemplate{
+			Spec: paddockv1alpha1.HarnessTemplateSpec{
+				Requires: paddockv1alpha1.RequireSpec{
+					Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "K"}},
+				},
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.fatal).To(BeFalse())
+		Expect(out.requeue).To(BeFalse())
+		Expect(out.credStatus).To(HaveLen(1))
+
+		var ready *metav1.Condition
+		for i, c := range run.Status.Conditions {
+			if c.Type == paddockv1alpha1.HarnessRunConditionBrokerReady {
+				ready = &run.Status.Conditions[i]
+			}
+		}
+		Expect(ready).NotTo(BeNil())
+		Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("returns requeue outcome when the broker is unavailable", func() {
+		fb := &fakeBroker{errs: map[string]error{"K": fmt.Errorf("connection refused")}}
+		r := &HarnessRunReconciler{
+			Client:       k8sClient,
+			Scheme:       k8sClient.Scheme(),
+			Recorder:     record.NewFakeRecorder(8),
+			BrokerClient: fb,
+		}
+		run := &paddockv1alpha1.HarnessRun{
+			ObjectMeta: metav1.ObjectMeta{Name: "rc-requeue", Namespace: ns},
+			Spec:       paddockv1alpha1.HarnessRunSpec{TemplateRef: paddockv1alpha1.TemplateRef{Name: "tpl"}, Prompt: "hi"},
+		}
+		Expect(k8sClient.Create(ctx, run)).To(Succeed())
+		// Re-fetch so UID is populated.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: run.Name, Namespace: ns}, run)).To(Succeed())
+
+		out, err := r.reconcileCredentials(ctx, run, &resolvedTemplate{
+			Spec: paddockv1alpha1.HarnessTemplateSpec{
+				Requires: paddockv1alpha1.RequireSpec{
+					Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "K"}},
+				},
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.fatal).To(BeFalse())
+		Expect(out.requeue).To(BeTrue())
 	})
 })

@@ -295,80 +295,24 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	})
 
 	// 4a. Issue broker-backed credentials for any requires.credentials
-	// the template declares (ADR-0015). The broker has already answered
-	// admission-time policy questions; here we materialise values into
-	// an owned Secret the agent container consumes via envFrom.
-	credsOk, credStatus, brFatalReason, brFatalMsg, brErr := r.ensureBrokerCredentials(ctx, &run, tpl)
-	if brErr != nil {
-		return ctrl.Result{}, brErr
+	// the template declares (ADR-0015). Delegated to
+	// reconcileCredentials, which sets BrokerReady +
+	// BrokerCredentialsReady, emits per-credential events, and writes
+	// status.credentials.
+	credOutcome, credErr := r.reconcileCredentials(ctx, &run, tpl)
+	if credErr != nil {
+		return ctrl.Result{}, credErr
 	}
-	if brFatalReason != "" {
-		r.fail(&run, paddockv1alpha1.HarnessRunConditionBrokerReady, brFatalReason, brFatalMsg)
+	if credOutcome.fatal {
+		r.fail(&run, paddockv1alpha1.HarnessRunConditionBrokerReady, credOutcome.fatalReason, credOutcome.fatalMsg)
 		return r.commitStatus(ctx, &run, origStatus)
 	}
-	if !credsOk {
-		setCondition(&run.Status.Conditions, metav1.Condition{
-			Type:               paddockv1alpha1.HarnessRunConditionBrokerReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             "BrokerUnavailable",
-			Message:            "waiting on broker to issue credentials",
-			ObservedGeneration: run.Generation,
-		})
-		run.Status.Phase = paddockv1alpha1.HarnessRunPhasePending
+	if credOutcome.requeue {
 		if _, err := r.commitStatus(ctx, &run, origStatus); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
-	// Persist per-credential delivery metadata + summary condition.
-	// status.credentials is overwritten on every successful pass so it
-	// always reflects the latest broker response. Events are emitted
-	// unconditionally — the EventRecorder dedupes by reason/message so
-	// a steady-state reconcile loop won't spam the event stream.
-	run.Status.Credentials = credStatus
-	nProxy, nInContainer := 0, 0
-	for _, c := range credStatus {
-		switch c.DeliveryMode {
-		case paddockv1alpha1.DeliveryModeProxyInjected:
-			nProxy++
-		case paddockv1alpha1.DeliveryModeInContainer:
-			nInContainer++
-		}
-	}
-	setCondition(&run.Status.Conditions, metav1.Condition{
-		Type:   paddockv1alpha1.HarnessRunConditionBrokerCredentialsReady,
-		Status: metav1.ConditionTrue,
-		Reason: "AllIssued",
-		Message: fmt.Sprintf("%d credentials issued: %d proxy-injected, %d in-container",
-			len(credStatus), nProxy, nInContainer),
-		ObservedGeneration: run.Generation,
-	})
-	for _, c := range credStatus {
-		switch c.DeliveryMode {
-		case paddockv1alpha1.DeliveryModeProxyInjected:
-			r.Recorder.Eventf(&run, corev1.EventTypeNormal, "CredentialIssued",
-				"name=%s mode=ProxyInjected provider=%s", c.Name, c.Provider)
-		case paddockv1alpha1.DeliveryModeInContainer:
-			reason := c.InContainerReason
-			if len(reason) > 60 {
-				reason = reason[:60] + "..."
-			}
-			r.Recorder.Eventf(&run, corev1.EventTypeNormal, "InContainerCredentialDelivered",
-				"name=%s reason=%q", c.Name, reason)
-		}
-	}
-
-	brokerMsg := "no broker credentials required"
-	if len(tpl.Spec.Requires.Credentials) > 0 {
-		brokerMsg = fmt.Sprintf("broker issued %d credential(s)", len(tpl.Spec.Requires.Credentials))
-	}
-	setCondition(&run.Status.Conditions, metav1.Condition{
-		Type:               paddockv1alpha1.HarnessRunConditionBrokerReady,
-		Status:             metav1.ConditionTrue,
-		Reason:             "Issued",
-		Message:            brokerMsg,
-		ObservedGeneration: run.Generation,
-	})
 
 	// 4b. Materialise the per-run proxy-tls Secret and flip
 	// EgressConfigured (ADR-0013 §7.3). When proxy integration is
@@ -589,6 +533,108 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// credentialsReconcileOutcome is the four-way return shape of
+// reconcileCredentials. The caller in Reconcile switches on it to
+// decide whether to fail+commit, requeue+commit, or proceed.
+type credentialsReconcileOutcome struct {
+	credStatus  []paddockv1alpha1.CredentialStatus
+	requeue     bool // when true, caller commits + requeues 10s
+	fatal       bool // when true, caller marks BrokerReady fatal and commits
+	fatalReason string
+	fatalMsg    string
+}
+
+// reconcileCredentials issues per-credential bearers via the broker,
+// updates per-credential status + summary conditions + events, and
+// reports back to the Reconcile loop how to proceed.
+//
+// Outcome interpretation (in caller):
+//   - err != nil: transient failure; return (ctrl.Result{}, err) without
+//     committing status changes the method has already written.
+//   - outcome.fatal == true: r.fail with outcome.fatalReason/Msg, then
+//     commitStatus.
+//   - outcome.requeue == true: commitStatus then requeue 10s.
+//   - otherwise: continue Reconcile.
+//
+// The method is idempotent: a steady-state reconcile loop with no
+// broker change emits no new events (the EventRecorder dedupes by
+// reason/message).
+func (r *HarnessRunReconciler) reconcileCredentials(
+	ctx context.Context,
+	run *paddockv1alpha1.HarnessRun,
+	tpl *resolvedTemplate,
+) (credentialsReconcileOutcome, error) {
+	credsOk, credStatus, brFatalReason, brFatalMsg, brErr := r.ensureBrokerCredentials(ctx, run, tpl)
+	if brErr != nil {
+		return credentialsReconcileOutcome{}, brErr
+	}
+	if brFatalReason != "" {
+		return credentialsReconcileOutcome{fatal: true, fatalReason: brFatalReason, fatalMsg: brFatalMsg}, nil
+	}
+	if !credsOk {
+		setCondition(&run.Status.Conditions, metav1.Condition{
+			Type:               paddockv1alpha1.HarnessRunConditionBrokerReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "BrokerUnavailable",
+			Message:            "waiting on broker to issue credentials",
+			ObservedGeneration: run.Generation,
+		})
+		run.Status.Phase = paddockv1alpha1.HarnessRunPhasePending
+		return credentialsReconcileOutcome{requeue: true}, nil
+	}
+
+	// Persist per-credential delivery metadata + summary condition.
+	// status.credentials is overwritten on every successful pass so it
+	// always reflects the latest broker response. Events are emitted
+	// unconditionally — the EventRecorder dedupes by reason/message so
+	// a steady-state reconcile loop won't spam the event stream.
+	run.Status.Credentials = credStatus
+	nProxy, nInContainer := 0, 0
+	for _, c := range credStatus {
+		switch c.DeliveryMode {
+		case paddockv1alpha1.DeliveryModeProxyInjected:
+			nProxy++
+		case paddockv1alpha1.DeliveryModeInContainer:
+			nInContainer++
+		}
+	}
+	setCondition(&run.Status.Conditions, metav1.Condition{
+		Type:   paddockv1alpha1.HarnessRunConditionBrokerCredentialsReady,
+		Status: metav1.ConditionTrue,
+		Reason: "AllIssued",
+		Message: fmt.Sprintf("%d credentials issued: %d proxy-injected, %d in-container",
+			len(credStatus), nProxy, nInContainer),
+		ObservedGeneration: run.Generation,
+	})
+	for _, c := range credStatus {
+		switch c.DeliveryMode {
+		case paddockv1alpha1.DeliveryModeProxyInjected:
+			r.Recorder.Eventf(run, corev1.EventTypeNormal, "CredentialIssued",
+				"name=%s mode=ProxyInjected provider=%s", c.Name, c.Provider)
+		case paddockv1alpha1.DeliveryModeInContainer:
+			reason := c.InContainerReason
+			if len(reason) > 60 {
+				reason = reason[:60] + "..."
+			}
+			r.Recorder.Eventf(run, corev1.EventTypeNormal, "InContainerCredentialDelivered",
+				"name=%s reason=%q", c.Name, reason)
+		}
+	}
+
+	brokerMsg := "no broker credentials required"
+	if len(tpl.Spec.Requires.Credentials) > 0 {
+		brokerMsg = fmt.Sprintf("broker issued %d credential(s)", len(tpl.Spec.Requires.Credentials))
+	}
+	setCondition(&run.Status.Conditions, metav1.Condition{
+		Type:               paddockv1alpha1.HarnessRunConditionBrokerReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "Issued",
+		Message:            brokerMsg,
+		ObservedGeneration: run.Generation,
+	})
+	return credentialsReconcileOutcome{credStatus: credStatus}, nil
 }
 
 // ensureWorkspace returns the Workspace this run uses. If
