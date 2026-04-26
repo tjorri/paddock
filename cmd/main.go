@@ -93,6 +93,7 @@ func main() {
 	var brokerEndpoint string
 	var brokerTokenPath string
 	var brokerCAPath string
+	var brokerPort int
 	var proxyImage string
 	var proxyCAClusterIssuer string
 	var proxyAllowList string
@@ -115,6 +116,8 @@ func main() {
 	flag.StringVar(&brokerNamespace, "broker-namespace", "paddock-system",
 		"Namespace where the broker is deployed; used to construct the per-run NetworkPolicy "+
 			"broker-egress rule when --networkpolicy-enforce=on. Default matches the chart.")
+	flag.IntVar(&brokerPort, "broker-port", 8443,
+		"TLS service port the broker listens on. Plumbed into per-pod NetworkPolicy egress rules.")
 	flag.StringVar(&brokerTokenPath, "broker-token-path", "/var/run/secrets/paddock-broker/token",
 		"Path to a ProjectedServiceAccountToken with audience=paddock-broker.")
 	flag.StringVar(&brokerCAPath, "broker-ca-path", "/etc/paddock-broker/ca/ca.crt",
@@ -348,26 +351,34 @@ func main() {
 	setupLog.Info("NetworkPolicy enforcement", "mode", npEnforce,
 		"effective", hrReconciler.NetworkPolicyEnforce == controller.NetworkPolicyEnforceOn ||
 			(hrReconciler.NetworkPolicyEnforce == controller.NetworkPolicyEnforceAuto && hrReconciler.NetworkPolicyAutoEnabled))
-	if err := hrReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "HarnessRun")
+	// Construct the shared config after the CNI probe so npAuto reflects the
+	// post-probe value. HarnessRunReconciler still carries its own copies of
+	// these fields; Task 6b will embed ProxyBrokerConfig there too.
+	if brokerPort < 1 || brokerPort > 65535 {
+		setupLog.Error(fmt.Errorf("invalid --broker-port=%d (want 1-65535)", brokerPort), "invalid flag")
 		os.Exit(1)
 	}
-	if err := (&controller.WorkspaceReconciler{
-		Client:               mgr.GetClient(),
-		Scheme:               mgr.GetScheme(),
-		ProxyImage:           proxyImage,
-		BrokerEndpoint:       brokerEndpoint,
-		ProxyCAClusterIssuer: proxyCAClusterIssuer,
-		BrokerCASource: controller.BrokerCASource{
-			Name:      brokerCAName,
-			Namespace: brokerCANamespace,
-		},
+	proxyBrokerCfg := controller.ProxyBrokerConfig{
+		ProxyImage:               proxyImage,
+		BrokerEndpoint:           brokerEndpoint,
+		BrokerNamespace:          brokerNamespace,
+		BrokerPort:               int32(brokerPort), //nolint:gosec // validated 1-65535 above
+		BrokerCASource:           controller.BrokerCASource{Name: brokerCAName, Namespace: brokerCANamespace},
+		ProxyCAClusterIssuer:     proxyCAClusterIssuer,
 		NetworkPolicyEnforce:     npEnforce,
 		NetworkPolicyAutoEnabled: npAuto,
 		ClusterPodCIDR:           clusterPodCIDR,
 		ClusterServiceCIDR:       clusterServiceCIDR,
 		APIServerIPs:             apiserverIPs,
-		BrokerNamespace:          brokerNamespace,
+	}
+	if err := hrReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "HarnessRun")
+		os.Exit(1)
+	}
+	if err := (&controller.WorkspaceReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		ProxyBrokerConfig: proxyBrokerCfg,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Workspace")
 		os.Exit(1)

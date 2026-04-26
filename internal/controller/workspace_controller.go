@@ -21,7 +21,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"net"
 	"reflect"
 	"time"
 
@@ -55,36 +54,11 @@ type WorkspaceReconciler struct {
 	// tests; production uses defaultSeedImage.
 	SeedImage string
 
-	// Proxy / broker configuration mirrored from the HarnessRun
-	// reconciler. Set at manager startup. Non-empty values opt the
-	// seed Pod into broker-backed git credentials: when a repo in
-	// spec.seed.repos declares brokerCredentialRef, the seed Pod
-	// gains a proxy sidecar that MITM-swaps the Paddock bearer for
-	// the real upstream token. Empty fields mean seeds stay on the
-	// v0.2 credentialsSecretRef path (fallback).
-	ProxyImage           string
-	BrokerEndpoint       string
-	ProxyCAClusterIssuer string
-	BrokerCASource       BrokerCASource
-
-	// NetworkPolicyEnforce controls whether the controller emits a
-	// per-seed-Pod NetworkPolicy. Mirrors HarnessRunReconciler.NetworkPolicyEnforce.
-	// See finding F-45.
-	NetworkPolicyEnforce NetworkPolicyEnforceMode
-	// NetworkPolicyAutoEnabled is set at manager startup based on the
-	// CNI probe; when NetworkPolicyEnforce="auto", this gates emission.
-	NetworkPolicyAutoEnabled bool
-	// ClusterPodCIDR / ClusterServiceCIDR — same purpose as on
-	// HarnessRunReconciler. Excluded from seed-Pod NP egress. See F-19.
-	ClusterPodCIDR     string
-	ClusterServiceCIDR string
-	// BrokerNamespace mirrors HarnessRunReconciler.BrokerNamespace; used
-	// by the per-seed-Pod NetworkPolicy. See F-45.
-	BrokerNamespace string
-	// APIServerIPs mirrors HarnessRunReconciler.APIServerIPs; used by the
-	// per-seed-Pod NetworkPolicy to allow TCP/443 egress to the apiserver.
-	// F-41 / Phase 2d.
-	APIServerIPs []net.IP
+	// ProxyBrokerConfig carries the shared cluster-and-manager config
+	// used to render seed-pod proxy sidecars and per-seed-Pod
+	// NetworkPolicies. Populated once in cmd/main.go and embedded in
+	// both reconcilers.
+	ProxyBrokerConfig
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=workspaces,verbs=get;list;watch;create;update;patch;delete
@@ -445,6 +419,7 @@ func (r *WorkspaceReconciler) ensureSeedNetworkPolicy(ctx context.Context, ws *p
 		ClusterPodCIDR:     r.ClusterPodCIDR,
 		ClusterServiceCIDR: r.ClusterServiceCIDR,
 		BrokerNamespace:    r.BrokerNamespace,
+		BrokerPort:         r.BrokerPort,
 		APIServerIPs:       r.APIServerIPs,
 	}
 	desired := buildSeedNetworkPolicy(ws, cfg)
