@@ -27,9 +27,12 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"time"
+
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
 
 // dialUpstreamTLS opens a TLS connection to tcpAddr, presenting and
@@ -37,10 +40,10 @@ import (
 // fallback, TLS-config clone with ServerName injection, and the
 // HandshakeContext-with-timeout shared by both upstream legs.
 //
-// Callers:
-//   - cooperative mode (dialUpstream): tcpAddr = net.JoinHostPort(host, port);
+// Called by doMITM with:
+//   - cooperative mode: tcpAddr = net.JoinHostPort(host, port);
 //     serverName = host. The dial address and the cert hostname coincide.
-//   - transparent mode (dialUpstreamAt): tcpAddr = net.JoinHostPort(ip, port);
+//   - transparent mode: tcpAddr = net.JoinHostPort(origIP, origPort);
 //     serverName = sni. The dial address is the SO_ORIGINAL_DST IP, but
 //     the cert is verified against the agent-requested SNI so the agent's
 //     intent (connect to hostname X) is preserved.
@@ -73,4 +76,98 @@ func (s *Server) dialUpstreamTLS(ctx context.Context, tcpAddr, serverName string
 // used by both wrappers. Inlined deliberately — keeps the call sites short.
 func joinHostPortInt(host string, port int) string {
 	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+// doMITM is the shared MITM core called by both cooperative-mode
+// (server.go::mitm) and transparent-mode (mode.go::mitmTransparent)
+// entry points. It owns:
+//
+//  1. Forging a leaf cert for sni.
+//  2. Terminating TLS on the agent side with HandshakeContext(timeout).
+//  3. Dialing the upstream via dialUpstreamTLS (cooperative passes
+//     dialHost == sni; transparent passes dialHost = original-DST IP).
+//  4. Emitting the allow-path AuditEvent (with Kind=egress-discovery-allow
+//     when decision.DiscoveryAllow is set) — log+counter on failure;
+//     allow-path audit is fail-open by F-24 design.
+//  5. Either entering the substitute-auth request loop (when
+//     decision.SubstituteAuth && Substituter != nil) or running the
+//     bytes-shuttle with idle deadlines.
+//
+// Returns an error only for diagnostic logging; the caller does not
+// fail the connection on a non-nil result. The returned error is
+// suitable to log at V(1) — bytes-shuttle EOFs and similar are normal.
+func (s *Server) doMITM(
+	ctx context.Context,
+	clientConn net.Conn,
+	sni string,
+	dialHost string,
+	port int,
+	decision Decision,
+) error {
+	leaf, err := s.CA.ForgeFor(sni)
+	if err != nil {
+		s.log().Error(err, "forge leaf", "host", sni)
+		return fmt.Errorf("forge leaf: %w", err)
+	}
+	clientTLS := tls.Server(clientConn, &tls.Config{
+		Certificates: []tls.Certificate{*leaf},
+		MinVersion:   tls.VersionTLS12,
+	})
+	hsCtx, cancel := context.WithTimeout(ctx, s.handshakeTimeout())
+	defer cancel()
+	if err := clientTLS.HandshakeContext(hsCtx); err != nil {
+		s.log().V(1).Info("client TLS handshake failed", "host", sni, "err", err)
+		return fmt.Errorf("client TLS handshake: %w", err)
+	}
+	defer func() { _ = clientTLS.Close() }()
+
+	upstreamConn, err := s.dialUpstreamTLS(ctx, joinHostPortInt(dialHost, port), sni)
+	if err != nil {
+		s.log().V(1).Info("upstream dial failed", "host", sni, "err", err)
+		return fmt.Errorf("upstream dial: %w", err)
+	}
+	defer func() { _ = upstreamConn.Close() }()
+
+	kind := paddockv1alpha1.AuditKindEgressAllow
+	if decision.DiscoveryAllow {
+		kind = paddockv1alpha1.AuditKindEgressDiscoveryAllow
+	}
+	if aErr := s.recordEgress(ctx, EgressEvent{
+		Host: sni, Port: port,
+		Decision:      paddockv1alpha1.AuditDecisionGranted,
+		MatchedPolicy: decision.MatchedPolicy,
+		Kind:          kind,
+		Reason:        decision.Reason,
+	}); aErr != nil {
+		// Allow path proceeds despite audit failure — F-24 fail-open.
+		// The connection's security posture is already enforced; failing
+		// legit traffic on a transient audit hiccup is worse than a
+		// missing record. paddock_audit_write_failures_total catches it.
+		s.log().Error(aErr, "audit write failed on allow path", "host", sni, "port", port)
+	}
+
+	if decision.SubstituteAuth && s.Substituter != nil {
+		if err := handleSubstituted(ctx, clientTLS, upstreamConn, sni, port, s.Substituter, s.idleTimeout()); err != nil {
+			s.log().V(1).Info("substitute-auth MITM ended", "host", sni, "err", err)
+			return err
+		}
+		return nil
+	}
+
+	// Full-duplex copy with idle deadline on each direction. Exit as soon
+	// as either direction closes. F-25: a tunnel that goes idle for
+	// s.idleTimeout() is torn down so a revoked BrokerPolicy takes
+	// effect within that window even on opaque (no-decrypt) flows.
+	clientReader := &deadlineExtendingReader{conn: clientTLS, timeout: s.idleTimeout()}
+	upstreamReader := &deadlineExtendingReader{conn: upstreamConn, timeout: s.idleTimeout()}
+	errCh := make(chan error, 2)
+	go func() { _, err := io.Copy(upstreamConn, clientReader); errCh <- err }()
+	go func() { _, err := io.Copy(clientTLS, upstreamReader); errCh <- err }()
+	// Single receive is intentional: when either io.Copy returns the
+	// deferred close-pair fires, the second goroutine's Read errors out
+	// against the closed conn (or the idle deadline), and it sends to
+	// errCh on its way out. The send doesn't block (errCh is buffered 2),
+	// the goroutine exits, and we don't leak. XC-04 in the engineering
+	// review tracks this comment.
+	return <-errCh
 }

@@ -18,9 +18,7 @@ package proxy
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
-	"io"
 	"net"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
@@ -110,13 +108,10 @@ func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 	s.mitmTransparent(ctx, peek, sni, origIP, origPort, decision)
 }
 
-// mitmTransparent terminates TLS on the agent side (leaf forged from
-// SNI), dials the upstream at the original IP:port, and proxies bytes.
-// Symmetric with Server.mitm but without the CONNECT 200-OK write —
-// transparent mode drops straight into TLS termination.
-//
-// Branches to the substitute-auth request loop when the matched
-// grant so declares, identical to the cooperative MITM path.
+// mitmTransparent is the transparent-mode MITM entry. The agent's TLS
+// destination IP came from SO_ORIGINAL_DST; the SNI came from the
+// peeked ClientHello. The leaf is forged for sni, the upstream is
+// dialed at the original IP, and the cert is verified against sni.
 func (s *Server) mitmTransparent(
 	ctx context.Context,
 	clientConn net.Conn,
@@ -125,71 +120,9 @@ func (s *Server) mitmTransparent(
 	origPort int,
 	decision Decision,
 ) {
-	leaf, err := s.CA.ForgeFor(sni)
-	if err != nil {
-		s.log().Error(err, "forge leaf", "host", sni)
-		return
+	if err := s.doMITM(ctx, clientConn, sni, origIP.String(), origPort, decision); err != nil {
+		s.log().V(1).Info("transparent MITM ended", "host", sni, "err", err)
 	}
-	clientTLS := tls.Server(clientConn, &tls.Config{
-		Certificates: []tls.Certificate{*leaf},
-		MinVersion:   tls.VersionTLS12,
-	})
-	hsCtx, cancel := context.WithTimeout(ctx, s.handshakeTimeout())
-	defer cancel()
-	if err := clientTLS.HandshakeContext(hsCtx); err != nil {
-		s.log().V(1).Info("client TLS handshake failed", "host", sni, "err", err)
-		return
-	}
-	defer func() { _ = clientTLS.Close() }()
-
-	upstream, err := s.dialUpstreamAt(ctx, sni, origIP, origPort)
-	if err != nil {
-		s.log().V(1).Info("upstream dial failed", "host", sni, "err", err)
-		return
-	}
-	defer func() { _ = upstream.Close() }()
-
-	kind := paddockv1alpha1.AuditKindEgressAllow
-	if decision.DiscoveryAllow {
-		kind = paddockv1alpha1.AuditKindEgressDiscoveryAllow
-	}
-	if aErr := s.recordEgress(ctx, EgressEvent{
-		Host: sni, Port: origPort,
-		Decision:      paddockv1alpha1.AuditDecisionGranted,
-		MatchedPolicy: decision.MatchedPolicy,
-		Kind:          kind,
-		Reason:        decision.Reason,
-	}); aErr != nil {
-		// Allow path proceeds despite audit failure — see comment in
-		// server.go's mitm() for the rationale.
-		s.log().Error(aErr, "audit write failed on allow path", "host", sni, "port", origPort)
-	}
-
-	if decision.SubstituteAuth && s.Substituter != nil {
-		if err := handleSubstituted(ctx, clientTLS, upstream, sni, origPort, s.Substituter, s.idleTimeout()); err != nil {
-			s.log().V(1).Info("substitute-auth MITM ended", "host", sni, "err", err)
-		}
-		return
-	}
-
-	// F-25: idle-deadline on each direction so a stale-policy tunnel
-	// closes within s.idleTimeout(). copyNonBlocking is now wrapper-only
-	// kept for the test scaffolding (legacy alias).
-	clientReader := &deadlineExtendingReader{conn: clientTLS, timeout: s.idleTimeout()}
-	upstreamReader := &deadlineExtendingReader{conn: upstream, timeout: s.idleTimeout()}
-	errCh := make(chan error, 2)
-	go func() { _, err := io.Copy(upstream, clientReader); errCh <- err }()
-	go func() { _, err := io.Copy(clientTLS, upstreamReader); errCh <- err }()
-	<-errCh
-}
-
-// dialUpstreamAt dials a TLS upstream using the caller-specified IP
-// directly — i.e. the SO_ORIGINAL_DST target — but verifies the peer
-// certificate against the SNI the agent requested. This preserves the
-// agent's intent (connect to hostname X) while respecting the kernel's
-// original routing decision. All shared logic lives in dialUpstreamTLS.
-func (s *Server) dialUpstreamAt(ctx context.Context, sni string, ip net.IP, port int) (net.Conn, error) {
-	return s.dialUpstreamTLS(ctx, joinHostPortInt(ip.String(), port), sni)
 }
 
 // abruptClose sets SO_LINGER to 0 on conn (when supported) so the

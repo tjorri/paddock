@@ -29,7 +29,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -190,85 +189,14 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	s.mitm(ctx, clientConn, host, port, decision)
 }
 
-// mitm terminates TLS on the agent side, dials the upstream with TLS,
-// and either:
-//   - shuttles bytes both ways (default, fastest path), or
-//   - runs the request-by-request loop via handleSubstituted when the
-//     matched policy's egress grant declared SubstituteAuth=true — the
-//     proxy then parses each HTTP request, swaps headers through the
-//     broker, and forwards.
-//
-// Audit allow-events land here on success (M4: per-connection;
-// ADR-0016 summarisation in a later milestone).
+// mitm is the cooperative-mode MITM entry. The CONNECT 200 write and
+// hijack already happened in handleConnect; mitm forges a leaf for
+// host, terminates TLS, and delegates to doMITM. In cooperative mode
+// the dial host (= upstream IP/hostname) and the SNI coincide.
 func (s *Server) mitm(ctx context.Context, clientConn net.Conn, host string, port int, decision Decision) {
-	leaf, err := s.CA.ForgeFor(host)
-	if err != nil {
-		s.log().Error(err, "forge leaf", "host", host)
-		return
+	if err := s.doMITM(ctx, clientConn, host, host, port, decision); err != nil {
+		s.log().V(1).Info("cooperative MITM ended", "host", host, "err", err)
 	}
-	clientTLS := tls.Server(clientConn, &tls.Config{
-		Certificates: []tls.Certificate{*leaf},
-		MinVersion:   tls.VersionTLS12,
-	})
-	hsCtx, cancel := context.WithTimeout(ctx, s.handshakeTimeout())
-	defer cancel()
-	if err := clientTLS.HandshakeContext(hsCtx); err != nil {
-		s.log().V(1).Info("client TLS handshake failed", "host", host, "err", err)
-		return
-	}
-	defer func() { _ = clientTLS.Close() }()
-
-	upstreamConn, err := s.dialUpstream(ctx, host, port)
-	if err != nil {
-		s.log().V(1).Info("upstream dial failed", "host", host, "err", err)
-		return
-	}
-	defer func() { _ = upstreamConn.Close() }()
-
-	kind := paddockv1alpha1.AuditKindEgressAllow
-	if decision.DiscoveryAllow {
-		kind = paddockv1alpha1.AuditKindEgressDiscoveryAllow
-	}
-	if aErr := s.recordEgress(ctx, EgressEvent{
-		Host: host, Port: port,
-		Decision:      paddockv1alpha1.AuditDecisionGranted,
-		MatchedPolicy: decision.MatchedPolicy,
-		Kind:          kind,
-		Reason:        decision.Reason,
-	}); aErr != nil {
-		// Allow path proceeds despite audit failure — the connection's
-		// security posture is already enforced, and failing legit
-		// traffic on a transient etcd hiccup is worse than a missing
-		// audit record. paddock_audit_write_failures_total catches it.
-		s.log().Error(aErr, "audit write failed on allow path", "host", host, "port", port)
-	}
-
-	if decision.SubstituteAuth && s.Substituter != nil {
-		if err := handleSubstituted(ctx, clientTLS, upstreamConn, host, port, s.Substituter, s.idleTimeout()); err != nil {
-			s.log().V(1).Info("substitute-auth MITM ended", "host", host, "err", err)
-		}
-		return
-	}
-
-	// Full-duplex copy with idle deadline on each direction. Exit as
-	// soon as either direction closes — the proxy does not add buffering
-	// beyond the kernel socket buffers. F-25: a tunnel that goes idle
-	// for s.idleTimeout() is torn down so a revoked BrokerPolicy takes
-	// effect within that window even on opaque (no-MITM-decrypt) flows.
-	clientReader := &deadlineExtendingReader{conn: clientTLS, timeout: s.idleTimeout()}
-	upstreamReader := &deadlineExtendingReader{conn: upstreamConn, timeout: s.idleTimeout()}
-	errCh := make(chan error, 2)
-	go func() { _, err := io.Copy(upstreamConn, clientReader); errCh <- err }()
-	go func() { _, err := io.Copy(clientTLS, upstreamReader); errCh <- err }()
-	<-errCh
-}
-
-// dialUpstream opens a TLS connection to host:port for cooperative
-// (CONNECT) mode. The dial target and the cert hostname coincide.
-// All shared logic (dialer fallback, TLS-config clone, ServerName
-// injection, handshake timeout) lives in dialUpstreamTLS.
-func (s *Server) dialUpstream(ctx context.Context, host string, port int) (net.Conn, error) {
-	return s.dialUpstreamTLS(ctx, joinHostPortInt(host, port), host)
 }
 
 func (s *Server) handshakeTimeout() time.Duration {
