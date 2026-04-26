@@ -47,6 +47,26 @@ const (
 	PathReadyz         = "/readyz"
 )
 
+// Symbolic broker error codes returned in ErrorResponse.Code. Kept
+// here so callers can compare against typed constants instead of
+// string literals (XC-02). The list mirrors the inline doc on
+// ErrorResponse — extend both together.
+const (
+	CodeBadRequest         = "BadRequest"
+	CodeUnauthorized       = "Unauthorized"
+	CodeForbidden          = "Forbidden"
+	CodeRunNotFound        = "RunNotFound"
+	CodeRunTerminated      = "RunTerminated"
+	CodeCredentialNotFound = "CredentialNotFound"
+	CodePolicyMissing      = "PolicyMissing"
+	CodePolicyRevoked      = "PolicyRevoked"
+	CodeEgressRevoked      = "EgressRevoked"
+	CodeHostNotAllowed     = "HostNotAllowed"
+	CodeBearerUnknown      = "BearerUnknown"
+	CodeAuditUnavailable   = "AuditUnavailable"
+	CodeProviderFailure    = "ProviderFailure"
+)
+
 // IssueRequest asks the broker to issue a value for one of the named
 // credentials declared on the run's template.
 type IssueRequest struct {

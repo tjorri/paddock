@@ -113,7 +113,11 @@ func IsBrokerCodeFatal(err error) bool {
 		return false
 	}
 	switch be.Code {
-	case "RunNotFound", "CredentialNotFound", "PolicyMissing", "BadRequest", "Forbidden":
+	case brokerapi.CodeRunNotFound,
+		brokerapi.CodeCredentialNotFound,
+		brokerapi.CodePolicyMissing,
+		brokerapi.CodeBadRequest,
+		brokerapi.CodeForbidden:
 		return true
 	}
 	return false

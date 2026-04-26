@@ -205,3 +205,25 @@ func TestBrokerHTTPClient_Issue_TokenReaderError(t *testing.T) {
 		t.Fatalf("expected token-reader error")
 	}
 }
+
+func TestIsBrokerCodeFatal_UsesTypedConstants(t *testing.T) {
+	cases := []struct {
+		code  string
+		fatal bool
+	}{
+		{brokerapi.CodeRunNotFound, true},
+		{brokerapi.CodeCredentialNotFound, true},
+		{brokerapi.CodePolicyMissing, true},
+		{brokerapi.CodeBadRequest, true},
+		{brokerapi.CodeForbidden, true},
+		{brokerapi.CodeProviderFailure, false},
+		{brokerapi.CodeAuditUnavailable, false},
+		{"SomeFutureCode", false},
+	}
+	for _, tc := range cases {
+		err := &brokerclient.BrokerError{Status: 500, Code: tc.code}
+		if got := IsBrokerCodeFatal(err); got != tc.fatal {
+			t.Errorf("IsBrokerCodeFatal(%q) = %v, want %v", tc.code, got, tc.fatal)
+		}
+	}
+}
