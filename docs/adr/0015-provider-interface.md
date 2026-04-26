@@ -59,3 +59,15 @@ type Provider interface {
 - **Single interface with only `Issue`, leases encoded in the caller.** Rejected: `Revoke` needs provider-side cleanup (PAT pool release, GitHub token revocation endpoint). Caller-side lease tracking pushes every provider's idiosyncrasies onto the caller, which is the wrong direction for an extension point.
 - **One Secret per provider instance holding all config.** Rejected: App IDs and installation IDs aren't secrets; stuffing them into Secrets makes `kubectl describe brokerpolicy` useless for operators debugging a misconfigured installation ID.
 - **Runtime-pluggable providers via Go plugin or WebAssembly.** Rejected for v0.3 — the supply-chain story and debugging surface (panic in a plugin takes down the broker) aren't worth the flexibility before we have three external providers asking for it.
+
+## Phase 2g update (2026-04-26)
+
+`providers.SubstituteResult` gains three additive fields:
+
+- `AllowedHeaders []string` — proxy-side allowlist of header names the upstream may receive alongside the substituted credential. Empty fails closed (proxy strips all but `mustKeep` ∪ `SetHeaders` keys). Provider authors must populate this; the empty default is intentional.
+- `AllowedQueryParams []string` — same shape for URL query parameters.
+- `CredentialName string` — internal-only field the broker handler uses to re-evaluate the matching `BrokerPolicy` grant per request (F-10). Not emitted on the proxy↔broker wire.
+
+`SubstituteAuthResponse` carries `AllowedHeaders` + `AllowedQueryParams` on the wire (additive; pre-v1, evolves in place). `CredentialName` stays internal — the proxy doesn't need it.
+
+Each vertical-provider lease (`anthropicLease`, `githubLease`, `patLease`) now records `AllowedHosts []string` at `Issue` time. `SubstituteAuth` rejects bearer use against hosts not on the list via `hostMatchesGlobs` (mirroring `UserSuppliedSecretProvider`).

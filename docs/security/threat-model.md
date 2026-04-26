@@ -242,7 +242,7 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | STRIDE                     | Threat                                                    | Defence                                                       |
 |----------------------------|-----------------------------------------------------------|---------------------------------------------------------------|
 | Spoofing                   | Agent connects to attacker-controlled DNS-rebound IP      | Proxy resolves SNI; allowlist matches host (see F-22)          |
-| Tampering                  | Agent modifies request after substitution                 | Proxy re-checks per request; agent doesn't see real cred        |
+| Tampering                  | Agent modifies request after substitution                 | Proxy re-checks per request; agent doesn't see real cred[^per-request-recheck] |
 | Repudiation                | External call lacks audit trail                           | AuditEvent on every connection                                 |
 | Information disclosure     | Allowlisted host receives substituted secret              | Trusted upstream; substitution targets declared in policy       |
 | Denial of service          | Agent floods upstream                                     | Proxy connection limits; upstream-side rate limit              |
@@ -271,3 +271,5 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | Elevation of privilege     | Seed Job gains write to a non-target repo                 | Token lease scope; broker validates per-call                   |
 
 [^per-run-ca]: Phase 2f (2026-04-26) makes this property factually accurate. Prior to Phase 2f, this row was a documentation/code mismatch — the per-run Secret content was a byte-for-byte copy of the cluster root keypair (F-18). After Phase 2f, each run has its own intermediate CA issued by cert-manager via a `ClusterIssuer` of `kind: CA`; the cluster root never leaves cert-manager's signing path; tenant A's agent does not trust leaves signed by tenant B's intermediate.
+
+[^per-request-recheck]: Phase 2g (2026-04-26) makes this property factually hold. Prior to Phase 2g, the broker's `handleSubstituteAuth` did not re-fetch `HarnessRun` or re-call `matchPolicyGrant` per request (F-10); the proxy did not re-call `ValidateEgress` per request inside a kept-alive substitute connection (F-25); and vertical providers did not host-scope `SubstituteAuth` (F-09). After Phase 2g, every `SubstituteAuth` call re-validates run phase + policy grant + egress grant + per-lease `AllowedHosts`, and bytes-shuttle / substitute-loop paths enforce a manager-flag idle deadline (default 60s) so revocation takes effect within that window even on opaque tunnels.

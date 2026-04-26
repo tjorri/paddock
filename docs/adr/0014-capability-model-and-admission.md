@@ -59,3 +59,7 @@ emitted by `HarnessRunCustomValidator` and `BrokerPolicyCustomValidator`.
 The validators wire an `auditing.Sink` from `cmd/main.go`. Audit-write
 failures are fail-open — admission decisions are not gated on
 AuditEvent availability. See Phase 2c spec §5.3.
+
+## Phase 2g update (2026-04-26)
+
+Runtime enforcement on the substitute-auth path is now actually independent of admission, as this ADR claimed all along. `internal/broker/server.go::handleSubstituteAuth` re-fetches the `HarnessRun` and re-evaluates `matchPolicyGrant` + `matchEgressGrant` on every call. The cached client makes both lookups sub-millisecond informer-cache hits, so the per-request cost is negligible. The audit's F-10 finding (the gap that motivated this update) is closed in Phase 2g.
