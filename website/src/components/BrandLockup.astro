@@ -1,0 +1,22 @@
+---
+interface Props {
+  /** Pixel width of the rendered lockup. Defaults to 240. */
+  width?: number;
+  /** Optional override of the alt text. */
+  alt?: string;
+  /** Use the standalone logo (hexagon) instead of the lockup. */
+  logoOnly?: boolean;
+}
+const { width = 240, alt = "Paddock", logoOnly = false } = Astro.props;
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+const lightSrc = logoOnly
+  ? `${base}/brand/paddock-logo-light.svg`
+  : `${base}/brand/paddock-lockup-light.svg`;
+const darkSrc = logoOnly
+  ? `${base}/brand/paddock-logo-dark.svg`
+  : `${base}/brand/paddock-lockup-dark.svg`;
+---
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset={darkSrc} />
+  <img src={lightSrc} alt={alt} width={width} loading="eager" decoding="async" />
+</picture>
