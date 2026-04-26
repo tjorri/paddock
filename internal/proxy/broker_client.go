@@ -17,45 +17,39 @@ limitations under the License.
 package proxy
 
 import (
-	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"strings"
 	"time"
 
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 	"paddock.dev/paddock/internal/broker/providers"
+	"paddock.dev/paddock/internal/brokerclient"
 )
 
 // BrokerClient talks to the paddock-broker over HTTPS, authenticated
-// with a ProjectedServiceAccountToken (audience=paddock-broker) that
-// the reconciler mounts on the proxy sidecar. Implements both Validator
-// (per-connection egress check) and Substituter (per-request header
-// swap) — a single client because both endpoints share the TLS config
-// and auth plumbing.
+// with a ProjectedServiceAccountToken. Implements both Validator and
+// Substituter — a single client because both endpoints share the same
+// TLS + auth plumbing.
 //
 // Zero value not usable; construct via NewBrokerClient.
+//
+// BrokerClient is held per-run, so RunName and RunNamespace are
+// immutable after construction. Tests may mutate TokenReader;
+// production paths do not.
 type BrokerClient struct {
-	Endpoint     string
-	TokenPath    string
-	RunName      string
-	RunNamespace string
+	// TokenReader, when non-nil, overrides the inner client's TokenReader
+	// on every ValidateEgress / SubstituteAuth call. NewBrokerClient
+	// initialises this field and the inner client's TokenReader to the
+	// same closure (re-reads tokenPath on every call), so production paths
+	// see no behavioural change. Tests can mutate this field after
+	// construction to inject inline byte slices; the override is
+	// propagated on the next ValidateEgress / SubstituteAuth call.
+	TokenReader brokerclient.TokenReader
 
-	// TokenReader returns the SA bearer token to attach to every
-	// outbound request. Defaulted by NewBrokerClient to a closure that
-	// re-reads TokenPath on each call (the projected
-	// ServiceAccountToken file rotates on disk; an in-memory cache
-	// would invite expired-token failures). Tests inject inline byte
-	// slices.
-	TokenReader func() ([]byte, error)
-
-	hc *http.Client
+	c *brokerclient.Client
 }
 
 // Compile-time checks.
@@ -65,57 +59,45 @@ var (
 )
 
 // NewBrokerClient builds a client against the broker at endpoint.
-// caPath is the CA bundle verifying the broker's serving cert (written
-// by cert-manager alongside the broker-serving-cert Secret); empty
-// falls back to the system trust store, which is only correct if the
-// broker's cert chains to a publicly trusted root (not our default).
+// caPath is the CA bundle verifying the broker's serving cert; empty
+// falls back to the system trust store, only correct if the broker's
+// cert chains to a publicly trusted root (not Paddock's default).
 func NewBrokerClient(endpoint, tokenPath, caPath, runName, runNamespace string) (*BrokerClient, error) {
 	if endpoint == "" {
 		return nil, errors.New("broker endpoint is required")
 	}
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
-	if caPath != "" {
-		pem, err := os.ReadFile(caPath)
-		if err != nil {
-			return nil, fmt.Errorf("reading broker CA at %s: %w", caPath, err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("broker CA at %s has no valid certificates", caPath)
-		}
-		tlsCfg.RootCAs = pool
-	}
-	c := &BrokerClient{
-		Endpoint:     strings.TrimRight(endpoint, "/"),
-		TokenPath:    tokenPath,
+	tr := brokerclient.FileTokenReader(tokenPath)
+	c, err := brokerclient.New(brokerclient.Options{
+		Endpoint:     endpoint,
+		CABundlePath: caPath,
+		TokenReader:  tr,
 		RunName:      runName,
 		RunNamespace: runNamespace,
-		hc: &http.Client{
-			// Short timeout — the proxy blocks a TLS handshake on this
-			// call, so a slow broker stalls the agent. 5s matches the
-			// broker's own backend budget.
-			Timeout:   5 * time.Second,
-			Transport: &http.Transport{TLSClientConfig: tlsCfg},
-		},
+		// 5s matches the broker's own backend budget; the proxy
+		// blocks a TLS handshake on this call, so a slow broker
+		// stalls the agent.
+		Timeout: 5 * time.Second,
+	})
+	if err != nil {
+		return nil, err
 	}
-	c.TokenReader = func() ([]byte, error) { return os.ReadFile(c.TokenPath) }
-	return c, nil
+	return &BrokerClient{TokenReader: tr, c: c}, nil
 }
 
 // ValidateEgress implements Validator by calling the broker's
 // /v1/validate-egress. On HTTP or broker error, returns err so the
 // caller can fail-closed per ADR-0013.
 func (c *BrokerClient) ValidateEgress(ctx context.Context, host string, port int) (Decision, error) {
+	if c.TokenReader != nil {
+		c.c.TokenReader = c.TokenReader
+	}
 	body, _ := json.Marshal(brokerapi.ValidateEgressRequest{Host: host, Port: port})
-	resp, err := c.do(ctx, brokerapi.PathValidateEgress, body)
+	resp, err := c.c.Do(ctx, brokerapi.PathValidateEgress, body)
 	if err != nil {
 		return Decision{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		return Decision{}, decodeBrokerError(resp)
-	}
 	var out brokerapi.ValidateEgressResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return Decision{}, fmt.Errorf("decoding validate-egress response: %w", err)
@@ -134,21 +116,21 @@ func (c *BrokerClient) ValidateEgress(ctx context.Context, host string, port int
 // substitution so the MITM path drops the connection rather than
 // forwarding the agent's Paddock-issued bearer upstream.
 func (c *BrokerClient) SubstituteAuth(ctx context.Context, host string, port int, headers http.Header) (providers.SubstituteResult, error) {
+	if c.TokenReader != nil {
+		c.c.TokenReader = c.TokenReader
+	}
 	body, _ := json.Marshal(brokerapi.SubstituteAuthRequest{
 		Host:                  host,
 		Port:                  port,
 		IncomingAuthorization: headers.Get("Authorization"),
 		IncomingXAPIKey:       headers.Get("X-Api-Key"),
 	})
-	resp, err := c.do(ctx, brokerapi.PathSubstituteAuth, body)
+	resp, err := c.c.Do(ctx, brokerapi.PathSubstituteAuth, body)
 	if err != nil {
 		return providers.SubstituteResult{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		return providers.SubstituteResult{}, decodeBrokerError(resp)
-	}
 	var out brokerapi.SubstituteAuthResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return providers.SubstituteResult{}, fmt.Errorf("decoding substitute-auth response: %w", err)
@@ -159,37 +141,4 @@ func (c *BrokerClient) SubstituteAuth(ctx context.Context, host string, port int
 		AllowedHeaders:     out.AllowedHeaders,
 		AllowedQueryParams: out.AllowedQueryParams,
 	}, nil
-}
-
-// do POSTs the request with the run's SA token attached. Reads the
-// token fresh on every call — ProjectedServiceAccountToken files
-// rotate on disk, and any in-memory cache would invite expired-token
-// failures after Pod lifetime ≥ the token's 1h TTL.
-func (c *BrokerClient) do(ctx context.Context, path string, body []byte) (*http.Response, error) {
-	token, err := c.TokenReader()
-	if err != nil {
-		return nil, fmt.Errorf("reading broker token: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint+path, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(brokerapi.HeaderRun, c.RunName)
-	if c.RunNamespace != "" {
-		req.Header.Set(brokerapi.HeaderNamespace, c.RunNamespace)
-	}
-	return c.hc.Do(req)
-}
-
-// decodeBrokerError turns a non-2xx response into a typed error. Tries
-// the broker's JSON envelope first; falls back to a raw HTTP code.
-func decodeBrokerError(resp *http.Response) error {
-	var env brokerapi.ErrorResponse
-	_ = json.NewDecoder(resp.Body).Decode(&env)
-	if env.Code == "" {
-		env.Code = fmt.Sprintf("HTTP%d", resp.StatusCode)
-	}
-	return fmt.Errorf("broker %d %s: %s", resp.StatusCode, env.Code, env.Message)
 }
