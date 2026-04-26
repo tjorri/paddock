@@ -18,13 +18,13 @@ COPY api/ api/
 COPY cmd/proxy/ cmd/proxy/
 COPY internal/auditing/ internal/auditing/
 COPY internal/proxy/ internal/proxy/
-# internal/proxy/broker_client.go imports the broker's wire types
-# (paddock.dev/paddock/internal/broker/api) to share request/response
-# schemas with the broker binary without a separate contract package.
-# It also imports providers.SubstituteResult / BasicAuth / Substituter
-# for the substitution rewrite pipeline.
+# internal/proxy/broker_client.go and substitute.go import the broker's
+# wire types (paddock.dev/paddock/internal/broker/api) to share
+# request/response schemas with the broker binary without a separate
+# contract package. The shared TLS+token+envelope plumbing lives in
+# internal/brokerclient (XC-01).
 COPY internal/broker/api/ internal/broker/api/
-COPY internal/broker/providers/ internal/broker/providers/
+COPY internal/brokerclient/ internal/brokerclient/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \

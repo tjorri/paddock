@@ -261,3 +261,14 @@ func TestBrokerClient_ValidateEgress_TokenReaderError(t *testing.T) {
 		t.Fatalf("expected token-reader error")
 	}
 }
+
+func TestBrokerClient_SubstituteAuth_TokenReaderError(t *testing.T) {
+	client, stop := startTestBroker(t, func(http.ResponseWriter, *http.Request) {
+		t.Fatalf("broker should not be called when token-read fails")
+	})
+	defer stop()
+	client.TokenReader = func() ([]byte, error) { return nil, errors.New("token unreadable") }
+	if _, err := client.SubstituteAuth(testContext(t), "h", 1, http.Header{}); err == nil {
+		t.Fatalf("expected token-reader error")
+	}
+}
