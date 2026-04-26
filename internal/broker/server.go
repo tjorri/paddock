@@ -553,13 +553,84 @@ func (s *Server) handleSubstituteAuth(w http.ResponseWriter, r *http.Request) {
 						"paddock-broker: audit unavailable, please retry")
 					return
 				}
-				writeError(w, http.StatusForbidden, "SubstituteFailed", err.Error())
+				// HostNotAllowed surfaces as a distinct error code so the
+				// proxy log line is greppable from a generic SubstituteFailed.
+				code := "SubstituteFailed"
+				if strings.Contains(err.Error(), "not in lease's allowed hosts") {
+					code = "HostNotAllowed"
+				}
+				writeError(w, http.StatusForbidden, code, err.Error())
 				return
 			}
+
+			// F-10: re-validate the matched BrokerPolicy + egress grant
+			// against this run's template, on every request. Cached
+			// client; sub-millisecond informer-cache lookups.
+			if result.CredentialName == "" {
+				// Defensive: a Phase 2g+ provider must populate
+				// CredentialName so the handler can re-validate. Fail
+				// closed if the contract was missed.
+				logger.Info("SubstituteAuth provider returned no CredentialName; refusing to substitute",
+					"run", runName, "provider", prov.Name())
+				writeError(w, http.StatusInternalServerError, "ProviderFailure",
+					"provider returned SubstituteResult with no CredentialName")
+				return
+			}
+			grant, _, _, mErr := matchPolicyGrant(ctx, s.Client, runNamespace,
+				run.Spec.TemplateRef.Name, result.CredentialName)
+			if mErr != nil {
+				writeError(w, http.StatusInternalServerError, "ProviderFailure", mErr.Error())
+				return
+			}
+			if grant == nil || grant.Provider.Kind != prov.Name() {
+				revokedAudit := CredentialAudit{
+					RunName:        runName,
+					Namespace:      runNamespace,
+					CredentialName: result.CredentialName,
+					Provider:       prov.Name(),
+					Reason: fmt.Sprintf(
+						"policy revoked: no BrokerPolicy in namespace %q grants credential %q via provider %q for template %q",
+						runNamespace, result.CredentialName, prov.Name(), run.Spec.TemplateRef.Name),
+				}
+				if wErr := s.Audit.CredentialDenied(ctx, revokedAudit); wErr != nil {
+					logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
+					writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+						"paddock-broker: audit unavailable, please retry")
+					return
+				}
+				writeError(w, http.StatusForbidden, "PolicyRevoked", revokedAudit.Reason)
+				return
+			}
+			egressGrant, _, eErr := matchEgressGrant(ctx, s.Client, runNamespace,
+				run.Spec.TemplateRef.Name, req.Host, req.Port)
+			if eErr != nil {
+				writeError(w, http.StatusInternalServerError, "ProviderFailure", eErr.Error())
+				return
+			}
+			if egressGrant == nil {
+				egressRevokedAudit := CredentialAudit{
+					RunName:        runName,
+					Namespace:      runNamespace,
+					CredentialName: result.CredentialName,
+					Provider:       prov.Name(),
+					Reason: fmt.Sprintf(
+						"egress revoked: no BrokerPolicy in namespace %q grants egress to %s:%d for template %q",
+						runNamespace, req.Host, req.Port, run.Spec.TemplateRef.Name),
+				}
+				if wErr := s.Audit.CredentialDenied(ctx, egressRevokedAudit); wErr != nil {
+					logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
+					writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
+						"paddock-broker: audit unavailable, please retry")
+					return
+				}
+				writeError(w, http.StatusForbidden, "EgressRevoked", egressRevokedAudit.Reason)
+				return
+			}
+
 			grantAudit := CredentialAudit{
 				RunName:        runName,
 				Namespace:      runNamespace,
-				CredentialName: pReq.Host,
+				CredentialName: result.CredentialName,
 				Provider:       prov.Name(),
 				Reason:         "substituted upstream credential",
 			}
@@ -570,8 +641,10 @@ func (s *Server) handleSubstituteAuth(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, http.StatusOK, brokerapi.SubstituteAuthResponse{
-				SetHeaders:    result.SetHeaders,
-				RemoveHeaders: result.RemoveHeaders,
+				SetHeaders:         result.SetHeaders,
+				RemoveHeaders:      result.RemoveHeaders,
+				AllowedHeaders:     result.AllowedHeaders,
+				AllowedQueryParams: result.AllowedQueryParams,
 			})
 			return
 		}
