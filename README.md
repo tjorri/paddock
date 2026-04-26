@@ -1,4 +1,9 @@
-# Paddock
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/paddock-lockup-dark.svg">
+    <img alt="Paddock" src="assets/paddock-lockup-light.svg" width="400">
+  </picture>
+</p>
 
 > Run AI agent harnesses as first-class Kubernetes workloads, with the safety rails built in.
 
