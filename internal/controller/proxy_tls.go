@@ -23,6 +23,7 @@ import (
 
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -155,7 +156,7 @@ func ensureProxyCACertificate(
 		}
 		return nil
 	})
-	if err != nil {
+	if err != nil && !apierrors.IsConflict(err) {
 		return false, false, fmt.Errorf("upserting Certificate %s/%s: %w", ns, secretName, err)
 	}
 

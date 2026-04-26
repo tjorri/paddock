@@ -293,7 +293,7 @@ func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *
 		np.Spec = desired.Spec
 		return nil
 	})
-	if err != nil {
+	if err != nil && !apierrors.IsConflict(err) {
 		return fmt.Errorf("upserting run NetworkPolicy: %w", err)
 	}
 	// F-43: a Create on a run that already has Status set (i.e. has been
