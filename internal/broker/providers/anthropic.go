@@ -81,6 +81,11 @@ type anthropicLease struct {
 	RunName        string
 	CredentialName string
 	ExpiresAt      time.Time
+	// AllowedHosts is the list of hostnames this lease may be substituted
+	// for. Populated at Issue from grant.Provider.Hosts (or the default
+	// [api.anthropic.com] when the grant omits it). SubstituteAuth
+	// rejects a request whose req.Host is not on this list. F-09.
+	AllowedHosts []string
 }
 
 // Compile-time checks.
@@ -129,12 +134,17 @@ func (p *AnthropicAPIProvider) Issue(ctx context.Context, req IssueRequest) (Iss
 	}
 	expires := now.Add(ttl)
 
+	allowedHosts := cfg.Hosts
+	if len(allowedHosts) == 0 {
+		allowedHosts = []string{"api.anthropic.com"}
+	}
 	lease := &anthropicLease{
 		Namespace:      req.Namespace,
 		SecretRef:      *cfg.SecretRef,
 		RunName:        req.RunName,
 		CredentialName: req.CredentialName,
 		ExpiresAt:      expires,
+		AllowedHosts:   allowedHosts,
 	}
 	p.mu.Lock()
 	if p.bearers == nil {
@@ -196,6 +206,10 @@ func (p *AnthropicAPIProvider) SubstituteAuth(ctx context.Context, req Substitut
 		p.mu.Unlock()
 		return SubstituteResult{Matched: true}, fmt.Errorf("anthropic bearer expired")
 	}
+	if !hostMatchesGlobs(req.Host, lease.AllowedHosts) {
+		return SubstituteResult{Matched: true},
+			fmt.Errorf("bearer host %q not in lease's allowed hosts %v", req.Host, lease.AllowedHosts)
+	}
 
 	var secret corev1.Secret
 	key := types.NamespacedName{Name: lease.SecretRef.Name, Namespace: lease.Namespace}
@@ -217,6 +231,18 @@ func (p *AnthropicAPIProvider) SubstituteAuth(ctx context.Context, req Substitut
 			"x-api-key": string(data),
 		},
 		RemoveHeaders: []string{"Authorization"},
+		// F-21: minimal protocol-relevant header allowlist. Any agent header
+		// not in this set (and not in SetHeaders) is stripped by the proxy.
+		AllowedHeaders: []string{
+			"Content-Type", "Content-Length",
+			"Accept", "Accept-Encoding", "User-Agent",
+			"Anthropic-Version", "Anthropic-Beta",
+		},
+		// F-21: Anthropic's REST API doesn't use query-param auth; empty list.
+		AllowedQueryParams: nil,
+		// F-10: the broker handler re-validates matchPolicyGrant against
+		// this name before returning the substituted credential.
+		CredentialName: lease.CredentialName,
 	}, nil
 }
 
