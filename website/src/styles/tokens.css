@@ -73,6 +73,8 @@
     --paddock-teal-on-dk:  #7FB3C4;
     --paddock-amber-on-dk: #E8A23C;
     --paddock-rule-on-dk:  #2A3D44;
+    --paddock-teal-bright-on-dk:  #9CC6D4;
+    --paddock-amber-bright-on-dk: #F0B970;
 
     --color-bg:            var(--paddock-bg);
     --color-bg-2:          var(--paddock-bg-2);
@@ -80,8 +82,12 @@
     --color-text-muted:    var(--paddock-text-muted);
     --color-rule:          var(--paddock-rule-on-dk);
     --color-accent:        var(--paddock-teal-on-dk);
-    --color-accent-strong: var(--paddock-teal);
+    --color-accent-strong: var(--paddock-teal-bright-on-dk);
     --color-link:          var(--paddock-amber-on-dk);
-    --color-link-hover:    var(--paddock-amber);
+    --color-link-hover:    var(--paddock-amber-bright-on-dk);
+
+    /* Shadows on dark backgrounds need real darkness, not the bg-color rgba. */
+    --shadow-card:    0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
+    --shadow-popover: 0 4px 16px rgba(0, 0, 0, 0.5);
   }
 }
