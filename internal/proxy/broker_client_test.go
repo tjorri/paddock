@@ -23,11 +23,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	brokerapi "paddock.dev/paddock/internal/broker/api"
+	"paddock.dev/paddock/internal/brokerclient"
 )
 
 // startTestBroker spins up a TLS httptest server that dispatches every
@@ -124,8 +124,6 @@ func TestBrokerClient_ValidateEgress_Deny(t *testing.T) {
 }
 
 func TestBrokerClient_ValidateEgress_BrokerError(t *testing.T) {
-	// TODO(Task 6): once proxy migrates to brokerclient.BrokerError,
-	// upgrade this assertion to errors.As(err, &*brokerclient.BrokerError{}).
 	client, stop := startTestBroker(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
@@ -139,8 +137,12 @@ func TestBrokerClient_ValidateEgress_BrokerError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	if !strings.Contains(err.Error(), "EgressRevoked") {
-		t.Fatalf("error = %q, want EgressRevoked code", err)
+	var be *brokerclient.BrokerError
+	if !errors.As(err, &be) {
+		t.Fatalf("expected *brokerclient.BrokerError, got %T: %v", err, err)
+	}
+	if be.Code != "EgressRevoked" {
+		t.Fatalf("Code = %q, want EgressRevoked", be.Code)
 	}
 }
 
@@ -190,8 +192,6 @@ func TestBrokerClient_SubstituteAuth_Success(t *testing.T) {
 }
 
 func TestBrokerClient_SubstituteAuth_BrokerError(t *testing.T) {
-	// TODO(Task 6): once proxy migrates to brokerclient.BrokerError,
-	// upgrade this assertion to errors.As(err, &*brokerclient.BrokerError{}).
 	client, stop := startTestBroker(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
@@ -205,8 +205,12 @@ func TestBrokerClient_SubstituteAuth_BrokerError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	if !strings.Contains(err.Error(), "BearerUnknown") {
-		t.Fatalf("error = %q, want BearerUnknown", err)
+	var be *brokerclient.BrokerError
+	if !errors.As(err, &be) {
+		t.Fatalf("expected *brokerclient.BrokerError, got %T: %v", err, err)
+	}
+	if be.Code != "BearerUnknown" {
+		t.Fatalf("Code = %q, want BearerUnknown", be.Code)
 	}
 }
 

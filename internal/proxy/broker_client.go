@@ -47,6 +47,9 @@ type BrokerClient struct {
 	// see no behavioural change. Tests can mutate this field after
 	// construction to inject inline byte slices; the override is
 	// propagated on the next ValidateEgress / SubstituteAuth call.
+	// Setting this field back to nil after construction is a no-op — it
+	// does not reset the inner client's TokenReader to the default; to
+	// "reset", re-call NewBrokerClient.
 	TokenReader brokerclient.TokenReader
 
 	c *brokerclient.Client
