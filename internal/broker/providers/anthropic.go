@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	brokerapi "paddock.dev/paddock/internal/broker/api"
 )
 
 // anthropicBearerPrefix is both the "how the proxy recognises this
@@ -176,13 +177,13 @@ func (p *AnthropicAPIProvider) Issue(ctx context.Context, req IssueRequest) (Iss
 // when IncomingBearer is one this provider minted — even on error
 // (expired / revoked) — so the broker doesn't fall through to the next
 // provider and accidentally let the request out with the wrong swap.
-func (p *AnthropicAPIProvider) SubstituteAuth(ctx context.Context, req SubstituteRequest) (SubstituteResult, error) {
+func (p *AnthropicAPIProvider) SubstituteAuth(ctx context.Context, req SubstituteRequest) (brokerapi.SubstituteResult, error) {
 	// Lenient extraction: handles "Bearer X", raw tokens, and the "Basic"
 	// shape git + the go-git library emit. Providers that wanted the
 	// unparsed value would bypass this helper — none do today.
 	bearer := ExtractBearer(req.IncomingBearer)
 	if !strings.HasPrefix(bearer, anthropicBearerPrefix) {
-		return SubstituteResult{Matched: false}, nil
+		return brokerapi.SubstituteResult{Matched: false}, nil
 	}
 
 	p.mu.Lock()
@@ -193,39 +194,39 @@ func (p *AnthropicAPIProvider) SubstituteAuth(ctx context.Context, req Substitut
 		// Matched=true anyway — returning false would tell the broker to
 		// try other providers; safer to short-circuit with an explicit
 		// error.
-		return SubstituteResult{Matched: true}, fmt.Errorf("anthropic bearer not recognised")
+		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("anthropic bearer not recognised")
 	}
 	// Namespace mismatch is a programming error upstream (broker should
 	// scope by caller's namespace before calling us); be defensive.
 	if req.Namespace != "" && lease.Namespace != req.Namespace {
-		return SubstituteResult{Matched: true}, fmt.Errorf("bearer lease namespace %q does not match caller namespace %q", lease.Namespace, req.Namespace)
+		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("bearer lease namespace %q does not match caller namespace %q", lease.Namespace, req.Namespace)
 	}
 	if p.now().After(lease.ExpiresAt) {
 		p.mu.Lock()
 		delete(p.bearers, bearer)
 		p.mu.Unlock()
-		return SubstituteResult{Matched: true}, fmt.Errorf("anthropic bearer expired")
+		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("anthropic bearer expired")
 	}
 	if !hostMatchesGlobs(req.Host, lease.AllowedHosts) {
-		return SubstituteResult{Matched: true},
+		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("bearer host %q not in lease's allowed hosts %v", req.Host, lease.AllowedHosts)
 	}
 
 	var secret corev1.Secret
 	key := types.NamespacedName{Name: lease.SecretRef.Name, Namespace: lease.Namespace}
 	if err := p.Client.Get(ctx, key, &secret); err != nil {
-		return SubstituteResult{Matched: true}, fmt.Errorf("reading secret %s/%s: %w", lease.Namespace, lease.SecretRef.Name, err)
+		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("reading secret %s/%s: %w", lease.Namespace, lease.SecretRef.Name, err)
 	}
 	data, ok := secret.Data[lease.SecretRef.Key]
 	if !ok || len(data) == 0 {
-		return SubstituteResult{Matched: true}, fmt.Errorf("key %q missing or empty in secret %s/%s",
+		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("key %q missing or empty in secret %s/%s",
 			lease.SecretRef.Key, lease.Namespace, lease.SecretRef.Name)
 	}
 
 	// Anthropic's REST API authenticates via x-api-key. We also drop
 	// Authorization if present, so a belt-and-braces agent that sent
 	// both doesn't leak the Paddock bearer upstream.
-	return SubstituteResult{
+	return brokerapi.SubstituteResult{
 		Matched: true,
 		SetHeaders: map[string]string{
 			"x-api-key": string(data),

@@ -25,7 +25,6 @@ import (
 	"time"
 
 	brokerapi "paddock.dev/paddock/internal/broker/api"
-	"paddock.dev/paddock/internal/broker/providers"
 	"paddock.dev/paddock/internal/brokerclient"
 )
 
@@ -118,7 +117,7 @@ func (c *BrokerClient) ValidateEgress(ctx context.Context, host string, port int
 // /v1/substitute-auth. Returns an error — not a fallback — on denied
 // substitution so the MITM path drops the connection rather than
 // forwarding the agent's Paddock-issued bearer upstream.
-func (c *BrokerClient) SubstituteAuth(ctx context.Context, host string, port int, headers http.Header) (providers.SubstituteResult, error) {
+func (c *BrokerClient) SubstituteAuth(ctx context.Context, host string, port int, headers http.Header) (brokerapi.SubstituteResult, error) {
 	if c.TokenReader != nil {
 		c.c.TokenReader = c.TokenReader
 	}
@@ -130,15 +129,15 @@ func (c *BrokerClient) SubstituteAuth(ctx context.Context, host string, port int
 	})
 	resp, err := c.c.Do(ctx, brokerapi.PathSubstituteAuth, body)
 	if err != nil {
-		return providers.SubstituteResult{}, err
+		return brokerapi.SubstituteResult{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	var out brokerapi.SubstituteAuthResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return providers.SubstituteResult{}, fmt.Errorf("decoding substitute-auth response: %w", err)
+		return brokerapi.SubstituteResult{}, fmt.Errorf("decoding substitute-auth response: %w", err)
 	}
-	return providers.SubstituteResult{
+	return brokerapi.SubstituteResult{
 		SetHeaders:         out.SetHeaders,
 		RemoveHeaders:      out.RemoveHeaders,
 		AllowedHeaders:     out.AllowedHeaders,

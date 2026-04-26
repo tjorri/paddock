@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	brokerapi "paddock.dev/paddock/internal/broker/api"
 )
 
 // patPoolBearerPrefix marks bearers minted by this provider. Same
@@ -236,10 +237,10 @@ func (p *PATPoolProvider) Issue(ctx context.Context, req IssueRequest) (IssueRes
 // bearer that begins with our prefix — including unknown/expired
 // bearers — so the broker short-circuits rather than trying other
 // providers and leaking the Paddock bearer upstream.
-func (p *PATPoolProvider) SubstituteAuth(ctx context.Context, req SubstituteRequest) (SubstituteResult, error) {
+func (p *PATPoolProvider) SubstituteAuth(ctx context.Context, req SubstituteRequest) (brokerapi.SubstituteResult, error) {
 	bearer := ExtractBearer(req.IncomingBearer)
 	if !strings.HasPrefix(bearer, patPoolBearerPrefix) {
-		return SubstituteResult{Matched: false}, nil
+		return brokerapi.SubstituteResult{Matched: false}, nil
 	}
 
 	p.mu.Lock()
@@ -258,31 +259,31 @@ func (p *PATPoolProvider) SubstituteAuth(ctx context.Context, req SubstituteRequ
 		}
 	}
 	if matchedLease == nil {
-		return SubstituteResult{Matched: true}, fmt.Errorf("patpool bearer not recognised")
+		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("patpool bearer not recognised")
 	}
 	if req.Namespace != "" && matchedKey.Namespace != req.Namespace {
-		return SubstituteResult{Matched: true}, fmt.Errorf("bearer lease namespace %q does not match caller namespace %q",
+		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("bearer lease namespace %q does not match caller namespace %q",
 			matchedKey.Namespace, req.Namespace)
 	}
 	if p.now().After(matchedLease.ExpiresAt) {
 		p.releaseLocked(matchedKey, matchedPool, bearer)
-		return SubstituteResult{Matched: true}, fmt.Errorf("patpool bearer expired")
+		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("patpool bearer expired")
 	}
 	if matchedLease.Index < 0 || matchedLease.Index >= len(matchedPool.entries) {
 		// Pool Secret shrunk under us since we leased. Releasing
 		// restores the bookkeeping; the caller sees an error and the
 		// reconciler requeues for a fresh lease.
 		p.releaseLocked(matchedKey, matchedPool, bearer)
-		return SubstituteResult{Matched: true}, fmt.Errorf("patpool shrank; bearer's lease index is stale")
+		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("patpool shrank; bearer's lease index is stale")
 	}
 	if !hostMatchesGlobs(req.Host, matchedLease.AllowedHosts) {
-		return SubstituteResult{Matched: true},
+		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("bearer host %q not in lease's allowed hosts %v", req.Host, matchedLease.AllowedHosts)
 	}
 
 	pat := matchedPool.entries[matchedLease.Index]
 	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + pat))
-	return SubstituteResult{
+	return brokerapi.SubstituteResult{
 		Matched: true,
 		SetHeaders: map[string]string{
 			"Authorization": "Basic " + basic,

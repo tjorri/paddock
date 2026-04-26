@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	brokerapi "paddock.dev/paddock/internal/broker/api"
 )
 
 // githubAppBearerPrefix is the "I minted this" marker. Shape matches
@@ -250,43 +251,43 @@ func (p *GitHubAppProvider) Issue(ctx context.Context, req IssueRequest) (IssueR
 // HTTPS auth form. Upstream GitHub accepts the same credential on
 // "Bearer <token>" too; we emit Basic because it works for both git's
 // libcurl path and the go-git client the seed Job uses.
-func (p *GitHubAppProvider) SubstituteAuth(ctx context.Context, req SubstituteRequest) (SubstituteResult, error) {
+func (p *GitHubAppProvider) SubstituteAuth(ctx context.Context, req SubstituteRequest) (brokerapi.SubstituteResult, error) {
 	bearer := ExtractBearer(req.IncomingBearer)
 	if !strings.HasPrefix(bearer, githubAppBearerPrefix) {
-		return SubstituteResult{Matched: false}, nil
+		return brokerapi.SubstituteResult{Matched: false}, nil
 	}
 
 	p.mu.Lock()
 	lease, ok := p.bearers[bearer]
 	p.mu.Unlock()
 	if !ok {
-		return SubstituteResult{Matched: true}, fmt.Errorf("github bearer not recognised")
+		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("github bearer not recognised")
 	}
 	if req.Namespace != "" && lease.Namespace != req.Namespace {
-		return SubstituteResult{Matched: true}, fmt.Errorf("bearer lease namespace %q does not match caller namespace %q",
+		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("bearer lease namespace %q does not match caller namespace %q",
 			lease.Namespace, req.Namespace)
 	}
 	if p.now().After(lease.ExpiresAt) {
 		p.mu.Lock()
 		delete(p.bearers, bearer)
 		p.mu.Unlock()
-		return SubstituteResult{Matched: true}, fmt.Errorf("github bearer expired")
+		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("github bearer expired")
 	}
 	if !hostMatchesGlobs(req.Host, lease.AllowedHosts) {
-		return SubstituteResult{Matched: true},
+		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("bearer host %q not in lease's allowed hosts %v", req.Host, lease.AllowedHosts)
 	}
 
 	token, err := p.resolveInstallationToken(ctx, lease)
 	if err != nil {
-		return SubstituteResult{Matched: true}, err
+		return brokerapi.SubstituteResult{Matched: true}, err
 	}
 
 	// Basic-auth with username "x-access-token" is the canonical form
 	// GitHub documents for App-issued tokens. Drop any Bearer/Basic
 	// the agent presented — the Paddock bearer must not leak upstream.
 	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
-	return SubstituteResult{
+	return brokerapi.SubstituteResult{
 		Matched: true,
 		SetHeaders: map[string]string{
 			"Authorization": "Basic " + basic,

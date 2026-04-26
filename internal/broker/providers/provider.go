@@ -104,7 +104,7 @@ type Substituter interface {
 	// proxy should set + remove before forwarding upstream. Returns
 	// Matched=false when the bearer is not owned by this provider —
 	// callers then try the next Substituter.
-	SubstituteAuth(ctx context.Context, req SubstituteRequest) (SubstituteResult, error)
+	SubstituteAuth(ctx context.Context, req SubstituteRequest) (brokerapi.SubstituteResult, error)
 }
 
 // SubstituteRequest is the per-request substitution input the broker
@@ -130,13 +130,3 @@ type SubstituteRequest struct {
 	// calling so the provider sees the raw bearer.
 	IncomingBearer string
 }
-
-// SubstituteResult is the canonical wire-shaped result type. Defined
-// in internal/broker/api; aliased here for backward compatibility
-// during the P-07 migration. Will be removed once all in-tree call
-// sites move to brokerapi.SubstituteResult.
-type SubstituteResult = brokerapi.SubstituteResult
-
-// BasicAuth is an alias for brokerapi.BasicAuth, mirroring the
-// SubstituteResult alias above.
-type BasicAuth = brokerapi.BasicAuth
