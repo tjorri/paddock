@@ -30,10 +30,9 @@ import (
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 )
 
-// startTestBroker spins up a TLS httptest server that serves the
-// proxy's broker endpoints with the given handler. Writes the test
-// server's certificate as a CA the client will trust, and a dummy
-// token. Returns (client, cleanup).
+// startTestBroker spins up a TLS httptest server that dispatches every
+// request to handler. Writes the test server's certificate as a CA the
+// client will trust, and a dummy token. Returns (client, cleanup).
 func startTestBroker(t *testing.T, handler http.HandlerFunc) (*BrokerClient, func()) {
 	t.Helper()
 	srv := httptest.NewTLSServer(handler)
@@ -58,6 +57,8 @@ func startTestBroker(t *testing.T, handler http.HandlerFunc) (*BrokerClient, fun
 	return c, srv.Close
 }
 
+// testContext returns a test-scoped context — short TTL to avoid long
+// transport stalls in TestBrokerClient_ValidateEgress_TransportError.
 func testContext(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -123,6 +124,8 @@ func TestBrokerClient_ValidateEgress_Deny(t *testing.T) {
 }
 
 func TestBrokerClient_ValidateEgress_BrokerError(t *testing.T) {
+	// TODO(Task 6): once proxy migrates to brokerclient.BrokerError,
+	// upgrade this assertion to errors.As(err, &*brokerclient.BrokerError{}).
 	client, stop := startTestBroker(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
@@ -181,9 +184,14 @@ func TestBrokerClient_SubstituteAuth_Success(t *testing.T) {
 	if len(res.AllowedHeaders) != 1 || res.AllowedHeaders[0] != "Content-Type" {
 		t.Fatalf("AllowedHeaders = %+v", res.AllowedHeaders)
 	}
+	if len(res.AllowedQueryParams) != 1 || res.AllowedQueryParams[0] != "q" {
+		t.Fatalf("AllowedQueryParams = %+v", res.AllowedQueryParams)
+	}
 }
 
 func TestBrokerClient_SubstituteAuth_BrokerError(t *testing.T) {
+	// TODO(Task 6): once proxy migrates to brokerclient.BrokerError,
+	// upgrade this assertion to errors.As(err, &*brokerclient.BrokerError{}).
 	client, stop := startTestBroker(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
