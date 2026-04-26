@@ -1,0 +1,51 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+<BaseLayout title="Roadmap" pathname="/roadmap">
+  <article class="container" style="padding-block: var(--space-8);">
+    <header class="prose">
+      <h1>Roadmap</h1>
+      <p class="lead">
+        High-level direction. No specific dates promised until v1.0 lands. For
+        the living detail, see
+        <a href="https://github.com/tjorri/paddock/milestones">GitHub
+        Milestones</a> and
+        <a href="https://github.com/tjorri/paddock/blob/main/CHANGELOG.md">CHANGELOG.md</a>.
+      </p>
+    </header>
+
+    <section class="prose">
+      <h2>Now (v0.4)</h2>
+      <p>
+        v0.4 phase-2 security review wrapping up: per-run intermediate CA,
+        pod-spec hardening, audit completeness, substitute-auth hygiene. The
+        platform is feature-frozen for the duration of the security pass; the
+        next minor will resume forward motion.
+      </p>
+    </section>
+
+    <section class="prose">
+      <h2>Next</h2>
+      <ul>
+        <li>Promotable broker policy: declarative, namespaced, self-documenting.</li>
+        <li>First reference bridge — Linear — landing as <code>paddock-bridges</code>.</li>
+        <li>CRD reference site, generated from the v1alpha1 types.</li>
+        <li>UX refactor on the CLI and the operator cookbooks once the broker policy shape settles.</li>
+      </ul>
+    </section>
+
+    <section class="prose">
+      <h2>Later</h2>
+      <ul>
+        <li>Additional bridges (GitHub Issues, Slack).</li>
+        <li>More reference harnesses (Codex CLI, OpenCode).</li>
+        <li>Workspace archival to object storage and on-demand thaw.</li>
+        <li>Multi-tenant broker policy with namespace-level grants.</li>
+      </ul>
+    </section>
+  </article>
+
+  <style>
+    .lead { font-size: var(--text-lg); color: var(--color-text-muted); }
+  </style>
+</BaseLayout>

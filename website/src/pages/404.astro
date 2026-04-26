@@ -1,0 +1,20 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import BrandLockup from "../components/BrandLockup.astro";
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+---
+<BaseLayout title="Not found" pathname="/404">
+  <section class="container nf">
+    <BrandLockup width={120} logoOnly={true} />
+    <h1>This paddock is empty.</h1>
+    <p>That URL doesn't lead anywhere. Try <a href={`${base}/`}>the home page</a>.</p>
+  </section>
+
+  <style>
+    .nf {
+      padding-block: var(--space-9);
+      text-align: center;
+    }
+    .nf h1 { margin-top: var(--space-5); }
+  </style>
+</BaseLayout>

@@ -1,0 +1,123 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const principles = [
+  ["Kubernetes-native, not Kubernetes-adjacent", "Runs are CRDs. Jobs are Jobs. Workspaces are PVCs. Paddock adds vocabulary to Kubernetes; it does not hide Kubernetes."],
+  ["Harness-agnostic", "If it runs in a container and accepts a prompt, it works. No harness gets privileged treatment in the core."],
+  ["Separation of concerns", "The run platform, the bridges, and the broker are three independent components with a clean contract. Each is swappable. Each is independently operable."],
+  ["Secure by default", "No long-lived credentials in agent containers. Default-deny egress. Per-run branch namespaces. Policy-gated repo access."],
+  ["Template once, run many", "The same harness template backs a Linear delegation, a CLI invocation, a nightly cron, and a GitHub webhook. One catalog, many entry points."],
+  ["Observable by construction", "Every run emits structured progress events. Every egress attempt is logged. Every credential issuance is audited."],
+  ["The unit of work terminates", "Runs are batch jobs. They start, do a thing, and exit. Continuity across runs comes from shared state outside the run, not from keeping processes alive."],
+];
+
+const notList = [
+  ["Not an agent framework", "Paddock doesn't define how agents think, reason, or use tools. That lives in the harness."],
+  ["Not a model provider", "Paddock does not host, route, or fine-tune models. It just lets you point harnesses at whichever provider you're using."],
+  ["Not a workflow engine", "Paddock runs individual agent invocations. If you need DAGs or fan-out/fan-in, use Argo Workflows and have each step submit a HarnessRun."],
+  ["Not an IDE", "Interactive, long-lived, human-in-the-loop sessions are a different product. Paddock is for headless, delegated work."],
+  ["Not a replacement for your CI", "Paddock agents can open PRs; your CI decides whether those PRs are mergeable. That separation is load-bearing."],
+];
+---
+<BaseLayout title="About" pathname="/about">
+  <article class="container" style="padding-block: var(--space-8);">
+    <header class="prose">
+      <h1>About Paddock</h1>
+    </header>
+
+    <section class="prose">
+      <h2>What Paddock is</h2>
+      <p>
+        Paddock is an open-source, Kubernetes-native platform for running headless
+        AI agent harnesses — Claude Code, Codex CLI, OpenCode, Pi, or anything
+        else you can put in a container — as templated, sandboxed, observable
+        batch workloads.
+      </p>
+      <p>
+        You define a harness once. You invoke it many times, from many entry
+        points, against many repos, under policy. Kubernetes schedules the work,
+        persists the workspace, streams progress back, and enforces the security
+        boundary.
+      </p>
+      <p>
+        The shortest description: <em>the plumbing that makes agentic work a
+        first-class citizen of your cluster, with the credential handling and
+        egress control you'd want before letting an LLM anywhere near
+        production code.</em>
+      </p>
+    </section>
+
+    <section class="prose">
+      <h2>Why it exists</h2>
+      <p>
+        Teams are wiring up coding agents as CronJobs, Argo Workflows, or
+        bespoke Python scripts to handle bug triage, backlog grooming, code
+        migrations, and incident response. Every team rebuilds the same four
+        things:
+      </p>
+      <ol>
+        <li>A way to template harnesses so they can be reused across tasks.</li>
+        <li>A way to persist and share workspaces across runs, so the agent doesn't start cold every time.</li>
+        <li>A way to integrate with their issue tracker or chat tool, so humans can delegate.</li>
+        <li>A way to stop the agent from exfiltrating secrets, pushing to <code>main</code>, or installing arbitrary things from the internet.</li>
+      </ol>
+      <p>Paddock is that shared substrate.</p>
+    </section>
+
+    <section>
+      <h2>Core principles</h2>
+      <p class="prose">These are the tiebreakers when design decisions get contested.</p>
+      <ul class="principles">
+        {principles.map(([title, body]) => (
+          <li>
+            <strong>{title}.</strong> {body}
+          </li>
+        ))}
+      </ul>
+    </section>
+
+    <section>
+      <h2>What Paddock deliberately is not</h2>
+      <ul class="principles">
+        {notList.map(([title, body]) => (
+          <li>
+            <strong>{title}.</strong> {body}
+          </li>
+        ))}
+      </ul>
+    </section>
+
+    <section class="prose">
+      <h2>The north star, in one sentence</h2>
+      <blockquote>
+        Paddock lets a platform team publish a catalog of safe, templated AI
+        harnesses that anyone — or any system — in their organization can invoke
+        to get real work done, with the credentials, networks, and repos those
+        runs touch governed by policy the security team actually wrote.
+      </blockquote>
+    </section>
+  </article>
+
+  <style>
+    .principles {
+      list-style: none;
+      padding: 0;
+      margin: var(--space-4) 0 var(--space-5);
+      display: grid;
+      gap: var(--space-4);
+      max-width: var(--prose-max-w);
+    }
+    .principles li {
+      padding-left: var(--space-4);
+      border-left: 2px solid var(--color-accent);
+    }
+    blockquote {
+      margin: var(--space-5) 0;
+      padding: var(--space-5);
+      background: var(--color-bg-2);
+      border-radius: var(--radius-md);
+      font-style: italic;
+      color: var(--color-text);
+    }
+  </style>
+</BaseLayout>
