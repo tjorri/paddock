@@ -1051,8 +1051,6 @@ func parseResultJSON(data string) (*paddockv1alpha1.HarnessRunOutputs, error) {
 	return &out, nil
 }
 
-// ensureJob builds and creates the backing Job. No-op when one already
-// exists (Job spec is immutable once the HarnessRun spec is).
 // ensureJob builds and creates the backing Job. No-op when one
 // already exists. The `decision` parameter is the resolved
 // interception mode for the proxy-enabled path; callers in the
