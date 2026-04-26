@@ -624,6 +624,7 @@ func buildProxyContainer(run *paddockv1alpha1.HarnessRun, in podSpecInputs) core
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser:                &uid,
 			RunAsGroup:               &uid,
+			RunAsNonRoot:             ptrBool(true),
 			AllowPrivilegeEscalation: ptrBool(false),
 			ReadOnlyRootFilesystem:   ptrBool(true),
 			Capabilities: &corev1.Capabilities{

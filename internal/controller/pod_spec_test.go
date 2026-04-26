@@ -17,20 +17,25 @@ limitations under the License.
 package controller
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	psapi "k8s.io/pod-security-admission/api"
+	pspolicy "k8s.io/pod-security-admission/policy"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
 
-// testProxyImage and testProxyTLSSecret are the canonical test-fixture
-// values used by all proxy-wiring tests. Extracted as constants to
-// satisfy goconst (5+ occurrences across the file).
+// testProxyImage, testProxyTLSSecret and testProxyAllowList are the
+// canonical test-fixture values used by all proxy-wiring tests.
+// Extracted as constants to satisfy goconst (5+ occurrences across
+// the file).
 const (
 	testProxyImage     = "paddock-proxy:test"
 	testProxyTLSSecret = "run-echo-proxy-tls"
+	testProxyAllowList = "api.anthropic.com:443"
 )
 
 // echoTemplateFixture returns a resolvedTemplate that mirrors the
@@ -276,7 +281,7 @@ func TestBuildPodSpec_ProxySidecar(t *testing.T) {
 	in := defaultInputs()
 	in.proxyImage = testProxyImage
 	in.proxyTLSSecret = testProxyTLSSecret
-	in.proxyAllowList = "api.anthropic.com:443"
+	in.proxyAllowList = testProxyAllowList
 
 	ps := buildPodSpec(run, tpl, in)
 
@@ -463,7 +468,7 @@ func TestBuildPodSpec_ProxyBrokerWiring(t *testing.T) {
 	in.brokerEndpoint = "https://paddock-broker.paddock-system.svc:8443"
 	in.brokerCASecret = "run-echo-broker-ca"
 	// Allow-list must be ignored in favour of broker-backed validation.
-	in.proxyAllowList = "api.anthropic.com:443"
+	in.proxyAllowList = testProxyAllowList
 
 	ps := buildPodSpec(run, tpl, in)
 
@@ -764,6 +769,114 @@ func TestBuildPodSpec_CollectorSecurityContext(t *testing.T) {
 	}
 }
 
+// TestBuildPodSpec_PassesPSSBaseline runs the built pod spec through
+// the kubernetes/pod-security-admission policy package at level
+// `baseline`. We assert baseline (not restricted) at the pod level
+// because the agent is tenant-supplied and we do not force
+// RunAsNonRoot — see design Section 3.1 and the pod-level test above.
+func TestBuildPodSpec_PassesPSSBaseline(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+	in.proxyAllowList = testProxyAllowList
+
+	ps := buildPodSpec(run, tpl, in)
+
+	evaluator, err := pspolicy.NewEvaluator(pspolicy.DefaultChecks(), nil)
+	if err != nil {
+		t.Fatalf("pss evaluator: %v", err)
+	}
+
+	podMeta := &metav1.ObjectMeta{Name: run.Name, Namespace: run.Namespace}
+	results := evaluator.EvaluatePod(
+		psapi.LevelVersion{Level: psapi.LevelBaseline, Version: psapi.LatestVersion()},
+		podMeta, &ps,
+	)
+
+	for _, r := range results {
+		if !r.Allowed {
+			t.Errorf("PSS baseline violation: %s — %s (forbidden detail: %s)",
+				r.ForbiddenReason, r.ForbiddenDetail, r.ForbiddenDetail)
+		}
+	}
+}
+
+// TestBuildPodSpec_FirstPartyContainersPassPSSRestricted asserts each
+// first-party container, viewed in isolation, satisfies the PSS
+// `restricted` profile. We construct a synthetic single-container
+// PodSpec around the container under test (re-using the pod-level
+// SecurityContext that the real pod spec ships with) so the evaluator
+// sees a well-formed pod for each check.
+//
+// First-party containers: collector, proxy, iptables-init.
+// (Agent + adapter intentionally only target baseline; see Section 3.1.)
+func TestBuildPodSpec_FirstPartyContainersPassPSSRestricted(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+	in.proxyAllowList = testProxyAllowList
+	in.interceptionMode = paddockv1alpha1.InterceptionModeTransparent
+	in.iptablesInitImage = "paddock-iptables-init:test"
+
+	ps := buildPodSpec(run, tpl, in)
+
+	evaluator, err := pspolicy.NewEvaluator(pspolicy.DefaultChecks(), nil)
+	if err != nil {
+		t.Fatalf("pss evaluator: %v", err)
+	}
+	level := psapi.LevelVersion{Level: psapi.LevelRestricted, Version: psapi.LatestVersion()}
+	podMeta := &metav1.ObjectMeta{Name: run.Name, Namespace: run.Namespace}
+
+	firstParty := map[string]bool{
+		collectorContainerName:    true,
+		proxyContainerName:        true,
+		iptablesInitContainerName: true,
+	}
+
+	for _, c := range ps.InitContainers {
+		if !firstParty[c.Name] {
+			continue
+		}
+		// Synthetic single-container pod, preserving the real pod-level
+		// SecurityContext so the evaluator sees seccomp=RuntimeDefault.
+		// iptables-init legitimately needs CAP_NET_ADMIN/NET_RAW; the
+		// PSS restricted "capabilities must be in the allowed list" rule
+		// rejects any add. We exempt iptables-init from this single rule
+		// — its capability adds are documented in ADR-0013 and gated by
+		// the iptables-init image's first-party status. All other
+		// restricted rules still apply.
+		isolatedPod := corev1.PodSpec{
+			Containers:      []corev1.Container{c},
+			SecurityContext: ps.SecurityContext,
+		}
+		results := evaluator.EvaluatePod(level, podMeta, &isolatedPod)
+		for _, r := range results {
+			if r.Allowed {
+				continue
+			}
+			// iptables-init legitimately runs as root (UID 0) with
+			// CAP_NET_ADMIN/NET_RAW — all three are necessary to install
+			// iptables REDIRECT rules in the pod netns (ADR-0013 §7.2).
+			// Exempt capability and run-as-root violations for this
+			// container only; all other restricted rules still apply.
+			if c.Name == iptablesInitContainerName &&
+				(strings.Contains(r.ForbiddenReason, "capabilit") ||
+					strings.Contains(r.ForbiddenReason, "runAsNonRoot") ||
+					strings.Contains(r.ForbiddenReason, "runAsUser")) {
+				continue
+			}
+			t.Errorf("container %q PSS restricted violation: %s — %s",
+				c.Name, r.ForbiddenReason, r.ForbiddenDetail)
+		}
+	}
+}
+
 // TestBuildPodSpec_ProxySeccompParity asserts the proxy container has
 // SeccompProfile=RuntimeDefault explicitly set at container level
 // (parity addition; pod-level setting would cover it but explicit is
@@ -778,7 +891,7 @@ func TestBuildPodSpec_ProxySeccompParity(t *testing.T) {
 	in := defaultInputs()
 	in.proxyImage = testProxyImage
 	in.proxyTLSSecret = testProxyTLSSecret
-	in.proxyAllowList = "api.anthropic.com:443"
+	in.proxyAllowList = testProxyAllowList
 
 	ps := buildPodSpec(run, tpl, in)
 
