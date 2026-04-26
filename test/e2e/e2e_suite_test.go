@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"sync"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -64,25 +63,29 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	By("building and loading all images in parallel")
-	// Build + kind-load all 9 images concurrently. Each `make image-*`
-	// is independent (separate Dockerfile, no shared writable state);
-	// Docker serializes builds around its daemon but interleaves
-	// layer caches across them. `kind load docker-image` self-locks
-	// against the kind CLI so the load step naturally serializes
-	// without explicit coordination. Wall-clock saving on a warm
-	// cache: ~30-50% of the build phase vs sequential.
-	buildAndLoadAll([]buildJob{
-		{managerImage, []string{"docker-build", fmt.Sprintf("IMG=%s", managerImage)}},
-		{echoImage, []string{"image-echo"}},
-		{adapterEchoImage, []string{"image-adapter-echo"}},
-		{collectorImage, []string{"image-collector"}},
-		{brokerImage, []string{"image-broker"}},
-		{proxyImage, []string{"image-proxy"}},
-		{iptablesInitImage, []string{"image-iptables-init"}},
-		{e2eEgressImage, []string{"image-e2e-egress"}},
-		{paddockEvilEchoImage, []string{"image-evil-echo"}},
-	})
+	// Builds run sequentially. An earlier attempt to fan out via
+	// goroutines was reverted: on a 2-vCPU CI runner, 9 concurrent
+	// Docker builds saturate the CPU and disk I/O, making the
+	// build phase ~75% slower than sequential (CI BeforeSuite
+	// climbed from ~150s to ~261s). The local laptop savings were
+	// only ~12s (2-3% of suite wall-clock) — not worth the CI
+	// regression. See also: tjorri/paddock PR #34 CI history.
+	By("building and loading paddock-manager")
+	buildAndLoad(managerImage, []string{"docker-build", fmt.Sprintf("IMG=%s", managerImage)})
+
+	By("building and loading paddock-echo + adapter-echo + collector")
+	buildAndLoad(echoImage, []string{"image-echo"})
+	buildAndLoad(adapterEchoImage, []string{"image-adapter-echo"})
+	buildAndLoad(collectorImage, []string{"image-collector"})
+
+	By("building and loading broker + proxy + iptables-init + e2e-egress (v0.3)")
+	buildAndLoad(brokerImage, []string{"image-broker"})
+	buildAndLoad(proxyImage, []string{"image-proxy"})
+	buildAndLoad(iptablesInitImage, []string{"image-iptables-init"})
+	buildAndLoad(e2eEgressImage, []string{"image-e2e-egress"})
+
+	By("building and loading paddock-evil-echo (hostile harness)")
+	buildAndLoad(paddockEvilEchoImage, []string{"image-evil-echo"})
 
 	if !skipCertManagerInstall {
 		By("checking if cert-manager is already installed")
@@ -144,48 +147,13 @@ var _ = AfterSuite(func() {
 	}
 })
 
-// buildJob describes a single image build + kind-load.
-type buildJob struct {
-	image       string
-	makeTargets []string
-}
-
-// buildAndLoadE runs `make <targets>` then kind-loads the resulting
-// image, returning any error rather than asserting via Gomega. Used by
-// buildAndLoadAll's goroutine fan-out where Gomega expectations would
-// not be safely captured outside the test goroutine.
-func buildAndLoadE(image string, makeTargets []string) error {
+// buildAndLoad runs `make <targets>` then kind-loads the resulting
+// image. Fails the suite on either step so BeforeSuite reports the
+// upstream failure cause.
+func buildAndLoad(image string, makeTargets []string) {
 	cmd := exec.Command("make", makeTargets...)
-	if _, err := utils.Run(cmd); err != nil {
-		return fmt.Errorf("build %s via %v: %w", image, makeTargets, err)
-	}
-	if err := utils.LoadImageToKindClusterWithName(image); err != nil {
-		return fmt.Errorf("load %s into Kind: %w", image, err)
-	}
-	return nil
-}
-
-// buildAndLoadAll runs every job's build + kind-load concurrently and
-// aggregates errors. Fails the suite if any job errors.
-func buildAndLoadAll(jobs []buildJob) {
-	var (
-		wg   sync.WaitGroup
-		mu   sync.Mutex
-		errs []error
-	)
-	wg.Add(len(jobs))
-	for _, j := range jobs {
-		go func(j buildJob) {
-			defer wg.Done()
-			if err := buildAndLoadE(j.image, j.makeTargets); err != nil {
-				mu.Lock()
-				errs = append(errs, err)
-				mu.Unlock()
-			}
-		}(j)
-	}
-	wg.Wait()
-	for _, err := range errs {
-		ExpectWithOffset(1, err).NotTo(HaveOccurred())
-	}
+	_, err := utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "build %s via %v", image, makeTargets)
+	ExpectWithOffset(1, utils.LoadImageToKindClusterWithName(image)).To(Succeed(),
+		"load %s into Kind", image)
 }
