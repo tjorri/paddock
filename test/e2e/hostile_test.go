@@ -470,9 +470,14 @@ spec:
 			// requeues. The fail-closed guarantee under test is that the
 			// credential never lands in <run>-broker-creds, NOT that the
 			// run fails terminally. F-12.
+			//
+			// 30s window with 5s poll = 6 polls; broker Issue retries
+			// fire every ~10s so we observe ~3 rejection cycles —
+			// enough to confirm the run cannot transition to Succeeded
+			// while the audit-write is broken.
 			Consistently(func() string {
 				return runPhase(ctx, tg19Namespace, runName)
-			}, 90*time.Second, 5*time.Second).ShouldNot(Equal("Succeeded"),
+			}, 30*time.Second, 5*time.Second).ShouldNot(Equal("Succeeded"),
 				"run must not reach Succeeded while broker's audit-write is failing")
 
 			By("dumping run state for diagnostic context")
