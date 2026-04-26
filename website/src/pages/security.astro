@@ -1,6 +1,6 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
-const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+import SecurityBoundary from "../components/SecurityBoundary.astro";
 
 const agentNeverSees = [
   "The actual provider API key (Anthropic, OpenAI, etc.) backing each request.",
@@ -58,10 +58,7 @@ const supplyChain = [
 
     <section>
       <h2>The boundary in one diagram</h2>
-      <div class="diagram-slot" aria-label="Security boundary diagram (placeholder)">
-        <!-- Diagram lands in Task 9 -->
-        <p class="diagram-placeholder">Diagram pending — see Task 9.</p>
-      </div>
+      <SecurityBoundary />
     </section>
 
     <section class="prose">
@@ -110,19 +107,6 @@ const supplyChain = [
 
   <style>
     .lead { font-size: var(--text-lg); color: var(--color-text-muted); }
-    .diagram-slot {
-      margin: var(--space-5) 0;
-      padding: var(--space-7);
-      border: 1px dashed var(--color-rule);
-      border-radius: var(--radius-md);
-      background: var(--color-bg-2);
-      text-align: center;
-    }
-    .diagram-placeholder {
-      margin: 0;
-      color: var(--color-text-muted);
-      font-style: italic;
-    }
     pre {
       background: var(--color-bg-2);
       border: 1px solid var(--color-rule);

@@ -1,0 +1,109 @@
+---
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+---
+<section class="arch">
+  <div class="container">
+    <h2>How it fits together</h2>
+    <p class="arch__lead">
+      Bridges translate external events into Kubernetes Custom Resources. The run
+      platform reconciles them into Jobs. The broker is the only component that
+      ever holds long-lived secrets — it gates admission and mints short-lived
+      credentials per run.
+    </p>
+    <svg class="arch__svg" viewBox="0 0 960 360" role="img" aria-labelledby="arch-title">
+      <title id="arch-title">Paddock architecture overview</title>
+
+      <!-- External systems -->
+      <g class="g-external">
+        <rect x="20" y="40" width="160" height="280" rx="8" />
+        <text x="100" y="70" text-anchor="middle" class="t-heading">External systems</text>
+        <text x="100" y="120" text-anchor="middle">Linear</text>
+        <text x="100" y="150" text-anchor="middle">GitHub Issues</text>
+        <text x="100" y="180" text-anchor="middle">Slack</text>
+        <text x="100" y="210" text-anchor="middle">cron</text>
+      </g>
+
+      <!-- Bridges -->
+      <g class="g-bridge">
+        <rect x="220" y="60" width="180" height="100" rx="8" />
+        <text x="310" y="90"  text-anchor="middle" class="t-heading">Bridges</text>
+        <text x="310" y="120" text-anchor="middle">webhook → CRD</text>
+      </g>
+
+      <!-- Run platform -->
+      <g class="g-platform">
+        <rect x="440" y="60" width="220" height="100" rx="8" />
+        <text x="550" y="90"  text-anchor="middle" class="t-heading">Run platform</text>
+        <text x="550" y="120" text-anchor="middle">CRDs · controllers · CLI</text>
+      </g>
+
+      <!-- Broker -->
+      <g class="g-broker">
+        <rect x="700" y="60" width="240" height="100" rx="8" />
+        <text x="820" y="90"  text-anchor="middle" class="t-heading">Broker</text>
+        <text x="820" y="120" text-anchor="middle">policy · credentials</text>
+      </g>
+
+      <!-- Job -->
+      <g class="g-job">
+        <rect x="220" y="220" width="720" height="120" rx="8" />
+        <text x="580" y="248" text-anchor="middle" class="t-heading">Kubernetes Job</text>
+        <text x="320" y="278" text-anchor="middle">init: iptables</text>
+        <text x="500" y="278" text-anchor="middle">sidecar: proxy</text>
+        <text x="680" y="278" text-anchor="middle">sidecar: collector</text>
+        <text x="840" y="278" text-anchor="middle">main: agent</text>
+        <text x="580" y="312" text-anchor="middle" class="t-muted">workspace PVC · controlled egress</text>
+      </g>
+
+      <!-- Arrows -->
+      <g class="arrows">
+        <line x1="180" y1="110" x2="220" y2="110" />
+        <line x1="400" y1="110" x2="440" y2="110" />
+        <line x1="660" y1="110" x2="700" y2="110" />
+        <line x1="550" y1="160" x2="550" y2="220" />
+        <line x1="820" y1="160" x2="820" y2="240" />
+      </g>
+    </svg>
+  </div>
+</section>
+
+<style>
+  .arch {
+    padding-block: var(--space-8);
+    border-bottom: 1px solid var(--color-rule);
+  }
+  .arch__lead {
+    color: var(--color-text-muted);
+    max-width: 56rem;
+    margin-bottom: var(--space-5);
+  }
+  .arch__svg {
+    width: 100%;
+    height: auto;
+    max-width: 60rem;
+    display: block;
+    margin: 0 auto;
+  }
+  .arch__svg rect {
+    fill: var(--color-bg-2);
+    stroke: var(--color-rule);
+    stroke-width: 1;
+  }
+  .arch__svg text {
+    fill: var(--color-text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+  }
+  .arch__svg .t-heading {
+    fill: var(--color-accent);
+    font-weight: 600;
+    font-size: 15px;
+  }
+  .arch__svg .t-muted { fill: var(--color-text-muted); font-size: 13px; }
+  .arch__svg .arrows line {
+    stroke: var(--color-text-muted);
+    stroke-width: 1.5;
+    marker-end: url(#arrowhead);
+  }
+  .arch__svg .g-broker rect { stroke: var(--color-accent); stroke-width: 1.5; }
+</style>
