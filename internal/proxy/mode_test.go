@@ -107,6 +107,7 @@ func TestHandleTransparentConn_AllowsAndMITMs(t *testing.T) {
 		Audit:               sink,
 		UpstreamTLSConfig:   &tls.Config{RootCAs: upstreamPool, MinVersion: tls.VersionTLS12},
 		OriginalDestination: fixedOrigDest(ips[0].IP, port),
+		IdleTimeout:         150 * time.Millisecond,
 	}
 
 	clientPool := x509.NewCertPool()
@@ -312,6 +313,7 @@ func TestHandleTransparentConn_EmitsDiscoveryAllowKind(t *testing.T) {
 		Audit:               sink,
 		UpstreamTLSConfig:   &tls.Config{RootCAs: upstreamPool, MinVersion: tls.VersionTLS12},
 		OriginalDestination: fixedOrigDest(ips[0].IP, port),
+		IdleTimeout:         150 * time.Millisecond,
 	}
 
 	clientPool := x509.NewCertPool()
