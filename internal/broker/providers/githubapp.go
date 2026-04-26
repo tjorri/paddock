@@ -117,6 +117,10 @@ type githubLease struct {
 	Repositories   []string
 	APIEndpoint    string
 	ExpiresAt      time.Time
+	// AllowedHosts is the list of hostnames this lease may be substituted
+	// for. Populated at Issue from grant.Provider.Hosts (or default
+	// [github.com, api.github.com] when the grant omits it). F-09.
+	AllowedHosts []string
 }
 
 // githubTokenKey uniquely identifies one cached installation token.
@@ -200,6 +204,10 @@ func (p *GitHubAppProvider) Issue(ctx context.Context, req IssueRequest) (IssueR
 	// connection as soon as SubstituteAuth returns an error anyway.
 	expires := now.Add(ttl)
 
+	allowedHosts := cfg.Hosts
+	if len(allowedHosts) == 0 {
+		allowedHosts = []string{"github.com", "api.github.com"}
+	}
 	lease := &githubLease{
 		Namespace:      req.Namespace,
 		SecretRef:      *cfg.SecretRef,
@@ -210,6 +218,7 @@ func (p *GitHubAppProvider) Issue(ctx context.Context, req IssueRequest) (IssueR
 		Repositories:   repos,
 		APIEndpoint:    apiEndpoint,
 		ExpiresAt:      expires,
+		AllowedHosts:   allowedHosts,
 	}
 
 	p.mu.Lock()
@@ -263,6 +272,10 @@ func (p *GitHubAppProvider) SubstituteAuth(ctx context.Context, req SubstituteRe
 		p.mu.Unlock()
 		return SubstituteResult{Matched: true}, fmt.Errorf("github bearer expired")
 	}
+	if !hostMatchesGlobs(req.Host, lease.AllowedHosts) {
+		return SubstituteResult{Matched: true},
+			fmt.Errorf("bearer host %q not in lease's allowed hosts %v", req.Host, lease.AllowedHosts)
+	}
 
 	token, err := p.resolveInstallationToken(ctx, lease)
 	if err != nil {
@@ -278,6 +291,14 @@ func (p *GitHubAppProvider) SubstituteAuth(ctx context.Context, req SubstituteRe
 		SetHeaders: map[string]string{
 			"Authorization": "Basic " + basic,
 		},
+		// F-21: GitHub-relevant header allowlist.
+		AllowedHeaders: []string{
+			"Content-Type", "Content-Length",
+			"Accept", "Accept-Encoding", "User-Agent",
+			"X-GitHub-Api-Version",
+		},
+		AllowedQueryParams: nil,
+		CredentialName:     lease.CredentialName,
 	}, nil
 }
 

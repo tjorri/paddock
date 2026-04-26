@@ -440,7 +440,7 @@ func TestGitHubAppProvider_GitHubServerError(t *testing.T) {
 	// The error arrives at substitute-auth time — the bearer path is
 	// where the GitHub API call happens.
 	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
-		Namespace: "my-team", IncomingBearer: res.Value,
+		Namespace: "my-team", Host: "github.com", IncomingBearer: res.Value,
 	})
 	if !sub.Matched {
 		t.Fatalf("Matched = false, want true (the bearer is ours)")
@@ -566,6 +566,123 @@ func TestParsePrivateKey(t *testing.T) {
 			t.Fatalf("expected error for non-PEM input")
 		}
 	})
+}
+
+func TestGitHubAppProvider_SubstituteHostNotAllowed_Default(t *testing.T) {
+	fg := newFakeGitHub(t)
+	clock := time.Unix(1_700_000_000, 0)
+	fg.expiresAt = clock.Add(time.Hour)
+	key := generateRSAKey(t)
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(githubSecret(key)).Build()
+	p := &GitHubAppProvider{
+		Client:      c,
+		HTTPClient:  fg.server.Client(),
+		APIEndpoint: fg.server.URL,
+		Now:         func() time.Time { return clock },
+	}
+
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "demo", Namespace: "my-team",
+		CredentialName: "GITHUB_TOKEN",
+		Grant:          githubGrant(),
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	// Default hosts is [github.com, api.github.com]; calling for evil.com must fail-closed.
+	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName: "demo", Namespace: "my-team",
+		Host: "evil.com", Port: 443,
+		IncomingBearer: res.Value,
+	})
+	if !sub.Matched {
+		t.Fatalf("Matched = false; want true so broker short-circuits")
+	}
+	if err == nil {
+		t.Fatalf("expected HostNotAllowed error for evil.com")
+	}
+	if !strings.Contains(err.Error(), "evil.com") {
+		t.Errorf("error must name the offending host; got %q", err)
+	}
+}
+
+func TestGitHubAppProvider_SubstituteHostAllowed_Defaults(t *testing.T) {
+	fg := newFakeGitHub(t)
+	clock := time.Unix(1_700_000_000, 0)
+	fg.expiresAt = clock.Add(time.Hour)
+	key := generateRSAKey(t)
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(githubSecret(key)).Build()
+	p := &GitHubAppProvider{
+		Client:      c,
+		HTTPClient:  fg.server.Client(),
+		APIEndpoint: fg.server.URL,
+		Now:         func() time.Time { return clock },
+	}
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "demo", Namespace: "my-team",
+		CredentialName: "GITHUB_TOKEN",
+		Grant:          githubGrant(),
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	// Both default hosts must be accepted.
+	for _, h := range []string{"github.com", "api.github.com"} {
+		sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+			RunName: "demo", Namespace: "my-team",
+			Host: h, Port: 443,
+			IncomingBearer: res.Value,
+		})
+		if err != nil {
+			t.Errorf("SubstituteAuth(%s): %v", h, err)
+			continue
+		}
+		if !sub.Matched {
+			t.Errorf("SubstituteAuth(%s): Matched=false", h)
+		}
+	}
+}
+
+func TestGitHubAppProvider_SubstituteResultFieldsPopulated(t *testing.T) {
+	fg := newFakeGitHub(t)
+	clock := time.Unix(1_700_000_000, 0)
+	fg.expiresAt = clock.Add(time.Hour)
+	key := generateRSAKey(t)
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(githubSecret(key)).Build()
+	p := &GitHubAppProvider{
+		Client:      c,
+		HTTPClient:  fg.server.Client(),
+		APIEndpoint: fg.server.URL,
+		Now:         func() time.Time { return clock },
+	}
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "demo", Namespace: "my-team",
+		CredentialName: "GITHUB_TOKEN",
+		Grant:          githubGrant(),
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName: "demo", Namespace: "my-team",
+		Host: "api.github.com", Port: 443,
+		IncomingBearer: res.Value,
+	})
+	if err != nil {
+		t.Fatalf("SubstituteAuth: %v", err)
+	}
+	if sub.CredentialName != "GITHUB_TOKEN" {
+		t.Errorf("CredentialName = %q, want GITHUB_TOKEN", sub.CredentialName)
+	}
+	wantHdrs := []string{"Content-Type", "Content-Length", "Accept", "Accept-Encoding", "User-Agent", "X-GitHub-Api-Version"}
+	if len(sub.AllowedHeaders) != len(wantHdrs) {
+		t.Fatalf("AllowedHeaders = %v, want %v", sub.AllowedHeaders, wantHdrs)
+	}
+	for i, h := range wantHdrs {
+		if sub.AllowedHeaders[i] != h {
+			t.Errorf("AllowedHeaders[%d] = %q, want %q", i, sub.AllowedHeaders[i], h)
+		}
+	}
 }
 
 // TestRepoNamesFromGitRepos — double-check we flatten the grant into
