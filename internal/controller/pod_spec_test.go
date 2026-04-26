@@ -785,6 +785,10 @@ func TestBuildPodSpec_PassesPSSBaseline(t *testing.T) {
 
 	ps := buildPodSpec(run, tpl, in)
 
+	// nil emulationVersion = evaluate against the newest registered
+	// PSS ruleset. A future k8s.io/pod-security-admission bump that
+	// tightens baseline/restricted will surface here on dependabot
+	// upgrade — that's the intended early-warning channel.
 	evaluator, err := pspolicy.NewEvaluator(pspolicy.DefaultChecks(), nil)
 	if err != nil {
 		t.Fatalf("pss evaluator: %v", err)
@@ -798,8 +802,8 @@ func TestBuildPodSpec_PassesPSSBaseline(t *testing.T) {
 
 	for _, r := range results {
 		if !r.Allowed {
-			t.Errorf("PSS baseline violation: %s — %s (forbidden detail: %s)",
-				r.ForbiddenReason, r.ForbiddenDetail, r.ForbiddenDetail)
+			t.Errorf("PSS baseline violation: %s — %s",
+				r.ForbiddenReason, r.ForbiddenDetail)
 		}
 	}
 }
@@ -839,18 +843,14 @@ func TestBuildPodSpec_FirstPartyContainersPassPSSRestricted(t *testing.T) {
 		iptablesInitContainerName: true,
 	}
 
-	for _, c := range ps.InitContainers {
+	allContainers := append([]corev1.Container{}, ps.InitContainers...)
+	allContainers = append(allContainers, ps.Containers...)
+	for _, c := range allContainers {
 		if !firstParty[c.Name] {
 			continue
 		}
 		// Synthetic single-container pod, preserving the real pod-level
 		// SecurityContext so the evaluator sees seccomp=RuntimeDefault.
-		// iptables-init legitimately needs CAP_NET_ADMIN/NET_RAW; the
-		// PSS restricted "capabilities must be in the allowed list" rule
-		// rejects any add. We exempt iptables-init from this single rule
-		// — its capability adds are documented in ADR-0013 and gated by
-		// the iptables-init image's first-party status. All other
-		// restricted rules still apply.
 		isolatedPod := corev1.PodSpec{
 			Containers:      []corev1.Container{c},
 			SecurityContext: ps.SecurityContext,
@@ -860,11 +860,11 @@ func TestBuildPodSpec_FirstPartyContainersPassPSSRestricted(t *testing.T) {
 			if r.Allowed {
 				continue
 			}
-			// iptables-init legitimately runs as root (UID 0) with
-			// CAP_NET_ADMIN/NET_RAW — all three are necessary to install
-			// iptables REDIRECT rules in the pod netns (ADR-0013 §7.2).
-			// Exempt capability and run-as-root violations for this
-			// container only; all other restricted rules still apply.
+			// iptables-init is exempted from three PSS restricted rule
+			// families: capabilities (must be in allowed list), runAsNonRoot,
+			// and runAsUser. It legitimately needs CAP_NET_ADMIN/NET_RAW and
+			// UID 0 to install iptables REDIRECT rules in the pod netns
+			// (ADR-0013). Exempt only these specific violations for iptables-init;
 			if c.Name == iptablesInitContainerName &&
 				(strings.Contains(r.ForbiddenReason, "capabilit") ||
 					strings.Contains(r.ForbiddenReason, "runAsNonRoot") ||
