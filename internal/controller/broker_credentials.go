@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	brokerapi "paddock.dev/paddock/internal/broker/api"
 )
 
 // brokerCredsSecretName returns the owned Secret name that holds
@@ -56,19 +57,19 @@ func brokerCredsSecretName(runName string) string {
 //   - ok=false, fatalReason non-empty on user-actionable failures
 //     (e.g. BrokerDenied / BrokerNotConfigured); caller should mark the
 //     run failed. credStatus is nil.
-func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run *paddockv1alpha1.HarnessRun, tpl *resolvedTemplate) (ok bool, credStatus []paddockv1alpha1.CredentialStatus, fatalReason, fatalMessage string, err error) {
+func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run *paddockv1alpha1.HarnessRun, tpl *resolvedTemplate) (ok bool, credStatus []paddockv1alpha1.CredentialStatus, issuedLeases []paddockv1alpha1.IssuedLease, fatalReason, fatalMessage string, err error) {
 	reqs := tpl.Spec.Requires.Credentials
 	if len(reqs) == 0 {
 		// Template declares no credentials — delete any stale Secret
 		// from a prior run that did declare them.
 		if err := r.deleteBrokerCredsSecret(ctx, run); err != nil {
-			return false, nil, "", "", err
+			return false, nil, nil, "", "", err
 		}
-		return true, nil, "", "", nil
+		return true, nil, nil, "", "", nil
 	}
 
 	if r.BrokerClient == nil {
-		return false, nil, "BrokerNotConfigured",
+		return false, nil, nil, "BrokerNotConfigured",
 			"controller has no --broker-endpoint configured; runs against templates with spec.requires cannot proceed",
 			nil
 	}
@@ -81,11 +82,12 @@ func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run 
 	logger := log.FromContext(ctx)
 	data := make(map[string][]byte, len(sorted))
 	credStatus = make([]paddockv1alpha1.CredentialStatus, 0, len(sorted))
+	issuedLeases = make([]paddockv1alpha1.IssuedLease, 0, len(sorted))
 	for _, c := range sorted {
 		resp, iErr := r.BrokerClient.Issue(ctx, run.Name, run.Namespace, c.Name)
 		if iErr != nil {
 			if IsBrokerCodeFatal(iErr) {
-				return false, nil, "BrokerDenied", iErr.Error(), nil
+				return false, nil, nil, "BrokerDenied", iErr.Error(), nil
 			}
 			// Transient — broker unreachable or an unexpected HTTP
 			// error. Let the reconciler set BrokerReady=False with
@@ -95,7 +97,7 @@ func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run 
 			// would bypass the condition update.
 			logger.Info("broker issue failed (transient)",
 				"credential", c.Name, "err", iErr.Error())
-			return false, nil, "", "", nil
+			return false, nil, nil, "", "", nil
 		}
 		data[c.Name] = []byte(resp.Value)
 		credStatus = append(credStatus, paddockv1alpha1.CredentialStatus{
@@ -104,6 +106,13 @@ func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run 
 			DeliveryMode:      paddockv1alpha1.DeliveryModeName(resp.DeliveryMode),
 			Hosts:             resp.Hosts,
 			InContainerReason: resp.InContainerReason,
+		})
+		issuedLeases = append(issuedLeases, paddockv1alpha1.IssuedLease{
+			Provider:       resp.Provider,
+			LeaseID:        resp.LeaseID,
+			CredentialName: c.Name,
+			ExpiresAt:      &metav1.Time{Time: resp.ExpiresAt},
+			PoolRef:        deriveProviderRef(resp),
 		})
 	}
 
@@ -124,11 +133,28 @@ func (r *HarnessRunReconciler) ensureBrokerCredentials(ctx context.Context, run 
 		return nil
 	})
 	if err != nil && !apierrors.IsConflict(err) {
-		return false, nil, "", "", fmt.Errorf("upserting broker-creds secret: %w", err)
+		return false, nil, nil, "", "", fmt.Errorf("upserting broker-creds secret: %w", err)
 	}
 	_ = op
 	r.Audit.EmitCredentialIssuedSummary(ctx, run.Name, run.Namespace, len(credStatus))
-	return true, credStatus, "", "", nil
+	return true, credStatus, issuedLeases, "", "", nil
+}
+
+// deriveProviderRef pulls provider-specific reconstruction metadata off
+// an IssueResponse and returns the wire-side equivalent for
+// HarnessRun.status.issuedLeases. Returns nil for any provider that
+// doesn't surface a per-lease ref (everything except PATPool today).
+func deriveProviderRef(resp *brokerapi.IssueResponse) *paddockv1alpha1.PoolLeaseRef {
+	if resp.Provider != "PATPool" || resp.PoolSecretRef == nil || resp.PoolSlotIndex == nil {
+		return nil
+	}
+	return &paddockv1alpha1.PoolLeaseRef{
+		SecretRef: paddockv1alpha1.SecretKeyReference{
+			Name: resp.PoolSecretRef.Name,
+			Key:  resp.PoolSecretRef.Key,
+		},
+		SlotIndex: *resp.PoolSlotIndex,
+	}
 }
 
 func (r *HarnessRunReconciler) deleteBrokerCredsSecret(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {

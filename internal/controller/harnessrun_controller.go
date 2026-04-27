@@ -567,7 +567,7 @@ func (r *HarnessRunReconciler) reconcileCredentials(
 	run *paddockv1alpha1.HarnessRun,
 	tpl *resolvedTemplate,
 ) (credentialsReconcileOutcome, error) {
-	credsOk, credStatus, brFatalReason, brFatalMsg, brErr := r.ensureBrokerCredentials(ctx, run, tpl)
+	credsOk, credStatus, issuedLeases, brFatalReason, brFatalMsg, brErr := r.ensureBrokerCredentials(ctx, run, tpl)
 	if brErr != nil {
 		return credentialsReconcileOutcome{}, brErr
 	}
@@ -592,6 +592,13 @@ func (r *HarnessRunReconciler) reconcileCredentials(
 	// unconditionally — the EventRecorder dedupes by reason/message so
 	// a steady-state reconcile loop won't spam the event stream.
 	run.Status.Credentials = credStatus
+	// Persist what was issued so the broker-leases finalizer can revoke
+	// and the broker can reconstruct PATPool slots on restart. Replace
+	// rather than append to keep the slice authoritative for each
+	// successful Issue cycle.
+	if len(issuedLeases) > 0 {
+		run.Status.IssuedLeases = issuedLeases
+	}
 	nProxy, nInContainer := 0, 0
 	for _, c := range credStatus {
 		switch c.DeliveryMode {

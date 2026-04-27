@@ -86,9 +86,17 @@ func (f *FakeBroker) Issue(_ context.Context, _ string, _ string, credentialName
 		if m.Provider != "" {
 			resp.Provider = m.Provider
 		}
+		if m.LeaseID != "" {
+			resp.LeaseID = m.LeaseID
+		}
+		if !m.ExpiresAt.IsZero() {
+			resp.ExpiresAt = m.ExpiresAt
+		}
 		resp.DeliveryMode = m.DeliveryMode
 		resp.Hosts = m.Hosts
 		resp.InContainerReason = m.InContainerReason
+		resp.PoolSecretRef = m.PoolSecretRef
+		resp.PoolSlotIndex = m.PoolSlotIndex
 	}
 	return &resp, nil
 }
