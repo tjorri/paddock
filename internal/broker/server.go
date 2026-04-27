@@ -63,6 +63,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc(brokerapi.PathHealthz, s.handleHealthz)
 	mux.HandleFunc(brokerapi.PathReadyz, s.handleReadyz)
 	mux.HandleFunc(brokerapi.PathIssue, s.handleIssue)
+	mux.HandleFunc(brokerapi.PathRevoke, s.handleRevoke)
 	mux.HandleFunc(brokerapi.PathValidateEgress, s.handleValidateEgress)
 	mux.HandleFunc(brokerapi.PathSubstituteAuth, s.handleSubstituteAuth)
 }

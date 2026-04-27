@@ -1096,6 +1096,154 @@ func TestSubstituteAuth_EgressRevoked_DeniesAndAudits(t *testing.T) {
 	_ = c
 }
 
+// recordingProvider is a minimal Provider stub that records Revoke calls
+// so TestHandleRevoke_* tests can assert that the handler dispatched to
+// the correct provider.
+type recordingProvider struct {
+	name        string
+	revokeCalls int
+	lastLeaseID string
+	revokeErr   error
+}
+
+func (r *recordingProvider) Name() string { return r.name }
+
+func (r *recordingProvider) Issue(_ context.Context, _ providers.IssueRequest) (providers.IssueResult, error) {
+	return providers.IssueResult{}, fmt.Errorf("recordingProvider does not implement Issue")
+}
+
+func (r *recordingProvider) Revoke(_ context.Context, leaseID string) error {
+	r.revokeCalls++
+	r.lastLeaseID = leaseID
+	return r.revokeErr
+}
+
+// setupRevoke builds a minimal Server wired to the given recordingProvider.
+// The caller identity defaults to the controller-manager SA (IsController=true)
+// unless overridden by the test after this returns.
+func setupRevoke(t *testing.T, prov *recordingProvider) *broker.Server {
+	t.Helper()
+	registry, err := providers.NewRegistry(prov)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).Build()
+	return &broker.Server{
+		Client: c,
+		Auth: stubAuth{identity: broker.CallerIdentity{
+			Namespace:      broker.ControllerSystemNamespace,
+			ServiceAccount: broker.ControllerServiceAccount,
+			IsController:   true,
+		}},
+		Providers: registry,
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
+	}
+}
+
+// postRevoke sends a POST /v1/revoke request to the server and returns the recorder.
+func postRevoke(t *testing.T, srv *broker.Server, runName, runNS, bearer string, body brokerapi.RevokeRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, brokerapi.PathRevoke, bytes.NewReader(b))
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	req.Header.Set(brokerapi.HeaderRun, runName)
+	if runNS != "" {
+		req.Header.Set(brokerapi.HeaderNamespace, runNS)
+	}
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	return rr
+}
+
+func TestHandleRevoke_Success_EmitsCredentialRevoked(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{name: "stub-prov"}
+	srv := setupRevoke(t, prov)
+	rec := &recordingAuditSink{}
+	srv.Audit = broker.NewAuditWriter(rec)
+
+	rr := postRevoke(t, srv, "hr-1", "team-a", "ctrl-token", brokerapi.RevokeRequest{
+		Provider:       "stub-prov",
+		LeaseID:        "lease-x",
+		CredentialName: "CRED",
+	})
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+	if prov.revokeCalls != 1 {
+		t.Errorf("Revoke called %d times, want 1", prov.revokeCalls)
+	}
+	if prov.lastLeaseID != "lease-x" {
+		t.Errorf("lastLeaseID = %q, want lease-x", prov.lastLeaseID)
+	}
+	wrote := rec.events()
+	if len(wrote) != 1 {
+		t.Fatalf("got %d audit events, want 1", len(wrote))
+	}
+	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialRevoked {
+		t.Errorf("audit kind = %q, want credential-revoked", wrote[0].Spec.Kind)
+	}
+}
+
+func TestHandleRevoke_NonControllerCaller_Forbidden(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{name: "stub-prov"}
+	srv := setupRevoke(t, prov)
+	// Override auth to return a non-controller caller.
+	srv.Auth = stubAuth{identity: broker.CallerIdentity{
+		Namespace:      "team-a",
+		ServiceAccount: "default",
+		IsController:   false,
+	}}
+	rec := &recordingAuditSink{}
+	srv.Audit = broker.NewAuditWriter(rec)
+
+	rr := postRevoke(t, srv, "hr-1", "team-a", "run-token", brokerapi.RevokeRequest{
+		Provider:       "stub-prov",
+		LeaseID:        "lease-x",
+		CredentialName: "CRED",
+	})
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+	}
+	if prov.revokeCalls != 0 {
+		t.Errorf("Revoke called %d times, want 0", prov.revokeCalls)
+	}
+	if len(rec.events()) != 0 {
+		t.Errorf("got %d audit events, want 0", len(rec.events()))
+	}
+}
+
+func TestHandleRevoke_AuditWriteFailure_Returns503(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{name: "stub-prov"}
+	srv := setupRevoke(t, prov)
+	srv.Audit = broker.NewAuditWriter(errorSink{err: errors.New("etcd unavailable")})
+
+	rr := postRevoke(t, srv, "hr-1", "team-a", "ctrl-token", brokerapi.RevokeRequest{
+		Provider:       "stub-prov",
+		LeaseID:        "lease-x",
+		CredentialName: "CRED",
+	})
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rr.Code, rr.Body.String())
+	}
+	var errResp brokerapi.ErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if errResp.Code != brokerapi.CodeAuditUnavailable {
+		t.Errorf("code = %q, want AuditUnavailable", errResp.Code)
+	}
+}
+
 func TestAuditWriter_NewAuditWriter_PanicsOnNilSink(t *testing.T) {
 	defer func() {
 		r := recover()
