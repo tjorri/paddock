@@ -4,7 +4,8 @@ name: CodeQL
 # a config file (.github/codeql/codeql-config.yml) that excludes the
 # evil-echo hostile harness from analysis. After merging this workflow,
 # disable default setup under repo Settings → Code security → Code
-# scanning → "CodeQL analysis" → Switch to advanced.
+# scanning. Matrix covers both Go source and GitHub Actions workflow
+# files; add languages here if the codebase grows.
 
 on:
   push:
@@ -27,21 +28,32 @@ permissions:
 
 jobs:
   analyze:
-    name: Analyze (Go)
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: autobuild
+          - language: actions
+            build-mode: none
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
-          languages: go
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
           config-file: ./.github/codeql/codeql-config.yml
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+      - if: matrix.build-mode == 'autobuild'
+        name: Autobuild
+        uses: github/codeql-action/autobuild@v4
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
-          category: "/language:go"
+          category: "/language:${{ matrix.language }}"
