@@ -382,19 +382,22 @@ func TestSeedProxySidecar_AuditEnabled(t *testing.T) {
 		brokerCASecret: "ws-1-broker-ca",
 	}
 	proxy := buildSeedProxySidecar(ws, in)
+	var sawRunName, sawRunNamespace bool
 	for _, a := range proxy.Args {
-		if a == "--disable-audit" {
+		switch a {
+		case "--disable-audit":
 			t.Errorf("seed proxy args still contain --disable-audit; expected audit enabled (F-52)")
-		}
-	}
-	sawRunName := false
-	for _, a := range proxy.Args {
-		if a == "--run-name=seed-ws-1" {
+		case "--run-name=seed-ws-1":
 			sawRunName = true
+		case "--run-namespace=team-a":
+			sawRunNamespace = true
 		}
 	}
 	if !sawRunName {
 		t.Errorf("seed proxy missing --run-name=seed-ws-1; want present so AuditEvent runRef.name is seed-<ws>")
+	}
+	if !sawRunNamespace {
+		t.Errorf("seed proxy missing --run-namespace=team-a; want present so AuditEvents land in the tenant namespace, not paddock-system")
 	}
 }
 
