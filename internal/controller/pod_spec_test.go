@@ -914,6 +914,54 @@ func TestBuildPodSpec_ProxySeccompParity(t *testing.T) {
 	}
 }
 
+// TestBuildPodSpec_ClampsGracePeriod is the controller-side belt-and-
+// braces for F-42's admission cap. Even if a template predates the
+// MaxTerminationGracePeriodSeconds webhook (or admission is bypassed
+// in some way), the kubelet never sees a grace period above the cap.
+func TestBuildPodSpec_ClampsGracePeriod(t *testing.T) {
+	grace := func(v int64) *int64 { return &v }
+	cases := []struct {
+		name    string
+		input   *int64
+		wantSec int64
+	}{
+		{"unset → default", nil, defaultGracePeriodSecs},
+		{"30 → 30 (below default)", grace(30), 30},
+		{"60 → 60 (default)", grace(60), 60},
+		{"299 → 299", grace(299), 299},
+		{"300 → 300 (cap)", grace(300), 300},
+		{"301 → 300 (clamped)", grace(301), maxPodGracePeriodSecs},
+		{"86400 → 300 (clamped)", grace(86400), maxPodGracePeriodSecs},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run := &paddockv1alpha1.HarnessRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+			}
+			tpl := &resolvedTemplate{
+				SourceName: "echo",
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Image:   "ghcr.io/paddock/harness-echo:v1",
+					Command: []string{"/bin/echo"},
+					Defaults: paddockv1alpha1.HarnessTemplateDefaults{
+						TerminationGracePeriodSeconds: tc.input,
+					},
+				},
+			}
+			spec := buildPodSpec(run, tpl, podSpecInputs{
+				outputConfigMap: "out",
+				serviceAccount:  "default",
+			})
+			if spec.TerminationGracePeriodSeconds == nil {
+				t.Fatal("TerminationGracePeriodSeconds is nil; want pointer set")
+			}
+			if got := *spec.TerminationGracePeriodSeconds; got != tc.wantSec {
+				t.Errorf("got %d; want %d", got, tc.wantSec)
+			}
+		})
+	}
+}
+
 // TestBuildEnv_ExtraEnvLastWinsOnControllerSide asserts F-39 defense in
 // depth: even if a tenant submits an extraEnv entry whose name collides
 // with a Paddock-reserved key (bypassing the webhook), the controller

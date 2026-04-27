@@ -42,7 +42,7 @@ const (
 
 // AuditKind names the category of a recorded decision. See spec 0002 §9
 // for the full taxonomy.
-// +kubebuilder:validation:Enum=credential-issued;credential-denied;credential-renewed;credential-revoked;egress-allow;egress-block;egress-block-summary;egress-discovery-allow;policy-applied;policy-rejected;broker-unavailable;run-failed;run-completed;ca-projected;network-policy-enforcement-withdrawn;ca-misconfigured
+// +kubebuilder:validation:Enum=credential-issued;credential-denied;credential-renewed;credential-revoked;egress-allow;egress-block;egress-block-summary;egress-discovery-allow;policy-applied;policy-rejected;broker-unavailable;run-failed;run-completed;ca-projected;network-policy-enforcement-withdrawn;ca-misconfigured;broker-creds-tampered
 type AuditKind string
 
 const (
@@ -62,6 +62,7 @@ const (
 	AuditKindCAProjected                       AuditKind = "ca-projected"
 	AuditKindNetworkPolicyEnforcementWithdrawn AuditKind = "network-policy-enforcement-withdrawn"
 	AuditKindCAMisconfigured                   AuditKind = "ca-misconfigured"
+	AuditKindBrokerCredsTampered               AuditKind = "broker-creds-tampered"
 )
 
 // AuditEventSpec records one security-relevant decision. Write-once:

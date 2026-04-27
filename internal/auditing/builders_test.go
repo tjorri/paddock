@@ -265,3 +265,32 @@ func TestNewNetworkPolicyEnforcementWithdrawn(t *testing.T) {
 		t.Errorf("reason = %q", ae.Spec.Reason)
 	}
 }
+
+func TestNewBrokerCredsTampered(t *testing.T) {
+	ae := auditing.NewBrokerCredsTampered(auditing.BrokerCredsTamperedInput{
+		RunName:    "hr-1",
+		Namespace:  "team-a",
+		PrunedKeys: []string{"EXTRA_VAR", "INJECTED"},
+	})
+	if ae.GenerateName != "ae-creds-tampered-" {
+		t.Errorf("GenerateName = %q; want %q", ae.GenerateName, "ae-creds-tampered-")
+	}
+	if ae.Spec.Kind != paddockv1alpha1.AuditKindBrokerCredsTampered {
+		t.Errorf("Kind = %q; want %q", ae.Spec.Kind, paddockv1alpha1.AuditKindBrokerCredsTampered)
+	}
+	if ae.Spec.Decision != paddockv1alpha1.AuditDecisionWarned {
+		t.Errorf("Decision = %q; want %q", ae.Spec.Decision, paddockv1alpha1.AuditDecisionWarned)
+	}
+	if ae.Spec.RunRef == nil || ae.Spec.RunRef.Name != "hr-1" {
+		t.Errorf("RunRef = %+v; want {Name: hr-1}", ae.Spec.RunRef)
+	}
+	if !strings.Contains(ae.Spec.Reason, "EXTRA_VAR") || !strings.Contains(ae.Spec.Reason, "INJECTED") {
+		t.Errorf("Reason = %q; want both pruned key names present", ae.Spec.Reason)
+	}
+	// Pin the security guarantee: only KEY NAMES end up in Reason,
+	// never values. Caller passes []string of names; values are not
+	// available to the builder.
+	if strings.Contains(ae.Spec.Reason, "secret-value-here") {
+		t.Errorf("Reason unexpectedly contains a value-shaped string: %q", ae.Spec.Reason)
+	}
+}

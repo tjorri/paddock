@@ -112,6 +112,21 @@ func (c *ControllerAudit) EmitWorkspaceCAMisconfigured(ctx context.Context, wsNa
 	}), "ca-misconfigured")
 }
 
+// EmitRunCAMisconfigured records a terminal CA-misconfigured event for
+// a HarnessRun whose source-Secret key is missing/empty (typo'd key,
+// blanked source) or whose cert-manager Certificate has hit a permanent
+// failure. F-44.
+//
+// Companion to EmitWorkspaceCAMisconfigured; both share the
+// AuditKindCAMisconfigured kind and "ca-misconfigured" log action.
+func (c *ControllerAudit) EmitRunCAMisconfigured(ctx context.Context, runName, namespace, reason string) {
+	c.write(ctx, auditing.NewCAMisconfigured(auditing.CAMisconfiguredInput{
+		Name:      runName,
+		Namespace: namespace,
+		Reason:    reason,
+	}), "ca-misconfigured")
+}
+
 // EmitNetworkPolicyEnforcementWithdrawn is called when the reconciler
 // observes that a run admitted with enforcement=true no longer has its
 // NetworkPolicy (e.g., operator deleted it via kubectl). The reconciler
@@ -123,4 +138,17 @@ func (c *ControllerAudit) EmitNetworkPolicyEnforcementWithdrawn(ctx context.Cont
 		Namespace: namespace,
 		Reason:    reason,
 	}), "network-policy-enforcement-withdrawn")
+}
+
+// EmitBrokerCredsTampered records that the controller detected
+// unexpected keys on a run's broker-creds Secret (e.g., a tenant
+// `kubectl edit secret <run>-broker-creds` injecting an extra envFrom
+// key) and pruned them via CreateOrUpdate. prunedKeys is the sorted
+// list of removed key names; values are never recorded. F-41 residual.
+func (c *ControllerAudit) EmitBrokerCredsTampered(ctx context.Context, runName, namespace string, prunedKeys []string) {
+	c.write(ctx, auditing.NewBrokerCredsTampered(auditing.BrokerCredsTamperedInput{
+		RunName:    runName,
+		Namespace:  namespace,
+		PrunedKeys: prunedKeys,
+	}), "broker-creds-tampered")
 }

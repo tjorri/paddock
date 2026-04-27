@@ -79,9 +79,10 @@ func proxyTLSSecretName(runName string) string {
 }
 
 // proxyCertDurationRun is the lifetime of a per-run intermediate CA.
-// 48h covers F-42's 24h cap on terminationGracePeriodSeconds plus
-// margin. No renewBefore — runs are bounded; the intermediate
-// outlives the run.
+// 48h dramatically exceeds F-42's 300s cap on
+// terminationGracePeriodSeconds (MaxTerminationGracePeriodSeconds in
+// the webhook package), so the intermediate always outlives the run.
+// No renewBefore — runs are bounded.
 const proxyCertDurationRun = 48 * time.Hour
 
 // proxyCertDurationWorkspace is the lifetime of a per-Workspace

@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -30,12 +29,6 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
-
-// errSourceCAMisconfigured is returned when the broker-CA source
-// Secret exists but has a missing or empty ca.crt key — operator
-// error, not transient. Reconciler maps to a terminal
-// BrokerCAMisconfigured condition (F-51).
-var errSourceCAMisconfigured = errors.New("source broker-CA Secret missing/empty key")
 
 // brokerSeedRepos returns the subset of the Workspace's seed repos
 // that opt into broker-backed credentials. Zero-length when the

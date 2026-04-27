@@ -226,6 +226,54 @@ func (r *HarnessRunReconciler) cachedBrokerCredentials(
 			return false, nil, nil, false
 		}
 	}
+
+	// F-41 residual: detect and prune extra keys. The Phase 2d
+	// Owns(&corev1.Secret{}) watch triggers a reconcile on broker-creds
+	// mutation; without this branch, the cached fast-path returned
+	// ok=true unchanged, leaving extras (e.g., an injected EXTRA_VAR)
+	// consumed by the agent's envFrom mount until the next full Issue
+	// cycle. Prune by re-writing canonical Data using the existing
+	// values (no broker round-trip — values aren't being changed,
+	// only extras dropped).
+	if len(s.Data) > len(sortedReqs) {
+		canonical := make(map[string][]byte, len(sortedReqs))
+		requiredNames := make(map[string]struct{}, len(sortedReqs))
+		for _, c := range sortedReqs {
+			requiredNames[c.Name] = struct{}{}
+			canonical[c.Name] = s.Data[c.Name]
+		}
+		pruned := make([]string, 0, len(s.Data)-len(sortedReqs))
+		for k := range s.Data {
+			if _, ok := requiredNames[k]; !ok {
+				pruned = append(pruned, k)
+			}
+		}
+		sort.Strings(pruned)
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      brokerCredsSecretName(run.Name),
+				Namespace: run.Namespace,
+			},
+		}
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+			if err := controllerutil.SetControllerReference(run, secret, r.Scheme); err != nil {
+				return err
+			}
+			secret.Type = corev1.SecretTypeOpaque
+			secret.Data = canonical
+			return nil
+		}); err != nil {
+			// Conflict or transient API error: prune outcome uncertain.
+			// Fall through to the full Issue cycle — safer than emitting
+			// an audit event for a prune we cannot prove landed, and the
+			// full Issue path will re-write Data wholesale anyway.
+			return false, nil, nil, false
+		}
+		if r.Audit != nil {
+			r.Audit.EmitBrokerCredsTampered(ctx, run.Name, run.Namespace, pruned)
+		}
+	}
+
 	return true, credStatus, issuedLeases, true
 }
 
