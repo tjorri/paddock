@@ -334,6 +334,58 @@ func TestPATPoolProvider_SubstituteHostNotAllowed(t *testing.T) {
 	}
 }
 
+func TestPATPool_RevokedPATIsNotServed(t *testing.T) {
+	t.Parallel()
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
+		WithObjects(patPoolSecret("ghp_alice\nghp_bob\n")).Build()
+	clock := time.Unix(1_700_000_000, 0)
+	p := &PATPoolProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return clock }}}
+
+	// Issue a bearer; it leases ghp_alice (index 0).
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "cc-1", Namespace: "my-team",
+		CredentialName: "GITHUB_TOKEN", Grant: patPoolGrant(),
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	// First substitute call works — sanity check.
+	if _, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName: "cc-1", Namespace: "my-team",
+		Host: "github.com", IncomingBearer: res.Value,
+	}); err != nil {
+		t.Fatalf("pre-revoke SubstituteAuth: %v", err)
+	}
+
+	// Operator rotates: ghp_alice removed, only ghp_bob remains.
+	secret := &corev1.Secret{}
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: "my-team", Name: "paddock-pat-pool"},
+		secret); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	secret.Data["pool"] = []byte("ghp_bob\n")
+	if err := c.Update(context.Background(), secret); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// SubstituteAuth must NOT serve the revoked PAT.
+	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName: "cc-1", Namespace: "my-team",
+		Host: "github.com", IncomingBearer: res.Value,
+	})
+	if !sub.Matched {
+		t.Fatalf("Matched = false; want true (still our prefix)")
+	}
+	if err == nil {
+		t.Fatalf("expected error after PAT revoked, got nil (would have served stale PAT)")
+	}
+	if !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("error %q does not mention revocation; want a revoked-PAT signal", err)
+	}
+}
+
 func TestPATPoolProvider_SubstituteResultFieldsPopulated(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_pool_a\n")).Build()
