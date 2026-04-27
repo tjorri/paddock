@@ -106,7 +106,13 @@ func parseFlags() config {
 // test can inject a WriteFunc without spinning up Kubernetes.
 func run(ctx context.Context, cfg config, write WriteFunc) error {
 	destDir := filepath.Join(cfg.workspace, ".paddock", "runs", cfg.runName)
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	// 0o775 (group-writable) is load-bearing: the agent runs as a
+	// different UID than the collector (post-Theme-4: collector=1339,
+	// agent=image-default ~65532). The pod's fsGroup pins GID=65532 on
+	// the workspace volume; group-write here lets the agent write its
+	// result.json into a directory the collector pre-created. F-20
+	// follow-up.
+	if err := os.MkdirAll(destDir, 0o775); err != nil {
 		return fmt.Errorf("mkdir dest: %w", err)
 	}
 	rawDst, err := openAppend(filepath.Join(destDir, "raw.jsonl"))
@@ -182,7 +188,9 @@ func envOr(key, fallback string) string {
 }
 
 func openAppend(path string) (*os.File, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// 0o775 mirrors the destDir mode in run() — see the comment there
+	// for the cross-UID rationale.
+	if err := os.MkdirAll(filepath.Dir(path), 0o775); err != nil {
 		return nil, err
 	}
 	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
