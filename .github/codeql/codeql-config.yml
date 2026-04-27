@@ -1,0 +1,9 @@
+name: paddock CodeQL config
+
+# evil-echo is a hostile test harness — it deliberately performs
+# security-relevant operations (raw TCP dials, InsecureSkipVerify TLS,
+# synthetic bearers) so the e2e suite can assert that paddock's defences
+# deny them. Scanning it produces true-positive findings that are
+# false-positive in context. See images/evil-echo/README.md.
+paths-ignore:
+  - images/evil-echo/**
