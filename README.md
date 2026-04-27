@@ -29,55 +29,11 @@ Prerequisites: Go 1.26+, Docker, `kubectl`, [Kind](https://kind.sigs.k8s.io/) 0.
 
 ## Installing a published release
 
-CI publishes versioned images and the Helm chart to GitHub Container Registry (ghcr.io) as OCI artifacts on every tagged release. Every push to `main` also publishes bleeding-edge images under the `:main` tag (with immutable `:main-<sha>` for pinning).
+For installing a tagged release into an existing cluster (Helm OCI chart, single-file manifest, Cosign verification, pre-release pinning), see [`docs/getting-started/installation.md`](docs/getting-started/installation.md).
 
-```sh
-helm install paddock \
-  oci://ghcr.io/tjorri/charts/paddock \
-  --version 0.3.0 \
-  --namespace paddock-system --create-namespace
-```
+## Concepts
 
-Or install a specific tagged release via the single-file manifest:
-
-```sh
-kubectl apply --server-side=true --force-conflicts \
-  -f https://github.com/tjorri/paddock/releases/download/v0.3.0/install.yaml
-```
-
-Every image is Cosign-signed (keyless, Sigstore). Verification is optional:
-
-```sh
-cosign verify ghcr.io/tjorri/paddock-manager:v0.3.0 \
-  --certificate-identity-regexp='^https://github\.com/tjorri/paddock/' \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
-```
-
-Pin to a specific main-branch commit via `:main-<sha>` (first seven chars of the commit SHA).
-
-## Concepts in 90 seconds
-
-```
-ClusterHarnessTemplate   image + command + eventAdapter + requires (cred + egress)
-        ▲
-        │ baseTemplateRef (inherits locked fields)
-HarnessTemplate          namespaced; can override defaults + requires
-        ▲
-        │ templateRef
-HarnessRun               one invocation: prompt + workspace + model
-        │
-        ├── BrokerPolicy (in-namespace)  grants → admission intersects with requires
-        ├── Workspace                    seeded PVC, serialised to one active run
-        ├── AuditEvent (per decision)    TTL-retained security trail
-        │
-        └── Job           init:  iptables-init (transparent mode only)
-                          sidecar: adapter                (per-harness event translator)
-                          sidecar: collector              (status + PVC persistence)
-                          sidecar: proxy  ── ValidateEgress + SubstituteAuth ──► broker
-                          main:    agent  (sees Paddock-issued bearers only)
-```
-
-Admission intersects the template's `spec.requires` with the union of matching `BrokerPolicy.spec.grants` in the run's namespace. Runs against an un-granted template are rejected at submit time with a scaffold hint.
+CRD relationships, Pod composition, and the admission model live in [`docs/concepts/architecture.md`](docs/concepts/architecture.md). The full component inventory is in [`docs/concepts/components.md`](docs/concepts/components.md).
 
 ## Repository layout
 

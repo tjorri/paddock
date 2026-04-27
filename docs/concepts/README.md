@@ -8,11 +8,12 @@ Pages:
 
 - [`components.md`](components.md) — inventory of CRDs, control plane,
   per-run runtime, and tooling.
+- [`architecture.md`](architecture.md) — CRD relationships, Pod
+  composition, admission model. Starter page; will grow to cover
+  deployment topology and control flow.
 
 To be written:
 
-- `architecture.md` — control flow, deployment topology, where each
-  piece runs.
 - `harness-runs.md` — the central abstraction.
 - `secret-broker.md` — why a separate broker, what it does.
 - `surrogates.md` — what a surrogate is and when substitution happens.

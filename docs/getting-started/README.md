@@ -7,11 +7,12 @@ Pages:
 
 - [`quickstart.md`](quickstart.md) — kind cluster, both reference
   harnesses, `BrokerPolicy` setup, observability. Ten minutes.
+- [`installation.md`](installation.md) — install from a tagged release
+  into an existing cluster: Helm OCI chart, single-file manifest,
+  Cosign verification, pre-release pinning.
 
 To be written:
 
-- `installation.md` — real cluster: prerequisites, Helm, Pod Security
-  Standards, network policy.
 - `first-harness.md` — end-to-end first run with a real harness and a
   `BrokerPolicy`, separate from the Kind quickstart.
 
