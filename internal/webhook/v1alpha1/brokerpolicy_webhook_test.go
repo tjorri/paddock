@@ -628,4 +628,19 @@ var _ = Describe("BrokerPolicy Webhook", func() {
 			Expect(err.Error()).To(ContainSubstring("RFC 1123"))
 		})
 	})
+
+	It("rejects an appliesToTemplates entry that is not a valid glob", func() {
+		spec := minimalSpec()
+		spec.AppliesToTemplates = []string{"claude-code-["}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("appliesToTemplates"))
+		Expect(err.Error()).To(ContainSubstring("not a valid glob"))
+	})
+
+	It("admits a valid prefix glob in appliesToTemplates", func() {
+		spec := minimalSpec()
+		spec.AppliesToTemplates = []string{"claude-code-*"}
+		Expect(validate(spec)).To(Succeed())
+	})
 })

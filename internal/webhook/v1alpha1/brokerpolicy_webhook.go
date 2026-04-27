@@ -30,6 +30,7 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	"paddock.dev/paddock/internal/auditing"
+	"paddock.dev/paddock/internal/policy"
 )
 
 var brokerpolicylog = logf.Log.WithName("brokerpolicy-resource")
@@ -137,9 +138,15 @@ func validateBrokerPolicySpec(spec *paddockv1alpha1.BrokerPolicySpec, now time.T
 			"at least one template selector is required"))
 	}
 	for i, sel := range spec.AppliesToTemplates {
-		if strings.TrimSpace(sel) == "" {
-			errs = append(errs, field.Invalid(specPath.Child("appliesToTemplates").Index(i),
-				sel, "selector must not be empty"))
+		entry := specPath.Child("appliesToTemplates").Index(i)
+		trimmed := strings.TrimSpace(sel)
+		if trimmed == "" {
+			errs = append(errs, field.Invalid(entry, sel, "selector must not be empty"))
+			continue
+		}
+		if err := policy.ValidateAppliesToTemplate(trimmed); err != nil {
+			errs = append(errs, field.Invalid(entry, sel,
+				"selector is not a valid glob pattern: "+err.Error()))
 		}
 	}
 
