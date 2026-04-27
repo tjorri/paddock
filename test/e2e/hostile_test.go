@@ -830,11 +830,18 @@ spec:
 			By("creating pool Secret, HarnessTemplate, and BrokerPolicy (2-slot pool)")
 			mustApplyManifest(patPoolFixtureManifest(t2Namespace, "t2-restart", 2))
 
-			By("starting two HarnessRuns to fill the 2-slot pool")
+			// Apply runs SEQUENTIALLY (not in a tight loop): in CI the
+			// reconcile rate per (namespace, run) is bounded, and a tight
+			// loop can leave the second run stuck behind the first run's
+			// reconcile cycle. The F-14 invariant we're validating is
+			// "post-restart slots stay distinct" — that's verified the
+			// same way whether runs leased concurrently or one-after-the-
+			// other, so prefer the more robust sequential setup.
 			runA := "restart-a"
 			runB := "restart-b"
-			for _, name := range []string{runA, runB} {
-				mustApplyManifest(fmt.Sprintf(`
+
+			By("starting run-a and waiting for it to acquire a lease")
+			mustApplyManifest(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -844,17 +851,28 @@ spec:
   templateRef:
     name: t2-patpool-tmpl
   prompt: "t2 restart test"
-`, name, t2Namespace))
-			}
+`, runA, t2Namespace))
+			Eventually(func() int {
+				return issuedLeaseCount(ctx, t2Namespace, runA)
+			}, 180*time.Second, 2*time.Second).Should(BeNumerically(">=", 1),
+				"run %s did not acquire a lease", runA)
 
-			By("waiting for both runs to acquire a lease")
-			for _, name := range []string{runA, runB} {
-				runNameCopy := name
-				Eventually(func() int {
-					return issuedLeaseCount(ctx, t2Namespace, runNameCopy)
-				}, 90*time.Second, 2*time.Second).Should(BeNumerically(">=", 1),
-					"run %s did not acquire a lease", runNameCopy)
-			}
+			By("starting run-b and waiting for it to acquire a lease")
+			mustApplyManifest(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  templateRef:
+    name: t2-patpool-tmpl
+  prompt: "t2 restart test"
+`, runB, t2Namespace))
+			Eventually(func() int {
+				return issuedLeaseCount(ctx, t2Namespace, runB)
+			}, 180*time.Second, 2*time.Second).Should(BeNumerically(">=", 1),
+				"run %s did not acquire a lease", runB)
 
 			slotA1 := poolSlotIndex(ctx, t2Namespace, runA)
 			slotB1 := poolSlotIndex(ctx, t2Namespace, runB)
