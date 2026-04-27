@@ -18,14 +18,24 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
+
+// errSourceCAMisconfigured is returned when the broker-CA source
+// Secret exists but has a missing or empty ca.crt key — operator
+// error, not transient. Reconciler maps to a terminal
+// BrokerCAMisconfigured condition (F-51).
+var errSourceCAMisconfigured = errors.New("source broker-CA Secret missing/empty key")
 
 // brokerSeedRepos returns the subset of the Workspace's seed repos
 // that opt into broker-backed credentials. Zero-length when the
@@ -99,8 +109,30 @@ func (r *WorkspaceReconciler) ensureSeedProxyTLS(ctx context.Context, ws *paddoc
 
 // ensureSeedBrokerCA copies ca.crt from the broker-serving-cert
 // Secret into a per-workspace broker-ca Secret. Mirrors ensureBrokerCA.
+//
+// Distinguishes transient from terminal failures (F-51):
+//   - source Secret IsNotFound: transient — returns (false, nil).
+//   - source Secret found but ca.crt missing/empty: terminal — returns
+//     (false, errSourceCAMisconfigured). Caller maps to a terminal
+//     BrokerCAMisconfigured condition with no requeue.
 func (r *WorkspaceReconciler) ensureSeedBrokerCA(ctx context.Context, ws *paddockv1alpha1.Workspace) (bool, error) {
 	dstName := workspaceBrokerCASecretName(ws.Name)
+
+	// Read the source first so we can distinguish "not found yet"
+	// (transient) from "found but malformed" (terminal — F-51).
+	src := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: r.BrokerCASource.Namespace, Name: r.BrokerCASource.Name}, src)
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("reading source broker-CA Secret %s/%s: %w",
+			r.BrokerCASource.Namespace, r.BrokerCASource.Name, err)
+	}
+	if len(src.Data[brokerCAKey]) == 0 {
+		return false, errSourceCAMisconfigured
+	}
+
 	created, err := copyCAToSecret(ctx, r.Client, r.Scheme, ws,
 		types.NamespacedName{Namespace: r.BrokerCASource.Namespace, Name: r.BrokerCASource.Name},
 		dstName, ws.Namespace,
@@ -115,12 +147,9 @@ func (r *WorkspaceReconciler) ensureSeedBrokerCA(ctx context.Context, ws *paddoc
 	if created {
 		return true, nil
 	}
-	// created=false, err=nil: either the source Secret is missing/empty
-	// (helper returned early) or this is a steady-state no-op update.
-	// Re-Get the destination to distinguish the two cases. This also
-	// closes a latent bug in the pre-refactor path: the original returned
-	// true on a no-op CreateOrUpdate even when the destination's ca.crt
-	// was stale/empty (e.g. blanked by an external actor).
+	// created=false, err=nil: steady-state no-op update. Re-Get the
+	// destination to verify ca.crt is populated (closes a latent bug
+	// where a blanked destination ca.crt would be silently accepted).
 	var dst corev1.Secret
 	if getErr := r.Get(ctx, types.NamespacedName{Namespace: ws.Namespace, Name: dstName}, &dst); getErr != nil {
 		if apierrors.IsNotFound(getErr) {
@@ -133,6 +162,92 @@ func (r *WorkspaceReconciler) ensureSeedBrokerCA(ctx context.Context, ws *paddoc
 		return false, nil
 	}
 	return true, nil
+}
+
+// ensureSeedRBAC provisions a per-Workspace ServiceAccount + Role +
+// RoleBinding granting the seed proxy sidecar create access to
+// AuditEvents in the Workspace's namespace. Follows the same shape as
+// ensureCollectorRBAC in harnessrun_controller.go (per-CR SA bundle,
+// owner-ref'd to the parent), differing in that all three objects use
+// CreateOrUpdate so label drift is reconciled on subsequent passes.
+// All three objects are owner-ref'd to the Workspace for cascade cleanup.
+//
+// Provisioned unconditionally for any seeded Workspace; the proxy
+// sidecar is the only intended consumer, but the bundle is created
+// even for non-broker seeds for simplicity. A namespace tenant with
+// pods/create could exercise the auditevents:create grant by mounting
+// the SA themselves — equivalent to the existing tenant trust model.
+//
+// F-48 (dedicated SA so default-SA automount can be disabled) +
+// F-52 (audit RBAC for the seed proxy's AuditEvent writes).
+func (r *WorkspaceReconciler) ensureSeedRBAC(ctx context.Context, ws *paddockv1alpha1.Workspace) error {
+	saName := seedSAName(ws)
+	labels := map[string]string{
+		"app.kubernetes.io/name":      "paddock",
+		"app.kubernetes.io/component": "workspace-seed",
+		"paddock.dev/workspace":       ws.Name,
+	}
+
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: ws.Namespace,
+			Labels:    labels,
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
+		return controllerutil.SetControllerReference(ws, sa, r.Scheme)
+	}); err != nil && !apierrors.IsConflict(err) {
+		return fmt.Errorf("seed serviceaccount: %w", err)
+	}
+
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: ws.Namespace,
+			Labels:    labels,
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
+		if err := controllerutil.SetControllerReference(ws, role, r.Scheme); err != nil {
+			return err
+		}
+		role.Rules = []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"paddock.dev"},
+				Resources: []string{"auditevents"},
+				Verbs:     []string{"create"},
+			},
+		}
+		return nil
+	}); err != nil && !apierrors.IsConflict(err) {
+		return fmt.Errorf("seed role: %w", err)
+	}
+
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: ws.Namespace,
+			Labels:    labels,
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rb, func() error {
+		if err := controllerutil.SetControllerReference(ws, rb, r.Scheme); err != nil {
+			return err
+		}
+		rb.Subjects = []rbacv1.Subject{
+			{Kind: "ServiceAccount", Name: saName, Namespace: ws.Namespace},
+		}
+		rb.RoleRef = rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     saName,
+		}
+		return nil
+	}); err != nil && !apierrors.IsConflict(err) {
+		return fmt.Errorf("seed rolebinding: %w", err)
+	}
+	return nil
 }
 
 // seedBrokerCredsReady checks that every BrokerCredentialRef the

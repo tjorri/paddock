@@ -309,6 +309,38 @@ func NewCAProjected(in CAProjectionInput) *paddockv1alpha1.AuditEvent {
 	return ae
 }
 
+// CAMisconfiguredInput is the flat input shape for NewCAMisconfigured.
+type CAMisconfiguredInput struct {
+	Name      string // Workspace name (will be prefixed seed- by the caller per F-52).
+	Namespace string
+	Reason    string
+	When      time.Time
+}
+
+// NewCAMisconfigured builds a ca-misconfigured AuditEvent. Emitted when
+// a Workspace's source CA Secret has a missing/empty key, or when
+// cert-manager has reported a permanent issuance failure for the
+// per-Workspace Certificate. F-51.
+func NewCAMisconfigured(in CAMisconfiguredInput) *paddockv1alpha1.AuditEvent {
+	ae := &paddockv1alpha1.AuditEvent{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:    in.Namespace,
+			GenerateName: "ae-ca-misconfigured-",
+		},
+		Spec: paddockv1alpha1.AuditEventSpec{
+			Decision:  paddockv1alpha1.AuditDecisionDenied,
+			Kind:      paddockv1alpha1.AuditKindCAMisconfigured,
+			Timestamp: metav1.NewTime(nowOr(in.When)),
+			Reason:    in.Reason,
+		},
+	}
+	if in.Name != "" {
+		ae.Spec.RunRef = &paddockv1alpha1.LocalObjectReference{Name: in.Name}
+	}
+	stampLabels(ae, in.Name)
+	return ae
+}
+
 // NetworkPolicyEnforcementWithdrawnInput is the flat input shape for
 // NewNetworkPolicyEnforcementWithdrawn.
 type NetworkPolicyEnforcementWithdrawnInput struct {

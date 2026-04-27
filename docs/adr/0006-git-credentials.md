@@ -38,3 +38,7 @@ Failure is loud: `backoffLimit: 0`, so a missing-key or bad-credentials failure 
 - Users have to know that `password` is the key for a PAT. Documented in the Go doc comment on `CredentialsSecretRef` and in `docs/specs/0001-core-v0.1.md` §2.3.
 - `StrictHostKeyChecking=accept-new` trusts the remote on first connection. For the tightly scoped seed pod this is acceptable; locked-down environments can pin a `known_hosts` via a future `knownHostsSecretRef` without changing today's contract.
 - The tmpfs scratch mount means credential artefacts live only in the pod's memory; a `kubectl cp` from the PVC cannot exfiltrate them.
+
+## Phase 2h update (2026-04-27)
+
+`WorkspaceGitSource.URL` rejects userinfo at admission. Credentials must flow through `credentialsSecretRef` (static) or `brokerCredentialRef` (broker-leased). A URL of the form `https://user:token@host/repo` is no longer admitted; the controller also scrubs userinfo from the on-PVC `repos.json` and runs `git remote set-url origin <scrubbed>` post-clone for broker-backed repos as defence-in-depth (F-50, Theme 1).

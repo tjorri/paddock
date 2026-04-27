@@ -18,8 +18,10 @@ package controller
 
 import (
 	"net"
+	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -113,6 +115,28 @@ func TestBuildSeedNetworkPolicy_APIServerEgressRule(t *testing.T) {
 	}
 }
 
+func TestSeedRepoSchemeAllowed(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"https://example.com/foo.git", true},
+		{"ssh://git@example.com/foo.git", true},
+		{"git@example.com:foo.git", true},
+		{"http://example.com/foo.git", false},
+		{"git://example.com/foo.git", false},
+		{"file:///etc/passwd", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.url, func(t *testing.T) {
+			if got := seedRepoSchemeAllowed(tc.url); got != tc.want {
+				t.Fatalf("seedRepoSchemeAllowed(%q) = %v, want %v", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsSSHURL(t *testing.T) {
 	cases := []struct {
 		name string
@@ -135,5 +159,270 @@ func TestIsSSHURL(t *testing.T) {
 				t.Fatalf("isSSHURL(%q) = %v, want %v", tc.url, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRepoManifestJSON_ScrubsUserinfo(t *testing.T) {
+	repos := []paddockv1alpha1.WorkspaceGitSource{
+		{URL: "https://x:secret@example.com/foo.git", Path: "foo"},
+	}
+	out := repoManifestJSON(repos)
+	if strings.Contains(out, "secret") || strings.Contains(out, "x:") {
+		t.Fatalf("manifest contains userinfo: %s", out)
+	}
+	if !strings.Contains(out, "https://example.com/foo.git") {
+		t.Fatalf("manifest missing scrubbed URL: %s", out)
+	}
+}
+
+func TestSeedInitContainer_BrokerBackedAppendsPostCloneRewrite(t *testing.T) {
+	// Feed a URL with userinfo (the threat F-50 names) — even though the
+	// webhook rejects this at admission, the post-clone rewrite is the
+	// last-line defence if a URL bypassed admission via direct API write.
+	// Asserting the rewrite scrubs the userinfo proves the layer actually
+	// defends against the threat, not just that it's wired.
+	repo := paddockv1alpha1.WorkspaceGitSource{
+		URL:  "https://x:secret@github.com/org/repo.git",
+		Path: "repo",
+		BrokerCredentialRef: &paddockv1alpha1.BrokerCredentialReference{
+			Name: "hr-1-broker-creds", Key: "GITHUB_TOKEN",
+		},
+	}
+	c, _ := seedInitContainer(0, repo, "alpine/git@sha256:0000000000000000000000000000000000000000000000000000000000000000", corev1.PullIfNotPresent)
+	if len(c.Command) != 3 || c.Command[0] != "sh" || c.Command[1] != "-c" {
+		t.Fatalf("unexpected command shape: %v", c.Command)
+	}
+	if !strings.Contains(c.Command[2], "remote set-url origin") {
+		t.Fatalf("post-clone rewrite missing: %s", c.Command[2])
+	}
+	// The rewrite must target the scrubbed URL.
+	if !strings.Contains(c.Command[2], "https://github.com/org/repo.git") {
+		t.Fatalf("rewrite target missing scrubbed URL: %s", c.Command[2])
+	}
+	// The clone line carries the original URL (git needs to connect to
+	// it). The rewrite line — everything after 'remote set-url origin' —
+	// must be the scrubbed form. Slice on that marker so the assertion
+	// is precise about which line is being checked.
+	idx := strings.LastIndex(c.Command[2], "remote set-url origin")
+	if idx < 0 {
+		t.Fatalf("could not locate rewrite line: %s", c.Command[2])
+	}
+	rewriteSuffix := c.Command[2][idx:]
+	if strings.Contains(rewriteSuffix, "secret") || strings.Contains(rewriteSuffix, "x:") {
+		t.Fatalf("rewrite line contains userinfo (credential leaked into .git/config): %s", rewriteSuffix)
+	}
+}
+
+func TestScrubURLUserinfo(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"https://example.com/foo.git", "https://example.com/foo.git"},
+		{"https://user:secret@example.com/foo.git", "https://example.com/foo.git"},
+		{"https://user@example.com/foo.git", "https://example.com/foo.git"},
+		{"ssh://git@example.com/foo.git", "ssh://git@example.com/foo.git"}, // not https:// — returned unchanged
+		{"git@example.com:foo.git", "git@example.com:foo.git"},
+	}
+	for _, tc := range cases {
+		if got := scrubURLUserinfo(tc.in); got != tc.want {
+			t.Errorf("scrubURLUserinfo(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSeedJob_AutomountFalseAndDedicatedSA(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+		Spec: paddockv1alpha1.WorkspaceSpec{
+			Seed: &paddockv1alpha1.WorkspaceSeed{
+				Repos: []paddockv1alpha1.WorkspaceGitSource{
+					{URL: "https://example.com/foo.git", Path: "foo"},
+				},
+			},
+		},
+	}
+	job := seedJobForWorkspace(ws, "alpine/git@sha256:0000000000000000000000000000000000000000000000000000000000000000", seedJobInputs{})
+	podSpec := job.Spec.Template.Spec
+	if podSpec.AutomountServiceAccountToken == nil || *podSpec.AutomountServiceAccountToken {
+		t.Errorf("AutomountServiceAccountToken = %v, want false", podSpec.AutomountServiceAccountToken)
+	}
+	if podSpec.ServiceAccountName != seedSAName(ws) {
+		t.Errorf("ServiceAccountName = %q, want %q", podSpec.ServiceAccountName, seedSAName(ws))
+	}
+}
+
+func TestSeedProxySidecar_HasSATokenVolumeMount(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+		Spec: paddockv1alpha1.WorkspaceSpec{
+			Seed: &paddockv1alpha1.WorkspaceSeed{
+				Repos: []paddockv1alpha1.WorkspaceGitSource{{
+					URL:  "https://github.com/org/repo.git",
+					Path: "repo",
+					BrokerCredentialRef: &paddockv1alpha1.BrokerCredentialReference{
+						Name: "hr-1-broker-creds", Key: "GITHUB_TOKEN",
+					},
+				}},
+			},
+		},
+	}
+	in := seedJobInputs{
+		proxyImage:     "paddock-proxy:dev",
+		proxyTLSSecret: "ws-1-proxy-tls",
+		brokerEndpoint: "https://paddock-broker.paddock-system.svc:8443",
+		brokerCASecret: "ws-1-broker-ca",
+	}
+	job := seedJobForWorkspace(ws, "alpine/git@sha256:0000000000000000000000000000000000000000000000000000000000000000", in)
+	var proxy *corev1.Container
+	for i, c := range job.Spec.Template.Spec.InitContainers {
+		if c.Name == proxyContainerName {
+			proxy = &job.Spec.Template.Spec.InitContainers[i]
+			break
+		}
+	}
+	if proxy == nil {
+		t.Fatal("proxy sidecar missing from init containers")
+	}
+	found := false
+	for _, m := range proxy.VolumeMounts {
+		if m.Name == paddockSAVolumeName && m.MountPath == paddockSAMountPath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("proxy sidecar missing %s mount at %s", paddockSAVolumeName, paddockSAMountPath)
+	}
+
+	// alpine/git init containers should NOT have the SA token mount
+	for _, c := range job.Spec.Template.Spec.InitContainers {
+		if c.Name == proxyContainerName {
+			continue
+		}
+		for _, m := range c.VolumeMounts {
+			if m.Name == paddockSAVolumeName {
+				t.Errorf("alpine/git container %q has SA token mount; expected only proxy sidecar", c.Name)
+			}
+		}
+	}
+}
+
+func TestSeedJob_DefaultImageDigestPinned(t *testing.T) {
+	if !IsDigestPinnedImageRef(defaultSeedImage) {
+		t.Fatalf("defaultSeedImage = %q; expected digest-pinned (image@<algo>:<hex>)", defaultSeedImage)
+	}
+}
+
+func TestIsDigestPinnedImageRef(t *testing.T) {
+	cases := []struct {
+		ref  string
+		want bool
+	}{
+		{"alpine/git@sha256:d453f54c83320412aa89c391b076930bd8569bc1012285e8c68ce2d4435826a3", true},
+		{"alpine/git@sha512:abcdef0123456789", true}, // non-sha256 algorithm
+		{"registry.example.com/path/img@sha256:0000000000000000000000000000000000000000000000000000000000000000", true},
+		{"alpine/git:v2.52.0", false}, // tag-only
+		{"alpine/git", false},         // bare name
+		{"alpine/git@", false},        // trailing @, no algo
+		{"alpine/git@sha256:", false}, // algo present but empty hash
+		{"alpine/git@sha256", false},  // missing colon
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.ref, func(t *testing.T) {
+			if got := IsDigestPinnedImageRef(tc.ref); got != tc.want {
+				t.Fatalf("IsDigestPinnedImageRef(%q) = %v, want %v", tc.ref, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSeedJob_PullPolicyForDigestPinnedImage(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+		Spec: paddockv1alpha1.WorkspaceSpec{
+			Seed: &paddockv1alpha1.WorkspaceSeed{
+				Repos: []paddockv1alpha1.WorkspaceGitSource{
+					{URL: "https://example.com/foo.git", Path: "foo"},
+				},
+			},
+		},
+	}
+	job := seedJobForWorkspace(ws, "alpine/git@sha256:d453f54c83320412aa89c391b076930bd8569bc1012285e8c68ce2d4435826a3", seedJobInputs{})
+	if pp := job.Spec.Template.Spec.Containers[0].ImagePullPolicy; pp != corev1.PullIfNotPresent {
+		t.Errorf("digest-pinned image pullPolicy = %q, want IfNotPresent", pp)
+	}
+}
+
+func TestSeedJob_PullPolicyForTagOnlyImage(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+		Spec: paddockv1alpha1.WorkspaceSpec{
+			Seed: &paddockv1alpha1.WorkspaceSeed{
+				Repos: []paddockv1alpha1.WorkspaceGitSource{
+					{URL: "https://example.com/foo.git", Path: "foo"},
+				},
+			},
+		},
+	}
+	job := seedJobForWorkspace(ws, "alpine/git:v2.52.0", seedJobInputs{})
+	if pp := job.Spec.Template.Spec.Containers[0].ImagePullPolicy; pp != corev1.PullAlways {
+		t.Errorf("tag-only image pullPolicy = %q, want Always", pp)
+	}
+}
+
+func TestSeedProxySidecar_AuditEnabled(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+	}
+	in := seedJobInputs{
+		proxyImage:     "paddock-proxy:dev",
+		proxyTLSSecret: "ws-1-proxy-tls",
+		brokerEndpoint: "https://paddock-broker.paddock-system.svc:8443",
+		brokerCASecret: "ws-1-broker-ca",
+	}
+	proxy := buildSeedProxySidecar(ws, in)
+	var sawRunName, sawRunNamespace bool
+	for _, a := range proxy.Args {
+		switch a {
+		case "--disable-audit":
+			t.Errorf("seed proxy args still contain --disable-audit; expected audit enabled (F-52)")
+		case "--run-name=seed-ws-1":
+			sawRunName = true
+		case "--run-namespace=team-a":
+			sawRunNamespace = true
+		}
+	}
+	if !sawRunName {
+		t.Errorf("seed proxy missing --run-name=seed-ws-1; want present so AuditEvent runRef.name is seed-<ws>")
+	}
+	if !sawRunNamespace {
+		t.Errorf("seed proxy missing --run-namespace=team-a; want present so AuditEvents land in the tenant namespace, not paddock-system")
+	}
+}
+
+func TestSeedJob_Deadlines(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+		Spec: paddockv1alpha1.WorkspaceSpec{
+			Seed: &paddockv1alpha1.WorkspaceSeed{
+				Repos: []paddockv1alpha1.WorkspaceGitSource{
+					{URL: "https://example.com/foo.git", Path: "foo"},
+				},
+			},
+		},
+	}
+	job := seedJobForWorkspace(ws, "alpine/git@sha256:0000000000000000000000000000000000000000000000000000000000000000", seedJobInputs{})
+	if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != 600 {
+		t.Errorf("Job.ActiveDeadlineSeconds = %v, want 600", job.Spec.ActiveDeadlineSeconds)
+	}
+	if job.Spec.Template.Spec.ActiveDeadlineSeconds == nil || *job.Spec.Template.Spec.ActiveDeadlineSeconds != 600 {
+		t.Errorf("Pod.ActiveDeadlineSeconds = %v, want 600", job.Spec.Template.Spec.ActiveDeadlineSeconds)
+	}
+	if job.Spec.Template.Spec.TerminationGracePeriodSeconds == nil || *job.Spec.Template.Spec.TerminationGracePeriodSeconds != 30 {
+		t.Errorf("Pod.TerminationGracePeriodSeconds = %v, want 30", job.Spec.Template.Spec.TerminationGracePeriodSeconds)
+	}
+	if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != 3600 {
+		t.Errorf("Job.TTLSecondsAfterFinished = %v, want 3600", job.Spec.TTLSecondsAfterFinished)
 	}
 }

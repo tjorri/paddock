@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -131,6 +132,142 @@ func TestEnsureProxyTLS_PendingWhenCertNotReady(t *testing.T) {
 	}
 	if ok {
 		t.Errorf("ensureProxyTLS ok = true, want false (Certificate not Ready)")
+	}
+}
+
+// TestEnsureProxyCACertificate_PermanentFailure covers the three signals
+// that isCertificatePermanentlyFailed detects.
+//
+// The test calls ensureProxyCACertificate with a fake client that already
+// holds a Certificate carrying the given failure conditions (seeded via
+// WithStatusSubresource so status survives the round-trip). It asserts
+// that the helper returns errProxyCertPermanentFailure in each case.
+func TestEnsureProxyCACertificate_PermanentFailure(t *testing.T) {
+	five := 5
+	cases := []struct {
+		name string
+		cert cmapi.Certificate
+	}{
+		{
+			name: "Issuing.Reason=Failed",
+			cert: cmapi.Certificate{
+				Status: cmapi.CertificateStatus{
+					Conditions: []cmapi.CertificateCondition{
+						{
+							Type:   cmapi.CertificateConditionIssuing,
+							Status: cmmeta.ConditionFalse,
+							Reason: "Failed",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "Ready.Reason=Failed",
+			cert: cmapi.Certificate{
+				Status: cmapi.CertificateStatus{
+					Conditions: []cmapi.CertificateCondition{
+						{
+							Type:   cmapi.CertificateConditionReady,
+							Status: cmmeta.ConditionFalse,
+							Reason: "Failed",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "FailedIssuanceAttempts>=5",
+			cert: cmapi.Certificate{
+				Status: cmapi.CertificateStatus{
+					FailedIssuanceAttempts: &five,
+				},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			scheme := schemeWithCertManager(t)
+			ws := &paddockv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{Name: "ws-perm", Namespace: "team-perm", UID: "uid-perm"},
+			}
+			// Pre-create the Certificate with the failure status already set.
+			secretName := "perm-test-tls"
+			certObj := tc.cert.DeepCopy()
+			certObj.Name = secretName
+			certObj.Namespace = ws.Namespace
+			cli := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(ws, certObj).
+				WithStatusSubresource(&cmapi.Certificate{}).
+				Build()
+			// Push the status (the fake client requires a separate Status().Update call
+			// after creation to set status fields when WithStatusSubresource is in use).
+			certObj.Status = tc.cert.Status
+			if err := cli.Status().Update(context.Background(), certObj); err != nil {
+				t.Fatalf("seeding Certificate status: %v", err)
+			}
+
+			_, _, err := ensureProxyCACertificate(
+				context.Background(), cli, scheme,
+				ws, ws.Namespace, secretName, "perm-test", "paddock-proxy-ca-issuer",
+				proxyCertDurationWorkspace, proxyCertRenewBeforeWorkspace,
+				nil,
+			)
+			if err == nil {
+				t.Fatal("ensureProxyCACertificate: got nil error, want errProxyCertPermanentFailure")
+			}
+			if !errors.Is(err, errProxyCertPermanentFailure) {
+				t.Errorf("err = %v, want errProxyCertPermanentFailure", err)
+			}
+		})
+	}
+}
+
+// TestEnsureProxyCACertificate_TransientPending verifies that a Certificate
+// with Ready=False/Reason=Pending does NOT trigger errProxyCertPermanentFailure.
+func TestEnsureProxyCACertificate_TransientPending(t *testing.T) {
+	scheme := schemeWithCertManager(t)
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-pend", Namespace: "team-pend", UID: "uid-pend"},
+	}
+	secretName := "pend-test-tls"
+	certObj := &cmapi.Certificate{
+		ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: ws.Namespace},
+		Status: cmapi.CertificateStatus{
+			Conditions: []cmapi.CertificateCondition{
+				{
+					Type:   cmapi.CertificateConditionReady,
+					Status: cmmeta.ConditionFalse,
+					Reason: "Pending",
+				},
+			},
+		},
+	}
+	cli := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ws, certObj).
+		WithStatusSubresource(&cmapi.Certificate{}).
+		Build()
+	if err := cli.Status().Update(context.Background(), certObj); err != nil {
+		t.Fatalf("seeding Certificate status: %v", err)
+	}
+
+	created, ready, err := ensureProxyCACertificate(
+		context.Background(), cli, scheme,
+		ws, ws.Namespace, secretName, "pend-test", "paddock-proxy-ca-issuer",
+		proxyCertDurationWorkspace, proxyCertRenewBeforeWorkspace,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("ensureProxyCACertificate: unexpected error %v", err)
+	}
+	if created {
+		t.Errorf("created = true, want false (Certificate already existed)")
+	}
+	if ready {
+		t.Errorf("ready = true, want false (Ready=False/Pending is transient)")
 	}
 }
 

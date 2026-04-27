@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"path"
 	"reflect"
 	"strings"
@@ -110,6 +111,8 @@ func validateWorkspaceRepos(reposPath *field.Path, repos []paddockv1alpha1.Works
 		entryPath := reposPath.Index(i)
 		if repo.URL == "" {
 			errs = append(errs, field.Required(entryPath.Child("url"), ""))
+		} else if e := validateRepoURL(entryPath.Child("url"), repo.URL); e != nil {
+			errs = append(errs, e)
 		}
 
 		// Credentials come from either a static Secret (v0.2) or the
@@ -163,20 +166,61 @@ func validateWorkspaceRepos(reposPath *field.Path, repos []paddockv1alpha1.Works
 // isSSHURLLocal mirrors controller.isSSHURL. Kept in the webhook
 // package so admission can reject broker-backed creds on ssh URLs
 // without importing the controller package (cycle).
-func isSSHURLLocal(url string) bool {
-	if strings.HasPrefix(url, "ssh://") {
+func isSSHURLLocal(raw string) bool {
+	if strings.HasPrefix(raw, "ssh://") {
 		return true
 	}
-	if strings.Contains(url, "://") {
+	if strings.Contains(raw, "://") {
 		return false
 	}
-	if at := strings.Index(url, "@"); at > 0 {
-		rest := url[at+1:]
+	if at := strings.Index(raw, "@"); at > 0 {
+		rest := raw[at+1:]
 		if colon := strings.Index(rest, ":"); colon > 0 && !strings.Contains(rest[:colon], "/") {
 			return true
 		}
 	}
 	return false
+}
+
+// validateRepoURL checks that raw is one of:
+//   - "https://..." (no userinfo — see F-50, validated separately if applicable)
+//   - "ssh://user@host/..." or scp-style "user@host:path"
+//
+// Rejects file://, git://, http://, and any other scheme. The seed
+// proxy's substitute-auth path is HTTPS-only by design, so SSH lives
+// outside the MITM trust model; per-host SSH allowlisting is delegated
+// to the per-seed-Pod NetworkPolicy. F-46.
+func validateRepoURL(p *field.Path, raw string) *field.Error {
+	if raw == "" {
+		return nil // empty URL is caught by the Required check upstream.
+	}
+	if isSSHURLLocal(raw) {
+		return nil
+	}
+	// Require an exact lowercase https:// prefix. url.Parse lowercases
+	// the scheme, so checking u.Scheme would silently admit HTTPS://
+	// and create a cross-side inconsistency with seedRepoSchemeAllowed
+	// (case-sensitive strings.HasPrefix in the controller).
+	if !strings.HasPrefix(raw, "https://") {
+		// Re-parse to surface the original scheme (or a "valid URL" hint).
+		if u, err := url.Parse(raw); err != nil || u.Scheme == "" {
+			return field.Invalid(p, raw, "must be a valid URL")
+		} else {
+			return field.Invalid(p, raw,
+				fmt.Sprintf("scheme %q is not allowed; only https:// or ssh:// (or scp-style user@host:path) accepted", u.Scheme))
+		}
+	}
+	// F-50: reject userinfo on https URLs. Credentials must flow via
+	// credentialsSecretRef or brokerCredentialRef, never embedded in URL.
+	u, err := url.Parse(raw)
+	if err != nil {
+		return field.Invalid(p, raw, "must be a valid URL")
+	}
+	if u.User != nil {
+		return field.Invalid(p, raw,
+			"https URL must not contain userinfo; use credentialsSecretRef or brokerCredentialRef for credentials")
+	}
+	return nil
 }
 
 func validateRepoPath(p *field.Path, raw string) *field.Error {

@@ -17,7 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"encoding/json"
 	"fmt"
 	"path"
 	"strconv"
@@ -31,61 +30,6 @@ import (
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
 
-// Non-root UID/GID the seed Job pod runs as. 65532 is distroless/nonroot
-// and matches the UID used by every first-party Paddock image.
-const seedRunAsID int64 = 65532
-
-const (
-	// Default alpine/git image. Pinned; update via a PR rather than
-	// floating latest.
-	defaultSeedImage = "alpine/git:v2.52.0"
-
-	// Seed-job volume + mount used by both the PVC and the clone path.
-	seedVolumeName = "workspace"
-	seedMountPath  = "/workspace"
-
-	// Relative path (under the workspace root) where the seed Job
-	// writes the repo manifest that harness pods read via
-	// PADDOCK_REPOS_PATH.
-	seedManifestRelPath = ".paddock/repos.json"
-
-	// Directory inside the seed pod where per-repo credential secrets
-	// and helper scripts are mounted. Separate from /workspace so
-	// credentials never land on the PVC.
-	seedCredsRoot    = "/paddock/creds"
-	seedScratchMount = "/paddock/scratch"
-)
-
-// pvcForWorkspace returns the PVC that backs this Workspace. The PVC
-// inherits the Workspace's namespace and is named after the Workspace.
-func pvcForWorkspace(ws *paddockv1alpha1.Workspace) *corev1.PersistentVolumeClaim {
-	accessMode := ws.Spec.Storage.AccessMode
-	if accessMode == "" {
-		accessMode = corev1.ReadWriteOnce
-	}
-
-	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      pvcName(ws),
-			Namespace: ws.Namespace,
-			Labels:    workspaceLabels(ws),
-		},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{accessMode},
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: ws.Spec.Storage.Size,
-				},
-			},
-		},
-	}
-	if ws.Spec.Storage.StorageClass != "" {
-		sc := ws.Spec.Storage.StorageClass
-		pvc.Spec.StorageClassName = &sc
-	}
-	return pvc
-}
-
 // seedJobInputs bundles the broker/proxy plumbing a seed Pod needs
 // when any repo opts into broker-backed credentials. All four fields
 // must be populated for the proxy path to engage; empty values fall
@@ -96,6 +40,22 @@ type seedJobInputs struct {
 	brokerEndpoint string
 	brokerCASecret string
 }
+
+const (
+	// seedActiveDeadlineSeconds caps total seed Job runtime. ≈10× the
+	// typical clone time, well under the 3600 s broker-token TTL — keeps
+	// the broker-leased credential surface bounded against hostile/slow
+	// git hosts (F-47).
+	seedActiveDeadlineSeconds int64 = 600
+
+	// seedTerminationGracePeriodSeconds pins the kubelet's grace period
+	// explicitly rather than inheriting the 30 s default. F-47.
+	seedTerminationGracePeriodSeconds int64 = 30
+
+	// seedTTLSecondsAfterFinished auto-reaps completed seed Jobs after
+	// 1 h. Operability win, no security delta. F-47.
+	seedTTLSecondsAfterFinished int32 = 3600
+)
 
 // seedJobForWorkspace returns the seed Job that clones spec.seed.repos
 // into the workspace PVC. The Job uses one init container per repo and
@@ -111,6 +71,12 @@ type seedJobInputs struct {
 func seedJobForWorkspace(ws *paddockv1alpha1.Workspace, image string, seedInputs seedJobInputs) *batchv1.Job {
 	if image == "" {
 		image = defaultSeedImage
+	}
+
+	pullPolicy := corev1.PullIfNotPresent
+	if !IsDigestPinnedImageRef(image) {
+		// Tag-only ref: defend against tag mutation by always re-pulling.
+		pullPolicy = corev1.PullAlways
 	}
 
 	repos := ws.Spec.Seed.Repos
@@ -172,6 +138,43 @@ func seedJobForWorkspace(ws *paddockv1alpha1.Workspace, image string, seedInputs
 				},
 			},
 		)
+		// F-48 + F-52: with automount disabled at the Pod level, the
+		// proxy sidecar needs explicit access to the K8s API token to
+		// write AuditEvents. Mirrors the run-Pod's paddock-sa-token
+		// projected volume in pod_spec.go.
+		volumes = append(volumes, corev1.Volume{
+			Name: paddockSAVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{
+					Sources: []corev1.VolumeProjection{
+						{
+							ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+								Path:              "token",
+								ExpirationSeconds: ptr.To[int64](3600),
+							},
+						},
+						{
+							ConfigMap: &corev1.ConfigMapProjection{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "kube-root-ca.crt"},
+								Items: []corev1.KeyToPath{
+									{Key: "ca.crt", Path: "ca.crt"},
+								},
+							},
+						},
+						{
+							DownwardAPI: &corev1.DownwardAPIProjection{
+								Items: []corev1.DownwardAPIVolumeFile{
+									{
+										Path:     "namespace",
+										FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		})
 		initContainers = append(initContainers, buildSeedProxySidecar(ws, seedInputs))
 	}
 
@@ -195,7 +198,7 @@ func seedJobForWorkspace(ws *paddockv1alpha1.Workspace, image string, seedInputs
 	}
 
 	for i, repo := range repos {
-		c, extraVolumes := seedInitContainer(i, repo, image)
+		c, extraVolumes := seedInitContainer(i, repo, image, pullPolicy)
 		initContainers = append(initContainers, c)
 		volumes = append(volumes, extraVolumes...)
 	}
@@ -214,6 +217,7 @@ PADDOCK_EOF`,
 	mainContainer := corev1.Container{
 		Name:            "manifest",
 		Image:           image,
+		ImagePullPolicy: pullPolicy,
 		Command:         []string{"sh", "-c", mainCmd},
 		WorkingDir:      "/",
 		SecurityContext: seedContainerSecurityContext(),
@@ -225,6 +229,9 @@ PADDOCK_EOF`,
 	// backoffLimit=0: seed failures surface immediately; we don't want
 	// alpine/git retrying a bad URL six times.
 	var backoff int32
+	activeDeadline := seedActiveDeadlineSeconds
+	grace := seedTerminationGracePeriodSeconds
+	ttl := seedTTLSecondsAfterFinished
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -233,17 +240,23 @@ PADDOCK_EOF`,
 			Labels:    workspaceLabels(ws),
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit: &backoff,
+			BackoffLimit:            &backoff,
+			ActiveDeadlineSeconds:   &activeDeadline,
+			TTLSecondsAfterFinished: &ttl,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: workspaceLabels(ws),
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy:   corev1.RestartPolicyNever,
-					SecurityContext: seedPodSecurityContext(),
-					InitContainers:  initContainers,
-					Containers:      []corev1.Container{mainContainer},
-					Volumes:         volumes,
+					RestartPolicy:                 corev1.RestartPolicyNever,
+					ServiceAccountName:            seedSAName(ws),
+					AutomountServiceAccountToken:  ptr.To(false),
+					SecurityContext:               seedPodSecurityContext(),
+					InitContainers:                initContainers,
+					Containers:                    []corev1.Container{mainContainer},
+					Volumes:                       volumes,
+					ActiveDeadlineSeconds:         &activeDeadline,
+					TerminationGracePeriodSeconds: &grace,
 				},
 			},
 		},
@@ -259,20 +272,6 @@ func anyRepoUsesBroker(repos []paddockv1alpha1.WorkspaceGitSource) bool {
 		}
 	}
 	return false
-}
-
-// seedBrokerCredsVolumeName is the per-Secret mount name used inside
-// the seed Pod. Deterministic so repeat reconciles don't churn the
-// Pod spec.
-func seedBrokerCredsVolumeName(secretName string) string {
-	return "broker-creds-" + secretName
-}
-
-// seedBrokerCredsMountPath returns where the seed init container
-// reads the bearer from. One directory per Secret — the askpass
-// helper takes the key name as its filename.
-func seedBrokerCredsMountPath(secretName string) string {
-	return "/paddock/broker-creds/" + secretName
 }
 
 // buildSeedProxySidecar returns the native sidecar that routes git
@@ -291,9 +290,6 @@ func buildSeedProxySidecar(ws *paddockv1alpha1.Workspace, in seedJobInputs) core
 		"--broker-endpoint=" + in.brokerEndpoint,
 		"--broker-token-path=" + brokerTokenPath,
 		"--broker-ca-path=" + brokerCAPath,
-		// Seeds don't need AuditEvent writes — the run's audit trail
-		// is enough. Skipping avoids a new RBAC grant on the seed SA.
-		"--disable-audit",
 	}
 	uid := int64(proxyRunAsUID)
 	return corev1.Container{
@@ -313,6 +309,7 @@ func buildSeedProxySidecar(ws *paddockv1alpha1.Workspace, in seedJobInputs) core
 			{Name: proxyCAVolumeName, MountPath: proxyCAMountPath, ReadOnly: true},
 			{Name: brokerTokenVolumeName, MountPath: brokerTokenMountPath, ReadOnly: true},
 			{Name: brokerCAVolumeName, MountPath: brokerCAMountPath, ReadOnly: true},
+			{Name: paddockSAVolumeName, MountPath: paddockSAMountPath, ReadOnly: true},
 		},
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
@@ -345,7 +342,7 @@ func buildSeedProxySidecar(ws *paddockv1alpha1.Workspace, in seedJobInputs) core
 // seedBrokerCredsMountPath. The caller is responsible for ensuring
 // the proxy sidecar + Pod-level broker volumes are actually present;
 // this helper only wires the per-repo container shape.
-func seedInitContainer(idx int, repo paddockv1alpha1.WorkspaceGitSource, image string) (corev1.Container, []corev1.Volume) {
+func seedInitContainer(idx int, repo paddockv1alpha1.WorkspaceGitSource, image string, pullPolicy corev1.PullPolicy) (corev1.Container, []corev1.Volume) {
 	target := path.Join(seedMountPath, strings.TrimSpace(repo.Path))
 
 	mounts := []corev1.VolumeMount{
@@ -448,6 +445,7 @@ func seedInitContainer(idx int, repo paddockv1alpha1.WorkspaceGitSource, image s
 	c := corev1.Container{
 		Name:            fmt.Sprintf("repo-%d", idx),
 		Image:           image,
+		ImagePullPolicy: pullPolicy,
 		WorkingDir:      "/",
 		SecurityContext: seedContainerSecurityContext(),
 		VolumeMounts:    mounts,
@@ -458,7 +456,14 @@ func seedInitContainer(idx int, repo paddockv1alpha1.WorkspaceGitSource, image s
 	// helper first; otherwise we can exec git directly with args.
 	switch {
 	case repo.BrokerCredentialRef != nil:
-		c.Command = []string{"sh", "-c", brokerAskpassSetupScript() + " && exec git " + strings.Join(quoteArgs(args), " ")}
+		scrubbed := scrubURLUserinfo(repo.URL)
+		clone := "git " + strings.Join(quoteArgs(args), " ")
+		// Defence-in-depth (F-50): even if a URL with userinfo bypassed
+		// admission, the on-PVC .git/config never persists it. Wrapped
+		// inside the same sh -c so a clone failure short-circuits before
+		// the remote rewrite (the && chain).
+		rewrite := fmt.Sprintf("git -C %s remote set-url origin %s", shellQuote(target), shellQuote(scrubbed))
+		c.Command = []string{"sh", "-c", brokerAskpassSetupScript() + " && " + clone + " && " + rewrite}
 	case repo.CredentialsSecretRef != nil && !isSSHURL(repo.URL):
 		c.Command = []string{"sh", "-c", askpassSetupScript() + " && exec git " + strings.Join(quoteArgs(args), " ")}
 	default:
@@ -479,206 +484,4 @@ func buildCloneArgs(repo paddockv1alpha1.WorkspaceGitSource, target string) []st
 	}
 	args = append(args, repo.URL, target)
 	return args
-}
-
-// brokerAskpassSetupScript emits the git askpass helper used for
-// broker-backed repos. Username is the fixed literal "x-access-token"
-// (the value GitHub expects alongside App + PAT tokens; works for
-// any git forge that accepts Basic auth with a bearer in the password
-// slot). Password is read from the broker-creds Secret mounted at
-// $PADDOCK_CREDS_DIR/$PADDOCK_CREDS_KEY.
-//
-// The proxy sidecar MITMs the outbound TLS and swaps the bearer for
-// the real upstream token before forwarding — upstream never sees
-// the Paddock bearer.
-func brokerAskpassSetupScript() string {
-	return `cat > "$HOME/askpass.sh" <<'PADDOCK_HELPER'
-#!/bin/sh
-case "$1" in
-  Username*) printf 'x-access-token' ;;
-  Password*) cat "$PADDOCK_CREDS_DIR/$PADDOCK_CREDS_KEY" 2>/dev/null ;;
-esac
-PADDOCK_HELPER
-chmod 0500 "$HOME/askpass.sh"`
-}
-
-// askpassSetupScript emits a tiny inline helper that git invokes via
-// GIT_ASKPASS. The helper echoes the username/password loaded from the
-// mounted Secret (keys `username` / `password`).
-func askpassSetupScript() string {
-	// Kept as a here-doc to avoid shell-quoting the body of the helper.
-	return `cat > "$HOME/askpass.sh" <<'PADDOCK_HELPER'
-#!/bin/sh
-case "$1" in
-  Username*) cat "$PADDOCK_CREDS_DIR/username" 2>/dev/null ;;
-  Password*) cat "$PADDOCK_CREDS_DIR/password" 2>/dev/null ;;
-esac
-PADDOCK_HELPER
-chmod 0500 "$HOME/askpass.sh"`
-}
-
-// quoteArgs produces POSIX-quoted argv so the exec line is safe when
-// interpolated into an sh -c string.
-func quoteArgs(args []string) []string {
-	out := make([]string, len(args))
-	for i, a := range args {
-		out[i] = shellQuote(a)
-	}
-	return out
-}
-
-// shellQuote wraps s in single quotes, escaping any embedded single
-// quote. Sufficient for argv assembled from CRD fields.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
-}
-
-// repoManifestJSON marshals the repos slice to the schema harnesses
-// read from /workspace/.paddock/repos.json.
-func repoManifestJSON(repos []paddockv1alpha1.WorkspaceGitSource) string {
-	type entry struct {
-		URL    string `json:"url"`
-		Path   string `json:"path"`
-		Branch string `json:"branch,omitempty"`
-	}
-	out := make([]entry, len(repos))
-	for i, r := range repos {
-		out[i] = entry{URL: r.URL, Path: strings.TrimSpace(r.Path), Branch: r.Branch}
-	}
-	b, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		// Inputs are plain strings from the CRD; marshalling can't fail.
-		return "[]"
-	}
-	return string(b)
-}
-
-// isSSHURL reports whether url uses an ssh transport (ssh:// or the
-// scp-style git@host:path form).
-func isSSHURL(url string) bool {
-	if strings.HasPrefix(url, "ssh://") {
-		return true
-	}
-	// scp-style is git@host:path — it never carries a scheme
-	// separator. Bail before the scp-style check so a URL like
-	// https://user@host:port/repo isn't misread as SSH.
-	if strings.Contains(url, "://") {
-		return false
-	}
-	if at := strings.Index(url, "@"); at > 0 {
-		rest := url[at+1:]
-		if colon := strings.Index(rest, ":"); colon > 0 && !strings.Contains(rest[:colon], "/") {
-			return true
-		}
-	}
-	return false
-}
-
-// seedPodSecurityContext returns the pod-level SecurityContext the seed
-// Job runs with. Satisfies the PSS `restricted` profile: non-root uid,
-// seccomp=RuntimeDefault, and an fsGroup that makes the PVC writable
-// by the git container. Without FSGroup, default PVCs are owned by
-// root:root and a non-root git would fail to clone into /workspace.
-//
-// ReadOnlyRootFilesystem is deliberately *not* set: alpine/git writes
-// to $HOME and /tmp during clone. Adding a tmpfs emptyDir for those is
-// a later tightening (tracked in ADR-0010 follow-ups).
-func seedPodSecurityContext() *corev1.PodSecurityContext {
-	return &corev1.PodSecurityContext{
-		RunAsNonRoot: ptr.To(true),
-		RunAsUser:    ptr.To(seedRunAsID),
-		RunAsGroup:   ptr.To(seedRunAsID),
-		FSGroup:      ptr.To(seedRunAsID),
-		SeccompProfile: &corev1.SeccompProfile{
-			Type: corev1.SeccompProfileTypeRuntimeDefault,
-		},
-	}
-}
-
-// seedContainerSecurityContext returns the container-level
-// SecurityContext: no capabilities, no privilege escalation. Same
-// posture `restricted` requires.
-func seedContainerSecurityContext() *corev1.SecurityContext {
-	return &corev1.SecurityContext{
-		AllowPrivilegeEscalation: ptr.To(false),
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-	}
-}
-
-// Job phase labels returned by jobPhase. Not a Kubernetes enum — the
-// helper normalises Job status conditions into this small set so
-// callers can switch on a single string.
-const (
-	jobPhasePending   = "Pending"
-	jobPhaseRunning   = "Running"
-	jobPhaseSucceeded = "Succeeded"
-	jobPhaseFailed    = "Failed"
-)
-
-// jobPhase summarises a Job's condition into one of the jobPhase*
-// constants above.
-func jobPhase(job *batchv1.Job) string {
-	for _, c := range job.Status.Conditions {
-		if c.Status != corev1.ConditionTrue {
-			continue
-		}
-		switch c.Type {
-		case batchv1.JobComplete, batchv1.JobSuccessCriteriaMet:
-			return jobPhaseSucceeded
-		case batchv1.JobFailed:
-			return jobPhaseFailed
-		}
-	}
-	if job.Status.Active > 0 {
-		return jobPhaseRunning
-	}
-	return jobPhasePending
-}
-
-// pvcName and seedJobName keep owned-resource naming deterministic.
-func pvcName(ws *paddockv1alpha1.Workspace) string {
-	return "ws-" + ws.Name
-}
-
-func seedJobName(ws *paddockv1alpha1.Workspace) string {
-	return ws.Name + "-seed"
-}
-
-// workspaceLabels returns the labels applied to all owned resources.
-func workspaceLabels(ws *paddockv1alpha1.Workspace) map[string]string {
-	return map[string]string{
-		"app.kubernetes.io/name":       "paddock",
-		"app.kubernetes.io/component":  "workspace",
-		"app.kubernetes.io/managed-by": "paddock-controller",
-		"paddock.dev/workspace":        ws.Name,
-	}
-}
-
-// seedNetworkPolicyName returns the per-seed-Pod NP's name.
-func seedNetworkPolicyName(ws *paddockv1alpha1.Workspace) string {
-	return seedJobName(ws) + "-egress"
-}
-
-// describeSeed produces a short human-readable summary of the seed source
-// for event messages.
-func describeSeed(ws *paddockv1alpha1.Workspace) string {
-	if ws.Spec.Seed == nil || len(ws.Spec.Seed.Repos) == 0 {
-		return "(none)"
-	}
-	repos := ws.Spec.Seed.Repos
-	if len(repos) == 1 {
-		parts := []string{repos[0].URL}
-		if p := strings.TrimSpace(repos[0].Path); p != "" {
-			parts = append(parts, "path="+p)
-		}
-		if repos[0].Branch != "" {
-			parts = append(parts, "branch="+repos[0].Branch)
-		}
-		return "git " + strings.Join(parts, " ")
-	}
-	entries := make([]string, len(repos))
-	for i, r := range repos {
-		entries[i] = strings.TrimSpace(r.Path) + "=" + r.URL
-	}
-	return fmt.Sprintf("%d repos: %s", len(repos), strings.Join(entries, ", "))
 }

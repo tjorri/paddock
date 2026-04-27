@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -32,6 +33,42 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
+
+// errProxyCertPermanentFailure is returned when a cert-manager
+// Certificate has reported Ready=False with a permanent reason
+// (issuer not found, etc.). Reconciler maps to a terminal
+// ProxyCAMisconfigured condition (F-51).
+var errProxyCertPermanentFailure = errors.New("cert-manager Certificate permanently failed")
+
+// isCertificatePermanentlyFailed returns (true, reason) when the
+// Certificate carries any of the three signals that indicate the
+// issuance has permanently failed (not merely pending):
+//
+//  1. Conditions[Issuing].Reason == "Failed" — cert-manager's issuing
+//     controller sets this when retries are exhausted.
+//  2. Conditions[Ready].Reason == "Failed" — defensive; some versions
+//     surface permanent failures here as well.
+//  3. Status.FailedIssuanceAttempts >= 5 — strong signal that issuance
+//     has been retried multiple times and given up.
+//
+// The reason string is intended for diagnostic error messages only.
+func isCertificatePermanentlyFailed(cert *cmapi.Certificate) (bool, string) {
+	for _, c := range cert.Status.Conditions {
+		if c.Reason != "Failed" {
+			continue
+		}
+		switch c.Type {
+		case cmapi.CertificateConditionIssuing:
+			return true, fmt.Sprintf("Conditions[Issuing].Reason=Failed message=%s", c.Message)
+		case cmapi.CertificateConditionReady:
+			return true, fmt.Sprintf("Conditions[Ready].Reason=Failed message=%s", c.Message)
+		}
+	}
+	if cert.Status.FailedIssuanceAttempts != nil && *cert.Status.FailedIssuanceAttempts >= 5 {
+		return true, fmt.Sprintf("FailedIssuanceAttempts=%d", *cert.Status.FailedIssuanceAttempts)
+	}
+	return false, ""
+}
 
 // proxyTLSSecretName is the per-run Secret holding the per-run
 // intermediate CA keypair. cert-manager creates this Secret directly
@@ -163,6 +200,13 @@ func ensureProxyCACertificate(
 	// Re-read to pick up status (CreateOrUpdate doesn't fetch status by default).
 	if err := cli.Get(ctx, types.NamespacedName{Name: secretName, Namespace: ns}, cert); err != nil {
 		return false, false, fmt.Errorf("re-reading Certificate %s/%s: %w", ns, secretName, err)
+	}
+	// Check permanent failure first — covers Issuing.Reason, Ready.Reason,
+	// and FailedIssuanceAttempts (C1 fix: the old map only checked
+	// Ready.Reason for "IssuerNotFound"/"Failed", both of which are
+	// actually set on child CertificateRequests or Conditions[Issuing]).
+	if perm, reason := isCertificatePermanentlyFailed(cert); perm {
+		return false, false, fmt.Errorf("%w: %s", errProxyCertPermanentFailure, reason)
 	}
 	for _, c := range cert.Status.Conditions {
 		if c.Type == cmapi.CertificateConditionReady && c.Status == cmmeta.ConditionTrue {

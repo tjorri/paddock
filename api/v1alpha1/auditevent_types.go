@@ -42,7 +42,7 @@ const (
 
 // AuditKind names the category of a recorded decision. See spec 0002 §9
 // for the full taxonomy.
-// +kubebuilder:validation:Enum=credential-issued;credential-denied;credential-renewed;credential-revoked;egress-allow;egress-block;egress-block-summary;egress-discovery-allow;policy-applied;policy-rejected;broker-unavailable;run-failed;run-completed;ca-projected;network-policy-enforcement-withdrawn
+// +kubebuilder:validation:Enum=credential-issued;credential-denied;credential-renewed;credential-revoked;egress-allow;egress-block;egress-block-summary;egress-discovery-allow;policy-applied;policy-rejected;broker-unavailable;run-failed;run-completed;ca-projected;network-policy-enforcement-withdrawn;ca-misconfigured
 type AuditKind string
 
 const (
@@ -61,6 +61,7 @@ const (
 	AuditKindRunCompleted                      AuditKind = "run-completed"
 	AuditKindCAProjected                       AuditKind = "ca-projected"
 	AuditKindNetworkPolicyEnforcementWithdrawn AuditKind = "network-policy-enforcement-withdrawn"
+	AuditKindCAMisconfigured                   AuditKind = "ca-misconfigured"
 )
 
 // AuditEventSpec records one security-relevant decision. Write-once:
@@ -70,6 +71,9 @@ type AuditEventSpec struct {
 	// RunRef identifies the HarnessRun this decision pertains to. May be
 	// empty for events emitted outside a run context (e.g. broker
 	// startup diagnostics — not currently emitted).
+	//
+	// Names prefixed "seed-" denote a workspace-seed-time decision; the
+	// suffix is the Workspace name (F-52).
 	// +optional
 	RunRef *LocalObjectReference `json:"runRef,omitempty"`
 

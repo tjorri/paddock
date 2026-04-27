@@ -20,6 +20,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -27,6 +28,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -54,6 +56,12 @@ type WorkspaceReconciler struct {
 	// tests; production uses defaultSeedImage.
 	SeedImage string
 
+	// Audit is the canonical sink for terminal-condition events emitted
+	// by the Workspace reconciler (F-51 ca-misconfigured). Optional;
+	// nil falls back to silent, with status conditions remaining the
+	// primary signal.
+	Audit *ControllerAudit
+
 	// ProxyBrokerConfig carries the shared cluster-and-manager config
 	// used to render seed-pod proxy sidecars and per-seed-Pod
 	// NetworkPolicies. Populated once in cmd/main.go and embedded in
@@ -68,6 +76,8 @@ type WorkspaceReconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile brings a Workspace to its desired state. See package doc and
 // docs/specs/0001-core-v0.1.md §3.2 for the state machine.
@@ -131,6 +141,37 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		})
 
 	default:
+		// Defence-in-depth (F-46): refuse to render a seed Job whose URL
+		// scheme is not in the admission allowlist. Webhook should have
+		// rejected this; this catches a direct API bypass.
+		for i, repo := range ws.Spec.Seed.Repos {
+			if !seedRepoSchemeAllowed(repo.URL) {
+				setCondition(&ws.Status.Conditions, metav1.Condition{
+					Type:               paddockv1alpha1.WorkspaceConditionSeeded,
+					Status:             metav1.ConditionFalse,
+					Reason:             "SeedRejected",
+					Message:            fmt.Sprintf("seed.repos[%d].url has a non-allowlisted scheme; only https:// and ssh:// are accepted", i),
+					ObservedGeneration: ws.Generation,
+				})
+				ws.Status.Phase = paddockv1alpha1.WorkspacePhaseFailed
+				recordPhaseTransition(string(origStatus.Phase), string(ws.Status.Phase))
+				if !reflect.DeepEqual(origStatus, &ws.Status) {
+					if err := r.Status().Update(ctx, &ws); err != nil && !apierrors.IsConflict(err) {
+						return ctrl.Result{}, err
+					}
+				}
+				return ctrl.Result{}, nil
+			}
+		}
+
+		// F-48 + F-52: per-Workspace SA + Role + RoleBinding so the seed
+		// Pod runs without the namespace default-SA token automounted,
+		// and the proxy sidecar can write AuditEvents.
+		if err := r.ensureSeedRBAC(ctx, &ws); err != nil {
+			logger.Error(err, "ensuring seed RBAC failed")
+			return ctrl.Result{}, err
+		}
+
 		// Broker-backed seeds require the per-run <run>-broker-creds
 		// Secret to exist before the clone runs. When missing, stall
 		// the seed with a clear condition and requeue — the
@@ -181,6 +222,28 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			// rotation upstream flows through to the seed Pod on the
 			// next run.
 			if ok, err := r.ensureSeedProxyTLS(ctx, &ws); err != nil {
+				if errors.Is(err, errProxyCertPermanentFailure) {
+					msg := fmt.Sprintf("cert-manager Certificate for proxy-tls permanently failed: %s; operator must fix the ClusterIssuer config", err)
+					setCondition(&ws.Status.Conditions, metav1.Condition{
+						Type:               paddockv1alpha1.WorkspaceConditionSeeded,
+						Status:             metav1.ConditionFalse,
+						Reason:             "ProxyCAMisconfigured",
+						Message:            msg,
+						ObservedGeneration: ws.Generation,
+					})
+					ws.Status.Phase = paddockv1alpha1.WorkspacePhaseFailed
+					recordPhaseTransition(string(origStatus.Phase), string(ws.Status.Phase))
+					r.Recorder.Eventf(&ws, corev1.EventTypeWarning, "ProxyCAMisconfigured", "%s", msg)
+					if r.Audit != nil {
+						r.Audit.EmitWorkspaceCAMisconfigured(ctx, ws.Name, ws.Namespace, msg)
+					}
+					if !reflect.DeepEqual(origStatus, &ws.Status) {
+						if err := r.Status().Update(ctx, &ws); err != nil && !apierrors.IsConflict(err) {
+							return ctrl.Result{}, err
+						}
+					}
+					return ctrl.Result{}, nil
+				}
 				return ctrl.Result{}, err
 			} else if !ok {
 				setCondition(&ws.Status.Conditions, metav1.Condition{
@@ -199,6 +262,29 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 			}
 			if ok, err := r.ensureSeedBrokerCA(ctx, &ws); err != nil {
+				if errors.Is(err, errSourceCAMisconfigured) {
+					msg := fmt.Sprintf("source broker-CA Secret %s/%s exists but has missing/empty %q; operator must populate it",
+						r.BrokerCASource.Namespace, r.BrokerCASource.Name, brokerCAKey)
+					setCondition(&ws.Status.Conditions, metav1.Condition{
+						Type:               paddockv1alpha1.WorkspaceConditionSeeded,
+						Status:             metav1.ConditionFalse,
+						Reason:             "BrokerCAMisconfigured",
+						Message:            msg,
+						ObservedGeneration: ws.Generation,
+					})
+					ws.Status.Phase = paddockv1alpha1.WorkspacePhaseFailed
+					recordPhaseTransition(string(origStatus.Phase), string(ws.Status.Phase))
+					r.Recorder.Eventf(&ws, corev1.EventTypeWarning, "BrokerCAMisconfigured", "%s", msg)
+					if r.Audit != nil {
+						r.Audit.EmitWorkspaceCAMisconfigured(ctx, ws.Name, ws.Namespace, msg)
+					}
+					if !reflect.DeepEqual(origStatus, &ws.Status) {
+						if err := r.Status().Update(ctx, &ws); err != nil && !apierrors.IsConflict(err) {
+							return ctrl.Result{}, err
+						}
+					}
+					return ctrl.Result{}, nil
+				}
 				return ctrl.Result{}, err
 			} else if !ok {
 				setCondition(&ws.Status.Conditions, metav1.Condition{
@@ -457,6 +543,9 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&batchv1.Job{}).
 		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(&corev1.ServiceAccount{}).
+		Owns(&rbacv1.Role{}).
+		Owns(&rbacv1.RoleBinding{}).
 		Named("workspace").
 		Complete(r)
 }

@@ -299,4 +299,130 @@ var _ = Describe("Workspace Webhook", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("immutable"))
 	})
+
+	It("rejects http:// seed repo URL", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "http://example.com/foo.git"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("https:// or ssh://"))
+	})
+
+	It("rejects git:// seed repo URL", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "git://example.com/foo.git"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("https:// or ssh://"))
+	})
+
+	It("rejects file:// seed repo URL", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "file:///etc/passwd"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("https:// or ssh://"))
+	})
+
+	It("admits ssh:// seed repo URL", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "ssh://git@example.com/org/repo.git"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("admits scp-style seed repo URL", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "git@example.com:org/repo.git"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rejects mixed-case https scheme (HTTPS://)", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "HTTPS://example.com/foo.git"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("https:// or ssh://"))
+	})
+
+	It("rejects https URL with userinfo", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "https://user:token@example.com/foo.git"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("userinfo"))
+	})
+
+	It("rejects https URL with username only (no password)", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "https://user@example.com/foo.git"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("userinfo"))
+	})
 })

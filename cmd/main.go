@@ -102,6 +102,7 @@ func main() {
 	var brokerCAName string
 	var brokerCANamespace string
 	var brokerNamespace string
+	var seedImage string
 	var clusterPodCIDR string
 	var clusterServiceCIDR string
 	flag.StringVar(&collectorImage, "collector-image", controller.DefaultCollectorImage,
@@ -136,6 +137,10 @@ func main() {
 	flag.StringVar(&iptablesInitImage, "iptables-init-image", "",
 		"Image for the transparent-mode NET_ADMIN init container (ADR-0013 §7.2). "+
 			"Empty disables transparent mode — every run resolves to cooperative.")
+	flag.StringVar(&seedImage, "seed-image", "",
+		"Image used by the Workspace seed Job to clone repos. Empty falls back to the in-source default "+
+			"(digest-pinned alpine/git). Operators may override with a digest-pinned reference "+
+			"(image@sha256:...). Tag-only references force ImagePullPolicy=Always and emit a warning.")
 	flag.StringVar(&brokerCAName, "broker-ca-secret-name", "broker-serving-cert",
 		"Name of the cert-manager-issued broker-serving-cert Secret the controller copies ca.crt from "+
 			"into per-run <run>-broker-ca Secrets for the proxy sidecar. Empty disables broker-backed proxy enforcement.")
@@ -312,6 +317,9 @@ func main() {
 			"transparent-mode", iptablesInitImage != "",
 		)
 	}
+	if seedImage != "" && !controller.IsDigestPinnedImageRef(seedImage) {
+		setupLog.Info("WARN third-party-image-policy: --seed-image is not digest-pinned; ImagePullPolicy=Always will be forced")
+	}
 	if npEnforce == controller.NetworkPolicyEnforceAuto {
 		enabled, reason, probeErr := controller.DetectNetworkPolicyCNI(context.Background(), mgr.GetAPIReader())
 		if probeErr != nil {
@@ -365,7 +373,11 @@ func main() {
 	if err := (&controller.WorkspaceReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
+		SeedImage:         seedImage,
 		ProxyBrokerConfig: proxyBrokerCfg,
+		Audit: &controller.ControllerAudit{
+			Sink: &auditing.KubeSink{Client: mgr.GetClient(), Component: "workspace-controller"},
+		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Workspace")
 		os.Exit(1)

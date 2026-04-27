@@ -78,6 +78,10 @@ docs(adr): ADR-0010 — Pod Security Standards posture
 
 The hard rule: **anything running inside a user's Pod is a separate binary and image**. The controller-manager and its webhook are one process; everything else isn't.
 
+- **Adding a third-party container image** — follow ADR-0018
+  (`docs/adr/0018-third-party-image-policy.md`): digest-pin in source,
+  surface an operator override, add an entry to the ADR's image table.
+
 | Component | `cmd/` | `images/` | Ships as |
 |---|---|---|---|
 | Controller-manager + webhook | `cmd/main.go` | `Dockerfile` (repo root) | `paddock-manager` |
