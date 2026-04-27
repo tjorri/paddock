@@ -112,6 +112,21 @@ func (c *ControllerAudit) EmitWorkspaceCAMisconfigured(ctx context.Context, wsNa
 	}), "ca-misconfigured")
 }
 
+// EmitRunCAMisconfigured records a terminal CA-misconfigured event for
+// a HarnessRun whose source-Secret key is missing/empty (typo'd key,
+// blanked source) or whose cert-manager Certificate has hit a permanent
+// failure. F-44.
+//
+// Companion to EmitWorkspaceCAMisconfigured; both share the
+// AuditKindCAMisconfigured kind and "ca-misconfigured" log action.
+func (c *ControllerAudit) EmitRunCAMisconfigured(ctx context.Context, runName, namespace, reason string) {
+	c.write(ctx, auditing.NewCAMisconfigured(auditing.CAMisconfiguredInput{
+		Name:      runName,
+		Namespace: namespace,
+		Reason:    reason,
+	}), "ca-misconfigured")
+}
+
 // EmitNetworkPolicyEnforcementWithdrawn is called when the reconciler
 // observes that a run admitted with enforcement=true no longer has its
 // NetworkPolicy (e.g., operator deleted it via kubectl). The reconciler

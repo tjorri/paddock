@@ -377,11 +377,28 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// MITM proxy in front of it.
 	var decision policy.InterceptionDecision
 	if r.proxyConfigured() {
-		// Theme 6 / F-44 will map errProxyCertPermanentFailure to a terminal
-		// HarnessRun condition. Currently propagated as a generic error and
-		// requeued — same indefinite-loop pattern F-51 closed for Workspaces.
 		ok, err := r.ensureProxyTLS(ctx, &run)
 		if err != nil {
+			if errors.Is(err, errProxyCertPermanentFailure) {
+				msg := fmt.Sprintf("cert-manager Certificate for proxy-tls permanently failed: %s; "+
+					"operator must fix the ClusterIssuer config", err)
+				setCondition(&run.Status.Conditions, metav1.Condition{
+					Type:               paddockv1alpha1.HarnessRunConditionEgressConfigured,
+					Status:             metav1.ConditionFalse,
+					Reason:             "ProxyCAMisconfigured",
+					Message:            msg,
+					ObservedGeneration: run.Generation,
+				})
+				run.Status.Phase = paddockv1alpha1.HarnessRunPhaseFailed
+				r.Recorder.Eventf(&run, corev1.EventTypeWarning, "ProxyCAMisconfigured", "%s", msg)
+				if r.Audit != nil {
+					r.Audit.EmitRunCAMisconfigured(ctx, run.Name, run.Namespace, msg)
+				}
+				if _, err := r.commitStatus(ctx, &run, origStatus); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{}, nil
+			}
 			return ctrl.Result{}, err
 		}
 		if !ok {
@@ -404,6 +421,27 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		// the static --allow list).
 		caOK, err := r.ensureBrokerCA(ctx, &run)
 		if err != nil {
+			if errors.Is(err, errSourceCAMisconfigured) {
+				msg := fmt.Sprintf("source broker-CA Secret %s/%s exists but has missing/empty %q; "+
+					"operator must populate it",
+					r.BrokerCASource.Namespace, r.BrokerCASource.Name, brokerCAKey)
+				setCondition(&run.Status.Conditions, metav1.Condition{
+					Type:               paddockv1alpha1.HarnessRunConditionEgressConfigured,
+					Status:             metav1.ConditionFalse,
+					Reason:             "BrokerCAMisconfigured",
+					Message:            msg,
+					ObservedGeneration: run.Generation,
+				})
+				run.Status.Phase = paddockv1alpha1.HarnessRunPhaseFailed
+				r.Recorder.Eventf(&run, corev1.EventTypeWarning, "BrokerCAMisconfigured", "%s", msg)
+				if r.Audit != nil {
+					r.Audit.EmitRunCAMisconfigured(ctx, run.Name, run.Namespace, msg)
+				}
+				if _, err := r.commitStatus(ctx, &run, origStatus); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{}, nil
+			}
 			return ctrl.Result{}, err
 		}
 		if !caOK {
