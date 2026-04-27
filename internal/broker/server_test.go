@@ -1220,6 +1220,8 @@ func TestHandleRevoke_NonControllerCaller_Forbidden(t *testing.T) {
 	}
 }
 
+// Covers the success-path 503 (revoke succeeded, audit failed).
+// The failure-path 503 is covered by TestHandleRevoke_RevokeFailsAndAuditFails_Returns503.
 func TestHandleRevoke_AuditWriteFailure_Returns503(t *testing.T) {
 	t.Parallel()
 	prov := &recordingProvider{name: "stub-prov"}
@@ -1241,6 +1243,55 @@ func TestHandleRevoke_AuditWriteFailure_Returns503(t *testing.T) {
 	}
 	if errResp.Code != brokerapi.CodeAuditUnavailable {
 		t.Errorf("code = %q, want AuditUnavailable", errResp.Code)
+	}
+}
+
+func TestHandleRevoke_RevokeFails_Returns500ProviderFailure(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{name: "stub-prov", revokeErr: errors.New("provider boom")}
+	srv := setupRevoke(t, prov)
+	rec := &recordingAuditSink{}
+	srv.Audit = broker.NewAuditWriter(rec)
+
+	rr := postRevoke(t, srv, "hr-1", "team-a", "ctrl-token", brokerapi.RevokeRequest{
+		Provider:       "stub-prov",
+		LeaseID:        "lease-x",
+		CredentialName: "cred",
+	})
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d body = %s; want 500", rr.Code, rr.Body.String())
+	}
+	if prov.revokeCalls != 1 {
+		t.Fatalf("provider Revoke calls = %d; want 1", prov.revokeCalls)
+	}
+	events := rec.events()
+	if len(events) != 1 {
+		t.Fatalf("expected exactly one audit event, got %d", len(events))
+	}
+	if events[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialDenied {
+		t.Fatalf("audit kind = %s; want credential-denied (denial-shape on revoke failure)", events[0].Spec.Kind)
+	}
+}
+
+func TestHandleRevoke_RevokeFailsAndAuditFails_Returns503(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{name: "stub-prov", revokeErr: errors.New("provider boom")}
+	srv := setupRevoke(t, prov)
+	srv.Audit = broker.NewAuditWriter(errorSink{err: errors.New("audit boom")})
+
+	rr := postRevoke(t, srv, "hr-1", "team-a", "ctrl-token", brokerapi.RevokeRequest{
+		Provider:       "stub-prov",
+		LeaseID:        "lease-x",
+		CredentialName: "cred",
+	})
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d body = %s; want 503 (failure-path Phase 2c contract)", rr.Code, rr.Body.String())
+	}
+	// Body should carry CodeAuditUnavailable, not CodeProviderFailure.
+	if !strings.Contains(rr.Body.String(), brokerapi.CodeAuditUnavailable) {
+		t.Fatalf("body missing AuditUnavailable code: %s", rr.Body.String())
 	}
 }
 
