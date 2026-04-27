@@ -22,7 +22,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -318,8 +317,8 @@ func main() {
 			"transparent-mode", iptablesInitImage != "",
 		)
 	}
-	if seedImage != "" && !strings.Contains(seedImage, "@sha256:") {
-		setupLog.Info("WARN third-party-image-policy: --seed-image is tag-pinned, not digest-pinned; ImagePullPolicy=Always will be forced")
+	if seedImage != "" && !controller.IsDigestPinnedImageRef(seedImage) {
+		setupLog.Info("WARN third-party-image-policy: --seed-image is not digest-pinned; ImagePullPolicy=Always will be forced")
 	}
 	if npEnforce == controller.NetworkPolicyEnforceAuto {
 		enabled, reason, probeErr := controller.DetectNetworkPolicyCNI(context.Background(), mgr.GetAPIReader())

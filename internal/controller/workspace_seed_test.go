@@ -308,8 +308,32 @@ func TestSeedProxySidecar_HasSATokenVolumeMount(t *testing.T) {
 }
 
 func TestSeedJob_DefaultImageDigestPinned(t *testing.T) {
-	if !strings.Contains(defaultSeedImage, "@sha256:") {
-		t.Fatalf("defaultSeedImage = %q; expected digest-pinned (image@sha256:...)", defaultSeedImage)
+	if !IsDigestPinnedImageRef(defaultSeedImage) {
+		t.Fatalf("defaultSeedImage = %q; expected digest-pinned (image@<algo>:<hex>)", defaultSeedImage)
+	}
+}
+
+func TestIsDigestPinnedImageRef(t *testing.T) {
+	cases := []struct {
+		ref  string
+		want bool
+	}{
+		{"alpine/git@sha256:d453f54c83320412aa89c391b076930bd8569bc1012285e8c68ce2d4435826a3", true},
+		{"alpine/git@sha512:abcdef0123456789", true}, // non-sha256 algorithm
+		{"registry.example.com/path/img@sha256:0000000000000000000000000000000000000000000000000000000000000000", true},
+		{"alpine/git:v2.52.0", false}, // tag-only
+		{"alpine/git", false},         // bare name
+		{"alpine/git@", false},        // trailing @, no algo
+		{"alpine/git@sha256:", false}, // algo present but empty hash
+		{"alpine/git@sha256", false},  // missing colon
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.ref, func(t *testing.T) {
+			if got := IsDigestPinnedImageRef(tc.ref); got != tc.want {
+				t.Fatalf("IsDigestPinnedImageRef(%q) = %v, want %v", tc.ref, got, tc.want)
+			}
+		})
 	}
 }
 

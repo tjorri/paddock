@@ -174,6 +174,23 @@ func seedRepoSchemeAllowed(raw string) bool {
 	return strings.HasPrefix(raw, "https://")
 }
 
+// IsDigestPinnedImageRef reports whether ref is content-addressed by a
+// digest (image@<algorithm>:<hex>) rather than a mutable tag. Recognises
+// any algorithm (sha256, sha512, future), per the OCI image spec. A
+// trailing "@" with no algorithm or no encoded hash is not a valid
+// digest pin. Used to decide whether the seed image needs
+// ImagePullPolicy=Always (F-49 / ADR-0018). Exported so cmd/main.go's
+// startup-warning path can reuse the same recognition rule.
+func IsDigestPinnedImageRef(ref string) bool {
+	at := strings.LastIndex(ref, "@")
+	if at < 0 || at == len(ref)-1 {
+		return false
+	}
+	rest := ref[at+1:]
+	colon := strings.Index(rest, ":")
+	return colon > 0 && colon < len(rest)-1
+}
+
 // scrubURLUserinfo returns raw with any userinfo segment stripped.
 // Defence-in-depth for F-50: the webhook should already have rejected
 // userinfo, but if a URL slips through (direct API write), this helper

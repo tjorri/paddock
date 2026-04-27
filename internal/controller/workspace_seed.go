@@ -74,7 +74,7 @@ func seedJobForWorkspace(ws *paddockv1alpha1.Workspace, image string, seedInputs
 	}
 
 	pullPolicy := corev1.PullIfNotPresent
-	if !strings.Contains(image, "@sha256:") {
+	if !IsDigestPinnedImageRef(image) {
 		// Tag-only ref: defend against tag mutation by always re-pulling.
 		pullPolicy = corev1.PullAlways
 	}
