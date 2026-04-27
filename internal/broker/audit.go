@@ -105,3 +105,16 @@ func (w *AuditWriter) CredentialDenied(ctx context.Context, e CredentialAudit) e
 		When:           e.When,
 	}))
 }
+
+// CredentialRevoked records a successful Revoke.
+func (w *AuditWriter) CredentialRevoked(ctx context.Context, e CredentialAudit) error {
+	return w.sink().Write(ctx, auditing.NewCredentialRevoked(auditing.CredentialRevokedInput{
+		RunName:        e.RunName,
+		Namespace:      e.Namespace,
+		CredentialName: e.CredentialName,
+		Provider:       e.Provider,
+		MatchedPolicy:  e.MatchedPolicy,
+		Reason:         e.Reason,
+		When:           e.When,
+	}))
+}

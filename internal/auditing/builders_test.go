@@ -98,6 +98,30 @@ func TestNewCredentialDenied(t *testing.T) {
 	}
 }
 
+func TestNewCredentialRevoked(t *testing.T) {
+	ae := auditing.NewCredentialRevoked(auditing.CredentialRevokedInput{
+		RunName:        "run-a",
+		Namespace:      "ns",
+		CredentialName: "gh",
+		Provider:       "PATPool",
+		Reason:         "run cancelled",
+	})
+	if ae.Spec.Kind != paddockv1alpha1.AuditKindCredentialRevoked {
+		t.Fatalf("Kind = %s", ae.Spec.Kind)
+	}
+	if ae.Spec.Decision != paddockv1alpha1.AuditDecisionGranted {
+		// Revocation is a successful action, not a denial — Decision=Granted
+		// matches credential-issued's polarity.
+		t.Fatalf("Decision = %s; want Granted", ae.Spec.Decision)
+	}
+	if ae.Spec.Credential.Name != "gh" || ae.Spec.Credential.Provider != "PATPool" {
+		t.Fatalf("Credential ref = %+v", ae.Spec.Credential)
+	}
+	if ae.Labels[paddockv1alpha1.AuditEventLabelKind] != string(paddockv1alpha1.AuditKindCredentialRevoked) {
+		t.Fatalf("Kind label not stamped: %v", ae.Labels)
+	}
+}
+
 func TestNewEgressBlock(t *testing.T) {
 	ae := auditing.NewEgressBlock(auditing.EgressInput{
 		RunName: "hr-1", Namespace: "team-a",

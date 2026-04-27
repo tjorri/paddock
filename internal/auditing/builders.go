@@ -127,6 +127,47 @@ func NewCredentialDenied(in CredentialDeniedInput) *paddockv1alpha1.AuditEvent {
 	return ae
 }
 
+// CredentialRevokedInput is the flat input shape for NewCredentialRevoked.
+type CredentialRevokedInput struct {
+	RunName        string
+	Namespace      string
+	CredentialName string
+	Provider       string
+	MatchedPolicy  string
+	Reason         string
+	When           time.Time
+}
+
+// NewCredentialRevoked builds a credential-revoked AuditEvent. Decision
+// is Granted (revocation is a successful action) — the action category
+// is conveyed by Kind, not Decision.
+func NewCredentialRevoked(in CredentialRevokedInput) *paddockv1alpha1.AuditEvent {
+	ae := &paddockv1alpha1.AuditEvent{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:    in.Namespace,
+			GenerateName: "ae-cred-",
+		},
+		Spec: paddockv1alpha1.AuditEventSpec{
+			Decision:  paddockv1alpha1.AuditDecisionGranted,
+			Kind:      paddockv1alpha1.AuditKindCredentialRevoked,
+			Timestamp: metav1.NewTime(nowOr(in.When)),
+			Reason:    in.Reason,
+			Credential: &paddockv1alpha1.AuditCredentialRef{
+				Name:     in.CredentialName,
+				Provider: in.Provider,
+			},
+		},
+	}
+	if in.RunName != "" {
+		ae.Spec.RunRef = &paddockv1alpha1.LocalObjectReference{Name: in.RunName}
+	}
+	if in.MatchedPolicy != "" {
+		ae.Spec.MatchedPolicy = &paddockv1alpha1.LocalObjectReference{Name: in.MatchedPolicy}
+	}
+	stampLabels(ae, in.RunName)
+	return ae
+}
+
 // EgressInput is the flat input shape for NewEgressAllow / NewEgressBlock /
 // NewEgressDiscoveryAllow.
 type EgressInput struct {
