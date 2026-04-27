@@ -1032,6 +1032,72 @@ func TestBuildPodSpec_PassesDenyCIDR(t *testing.T) {
 	}
 }
 
+// TestSidecarUIDsArePinned verifies that the adapter and collector
+// sidecars have RunAsUser pinned to adapterRunAsUID (1338) and
+// collectorRunAsUID (1339) respectively. F-20 / Phase 2h Theme 4:
+// pinned UIDs allow iptables-init to RETURN sidecar egress by
+// owner-UID match without routing it through the proxy.
+func TestSidecarUIDsArePinned(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+	ps := buildPodSpec(run, tpl, defaultInputs())
+
+	uids := map[string]int64{}
+	for _, c := range ps.InitContainers {
+		if c.SecurityContext != nil && c.SecurityContext.RunAsUser != nil {
+			uids[c.Name] = *c.SecurityContext.RunAsUser
+		}
+	}
+	for _, c := range ps.Containers {
+		if c.SecurityContext != nil && c.SecurityContext.RunAsUser != nil {
+			uids[c.Name] = *c.SecurityContext.RunAsUser
+		}
+	}
+	want := map[string]int64{
+		adapterContainerName:   1338,
+		collectorContainerName: 1339,
+	}
+	for name, wantUID := range want {
+		if got, ok := uids[name]; !ok || got != wantUID {
+			t.Errorf("%s UID = %d (present=%v), want %d", name, got, ok, wantUID)
+		}
+	}
+}
+
+// TestIPTablesInitArgs_BypassUIDs verifies that buildIPTablesInitContainer
+// emits --bypass-uids=1337,1338,1339 and does NOT emit the legacy
+// --proxy-uid flag. F-20 / Phase 2h Theme 4.
+func TestIPTablesInitArgs_BypassUIDs(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.iptablesInitImage = "paddock-iptables-init:test"
+	in.interceptionMode = paddockv1alpha1.InterceptionModeTransparent
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+
+	ps := buildPodSpec(run, tpl, in)
+
+	var ipt corev1.Container
+	for _, c := range ps.InitContainers {
+		if c.Name == iptablesInitContainerName {
+			ipt = c
+		}
+	}
+	if ipt.Name == "" {
+		t.Fatalf("iptables-init container not found in InitContainers")
+	}
+	if !slices.Contains(ipt.Args, "--bypass-uids=1337,1338,1339") {
+		t.Errorf("missing --bypass-uids=1337,1338,1339; got %v", ipt.Args)
+	}
+	for _, bad := range ipt.Args {
+		if strings.HasPrefix(bad, "--proxy-uid=") {
+			t.Errorf("legacy --proxy-uid flag still emitted: %s", bad)
+		}
+	}
+}
+
 func TestBuildPodSpec_PassesInterceptionAcceptanceArgs(t *testing.T) {
 	run := echoRunFixture()
 	tpl := echoTemplateFixture()

@@ -24,10 +24,16 @@ limitations under the License.
 // the life of the pod netns.
 //
 // Exclusions:
-//   - Traffic owned by the proxy's UID is RETURN'd, so the proxy can
-//     dial upstreams without looping through itself.
-//   - RFC1918 + loopback destinations are RETURN'd, so kubernetes-api
-//     and intra-cluster TCP keep working.
+//   - Traffic owned by any UID in --bypass-uids is RETURN'd. The list
+//     must include the proxy UID (1337) plus any sidecar that sends
+//     egress the proxy should not intercept: adapter (1338), collector
+//     (1339). F-20 / Phase 2h Theme 4.
+//   - Loopback (127.0.0.0/8) is RETURN'd so the proxy can talk to its
+//     own probes / loopback services without looping.
+//   - RFC1918 + CGNAT RETURN rules were removed in Phase 2h Theme 4
+//     (F-20): agent-originated traffic to in-cluster destinations
+//     (broker ClusterIP, kube-apiserver, co-tenant Pod IPs) now gets
+//     REDIRECTed to the proxy and enforced via BrokerPolicy.
 package main
 
 import (
@@ -36,52 +42,48 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 )
 
-// Defaults chosen so the binary can be invoked with zero flags.
-// The proxy sidecar is built to run as UID 1337 (see images/proxy);
-// if that changes, update this default in lockstep with the pod
-// securityContext the controller injects.
 const (
-	defaultProxyUID  = 1337
 	defaultProxyPort = 15001
 	defaultChainName = "PADDOCK_OUTPUT"
 	iptablesBinary   = "iptables"
 )
 
-// privateRanges are destinations we never redirect: loopback and the
-// RFC1918 + CGNAT blocks. Covers Kubernetes' default pod + service
-// CIDRs; a future milestone adds explicit --skip-cidr overrides.
-var privateRanges = []string{
-	"127.0.0.0/8",
-	"10.0.0.0/8",
-	"172.16.0.0/12",
-	"192.168.0.0/16",
-	"100.64.0.0/10",
-}
+// loopbackCIDR is the only CIDR we still RETURN; loopback traffic must
+// remain unimpaired so the proxy can talk to its own probes / loopback
+// services. RFC1918 RETURN was removed in Phase 2h Theme 4 (F-20):
+// agent-originated traffic to in-cluster destinations now goes through
+// the proxy regardless of destination CIDR.
+const loopbackCIDR = "127.0.0.0/8"
 
 func main() {
 	var (
-		proxyUID  int
-		proxyPort int
-		ports     string
-		dryRun    bool
+		bypassUIDs string
+		proxyPort  int
+		ports      string
+		dryRun     bool
 	)
-	flag.IntVar(&proxyUID, "proxy-uid", defaultProxyUID,
-		"UID the paddock-proxy sidecar runs as. Outbound traffic from this UID is RETURN'd to avoid a redirect loop.")
+	flag.StringVar(&bypassUIDs, "bypass-uids", "",
+		"REQUIRED. Comma-separated UIDs whose outbound TCP is RETURN'd before REDIRECT. "+
+			"Must include the proxy UID (1337) plus any sidecar that needs un-MITMed egress "+
+			"(adapter 1338, collector 1339). F-20.")
 	flag.IntVar(&proxyPort, "proxy-port", defaultProxyPort,
 		"TCP port the proxy listens on for transparent-mode traffic.")
 	flag.StringVar(&ports, "ports", "80,443",
-		"Comma-separated TCP dports to redirect. Non-matched ports are left alone.")
+		"Comma-separated TCP dports to redirect.")
 	flag.BoolVar(&dryRun, "dry-run", false,
-		"Print the iptables commands the init would run, without invoking iptables.")
+		"Print the iptables commands without invoking iptables.")
 	flag.Parse()
 
-	destPorts := strings.Split(ports, ",")
-	for i, p := range destPorts {
-		destPorts[i] = strings.TrimSpace(p)
+	uids, err := parseBypassUIDs(bypassUIDs)
+	if err != nil {
+		fatal("parse --bypass-uids: %v", err)
 	}
+
+	destPorts := splitPorts(ports)
 
 	runner := realRunner
 	if dryRun {
@@ -91,41 +93,84 @@ func main() {
 	if err := ensureChain(runner, defaultChainName); err != nil {
 		fatal("ensure chain: %v", err)
 	}
-
-	// Install the OUTPUT jump unconditionally; the -I (insert at head)
-	// makes it the first matcher, so later RETURN rules in our chain
-	// don't get bypassed by other system-added OUTPUT rules.
+	// Insert the OUTPUT jump (idempotent).
 	if err := runner("-t", "nat", "-C", "OUTPUT", "-p", "tcp", "-j", defaultChainName); err != nil {
 		if err := runner("-t", "nat", "-I", "OUTPUT", "1", "-p", "tcp", "-j", defaultChainName); err != nil {
 			fatal("install OUTPUT jump: %v", err)
 		}
 	}
 
-	// Inside PADDOCK_OUTPUT: RETURN for proxy-owned traffic, then
-	// RETURN for private-network destinations, then REDIRECT the
-	// listed TCP dports.
-	if err := appendIfMissing(runner, "-t", "nat", "-A", defaultChainName,
-		"-m", "owner", "--uid-owner", fmt.Sprint(proxyUID), "-j", "RETURN"); err != nil {
-		fatal("owner RETURN rule: %v", err)
+	if err := installRules(runner, uids, destPorts, proxyPort); err != nil {
+		fatal("install rules: %v", err)
 	}
-	for _, cidr := range privateRanges {
-		if err := appendIfMissing(runner, "-t", "nat", "-A", defaultChainName,
-			"-d", cidr, "-j", "RETURN"); err != nil {
-			fatal("private-cidr RETURN %s: %v", cidr, err)
-		}
+
+	fmt.Printf("iptables-init: installed REDIRECT chain %q (ports=%s, proxy=%d, bypass-uids=%v)\n",
+		defaultChainName, ports, proxyPort, uids)
+}
+
+// parseBypassUIDs parses the CSV value of --bypass-uids. Empty is
+// rejected (operator must be explicit; missing proxy UID would loop
+// proxy traffic). Non-integer entries and duplicates are rejected.
+func parseBypassUIDs(csv string) ([]int, error) {
+	csv = strings.TrimSpace(csv)
+	if csv == "" {
+		return nil, fmt.Errorf("--bypass-uids must be non-empty (must include the proxy UID at minimum)")
 	}
-	for _, port := range destPorts {
-		if port == "" {
+	seen := map[int]bool{}
+	out := []int{}
+	for _, raw := range strings.Split(csv, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
 			continue
 		}
+		uid, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("UID %q is not an integer: %w", raw, err)
+		}
+		if seen[uid] {
+			return nil, fmt.Errorf("duplicate UID %d", uid)
+		}
+		seen[uid] = true
+		out = append(out, uid)
+	}
+	return out, nil
+}
+
+func splitPorts(csv string) []string {
+	parts := strings.Split(csv, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// installRules emits, in order:
+//   - one owner-UID RETURN per bypass UID
+//   - one loopback RETURN
+//   - one REDIRECT per dport, sending to proxyPort
+func installRules(runner rulesRunner, uids []int, dports []string, proxyPort int) error {
+	for _, uid := range uids {
+		if err := appendIfMissing(runner, "-t", "nat", "-A", defaultChainName,
+			"-m", "owner", "--uid-owner", fmt.Sprint(uid), "-j", "RETURN"); err != nil {
+			return fmt.Errorf("owner RETURN uid=%d: %w", uid, err)
+		}
+	}
+	if err := appendIfMissing(runner, "-t", "nat", "-A", defaultChainName,
+		"-d", loopbackCIDR, "-j", "RETURN"); err != nil {
+		return fmt.Errorf("loopback RETURN: %w", err)
+	}
+	for _, port := range dports {
 		if err := appendIfMissing(runner, "-t", "nat", "-A", defaultChainName,
 			"-p", "tcp", "--dport", port,
 			"-j", "REDIRECT", "--to-ports", fmt.Sprint(proxyPort)); err != nil {
-			fatal("REDIRECT for :%s: %v", port, err)
+			return fmt.Errorf("REDIRECT for :%s: %w", port, err)
 		}
 	}
-	fmt.Printf("iptables-init: installed REDIRECT chain %q (ports=%s, proxy=%d, proxyUID=%d)\n",
-		defaultChainName, ports, proxyPort, proxyUID)
+	return nil
 }
 
 // ensureChain creates the named chain in the nat table if it does not

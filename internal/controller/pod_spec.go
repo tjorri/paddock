@@ -103,6 +103,11 @@ const (
 	// defaultProxyUID. 1337 is the Istio convention — low enough
 	// conflict risk against typical agent container UIDs.
 	proxyRunAsUID = 1337
+	// adapterRunAsUID and collectorRunAsUID pin the sidecar UIDs so the
+	// iptables-init --bypass-uids list can RETURN their egress without
+	// looping it through the proxy. F-20 / Phase 2h Theme 4.
+	adapterRunAsUID   = 1338
+	collectorRunAsUID = 1339
 	// agentCABundleMountPath is where the agent sees the MITM CA
 	// bundle. Points at a single file (tls.crt key of the per-run
 	// Secret — the per-run intermediate cert; see agentCABundleSubPath
@@ -401,11 +406,13 @@ func buildAgentContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemp
 // workspace PVC is the collector's concern.
 func buildAdapterContainer(template *resolvedTemplate) corev1.Container {
 	always := corev1.ContainerRestartPolicyAlways
+	sc := runContainerSecurityContextBaseline()
+	sc.RunAsUser = ptr.To(int64(adapterRunAsUID))
 	c := corev1.Container{
 		Name:            adapterContainerName,
 		Image:           template.Spec.EventAdapter.Image,
 		RestartPolicy:   &always,
-		SecurityContext: runContainerSecurityContextBaseline(),
+		SecurityContext: sc,
 		Env: []corev1.EnvVar{
 			{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
 			{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
@@ -432,11 +439,13 @@ func buildCollectorContainer(
 ) corev1.Container {
 	always := corev1.ContainerRestartPolicyAlways
 	mountPath := effectiveWorkspaceMount(template)
+	sc := runContainerSecurityContextRestricted()
+	sc.RunAsUser = ptr.To(int64(collectorRunAsUID))
 	return corev1.Container{
 		Name:            collectorContainerName,
 		Image:           image,
 		RestartPolicy:   &always,
-		SecurityContext: runContainerSecurityContextRestricted(),
+		SecurityContext: sc,
 		Env: []corev1.EnvVar{
 			{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
 			{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
@@ -692,7 +701,7 @@ func buildIPTablesInitContainer(in podSpecInputs) corev1.Container {
 		Name:  iptablesInitContainerName,
 		Image: img,
 		Args: []string{
-			fmt.Sprintf("--proxy-uid=%d", proxyRunAsUID),
+			fmt.Sprintf("--bypass-uids=%d,%d,%d", proxyRunAsUID, adapterRunAsUID, collectorRunAsUID),
 			fmt.Sprintf("--proxy-port=%d", proxyListenPort),
 			"--ports=80,443",
 		},
