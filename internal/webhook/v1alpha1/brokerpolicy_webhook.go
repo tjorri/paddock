@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -39,6 +40,13 @@ var brokerpolicylog = logf.Log.WithName("brokerpolicy-resource")
 // windows short-lived. Operators who want a different cap need an
 // operator-flag-tunable variant (deferred from v0.4).
 const MaxDiscoveryWindow = 7 * 24 * time.Hour
+
+// gitHubAppNumericID matches a positive integer of 1–20 digits with no
+// leading zero. Mirrors the kubebuilder pattern annotation on
+// BrokerPolicy.spec.grants[].credentials[].provider.{appId,installationId};
+// the webhook check provides a friendlier error message than the CRD's
+// "spec.… in body should match …" envelope.
+var gitHubAppNumericID = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
 
 // SetupBrokerPolicyWebhookWithManager registers the validating webhook
 // for BrokerPolicy with the manager. sink receives one AuditEvent per
@@ -238,9 +246,15 @@ func validateProviderConfig(p *field.Path, cfg paddockv1alpha1.ProviderConfig) f
 	case "GitHubApp":
 		if cfg.AppID == "" {
 			errs = append(errs, field.Required(p.Child("appId"), "required for GitHubApp provider"))
+		} else if !gitHubAppNumericID.MatchString(cfg.AppID) {
+			errs = append(errs, field.Invalid(p.Child("appId"), cfg.AppID,
+				"appId must be a positive integer (1-20 digits); see kubectl get installation -o yaml | grep id or the GitHub App settings page"))
 		}
 		if cfg.InstallationID == "" {
 			errs = append(errs, field.Required(p.Child("installationId"), "required for GitHubApp provider"))
+		} else if !gitHubAppNumericID.MatchString(cfg.InstallationID) {
+			errs = append(errs, field.Invalid(p.Child("installationId"), cfg.InstallationID,
+				"installationId must be a positive integer (1-20 digits); see kubectl get installation -o yaml | grep id or the GitHub App settings page"))
 		}
 		if cfg.SecretRef == nil {
 			errs = append(errs, field.Required(p.Child("secretRef"),

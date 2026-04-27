@@ -652,4 +652,73 @@ var _ = Describe("BrokerPolicy Webhook", func() {
 		spec.AppliesToTemplates = []string{"claude-code-*"}
 		Expect(validate(spec)).To(Succeed())
 	})
+
+	Context("F-36 GitHubApp appId/installationId must be positive integers", func() {
+		ghAppGrant := func(appID, instID string) paddockv1alpha1.CredentialGrant {
+			return paddockv1alpha1.CredentialGrant{
+				Name: "GH",
+				Provider: paddockv1alpha1.ProviderConfig{
+					Kind:           "GitHubApp",
+					AppID:          appID,
+					InstallationID: instID,
+					SecretRef:      &paddockv1alpha1.SecretKeyReference{Name: "gh", Key: "pem"},
+					Hosts:          []string{"api.github.com"},
+				},
+			}
+		}
+
+		It("admits a numeric appId and installationId", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "api.github.com", Ports: []int32{443},
+			})
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{ghAppGrant("12345", "67890")}
+			Expect(validate(spec)).To(Succeed())
+		})
+
+		It("rejects a non-numeric appId", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "api.github.com", Ports: []int32{443},
+			})
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{ghAppGrant("broken", "67890")}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("appId"))
+			Expect(err.Error()).To(ContainSubstring("positive integer"))
+		})
+
+		It("rejects a non-numeric installationId", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "api.github.com", Ports: []int32{443},
+			})
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{ghAppGrant("12345", "abc")}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("installationId"))
+			Expect(err.Error()).To(ContainSubstring("positive integer"))
+		})
+
+		It("rejects a leading-zero appId", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "api.github.com", Ports: []int32{443},
+			})
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{ghAppGrant("0123", "67890")}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("rejects an over-length appId", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "api.github.com", Ports: []int32{443},
+			})
+			tooLong := "1234567890123456789012" // 22 digits, exceeds 20-digit cap
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{ghAppGrant(tooLong, "67890")}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+		})
+	})
 })
