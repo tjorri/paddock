@@ -477,7 +477,7 @@ func TestPATPoolProvider_ReserveSlot_MarksLeased(t *testing.T) {
 			byBearer: map[string]*patLease{},
 		},
 	}
-	p.ReserveSlot(key, 1, "lease-x")
+	p.ReserveSlot(key, []string{"ghp_a", "ghp_b"}, 1, "lease-x")
 	if !p.pools[key].leased[1] {
 		t.Fatalf("ReserveSlot did not mark slot 1 leased")
 	}
@@ -493,9 +493,45 @@ func TestPATPoolProvider_ReserveSlot_OutOfRange_NoOp(t *testing.T) {
 	p.pools = map[PatPoolKey]*patPool{
 		key: {entries: []string{"ghp_a"}, leased: []bool{false}, byBearer: map[string]*patLease{}},
 	}
-	p.ReserveSlot(key, 7, "lease-x") // out of range; expected to no-op without panic
+	p.ReserveSlot(key, []string{"ghp_a"}, 7, "lease-x") // out of range; expected to no-op without panic
 	if p.pools[key].leased[0] {
 		t.Fatalf("out-of-range ReserveSlot wrongly mutated state")
+	}
+}
+
+func TestPATPoolProvider_ReserveSlot_PlaceholderSurvivesNextIssue(t *testing.T) {
+	t.Parallel()
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool", Namespace: "ns"},
+		Data:       map[string][]byte{"pats": []byte("ghp_aaa\nghp_bbb\n")},
+	}
+	p := &PATPoolProvider{Client: fake.NewClientBuilder().WithObjects(secret).Build()}
+	key := PatPoolKey{Namespace: "ns", Secret: "pool", Key: "pats"}
+
+	// Reserve slot 0 with no pre-existing in-memory pool — simulates
+	// broker startup reconstruction (F-14, Task 13 caller).
+	p.ReserveSlot(key, []string{"ghp_aaa", "ghp_bbb"}, 0, "lease-restored")
+
+	// Subsequent Issue must pick a DIFFERENT slot.
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "run-fresh", Namespace: "ns", CredentialName: "gh",
+		Grant: paddockv1alpha1.CredentialGrant{
+			Name: "gh",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "PATPool",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "pool", Key: "pats"},
+				Hosts:     []string{"github.com"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if res.PoolSlotIndex == nil {
+		t.Fatalf("Issue did not populate PoolSlotIndex")
+	}
+	if *res.PoolSlotIndex == 0 {
+		t.Fatalf("Issue picked the reserved slot 0; F-14 hazard not closed")
 	}
 }
 

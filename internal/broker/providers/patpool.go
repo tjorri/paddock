@@ -273,8 +273,12 @@ func (p *PATPoolProvider) Revoke(_ context.Context, leaseID string) error {
 // ReserveSlot marks pool[key].leased[slotIndex] = true with no
 // bearer-side state — used by the broker's startup reconstruction
 // (F-14) where the bearer bytes are deliberately not persisted on
-// HarnessRun.status. Out-of-range slotIndex is a no-op.
-func (p *PATPoolProvider) ReserveSlot(key PatPoolKey, slotIndex int, leaseID string) {
+// HarnessRun.status. The caller passes the freshly-read pool entries
+// so the in-memory pool's entries[] is populated up front (otherwise
+// the next Issue's reconcilePoolLocked would drop the reservation
+// during its slow rebuild path, defeating F-14). Out-of-range
+// slotIndex is a no-op.
+func (p *PATPoolProvider) ReserveSlot(key PatPoolKey, entries []string, slotIndex int, leaseID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.pools == nil {
@@ -282,16 +286,9 @@ func (p *PATPoolProvider) ReserveSlot(key PatPoolKey, slotIndex int, leaseID str
 	}
 	pool, ok := p.pools[key]
 	if !ok {
-		// No in-memory pool yet for this key: create a placeholder
-		// large enough to record the reservation. The first real Issue
-		// for this pool reads the Secret and reconciles via
-		// reconcilePoolLocked, which preserves leased[] so this entry
-		// survives. We don't have entries[] here without a Secret read;
-		// callers (reconstructLeases) pass slotIndex < pool size; we
-		// size leased to slotIndex+1 minimum so the assignment fits.
 		pool = &patPool{
-			entries:  nil, // populated on next Issue's reconcilePoolLocked
-			leased:   make([]bool, slotIndex+1),
+			entries:  append([]string(nil), entries...), // copy so caller's slice mutations don't leak in
+			leased:   make([]bool, len(entries)),
 			byBearer: map[string]*patLease{},
 		}
 		p.pools[key] = pool
