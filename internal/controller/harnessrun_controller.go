@@ -596,6 +596,11 @@ func (r *HarnessRunReconciler) reconcileCredentials(
 	// and the broker can reconstruct PATPool slots on restart. Replace
 	// rather than append to keep the slice authoritative for each
 	// successful Issue cycle.
+	// Replace only on a populated cycle: dropping requires.credentials
+	// must NOT erase prior leases — the broker-leases finalizer still
+	// has to revoke them on run delete. Status.Credentials, by contrast,
+	// tracks current-cycle delivery and is overwritten unconditionally
+	// above.
 	if len(issuedLeases) > 0 {
 		run.Status.IssuedLeases = issuedLeases
 	}
