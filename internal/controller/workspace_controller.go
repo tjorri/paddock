@@ -235,7 +235,7 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 					recordPhaseTransition(string(origStatus.Phase), string(ws.Status.Phase))
 					r.Recorder.Eventf(&ws, corev1.EventTypeWarning, "ProxyCAMisconfigured", "%s", msg)
 					if r.Audit != nil {
-						r.Audit.EmitCAMisconfigured(ctx, ws.Name, ws.Namespace, msg)
+						r.Audit.EmitWorkspaceCAMisconfigured(ctx, ws.Name, ws.Namespace, msg)
 					}
 					if !reflect.DeepEqual(origStatus, &ws.Status) {
 						if err := r.Status().Update(ctx, &ws); err != nil && !apierrors.IsConflict(err) {
@@ -276,7 +276,7 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 					recordPhaseTransition(string(origStatus.Phase), string(ws.Status.Phase))
 					r.Recorder.Eventf(&ws, corev1.EventTypeWarning, "BrokerCAMisconfigured", "%s", msg)
 					if r.Audit != nil {
-						r.Audit.EmitCAMisconfigured(ctx, ws.Name, ws.Namespace, msg)
+						r.Audit.EmitWorkspaceCAMisconfigured(ctx, ws.Name, ws.Namespace, msg)
 					}
 					if !reflect.DeepEqual(origStatus, &ws.Status) {
 						if err := r.Status().Update(ctx, &ws); err != nil && !apierrors.IsConflict(err) {

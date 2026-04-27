@@ -96,12 +96,15 @@ func (c *ControllerAudit) EmitCAProjected(ctx context.Context, runName, namespac
 	}), "ca-projected")
 }
 
-// EmitCAMisconfigured records a terminal CA-misconfigured event for a
-// Workspace whose source-Secret key is missing/empty (typo'd key,
-// blanked source) or whose cert-manager Certificate has hit a
-// permanent failure. The wsName argument is the Workspace name; it is
-// prefixed seed- here to match the F-52 runRef convention. F-51.
-func (c *ControllerAudit) EmitCAMisconfigured(ctx context.Context, wsName, namespace, reason string) {
+// EmitWorkspaceCAMisconfigured records a terminal CA-misconfigured event
+// for a Workspace whose source-Secret key is missing/empty (typo'd key,
+// blanked source) or whose cert-manager Certificate has hit a permanent
+// failure. The wsName argument is the Workspace name; it is prefixed
+// seed- here to match the F-52 runRef convention. F-51.
+//
+// Named EmitWorkspaceCAMisconfigured (not EmitCAMisconfigured) so Theme 6
+// can add EmitRunCAMisconfigured without prefix duplication. I2.
+func (c *ControllerAudit) EmitWorkspaceCAMisconfigured(ctx context.Context, wsName, namespace, reason string) {
 	c.write(ctx, auditing.NewCAMisconfigured(auditing.CAMisconfiguredInput{
 		Name:      "seed-" + wsName,
 		Namespace: namespace,

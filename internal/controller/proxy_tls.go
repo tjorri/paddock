@@ -40,13 +40,34 @@ import (
 // ProxyCAMisconfigured condition (F-51).
 var errProxyCertPermanentFailure = errors.New("cert-manager Certificate permanently failed")
 
-// permanentCertReasons enumerates cert-manager Ready=False reasons
-// that indicate operator misconfiguration rather than transient
-// issuance state. Conservative list — extend if real users hit a
-// reason that should be terminal but isn't covered.
-var permanentCertReasons = map[string]struct{}{
-	"IssuerNotFound": {},
-	"Failed":         {},
+// isCertificatePermanentlyFailed returns (true, reason) when the
+// Certificate carries any of the three signals that indicate the
+// issuance has permanently failed (not merely pending):
+//
+//  1. Conditions[Issuing].Reason == "Failed" — cert-manager's issuing
+//     controller sets this when retries are exhausted.
+//  2. Conditions[Ready].Reason == "Failed" — defensive; some versions
+//     surface permanent failures here as well.
+//  3. Status.FailedIssuanceAttempts >= 5 — strong signal that issuance
+//     has been retried multiple times and given up.
+//
+// The reason string is intended for diagnostic error messages only.
+func isCertificatePermanentlyFailed(cert *cmapi.Certificate) (bool, string) {
+	for _, c := range cert.Status.Conditions {
+		if c.Reason != "Failed" {
+			continue
+		}
+		switch c.Type {
+		case cmapi.CertificateConditionIssuing:
+			return true, fmt.Sprintf("Conditions[Issuing].Reason=Failed message=%s", c.Message)
+		case cmapi.CertificateConditionReady:
+			return true, fmt.Sprintf("Conditions[Ready].Reason=Failed message=%s", c.Message)
+		}
+	}
+	if cert.Status.FailedIssuanceAttempts != nil && *cert.Status.FailedIssuanceAttempts >= 5 {
+		return true, fmt.Sprintf("FailedIssuanceAttempts=%d", *cert.Status.FailedIssuanceAttempts)
+	}
+	return false, ""
 }
 
 // proxyTLSSecretName is the per-run Secret holding the per-run
@@ -180,17 +201,17 @@ func ensureProxyCACertificate(
 	if err := cli.Get(ctx, types.NamespacedName{Name: secretName, Namespace: ns}, cert); err != nil {
 		return false, false, fmt.Errorf("re-reading Certificate %s/%s: %w", ns, secretName, err)
 	}
+	// Check permanent failure first — covers Issuing.Reason, Ready.Reason,
+	// and FailedIssuanceAttempts (C1 fix: the old map only checked
+	// Ready.Reason for "IssuerNotFound"/"Failed", both of which are
+	// actually set on child CertificateRequests or Conditions[Issuing]).
+	if perm, reason := isCertificatePermanentlyFailed(cert); perm {
+		return false, false, fmt.Errorf("%w: %s", errProxyCertPermanentFailure, reason)
+	}
 	for _, c := range cert.Status.Conditions {
-		if c.Type == cmapi.CertificateConditionReady {
-			if c.Status == cmmeta.ConditionTrue {
-				ready = true
-				break
-			}
-			if c.Status == cmmeta.ConditionFalse {
-				if _, perm := permanentCertReasons[c.Reason]; perm {
-					return false, false, fmt.Errorf("%w: reason=%s message=%s", errProxyCertPermanentFailure, c.Reason, c.Message)
-				}
-			}
+		if c.Type == cmapi.CertificateConditionReady && c.Status == cmmeta.ConditionTrue {
+			ready = true
+			break
 		}
 	}
 	return op == controllerutil.OperationResultCreated, ready, nil

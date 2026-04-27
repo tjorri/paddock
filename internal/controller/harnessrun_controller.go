@@ -322,6 +322,9 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// MITM proxy in front of it.
 	var decision policy.InterceptionDecision
 	if r.proxyConfigured() {
+		// Theme 6 / F-44 will map errProxyCertPermanentFailure to a terminal
+		// HarnessRun condition. Currently propagated as a generic error and
+		// requeued — same indefinite-loop pattern F-51 closed for Workspaces.
 		ok, err := r.ensureProxyTLS(ctx, &run)
 		if err != nil {
 			return ctrl.Result{}, err
