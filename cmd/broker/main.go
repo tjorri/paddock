@@ -198,6 +198,9 @@ func main() {
 		Handler:           mux,
 		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	// Probe server on plain HTTP, separate addr so kubelet can hit it
@@ -223,6 +226,9 @@ func main() {
 		Addr:              probeAddr,
 		Handler:           probeMux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       30 * time.Second,
 	}
 
 	errCh := make(chan error, 2)
