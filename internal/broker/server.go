@@ -112,7 +112,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, grant, audit, err := s.issue(ctx, runNamespace, runName, req)
+	result, _, audit, err := s.issue(ctx, runNamespace, runName, req)
 	if err != nil {
 		// Deny path: write audit BEFORE returning the error to the
 		// caller. If the audit write itself fails, return 503 so the
@@ -152,60 +152,21 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt: result.ExpiresAt,
 		Provider:  audit.Provider,
 	}
-	populateDeliveryMetadata(&resp, result, grant)
+	populateDeliveryMetadata(&resp, result)
 	writeJSON(w, http.StatusOK, resp)
 }
 
 // populateDeliveryMetadata fills DeliveryMode / Hosts / InContainerReason
-// on an IssueResponse from the provider's IssueResult. Built-in providers
-// populate result.DeliveryMode + result.Hosts; the per-grant switch is
-// kept as a safety net during the B-02 migration and will be removed in
-// the follow-up commit.
-func populateDeliveryMetadata(resp *brokerapi.IssueResponse, result providers.IssueResult, grant *paddockv1alpha1.CredentialGrant) {
-	// Provider-supplied path (B-02 migration target). When a provider
-	// has been updated to populate IssueResult.DeliveryMode, trust it.
-	if result.DeliveryMode != "" {
-		resp.DeliveryMode = result.DeliveryMode
-		resp.Hosts = result.Hosts
-		resp.InContainerReason = result.InContainerReason
-		return
-	}
-	// Legacy switch — fallback for any provider that hasn't yet been
-	// migrated to populate IssueResult. Removed in Task 3b once the
-	// four bundled providers all populate IssueResult directly.
-	if grant == nil {
-		return
-	}
-	switch grant.Provider.Kind {
-	case "UserSuppliedSecret":
-		dm := grant.Provider.DeliveryMode
-		switch {
-		case dm != nil && dm.ProxyInjected != nil:
-			resp.DeliveryMode = "ProxyInjected"
-			resp.Hosts = dm.ProxyInjected.Hosts
-		case dm != nil && dm.InContainer != nil:
-			resp.DeliveryMode = "InContainer"
-			resp.InContainerReason = dm.InContainer.Reason
-		}
-	case "AnthropicAPI":
-		resp.DeliveryMode = "ProxyInjected"
-		resp.Hosts = hostsOrDefault(grant.Provider.Hosts, []string{"api.anthropic.com"})
-	case "GitHubApp":
-		resp.DeliveryMode = "ProxyInjected"
-		resp.Hosts = hostsOrDefault(grant.Provider.Hosts, []string{"github.com", "api.github.com"})
-	case "PATPool":
-		resp.DeliveryMode = "ProxyInjected"
-		resp.Hosts = hostsOrDefault(grant.Provider.Hosts, nil)
-	}
-}
-
-// hostsOrDefault returns override when non-empty, else the built-in
-// default list for the provider kind.
-func hostsOrDefault(override, builtin []string) []string {
-	if len(override) > 0 {
-		return override
-	}
-	return builtin
+// on an IssueResponse from the provider's IssueResult. Each built-in
+// provider populates result.DeliveryMode + result.Hosts (and
+// InContainerReason for UserSuppliedSecret InContainer mode); a future
+// provider must do the same to participate in delivery dispatch.
+// Compiler enforcement on IssueResult fields makes "I forgot to
+// populate the metadata" a build error, not a runtime miss.
+func populateDeliveryMetadata(resp *brokerapi.IssueResponse, result providers.IssueResult) {
+	resp.DeliveryMode = result.DeliveryMode
+	resp.Hosts = result.Hosts
+	resp.InContainerReason = result.InContainerReason
 }
 
 // issue is the broker's core decision function. Returns (result, grant, audit, err).
