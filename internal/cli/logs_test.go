@@ -17,6 +17,7 @@ limitations under the License.
 package cli
 
 import (
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -124,5 +125,55 @@ func TestResolvedPathSelectorsUnchanged(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestValidateReaderImage(t *testing.T) {
+	cases := []struct {
+		name    string
+		image   string
+		extra   []string
+		wantErr bool
+	}{
+		// Default-allowlisted prefixes
+		{"default digest-pinned busybox", "busybox:1.37@sha256:" + strings.Repeat("a", 64), nil, false},
+		{"bare busybox", "busybox", nil, false},
+		{"busybox tag", "busybox:1.37", nil, false},
+		{"docker.io qualified", "docker.io/library/busybox:1.37", nil, false},
+		{"k8s registry", "registry.k8s.io/pause:3.10", nil, false},
+
+		// Rejections
+		{"unknown registry", "evil.example.com/img:latest", nil, true},
+		{"boundary check (no separator)", "busybox-evil:tag", nil, true},
+		{"empty", "", nil, true},
+		{"prefix sibling not allowed", "registry.k8s.io.evil.com/img", nil, true},
+
+		// Override flag
+		{"extra prefix accepted", "ghcr.io/myorg/foo:v1", []string{"ghcr.io/myorg/"}, false},
+		{"extra prefix doesn't match siblings", "ghcr.io/other/foo:v1", []string{"ghcr.io/myorg/"}, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateReaderImage(tc.image, tc.extra)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for image=%q extra=%v", tc.image, tc.extra)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error for image=%q extra=%v: %v", tc.image, tc.extra, err)
+			}
+		})
+	}
+}
+
+func TestDefaultReaderImageDigestPinned(t *testing.T) {
+	// Belt-and-braces guard so a future tag-only edit fails CI.
+	if !strings.Contains(defaultReaderImage, "@sha256:") {
+		t.Fatalf("defaultReaderImage = %q; expected digest-pinned (image:tag@sha256:<64-hex>)", defaultReaderImage)
+	}
+	at := strings.LastIndex(defaultReaderImage, "@sha256:")
+	hex := defaultReaderImage[at+len("@sha256:"):]
+	if len(hex) != 64 {
+		t.Fatalf("defaultReaderImage digest hex = %q (length %d); expected 64 hex chars", hex, len(hex))
 	}
 }

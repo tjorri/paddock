@@ -44,18 +44,77 @@ import (
 // escape the workspace via the reader pod's `cat`.
 const workspaceMount = "/workspace"
 
+// defaultReaderImage is the trusted default image for the reader Pod.
+// Digest-pinned so a Docker Hub re-tag can't change the bytes
+// running inside the tenant namespace. Refreshed by
+// `make update-reader-image-digest`. Tag and digest both kept in
+// the string so --help and pod logs stay readable; Kubernetes
+// pulls by digest when both are present.
+const defaultReaderImage = "busybox:1.37@sha256:1487d0af5f52b4ba31c7e465126ee2123fe3f2305d638e7827681e7cf6c83d5e"
+
+// defaultReaderImageAllowlist holds trusted registry/repo prefixes
+// for --reader-image. Operators running air-gapped clusters with
+// private registries can extend the allowlist at invocation time
+// via --allow-reader-image-prefix. The match is prefix-aware-with-
+// boundary: "busybox" matches "busybox:1.37@sha256:..." (`:`
+// boundary) and "busybox/foo" (`/` boundary) but not
+// "busybox-evil:tag" (no boundary char).
+var defaultReaderImageAllowlist = []string{
+	"busybox",            // docker shorthand: busybox, busybox:tag, busybox:tag@sha256:...
+	"docker.io/library/", // qualified Docker Hub library namespace
+	"registry.k8s.io/",   // SIG-blessed Kubernetes registry
+}
+
+// validateReaderImage rejects --reader-image values that don't
+// start with one of the trusted prefixes (defaultReaderImageAllowlist
+// plus any --allow-reader-image-prefix overrides). The `:`/`@`/`/`
+// boundary check prevents "busybox-evil" from matching "busybox";
+// prefixes that already end in a boundary char (e.g.
+// "docker.io/library/") match plain HasPrefix.
+func validateReaderImage(image string, extra []string) error {
+	if image == "" {
+		return fmt.Errorf("--reader-image must not be empty")
+	}
+	allowed := append([]string(nil), defaultReaderImageAllowlist...)
+	allowed = append(allowed, extra...)
+	for _, p := range allowed {
+		if p == "" {
+			continue
+		}
+		// Prefix already carries a boundary char — direct prefix match.
+		if last := p[len(p)-1]; last == '/' || last == ':' || last == '@' {
+			if strings.HasPrefix(image, p) {
+				return nil
+			}
+			continue
+		}
+		// Prefix has no boundary — require one to follow, or exact match.
+		if image == p ||
+			strings.HasPrefix(image, p+":") ||
+			strings.HasPrefix(image, p+"@") ||
+			strings.HasPrefix(image, p+"/") {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"--reader-image %q is not on the allowlist; trusted prefixes: %s. "+
+			"Use --allow-reader-image-prefix=<prefix> to extend.",
+		image, strings.Join(allowed, ", "))
+}
+
 type logsOptions struct {
-	raw         bool
-	result      bool
-	file        string
-	readerImage string
-	timeout     time.Duration
-	keepPod     bool
+	raw                  bool
+	result               bool
+	file                 string
+	readerImage          string
+	allowedImagePrefixes []string
+	timeout              time.Duration
+	keepPod              bool
 }
 
 func newLogsCmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {
 	opts := &logsOptions{
-		readerImage: "busybox:1.37",
+		readerImage: defaultReaderImage,
 		timeout:     2 * time.Minute,
 	}
 	cmd := &cobra.Command{
@@ -82,7 +141,10 @@ deletes it.`,
 	cmd.Flags().BoolVar(&opts.raw, "raw", false, "Read raw.jsonl instead of events.jsonl")
 	cmd.Flags().BoolVar(&opts.result, "result", false, "Read result.json instead of events.jsonl")
 	cmd.Flags().StringVar(&opts.file, "file", "", "Absolute path rooted under /workspace (overrides the selectors above; relative paths and paths outside the workspace are rejected)")
-	cmd.Flags().StringVar(&opts.readerImage, "reader-image", opts.readerImage, "Image for the helper reader Pod")
+	cmd.Flags().StringVar(&opts.readerImage, "reader-image", opts.readerImage,
+		"Image for the helper reader Pod (must match a default or --allow-reader-image-prefix entry)")
+	cmd.Flags().StringSliceVar(&opts.allowedImagePrefixes, "allow-reader-image-prefix", nil,
+		"Additional trusted registry/repo prefixes for --reader-image (repeatable, comma-separated)")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "Deadline for the reader Pod to complete")
 	cmd.Flags().BoolVar(&opts.keepPod, "keep-reader", false, "Leave the reader Pod behind after streaming (for debugging)")
 	return cmd
@@ -91,6 +153,9 @@ deletes it.`,
 func runLogs(ctx context.Context, cfg *genericclioptions.ConfigFlags, cmd *cobra.Command, name string, opts *logsOptions) error {
 	if opts.raw && opts.result {
 		return fmt.Errorf("--raw and --result are mutually exclusive")
+	}
+	if err := validateReaderImage(opts.readerImage, opts.allowedImagePrefixes); err != nil {
+		return err
 	}
 	c, ns, err := newClient(cfg)
 	if err != nil {
