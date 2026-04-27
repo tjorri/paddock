@@ -1169,6 +1169,9 @@ spec:
           secretRef:
             name: %s-pool
             key: pool
+          hosts:
+            - github.com
+            - api.github.com
     egress:
       - host: github.com
         ports: [443]
