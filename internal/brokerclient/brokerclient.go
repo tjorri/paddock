@@ -123,21 +123,18 @@ type Options struct {
 	// read). Required — callers pick the budget appropriate to their
 	// path.
 	Timeout time.Duration
-
-	// UncheckedHTTPClient, when non-nil, is used as the underlying
-	// http.Client instead of constructing one from CABundlePath. It
-	// ALSO bypasses the URL-shape validation in New.
-	//
-	// This field exists solely for tests that point at an httptest.Server
-	// (whose URL is 127.0.0.1:PORT, not a canonical .svc:8443 endpoint).
-	// Production callers MUST leave this nil.
-	UncheckedHTTPClient *http.Client
 }
 
 // validateBrokerEndpoint enforces the canonical shape of the in-cluster
-// broker URL: scheme MUST be https, host MUST end in .svc or
-// .svc.cluster.local with at least two labels before that suffix, port
-// MUST be 8443, and the URL must have no path/query/fragment.
+// broker URL:
+//   - scheme MUST be https
+//   - URL must not contain userinfo (user:pass@)
+//   - host MUST follow the canonical Kubernetes service DNS form:
+//     service.namespace.svc[.cluster.local] — i.e. at least two dot-
+//     separated labels before the .svc suffix, and at least four before
+//     .svc.cluster.local
+//   - port MUST be 8443
+//   - URL must have no path, query, or fragment
 //
 // F-29: a hostile env or a future config-pull regression that hands
 // brokerclient.New a redirected endpoint would otherwise leak the
@@ -152,12 +149,26 @@ func validateBrokerEndpoint(endpoint string) error {
 	if u.Scheme != "https" {
 		return fmt.Errorf("endpoint scheme must be https; got %q", u.Scheme)
 	}
+	if u.User != nil {
+		return fmt.Errorf("endpoint must not contain userinfo")
+	}
 	if u.Hostname() == "" {
 		return fmt.Errorf("endpoint host is empty")
 	}
 	host := strings.ToLower(u.Hostname())
-	if !(strings.HasSuffix(host, ".svc.cluster.local") || strings.HasSuffix(host, ".svc")) {
+	if !strings.HasSuffix(host, ".svc.cluster.local") && !strings.HasSuffix(host, ".svc") {
 		return fmt.Errorf("endpoint host must end in .svc or .svc.cluster.local; got %q", host)
+	}
+	// Require at least service.namespace before the suffix so that a bare
+	// "broker.svc" or "broker.svc.cluster.local" (single-label) is rejected.
+	// Canonical chart value: paddock-broker.paddock-system.svc → 3 labels
+	// Canonical FQDN: paddock-broker.paddock-system.svc.cluster.local → 5 labels
+	labels := strings.Split(host, ".")
+	if strings.HasSuffix(host, ".svc.cluster.local") && len(labels) < 5 {
+		return fmt.Errorf("endpoint host must include service.namespace before .svc.cluster.local; got %q", host)
+	}
+	if strings.HasSuffix(host, ".svc") && !strings.HasSuffix(host, ".svc.cluster.local") && len(labels) < 3 {
+		return fmt.Errorf("endpoint host must include service.namespace before .svc; got %q", host)
 	}
 	if u.Port() != "8443" {
 		return fmt.Errorf("endpoint port must be 8443; got %q", u.Port())
@@ -180,10 +191,8 @@ func New(opts Options) (*Client, error) {
 	if opts.Endpoint == "" {
 		return nil, fmt.Errorf("brokerclient: endpoint is required")
 	}
-	if opts.UncheckedHTTPClient == nil {
-		if err := validateBrokerEndpoint(opts.Endpoint); err != nil {
-			return nil, fmt.Errorf("brokerclient: %w", err)
-		}
+	if err := validateBrokerEndpoint(opts.Endpoint); err != nil {
+		return nil, fmt.Errorf("brokerclient: %w", err)
 	}
 	if opts.TokenReader == nil {
 		return nil, fmt.Errorf("brokerclient: TokenReader is required")
@@ -192,24 +201,21 @@ func New(opts Options) (*Client, error) {
 		return nil, fmt.Errorf("brokerclient: Timeout is required")
 	}
 
-	hc := opts.UncheckedHTTPClient
-	if hc == nil {
-		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
-		if opts.CABundlePath != "" {
-			pem, err := os.ReadFile(opts.CABundlePath)
-			if err != nil {
-				return nil, fmt.Errorf("reading broker CA at %s: %w", opts.CABundlePath, err)
-			}
-			roots := x509.NewCertPool()
-			if !roots.AppendCertsFromPEM(pem) {
-				return nil, fmt.Errorf("broker CA at %s has no valid certificates", opts.CABundlePath)
-			}
-			tlsCfg.RootCAs = roots
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
+	if opts.CABundlePath != "" {
+		pem, err := os.ReadFile(opts.CABundlePath)
+		if err != nil {
+			return nil, fmt.Errorf("reading broker CA at %s: %w", opts.CABundlePath, err)
 		}
-		hc = &http.Client{
-			Timeout:   opts.Timeout,
-			Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("broker CA at %s has no valid certificates", opts.CABundlePath)
 		}
+		tlsCfg.RootCAs = roots
+	}
+	hc := &http.Client{
+		Timeout:   opts.Timeout,
+		Transport: &http.Transport{TLSClientConfig: tlsCfg},
 	}
 
 	return &Client{
@@ -219,6 +225,25 @@ func New(opts Options) (*Client, error) {
 		RunNamespace: opts.RunNamespace,
 		hc:           hc,
 	}, nil
+}
+
+// NewForTest builds a Client that talks to httptest-server URLs (e.g.
+// https://127.0.0.1:NNNNN) which the F-29 validator in New rejects. The
+// supplied http.Client is used as the transport — typically srv.Client()
+// from a httptest.Server.
+//
+// Production callers MUST NOT use this function. It exists solely to
+// support the brokerclienttest sub-package, which is the single approved
+// callsite. Validation is intentionally bypassed; the TokenReader and
+// RunName/RunNamespace from opts are used as-is.
+func NewForTest(opts Options, hc *http.Client) *Client {
+	return &Client{
+		Endpoint:     strings.TrimRight(opts.Endpoint, "/"),
+		TokenReader:  opts.TokenReader,
+		RunName:      opts.RunName,
+		RunNamespace: opts.RunNamespace,
+		hc:           hc,
+	}
 }
 
 // Do POSTs body to path with the SA token + Paddock headers attached.

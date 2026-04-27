@@ -269,7 +269,9 @@ func TestNew_RejectsBadEndpoint(t *testing.T) {
 		errContains string
 	}{
 		{name: "wrong scheme", endpoint: "http://paddock-broker.paddock-system.svc:8443", errContains: "scheme"},
+		{name: "with userinfo", endpoint: "https://user:pass@paddock-broker.paddock-system.svc:8443", errContains: "userinfo"},
 		{name: "external host", endpoint: "https://example.com:8443", errContains: "host"},
+		{name: "single-label svc host", endpoint: "https://broker.svc:8443", errContains: "host"},
 		{name: "wrong port", endpoint: "https://paddock-broker.paddock-system.svc:9443", errContains: "port"},
 		{name: "no port", endpoint: "https://paddock-broker.paddock-system.svc", errContains: "port"},
 		{name: "with path", endpoint: "https://paddock-broker.paddock-system.svc:8443/extra", errContains: "path"},

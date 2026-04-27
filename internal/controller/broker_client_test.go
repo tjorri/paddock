@@ -30,12 +30,13 @@ import (
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 	"paddock.dev/paddock/internal/brokerclient"
+	"paddock.dev/paddock/internal/brokerclient/brokerclienttest"
 )
 
 // startTestBroker spins up a TLS httptest server that serves
 // brokerapi.PathIssue with the given handler. Returns (client, cleanup).
-// Uses UncheckedHTTPClient to bypass the URL-shape validator (srv.URL
-// is 127.0.0.1:PORT, not a canonical .svc:8443 endpoint).
+// Uses brokerclienttest.NewUnchecked to bypass the URL-shape validator
+// (srv.URL is 127.0.0.1:PORT, not a canonical .svc:8443 endpoint).
 func startTestBroker(t *testing.T, handler http.HandlerFunc) (*BrokerHTTPClient, func()) {
 	t.Helper()
 	srv := httptest.NewTLSServer(handler)
@@ -47,15 +48,11 @@ func startTestBroker(t *testing.T, handler http.HandlerFunc) (*BrokerHTTPClient,
 	}
 
 	tr := brokerclient.FileTokenReader(tokenPath)
-	c, err := brokerclient.New(brokerclient.Options{
-		Endpoint:            srv.URL,
-		TokenReader:         tr,
-		Timeout:             10 * time.Second,
-		UncheckedHTTPClient: srv.Client(),
-	})
-	if err != nil {
-		t.Fatalf("brokerclient.New: %v", err)
-	}
+	c := brokerclienttest.NewUnchecked(brokerclient.Options{
+		Endpoint:    srv.URL,
+		TokenReader: tr,
+		Timeout:     10 * time.Second,
+	}, srv.Client())
 	return &BrokerHTTPClient{TokenReader: tr, c: c}, srv.Close
 }
 
@@ -122,20 +119,16 @@ func TestBrokerHTTPClient_Issue_TransportError(t *testing.T) {
 	tokenPath := filepath.Join(tmp, "token")
 	_ = os.WriteFile(tokenPath, []byte("t"), 0o600)
 
-	// Point at a port that will refuse connections. UncheckedHTTPClient
+	// Point at a port that will refuse connections. brokerclienttest.NewUnchecked
 	// bypasses the URL-shape validator (127.0.0.1 is not a .svc host).
 	tr := brokerclient.FileTokenReader(tokenPath)
-	bc, err := brokerclient.New(brokerclient.Options{
-		Endpoint:            "https://127.0.0.1:1",
-		TokenReader:         tr,
-		Timeout:             2 * time.Second,
-		UncheckedHTTPClient: &http.Client{Timeout: 2 * time.Second},
-	})
-	if err != nil {
-		t.Fatalf("brokerclient.New: %v", err)
-	}
+	bc := brokerclienttest.NewUnchecked(brokerclient.Options{
+		Endpoint:    "https://127.0.0.1:1",
+		TokenReader: tr,
+		Timeout:     2 * time.Second,
+	}, &http.Client{Timeout: 2 * time.Second})
 	c := &BrokerHTTPClient{TokenReader: tr, c: bc}
-	_, err = c.Issue(testContext(t), "demo", "ns", "X")
+	_, err := c.Issue(testContext(t), "demo", "ns", "X")
 	if err == nil {
 		t.Fatalf("expected transport error")
 	}
