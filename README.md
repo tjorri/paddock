@@ -7,84 +7,30 @@
 
 > Run AI agent harnesses as first-class Kubernetes workloads, with the safety rails built in.
 
-Paddock is an open-source, Kubernetes-native platform for running headless AI agent harnesses — Claude Code, Codex CLI, OpenCode, Pi, or anything else you can put in a container — as templated, sandboxed, observable batch workloads. v0.3 adds a capability-scoped **broker** for credential issuance and a per-run **egress proxy** that MITMs TLS so the agent never sees upstream API keys.
+Paddock is an open-source, Kubernetes-native platform for running headless AI agent harnesses — Claude Code, Codex CLI, OpenCode, Pi, or anything else you can put in a container — as templated, sandboxed, observable batch workloads. A capability-scoped **broker** issues short-lived credentials and a per-run **egress proxy** MITMs TLS so the agent never sees upstream API keys.
 
 > **Status:** pre-1.0. Expect breaking changes between minor versions until v1.0; pin to a tagged release for stability.
 
-**Start at [`docs/`](docs/)** — audience-routed entry point for evaluators, operators, harness authors, security reviewers, and contributors.
-
-For deeper internal reading: [`VISION.md`](VISION.md) (product north star), [`docs/internal/specs/`](docs/internal/specs/) (implementation specs), [`docs/contributing/adr/`](docs/contributing/adr/) (architecture decisions).
-
 ## What's in the box
 
-Paddock is built around five CRDs (`HarnessTemplate` / `ClusterHarnessTemplate`, `HarnessRun`, `Workspace`, `BrokerPolicy`, `AuditEvent`), a control plane (controller + admission webhooks + capability-scoped broker), and per-run sidecars (egress proxy + adapter + collector + a transparent-mode iptables-init). See [`docs/concepts/components.md`](docs/concepts/components.md) for the full inventory.
+Five CRDs (`HarnessTemplate` / `ClusterHarnessTemplate`, `HarnessRun`, `Workspace`, `BrokerPolicy`, `AuditEvent`), a control plane (controller + admission webhooks + capability-scoped broker), and per-run sidecars (egress proxy + adapter + collector + a transparent-mode iptables-init). Reference harnesses: `paddock-echo` (deterministic CI fixture) and Claude Code (real-agent demo). See [`docs/concepts/components.md`](docs/concepts/components.md) for the full inventory.
 
-Reference harnesses: `paddock-echo` (deterministic CI fixture) and Claude Code (real-agent demo).
+## Documentation
 
-## Quickstart
+[`docs/`](docs/) is the audience-routed entry point. Pick the path that matches what you are doing:
 
-A complete kind-cluster walkthrough — local cluster, both reference harnesses (`paddock-echo` and Claude Code), `BrokerPolicy` setup, and the observability surface — lives in [`docs/getting-started/quickstart.md`](docs/getting-started/quickstart.md). Runs end-to-end in about ten minutes.
+- **Evaluating Paddock** — [`docs/getting-started/quickstart.md`](docs/getting-started/quickstart.md) walks through a Kind cluster end-to-end in ~10 minutes.
+- **Installing into a real cluster** — [`docs/getting-started/installation.md`](docs/getting-started/installation.md) covers Helm OCI, manifest install, and Cosign verification.
+- **Understanding the model** — [`docs/concepts/`](docs/concepts/), starting with [`architecture.md`](docs/concepts/architecture.md) (CRD relationships, Pod composition, admission) and [`components.md`](docs/concepts/components.md).
+- **Trust review** — [`docs/security/threat-model.md`](docs/security/threat-model.md).
+- **Operator recipes** — [`docs/guides/`](docs/guides/) (provider setup, delivery modes, allowlist bootstrap).
+- **Reference** — [`docs/reference/`](docs/reference/) (CRD + CLI; autogeneration in progress).
 
-Prerequisites: Go 1.26+, Docker, `kubectl`, [Kind](https://kind.sigs.k8s.io/) 0.25+, Kubernetes 1.29+ on the target cluster.
-
-## Installing a published release
-
-For installing a tagged release into an existing cluster (Helm OCI chart, single-file manifest, Cosign verification, pre-release pinning), see [`docs/getting-started/installation.md`](docs/getting-started/installation.md).
-
-## Concepts
-
-CRD relationships, Pod composition, and the admission model live in [`docs/concepts/architecture.md`](docs/concepts/architecture.md). The full component inventory is in [`docs/concepts/components.md`](docs/concepts/components.md).
-
-## Repository layout
-
-```
-api/                         # CRD Go types (v1alpha1)
-cmd/
-  ├── kubectl-paddock/       # CLI plugin
-  ├── broker/                # paddock-broker Deployment entry point (v0.3)
-  ├── proxy/                 # per-run egress proxy (v0.3)
-  ├── iptables-init/         # NET_ADMIN init container (v0.3)
-  ├── adapter-echo/          # paddock-echo adapter sidecar
-  ├── adapter-claude-code/
-  └── collector/             # generic collector sidecar
-config/
-  ├── crd/                   # generated CRDs
-  ├── default/               # kustomize overlay rendered into the chart
-  ├── broker/                # broker Deployment + Service + RBAC
-  ├── proxy/                 # cert-manager Certificate for the MITM CA
-  ├── manager/               # manager Deployment
-  └── samples/               # ready-to-apply example CRs
-charts/paddock/              # Helm chart (regenerated via `make helm-chart`)
-docs/
-  ├── overview.md            # placeholder; full overview TBD
-  ├── getting-started/       # quickstart, installation, first harness
-  ├── concepts/              # mental model: harness runs, broker, surrogates
-  ├── security/              # threat model, secret lifecycle, hardening
-  ├── guides/                # operator how-tos (was cookbooks/)
-  ├── operations/            # day-2: upgrading, monitoring, audit
-  ├── reference/             # CRD/CLI reference (autogenerated)
-  ├── contributing/          # development, ADRs, release process
-  ├── internal/              # specs, migrations, audits, observability notes
-  └── superpowers/           # design specs and implementation plans
-examples/                    # runnable example manifests
-hack/                        # kind-up, gen-helm-chart, …
-images/                      # per-component Dockerfiles
-internal/
-  ├── controller/            # Workspace + HarnessRun + AuditEvent reconcilers
-  ├── broker/                # broker Server, providers, audit writer (v0.3)
-  │   ├── providers/         # Static, AnthropicAPI, GitHubApp, PATPool
-  │   └── api/               # HTTP wire types shared with the proxy
-  ├── proxy/                 # MITM engine, validator, substituter (v0.3)
-  ├── policy/                # admission algorithm — shared with webhook + CLI
-  ├── cli/                   # kubectl-paddock subcommand implementations
-  └── webhook/               # validating admission
-test/e2e/                    # Kind-based end-to-end suite (go test -tags=e2e)
-Tiltfile                     # inner-loop build + live-update
-```
+For the deepest internal reading: [`VISION.md`](VISION.md) (product north star) and [`docs/internal/specs/`](docs/internal/specs/) (numbered implementation specs).
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup, commit conventions, and the ADR process.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup, commit conventions, and the ADR process. Architecture decisions live at [`docs/contributing/adr/`](docs/contributing/adr/).
 
 ## License
 
