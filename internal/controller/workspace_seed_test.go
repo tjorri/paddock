@@ -188,7 +188,7 @@ func TestSeedInitContainer_BrokerBackedAppendsPostCloneRewrite(t *testing.T) {
 			Name: "hr-1-broker-creds", Key: "GITHUB_TOKEN",
 		},
 	}
-	c, _ := seedInitContainer(0, repo, "alpine/git@sha256:0000000000000000000000000000000000000000000000000000000000000000")
+	c, _ := seedInitContainer(0, repo, "alpine/git@sha256:0000000000000000000000000000000000000000000000000000000000000000", corev1.PullIfNotPresent)
 	if len(c.Command) != 3 || c.Command[0] != "sh" || c.Command[1] != "-c" {
 		t.Fatalf("unexpected command shape: %v", c.Command)
 	}
@@ -304,6 +304,46 @@ func TestSeedProxySidecar_HasSATokenVolumeMount(t *testing.T) {
 				t.Errorf("alpine/git container %q has SA token mount; expected only proxy sidecar", c.Name)
 			}
 		}
+	}
+}
+
+func TestSeedJob_DefaultImageDigestPinned(t *testing.T) {
+	if !strings.Contains(defaultSeedImage, "@sha256:") {
+		t.Fatalf("defaultSeedImage = %q; expected digest-pinned (image@sha256:...)", defaultSeedImage)
+	}
+}
+
+func TestSeedJob_PullPolicyForDigestPinnedImage(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+		Spec: paddockv1alpha1.WorkspaceSpec{
+			Seed: &paddockv1alpha1.WorkspaceSeed{
+				Repos: []paddockv1alpha1.WorkspaceGitSource{
+					{URL: "https://example.com/foo.git", Path: "foo"},
+				},
+			},
+		},
+	}
+	job := seedJobForWorkspace(ws, "alpine/git@sha256:d453f54c83320412aa89c391b076930bd8569bc1012285e8c68ce2d4435826a3", seedJobInputs{})
+	if pp := job.Spec.Template.Spec.Containers[0].ImagePullPolicy; pp != corev1.PullIfNotPresent {
+		t.Errorf("digest-pinned image pullPolicy = %q, want IfNotPresent", pp)
+	}
+}
+
+func TestSeedJob_PullPolicyForTagOnlyImage(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+		Spec: paddockv1alpha1.WorkspaceSpec{
+			Seed: &paddockv1alpha1.WorkspaceSeed{
+				Repos: []paddockv1alpha1.WorkspaceGitSource{
+					{URL: "https://example.com/foo.git", Path: "foo"},
+				},
+			},
+		},
+	}
+	job := seedJobForWorkspace(ws, "alpine/git:v2.52.0", seedJobInputs{})
+	if pp := job.Spec.Template.Spec.Containers[0].ImagePullPolicy; pp != corev1.PullAlways {
+		t.Errorf("tag-only image pullPolicy = %q, want Always", pp)
 	}
 }
 

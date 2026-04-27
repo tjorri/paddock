@@ -109,6 +109,13 @@ Actors are numbered `T-1` through `T-8`. Findings cite these IDs (`Threats: T-1,
 
 **Current defences.** `paddock-system` enforces PSS `restricted`; broker has its own ServiceAccount with minimal RBAC; controller and broker are separate Deployments (compromise of one ≠ compromise of the other); govulncheck in CI (Phase 1 deliverable); image baseline scanning in CI (Phase 1 deliverable); broker audit-writes fail-closed (returns 503 on failure, Phase 2c) so a compromised component cannot silently suppress audit records; substitute-auth per-request revalidation (Phase 2g) limits the blast radius of a compromised broker that has already issued bearers.
 
+**Update 2026-04-27 (Phase 2h, F-49).** The seed Job uses the third-party
+`alpine/git` image. Trust is established via the third-party-image
+policy in `docs/adr/0018-third-party-image-policy.md`: digest-pinned in
+source, operator-overrideable via `--seed-image` / Helm `seedImage`,
+audit-cadence reviewed quarterly. A first-party Paddock seed image
+remains a possible follow-up.
+
 ### T-6: Supply-chain attacker
 
 **Capabilities.** Influences a Go module the controller/broker/proxy depends on, a base image, a referenced harness image, or an MCP server the agent might load.
@@ -283,6 +290,8 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | Elevation of privilege     | Seed Job gains write to a non-target repo                 | Token lease scope; broker validates per-call                   |
 
 **Phase 2 update (2026-04-26).** Phase 2a introduced a per-seed NetworkPolicy that mirrors the per-run shape, narrowing the seed Job's inbound and outbound network surface. The Tampering and Spoofing cells benefit modestly from the RFC1918/link-local/cluster-CIDR exclusion now applied to the seed NP's public-internet allow rule. Residuals are significant: F-46 (arbitrary URL schemes in `gitRepos`), F-47 (no `activeDeadlineSeconds`), F-48 (default service-account token mounted), F-49 (harness image not verified), F-50 (cleartext credentials in env), and F-52 (audit disabled during seeding) remain Open.
+
+**Phase 2h update (2026-04-27, F-49).** F-49 closed. The seed Job's `alpine/git` image is now digest-pinned (`alpine/git@sha256:d453f54c...`), eliminating the tag-mutation vector. Operator override via `--seed-image` / Helm `seedImage` with documented policy (`docs/adr/0018-third-party-image-policy.md`). Tag-only overrides force `ImagePullPolicy: Always` and emit a startup warning. F-46, F-47, F-48, F-50, and F-52 are resolved in Theme 1 Tasks 2–5/8.
 
 [^per-run-ca]: Phase 2f (2026-04-26) makes this property factually accurate. Prior to Phase 2f, this row was a documentation/code mismatch — the per-run Secret content was a byte-for-byte copy of the cluster root keypair (F-18). After Phase 2f, each run has its own intermediate CA issued by cert-manager via a `ClusterIssuer` of `kind: CA`; the cluster root never leaves cert-manager's signing path; tenant A's agent does not trust leaves signed by tenant B's intermediate.
 

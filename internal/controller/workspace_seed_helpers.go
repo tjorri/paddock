@@ -35,9 +35,12 @@ import (
 const seedRunAsID int64 = 65532
 
 const (
-	// Default alpine/git image. Pinned; update via a PR rather than
-	// floating latest.
-	defaultSeedImage = "alpine/git:v2.52.0"
+	// Default alpine/git image, digest-pinned so tag mutation upstream
+	// can't substitute a different image without a deliberate update
+	// here. Operators override via --seed-image / Helm seedImage.
+	// Captured 2026-04-27 from `docker buildx imagetools inspect alpine/git:v2.52.0`.
+	// F-49 / ADR-0018.
+	defaultSeedImage = "alpine/git@sha256:d453f54c83320412aa89c391b076930bd8569bc1012285e8c68ce2d4435826a3"
 
 	// Seed-job volume + mount used by both the PVC and the clone path.
 	seedVolumeName = "workspace"

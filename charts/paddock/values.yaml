@@ -55,6 +55,13 @@ iptablesInitImage:
   tag: ""
   pullPolicy: IfNotPresent
 
+# Image used by the Workspace seed Job to clone repos. Empty falls back
+# to the in-source default (digest-pinned alpine/git). Operators may
+# override with a digest-pinned reference (image@sha256:...) for
+# air-gapped mirrors. Tag-only refs force ImagePullPolicy=Always and
+# emit a startup warning. F-49 / ADR-0018.
+seedImage: ""
+
 # Per-run NetworkPolicy enforcement (ADR-0013 §7.4). Defence-in-depth
 # on top of the proxy sidecar — blocks agent egress that somehow
 # bypasses iptables (raw sockets, privileged escapes). Values:

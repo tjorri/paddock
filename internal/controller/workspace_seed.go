@@ -73,6 +73,12 @@ func seedJobForWorkspace(ws *paddockv1alpha1.Workspace, image string, seedInputs
 		image = defaultSeedImage
 	}
 
+	pullPolicy := corev1.PullIfNotPresent
+	if !strings.Contains(image, "@sha256:") {
+		// Tag-only ref: defend against tag mutation by always re-pulling.
+		pullPolicy = corev1.PullAlways
+	}
+
 	repos := ws.Spec.Seed.Repos
 	initContainers := make([]corev1.Container, 0, len(repos)+1)
 	brokerBacked := seedInputs.proxyImage != "" && anyRepoUsesBroker(repos)
@@ -192,7 +198,7 @@ func seedJobForWorkspace(ws *paddockv1alpha1.Workspace, image string, seedInputs
 	}
 
 	for i, repo := range repos {
-		c, extraVolumes := seedInitContainer(i, repo, image)
+		c, extraVolumes := seedInitContainer(i, repo, image, pullPolicy)
 		initContainers = append(initContainers, c)
 		volumes = append(volumes, extraVolumes...)
 	}
@@ -211,6 +217,7 @@ PADDOCK_EOF`,
 	mainContainer := corev1.Container{
 		Name:            "manifest",
 		Image:           image,
+		ImagePullPolicy: pullPolicy,
 		Command:         []string{"sh", "-c", mainCmd},
 		WorkingDir:      "/",
 		SecurityContext: seedContainerSecurityContext(),
@@ -338,7 +345,7 @@ func buildSeedProxySidecar(ws *paddockv1alpha1.Workspace, in seedJobInputs) core
 // seedBrokerCredsMountPath. The caller is responsible for ensuring
 // the proxy sidecar + Pod-level broker volumes are actually present;
 // this helper only wires the per-repo container shape.
-func seedInitContainer(idx int, repo paddockv1alpha1.WorkspaceGitSource, image string) (corev1.Container, []corev1.Volume) {
+func seedInitContainer(idx int, repo paddockv1alpha1.WorkspaceGitSource, image string, pullPolicy corev1.PullPolicy) (corev1.Container, []corev1.Volume) {
 	target := path.Join(seedMountPath, strings.TrimSpace(repo.Path))
 
 	mounts := []corev1.VolumeMount{
@@ -441,6 +448,7 @@ func seedInitContainer(idx int, repo paddockv1alpha1.WorkspaceGitSource, image s
 	c := corev1.Container{
 		Name:            fmt.Sprintf("repo-%d", idx),
 		Image:           image,
+		ImagePullPolicy: pullPolicy,
 		WorkingDir:      "/",
 		SecurityContext: seedContainerSecurityContext(),
 		VolumeMounts:    mounts,
