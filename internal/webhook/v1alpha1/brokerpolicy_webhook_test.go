@@ -638,6 +638,15 @@ var _ = Describe("BrokerPolicy Webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("not a valid glob"))
 	})
 
+	It("rejects an appliesToTemplates entry with a trailing backslash", func() {
+		spec := minimalSpec()
+		spec.AppliesToTemplates = []string{`claude-code-\`}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("appliesToTemplates"))
+		Expect(err.Error()).To(ContainSubstring("not a valid glob"))
+	})
+
 	It("admits a valid prefix glob in appliesToTemplates", func() {
 		spec := minimalSpec()
 		spec.AppliesToTemplates = []string{"claude-code-*"}
