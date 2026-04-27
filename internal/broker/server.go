@@ -493,118 +493,33 @@ func (s *Server) handleSubstituteAuth(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				continue
 			}
-			result, err := sub.SubstituteAuth(ctx, pReq)
-			if !result.Matched {
+			outcome := s.dispatchSubstituter(ctx, prov, sub, &run, runName, runNamespace, pReq, req)
+			if !outcome.Matched {
 				continue
 			}
-			if err != nil {
-				logger.Info("SubstituteAuth denied", "run", runName, "provider", prov.Name(), "err", err)
-				denyAudit := CredentialAudit{
-					RunName:        runName,
-					Namespace:      runNamespace,
-					CredentialName: pReq.Host,
-					Provider:       prov.Name(),
-					Reason:         "substitute failed: " + err.Error(),
-				}
-				if wErr := s.Audit.CredentialDenied(ctx, denyAudit); wErr != nil {
+			// Matched: write audit (if applicable) and the response.
+			if outcome.InfraErr != nil {
+				writeError(w, http.StatusInternalServerError, "ProviderFailure", outcome.InfraErr.Error())
+				return
+			}
+			if outcome.AppErr != nil {
+				if wErr := s.Audit.CredentialDenied(ctx, outcome.Audit); wErr != nil {
 					logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
 					writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
 						"paddock-broker: audit unavailable, please retry")
 					return
 				}
-				// HostNotAllowed surfaces as a distinct error code so the
-				// proxy log line is greppable from a generic SubstituteFailed.
-				code := "SubstituteFailed"
-				if strings.Contains(err.Error(), "not in lease's allowed hosts") {
-					code = "HostNotAllowed"
-				}
-				writeError(w, http.StatusForbidden, code, err.Error())
+				writeError(w, outcome.AppErr.status, outcome.AppErr.code, outcome.AppErr.message)
 				return
 			}
-
-			// F-10: re-validate the matched BrokerPolicy + egress grant
-			// against this run's template, on every request. Cached
-			// client; sub-millisecond informer-cache lookups.
-			if result.CredentialName == "" {
-				// Defensive: a Phase 2g+ provider must populate
-				// CredentialName so the handler can re-validate. Fail
-				// closed if the contract was missed.
-				logger.Info("SubstituteAuth provider returned no CredentialName; refusing to substitute",
-					"run", runName, "provider", prov.Name())
-				writeError(w, http.StatusInternalServerError, "ProviderFailure",
-					"provider returned SubstituteResult with no CredentialName")
-				return
-			}
-			grant, _, _, mErr := matchPolicyGrant(ctx, s.Client, runNamespace,
-				run.Spec.TemplateRef.Name, result.CredentialName)
-			if mErr != nil {
-				writeError(w, http.StatusInternalServerError, "ProviderFailure", mErr.Error())
-				return
-			}
-			if grant == nil || grant.Provider.Kind != prov.Name() {
-				revokedAudit := CredentialAudit{
-					RunName:        runName,
-					Namespace:      runNamespace,
-					CredentialName: result.CredentialName,
-					Provider:       prov.Name(),
-					Reason: fmt.Sprintf(
-						"policy revoked: no BrokerPolicy in namespace %q grants credential %q via provider %q for template %q",
-						runNamespace, result.CredentialName, prov.Name(), run.Spec.TemplateRef.Name),
-				}
-				if wErr := s.Audit.CredentialDenied(ctx, revokedAudit); wErr != nil {
-					logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
-					writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
-						"paddock-broker: audit unavailable, please retry")
-					return
-				}
-				writeError(w, http.StatusForbidden, "PolicyRevoked", revokedAudit.Reason)
-				return
-			}
-			egressGrant, _, eErr := matchEgressGrant(ctx, s.Client, runNamespace,
-				run.Spec.TemplateRef.Name, req.Host, req.Port)
-			if eErr != nil {
-				writeError(w, http.StatusInternalServerError, "ProviderFailure", eErr.Error())
-				return
-			}
-			if egressGrant == nil {
-				egressRevokedAudit := CredentialAudit{
-					RunName:        runName,
-					Namespace:      runNamespace,
-					CredentialName: result.CredentialName,
-					Provider:       prov.Name(),
-					Reason: fmt.Sprintf(
-						"egress revoked: no BrokerPolicy in namespace %q grants egress to %s:%d for template %q",
-						runNamespace, req.Host, req.Port, run.Spec.TemplateRef.Name),
-				}
-				if wErr := s.Audit.CredentialDenied(ctx, egressRevokedAudit); wErr != nil {
-					logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
-					writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
-						"paddock-broker: audit unavailable, please retry")
-					return
-				}
-				writeError(w, http.StatusForbidden, "EgressRevoked", egressRevokedAudit.Reason)
-				return
-			}
-
-			grantAudit := CredentialAudit{
-				RunName:        runName,
-				Namespace:      runNamespace,
-				CredentialName: result.CredentialName,
-				Provider:       prov.Name(),
-				Reason:         "substituted upstream credential",
-			}
-			if wErr := s.Audit.CredentialIssued(ctx, grantAudit); wErr != nil {
+			// Success branch.
+			if wErr := s.Audit.CredentialIssued(ctx, outcome.Audit); wErr != nil {
 				logger.Error(wErr, "writing substitute-auth issuance AuditEvent", "run", runName)
 				writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
 					"paddock-broker: audit unavailable, please retry")
 				return
 			}
-			writeJSON(w, http.StatusOK, brokerapi.SubstituteAuthResponse{
-				SetHeaders:         result.SetHeaders,
-				RemoveHeaders:      result.RemoveHeaders,
-				AllowedHeaders:     result.AllowedHeaders,
-				AllowedQueryParams: result.AllowedQueryParams,
-			})
+			writeJSON(w, http.StatusOK, outcome.Response)
 			return
 		}
 	}
@@ -644,6 +559,125 @@ func resolveRunIdentity(r *http.Request, caller CallerIdentity) (string, string,
 	return runName, runNamespace, nil
 }
 
+// dispatchSubstituter handles a single matched provider's substitute
+// branch: the F-10 re-validation (policy + egress) and the success
+// audit. Returns Matched=false when the provider does not own the
+// bearer (caller continues to the next provider). Returns Matched=true
+// with one of (Response, AppErr, InfraErr) populated otherwise.
+//
+// Extracted from handleSubstituteAuth as B-01 part 1.
+func (s *Server) dispatchSubstituter(
+	ctx context.Context,
+	prov providers.Provider,
+	sub providers.Substituter,
+	run *paddockv1alpha1.HarnessRun,
+	runName, runNamespace string,
+	pReq providers.SubstituteRequest,
+	wireReq brokerapi.SubstituteAuthRequest,
+) substituteOutcome {
+	logger := log.FromContext(ctx)
+
+	result, err := sub.SubstituteAuth(ctx, pReq)
+	if !result.Matched {
+		return substituteOutcome{}
+	}
+	if err != nil {
+		logger.Info("SubstituteAuth denied", "run", runName, "provider", prov.Name(), "err", err)
+		// HostNotAllowed surfaces as a distinct error code so the
+		// proxy log line is greppable from a generic SubstituteFailed.
+		code := "SubstituteFailed"
+		if strings.Contains(err.Error(), "not in lease's allowed hosts") {
+			code = "HostNotAllowed"
+		}
+		return substituteOutcome{
+			Matched: true,
+			Audit: CredentialAudit{
+				RunName:        runName,
+				Namespace:      runNamespace,
+				CredentialName: pReq.Host,
+				Provider:       prov.Name(),
+				Reason:         "substitute failed: " + err.Error(),
+			},
+			AppErr: &applicationError{status: http.StatusForbidden, code: code, message: err.Error()},
+		}
+	}
+
+	// Defensive: a Phase 2g+ provider must populate CredentialName so
+	// the handler can re-validate. Fail closed if the contract was
+	// missed.
+	if result.CredentialName == "" {
+		logger.Info("SubstituteAuth provider returned no CredentialName; refusing to substitute",
+			"run", runName, "provider", prov.Name())
+		return substituteOutcome{
+			Matched:  true,
+			InfraErr: fmt.Errorf("provider returned SubstituteResult with no CredentialName"),
+		}
+	}
+
+	// F-10: re-validate the matched BrokerPolicy + egress grant
+	// against this run's template, on every request.
+	grant, _, _, mErr := matchPolicyGrant(ctx, s.Client, runNamespace,
+		run.Spec.TemplateRef.Name, result.CredentialName)
+	if mErr != nil {
+		return substituteOutcome{Matched: true, InfraErr: mErr}
+	}
+	if grant == nil || grant.Provider.Kind != prov.Name() {
+		reason := fmt.Sprintf(
+			"policy revoked: no BrokerPolicy in namespace %q grants credential %q via provider %q for template %q",
+			runNamespace, result.CredentialName, prov.Name(), run.Spec.TemplateRef.Name)
+		return substituteOutcome{
+			Matched: true,
+			Audit: CredentialAudit{
+				RunName:        runName,
+				Namespace:      runNamespace,
+				CredentialName: result.CredentialName,
+				Provider:       prov.Name(),
+				Reason:         reason,
+			},
+			AppErr: &applicationError{status: http.StatusForbidden, code: "PolicyRevoked", message: reason},
+		}
+	}
+
+	egressGrant, _, eErr := matchEgressGrant(ctx, s.Client, runNamespace,
+		run.Spec.TemplateRef.Name, wireReq.Host, wireReq.Port)
+	if eErr != nil {
+		return substituteOutcome{Matched: true, InfraErr: eErr}
+	}
+	if egressGrant == nil {
+		reason := fmt.Sprintf(
+			"egress revoked: no BrokerPolicy in namespace %q grants egress to %s:%d for template %q",
+			runNamespace, wireReq.Host, wireReq.Port, run.Spec.TemplateRef.Name)
+		return substituteOutcome{
+			Matched: true,
+			Audit: CredentialAudit{
+				RunName:        runName,
+				Namespace:      runNamespace,
+				CredentialName: result.CredentialName,
+				Provider:       prov.Name(),
+				Reason:         reason,
+			},
+			AppErr: &applicationError{status: http.StatusForbidden, code: "EgressRevoked", message: reason},
+		}
+	}
+
+	return substituteOutcome{
+		Matched: true,
+		Response: brokerapi.SubstituteAuthResponse{
+			SetHeaders:         result.SetHeaders,
+			RemoveHeaders:      result.RemoveHeaders,
+			AllowedHeaders:     result.AllowedHeaders,
+			AllowedQueryParams: result.AllowedQueryParams,
+		},
+		Audit: CredentialAudit{
+			RunName:        runName,
+			Namespace:      runNamespace,
+			CredentialName: result.CredentialName,
+			Provider:       prov.Name(),
+			Reason:         "substituted upstream credential",
+		},
+	}
+}
+
 func (s *Server) authenticate(ctx context.Context, r *http.Request) (CallerIdentity, error) {
 	authz := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authz, "Bearer ") {
@@ -662,6 +696,19 @@ type applicationError struct {
 }
 
 func (e *applicationError) Error() string { return e.message }
+
+// substituteOutcome is what dispatchSubstituter returns to the
+// handler. The handler maps Outcome to (audit-write, http response).
+// Exactly one of (Response, AppErr, InfraErr) is populated when
+// Matched is true; all three are zero when Matched is false (the
+// caller continues to the next provider).
+type substituteOutcome struct {
+	Matched  bool
+	Response brokerapi.SubstituteAuthResponse
+	Audit    CredentialAudit
+	AppErr   *applicationError // 4xx: write audit + write error
+	InfraErr error             // 5xx: write error, no audit
+}
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, brokerapi.ErrorResponse{Code: code, Message: message})
