@@ -289,3 +289,40 @@ func TestAnthropicAPIProvider_SubstituteResultFieldsPopulated(t *testing.T) {
 		t.Errorf("AllowedQueryParams = %v, want empty", sub.AllowedQueryParams)
 	}
 }
+
+func TestAnthropicProvider_Revoke_DropsLease(t *testing.T) {
+	p := &AnthropicAPIProvider{Client: fake.NewClientBuilder().WithObjects(
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "anth-key", Namespace: "ns"},
+			Data:       map[string][]byte{"key": []byte("sk-ant-real")},
+		},
+	).Build()}
+
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "run-a", Namespace: "ns", CredentialName: "cred",
+		Grant: paddockv1alpha1.CredentialGrant{
+			Name:     "cred",
+			Provider: paddockv1alpha1.ProviderConfig{Kind: "AnthropicAPI", SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "anth-key", Key: "key"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if _, ok := p.bearers[res.Value]; !ok {
+		t.Fatalf("Issue did not record lease for bearer")
+	}
+
+	if err := p.Revoke(context.Background(), res.LeaseID); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if _, ok := p.bearers[res.Value]; ok {
+		t.Fatalf("Revoke did not drop lease entry")
+	}
+}
+
+func TestAnthropicProvider_Revoke_UnknownLeaseID_NoError(t *testing.T) {
+	p := &AnthropicAPIProvider{}
+	if err := p.Revoke(context.Background(), "anth-deadbeef"); err != nil {
+		t.Fatalf("Revoke of unknown leaseID returned error: %v", err)
+	}
+}

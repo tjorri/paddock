@@ -84,6 +84,10 @@ type anthropicLease struct {
 	// [api.anthropic.com] when the grant omits it). SubstituteAuth
 	// rejects a request whose req.Host is not on this list. F-09.
 	AllowedHosts []string
+	// LeaseID is the same opaque identifier returned in IssueResult.LeaseID
+	// to the controller. Stored on the lease so Revoke can lookup by
+	// LeaseID without a separate index. F-11.
+	LeaseID string
 }
 
 // Compile-time checks.
@@ -132,6 +136,11 @@ func (p *AnthropicAPIProvider) Issue(ctx context.Context, req IssueRequest) (Iss
 	if len(allowedHosts) == 0 {
 		allowedHosts = []string{"api.anthropic.com"}
 	}
+	// LeaseID lets M8's Revoke hook find the lease without leaking
+	// the full bearer into AuditEvents. Prefix picks the first 8
+	// random hex chars; collision probability is 1/2^32 per run, and
+	// LeaseID only needs to be unique within the broker's lifetime.
+	leaseID := "anth-" + bearer[len(anthropicBearerPrefix):len(anthropicBearerPrefix)+8]
 	lease := &anthropicLease{
 		Namespace:      req.Namespace,
 		SecretRef:      *cfg.SecretRef,
@@ -139,6 +148,7 @@ func (p *AnthropicAPIProvider) Issue(ctx context.Context, req IssueRequest) (Iss
 		CredentialName: req.CredentialName,
 		ExpiresAt:      expires,
 		AllowedHosts:   allowedHosts,
+		LeaseID:        leaseID,
 	}
 	p.mu.Lock()
 	if p.bearers == nil {
@@ -156,20 +166,30 @@ func (p *AnthropicAPIProvider) Issue(ctx context.Context, req IssueRequest) (Iss
 	p.mu.Unlock()
 
 	return IssueResult{
-		Value: bearer,
-		// LeaseID lets M8's Revoke hook find the lease without leaking
-		// the full bearer into AuditEvents. Prefix picks the first 8
-		// random hex chars; collision probability is 1/2^32 per run, and
-		// LeaseID only needs to be unique within the broker's lifetime.
-		LeaseID:      "anth-" + bearer[len(anthropicBearerPrefix):len(anthropicBearerPrefix)+8],
+		Value:        bearer,
+		LeaseID:      leaseID,
 		ExpiresAt:    expires,
 		DeliveryMode: "ProxyInjected",
 		Hosts:        allowedHosts,
 	}, nil
 }
 
-// Revoke implementation lands in Task 4.
-func (p *AnthropicAPIProvider) Revoke(_ context.Context, _ string) error { return nil }
+// Revoke drops the in-memory lease entry whose LeaseID matches.
+// Idempotent — unknown leaseID returns nil. F-11.
+func (p *AnthropicAPIProvider) Revoke(_ context.Context, leaseID string) error {
+	if leaseID == "" {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for bearer, lease := range p.bearers {
+		if lease.LeaseID == leaseID {
+			delete(p.bearers, bearer)
+			return nil
+		}
+	}
+	return nil
+}
 
 // SubstituteAuth implements providers.Substituter. Returns Matched=true
 // when IncomingBearer is one this provider minted — even on error
