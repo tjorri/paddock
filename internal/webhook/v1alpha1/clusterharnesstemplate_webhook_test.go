@@ -65,4 +65,39 @@ var _ = Describe("ClusterHarnessTemplate Webhook", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("image"))
 	})
+
+	Context("Defaults.TerminationGracePeriodSeconds (F-42)", func() {
+		mkObj := func(secs *int64) *paddockv1alpha1.ClusterHarnessTemplate {
+			return &paddockv1alpha1.ClusterHarnessTemplate{
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Image:   "ghcr.io/paddock/harness-echo:v1",
+					Command: []string{"/bin/echo"},
+					Defaults: paddockv1alpha1.HarnessTemplateDefaults{
+						TerminationGracePeriodSeconds: secs,
+					},
+				},
+			}
+		}
+		grace := func(v int64) *int64 { return &v }
+
+		It("admits the cap (300)", func() {
+			_, err := validator.ValidateCreate(ctx, mkObj(grace(300)))
+			Expect(err).NotTo(HaveOccurred())
+		})
+		It("rejects 301", func() {
+			_, err := validator.ValidateCreate(ctx, mkObj(grace(301)))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must be <= 300"))
+		})
+		It("rejects a 24h value", func() {
+			_, err := validator.ValidateCreate(ctx, mkObj(grace(86400)))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must be <= 300"))
+		})
+		It("rejects negative", func() {
+			_, err := validator.ValidateCreate(ctx, mkObj(grace(-1)))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must be non-negative"))
+		})
+	})
 })

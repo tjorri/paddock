@@ -240,4 +240,57 @@ var _ = Describe("HarnessTemplate Webhook", func() {
 			Expect(err.Error()).To(ContainSubstring("port"))
 		})
 	})
+
+	Context("Defaults.TerminationGracePeriodSeconds (F-42)", func() {
+		mkObj := func(secs *int64) *paddockv1alpha1.HarnessTemplate {
+			return &paddockv1alpha1.HarnessTemplate{
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Image:   "ghcr.io/paddock/harness-echo:v1",
+					Command: []string{"/bin/echo"},
+					Defaults: paddockv1alpha1.HarnessTemplateDefaults{
+						TerminationGracePeriodSeconds: secs,
+					},
+				},
+			}
+		}
+		grace := func(v int64) *int64 { return &v }
+
+		It("admits when unset (controller defaults to 60s)", func() {
+			_, err := validator.ValidateCreate(ctx, mkObj(nil))
+			Expect(err).NotTo(HaveOccurred())
+		})
+		It("admits 0", func() {
+			_, err := validator.ValidateCreate(ctx, mkObj(grace(0)))
+			Expect(err).NotTo(HaveOccurred())
+		})
+		It("admits 60 (controller default)", func() {
+			_, err := validator.ValidateCreate(ctx, mkObj(grace(60)))
+			Expect(err).NotTo(HaveOccurred())
+		})
+		It("admits the cap (300)", func() {
+			_, err := validator.ValidateCreate(ctx, mkObj(grace(300)))
+			Expect(err).NotTo(HaveOccurred())
+		})
+		It("rejects 301", func() {
+			_, err := validator.ValidateCreate(ctx, mkObj(grace(301)))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("terminationGracePeriodSeconds"))
+			Expect(err.Error()).To(ContainSubstring("must be <= 300"))
+		})
+		It("rejects a 24h value", func() {
+			_, err := validator.ValidateCreate(ctx, mkObj(grace(86400)))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must be <= 300"))
+		})
+		It("rejects negative", func() {
+			_, err := validator.ValidateCreate(ctx, mkObj(grace(-1)))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must be non-negative"))
+		})
+		It("also rejects on Update", func() {
+			obj := mkObj(grace(600))
+			_, err := validator.ValidateUpdate(ctx, obj, obj)
+			Expect(err).To(HaveOccurred())
+		})
+	})
 })

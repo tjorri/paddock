@@ -61,6 +61,11 @@ const (
 	proxyContainerName        = "proxy"
 	iptablesInitContainerName = "iptables-init"
 	defaultGracePeriodSecs    = 60
+	// maxPodGracePeriodSecs is the controller-side belt-and-braces clamp
+	// matching the admission cap (MaxTerminationGracePeriodSeconds in the
+	// webhook package). F-42: even if a template predates the admission
+	// webhook, the kubelet never sees a grace period above this cap.
+	maxPodGracePeriodSecs = 300
 
 	// Proxy sidecar (ADR-0013 §7). Two modes:
 	//   - cooperative: agent sets HTTPS_PROXY=http://localhost:15001 and
@@ -241,6 +246,9 @@ func buildPodSpec(
 	grace := int64(defaultGracePeriodSecs)
 	if template.Spec.Defaults.TerminationGracePeriodSeconds != nil {
 		grace = *template.Spec.Defaults.TerminationGracePeriodSeconds
+	}
+	if grace > maxPodGracePeriodSecs {
+		grace = maxPodGracePeriodSecs
 	}
 
 	collectorImage := in.collectorImage
