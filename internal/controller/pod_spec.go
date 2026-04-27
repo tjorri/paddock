@@ -308,7 +308,19 @@ func buildPodSpec(
 		// deliberately unset — the agent is tenant-supplied and may run
 		// as root; per-container SecurityContext on first-party
 		// sidecars enforces non-root individually. See F-37 / Phase 2e.
+		//
+		// FSGroup makes the workspace PVC writable across pinned sidecar
+		// UIDs (collector=1339, adapter=1338) AND the agent's
+		// image-default UID (typically 65532 for distroless:nonroot).
+		// Without it, the collector creates `/workspace/.paddock/runs/...`
+		// owned by 1339:1339 mode 0755 and the agent (UID 65532) can't
+		// write its result.json there. Setting fsGroup=65532 makes K8s
+		// chown the PVC to GID 65532 and OR g+rwx onto contents, and adds
+		// 65532 as a supplementary group on every container — so all the
+		// pinned-UID sidecars (and the tenant agent) can collaborate on
+		// the workspace. F-20 follow-up.
 		SecurityContext: &corev1.PodSecurityContext{
+			FSGroup: ptr.To(int64(65532)),
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
 			},

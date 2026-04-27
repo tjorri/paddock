@@ -1064,6 +1064,30 @@ func TestSidecarUIDsArePinned(t *testing.T) {
 	}
 }
 
+// TestPodFSGroupIsSet verifies that the pod-level SecurityContext sets
+// FSGroup so the workspace PVC remains writable across the pinned
+// sidecar UIDs (adapter=1338, collector=1339) AND the agent's
+// image-default UID (typically 65532). Without fsGroup, the collector
+// (which starts before the agent) creates `/workspace/.paddock/runs/...`
+// at uid:gid 1339:1339 mode 0755, and the agent at UID 65532 fails to
+// write its result.json there. Regression test for the F-20 sidecar UID
+// pinning. F-20 follow-up.
+func TestPodFSGroupIsSet(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+	ps := buildPodSpec(run, tpl, defaultInputs())
+
+	if ps.SecurityContext == nil {
+		t.Fatal("pod SecurityContext is nil")
+	}
+	if ps.SecurityContext.FSGroup == nil {
+		t.Fatal("pod SecurityContext.FSGroup is nil; PVC writes will fail across pinned sidecar UIDs")
+	}
+	if got := *ps.SecurityContext.FSGroup; got != 65532 {
+		t.Errorf("FSGroup = %d, want 65532 (matches the agent's distroless:nonroot default GID)", got)
+	}
+}
+
 // TestIPTablesInitArgs_BypassUIDs verifies that buildIPTablesInitContainer
 // emits --bypass-uids=1337,1338,1339 and does NOT emit the legacy
 // --proxy-uid flag. F-20 / Phase 2h Theme 4.
