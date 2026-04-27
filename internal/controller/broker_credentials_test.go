@@ -30,10 +30,13 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
@@ -585,6 +588,9 @@ func TestCachedBrokerCredentials_StrictKeyPrune_PrunesExtras(t *testing.T) {
 	if !strings.Contains(events[0].Spec.Reason, "EXTRA_VAR") {
 		t.Errorf("event reason = %q; want substring %q", events[0].Spec.Reason, "EXTRA_VAR")
 	}
+	if strings.Contains(events[0].Spec.Reason, "malicious") {
+		t.Errorf("event reason leaks pruned value: %q", events[0].Spec.Reason)
+	}
 }
 
 func TestCachedBrokerCredentials_StrictKeyPrune_FallsThroughOnBlanked(t *testing.T) {
@@ -628,6 +634,72 @@ func TestCachedBrokerCredentials_StrictKeyPrune_FallsThroughOnBlanked(t *testing
 	// required-key check passes, which it didn't here.
 	if got := r.Audit.Sink.(*capturedSink).all; len(got) != 0 {
 		t.Errorf("audit emitted %d events; want 0", len(got))
+	}
+}
+
+func TestCachedBrokerCredentials_StrictKeyPrune_ConflictFallsThroughNoAudit(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := paddockv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("paddock scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("corev1 scheme: %v", err)
+	}
+
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+		Status: paddockv1alpha1.HarnessRunStatus{
+			IssuedLeases: []paddockv1alpha1.IssuedLease{
+				{CredentialName: "GITHUB_TOKEN", Provider: "PATPool", LeaseID: "L1",
+					ExpiresAt: &metav1.Time{Time: time.Now().Add(time.Hour)}},
+			},
+			Credentials: []paddockv1alpha1.CredentialStatus{
+				{Name: "GITHUB_TOKEN", Provider: "PATPool"},
+			},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: brokerCredsSecretName(run.Name), Namespace: run.Namespace},
+		Type:       corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"GITHUB_TOKEN": []byte("ghs_abc"),
+			"EXTRA_VAR":    []byte("malicious"),
+		},
+	}
+
+	// Interceptor returns a conflict on Update for the Secret prune.
+	cli := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(run, secret).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*corev1.Secret); ok {
+					return apierrors.NewConflict(
+						schema.GroupResource{Resource: "secrets"},
+						obj.GetName(),
+						fmt.Errorf("simulated conflict"),
+					)
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	rec := &capturedSink{}
+	r := &HarnessRunReconciler{
+		Client:   cli,
+		Scheme:   scheme,
+		Audit:    &ControllerAudit{Sink: rec},
+		Recorder: record.NewFakeRecorder(8),
+	}
+
+	reqs := []paddockv1alpha1.CredentialRequirement{{Name: "GITHUB_TOKEN"}}
+	_, _, _, found := r.cachedBrokerCredentials(context.Background(), run, reqs)
+	if found {
+		t.Errorf("cachedBrokerCredentials returned found=true on conflict; want false (caller falls through to full Issue)")
+	}
+	if got := rec.all; len(got) != 0 {
+		t.Errorf("audit emitted %d events on conflict; want 0 (prune outcome uncertain)", len(got))
 	}
 }
 

@@ -262,9 +262,11 @@ func (r *HarnessRunReconciler) cachedBrokerCredentials(
 			secret.Type = corev1.SecretTypeOpaque
 			secret.Data = canonical
 			return nil
-		}); err != nil && !apierrors.IsConflict(err) {
-			// Transient API error — fall through to the full Issue
-			// cycle rather than silently leaving extras in place.
+		}); err != nil {
+			// Conflict or transient API error: prune outcome uncertain.
+			// Fall through to the full Issue cycle — safer than emitting
+			// an audit event for a prune we cannot prove landed, and the
+			// full Issue path will re-write Data wholesale anyway.
 			return false, nil, nil, false
 		}
 		if r.Audit != nil {
