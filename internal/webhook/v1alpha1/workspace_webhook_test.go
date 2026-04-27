@@ -377,4 +377,20 @@ var _ = Describe("Workspace Webhook", func() {
 		_, err := validator.ValidateCreate(ctx, obj)
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("rejects mixed-case https scheme (HTTPS://)", func() {
+		obj := &paddockv1alpha1.Workspace{
+			Spec: paddockv1alpha1.WorkspaceSpec{
+				Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("10Gi")},
+				Seed: &paddockv1alpha1.WorkspaceSeed{
+					Repos: []paddockv1alpha1.WorkspaceGitSource{
+						{URL: "HTTPS://example.com/foo.git"},
+					},
+				},
+			},
+		}
+		_, err := validator.ValidateCreate(ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("https:// or ssh://"))
+	})
 })

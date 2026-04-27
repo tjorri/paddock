@@ -197,13 +197,18 @@ func validateRepoURL(p *field.Path, raw string) *field.Error {
 	if isSSHURLLocal(raw) {
 		return nil
 	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return field.Invalid(p, raw, "must be a valid URL")
-	}
-	if u.Scheme != "https" {
-		return field.Invalid(p, raw,
-			fmt.Sprintf("scheme %q is not allowed; only https:// or ssh:// (or scp-style user@host:path) accepted", u.Scheme))
+	// Require an exact lowercase https:// prefix. url.Parse lowercases
+	// the scheme, so checking u.Scheme would silently admit HTTPS://
+	// and create a cross-side inconsistency with seedRepoSchemeAllowed
+	// (case-sensitive strings.HasPrefix in the controller).
+	if !strings.HasPrefix(raw, "https://") {
+		// Re-parse to surface the original scheme (or a "valid URL" hint).
+		if u, err := url.Parse(raw); err != nil || u.Scheme == "" {
+			return field.Invalid(p, raw, "must be a valid URL")
+		} else {
+			return field.Invalid(p, raw,
+				fmt.Sprintf("scheme %q is not allowed; only https:// or ssh:// (or scp-style user@host:path) accepted", u.Scheme))
+		}
 	}
 	return nil
 }
