@@ -428,6 +428,77 @@ func TestPATPoolProvider_SubstituteResultFieldsPopulated(t *testing.T) {
 	}
 }
 
+func TestPATPoolProvider_Revoke_FreesSlot(t *testing.T) {
+	t.Parallel()
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool", Namespace: "ns"},
+		Data:       map[string][]byte{"pats": []byte("ghp_aaa\nghp_bbb\n")},
+	}
+	p := &PATPoolProvider{Client: fake.NewClientBuilder().WithObjects(secret).Build()}
+
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "run-a", Namespace: "ns", CredentialName: "gh",
+		Grant: paddockv1alpha1.CredentialGrant{
+			Name: "gh",
+			Provider: paddockv1alpha1.ProviderConfig{
+				Kind:      "PATPool",
+				SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "pool", Key: "pats"},
+				Hosts:     []string{"github.com"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if res.PoolSlotIndex == nil {
+		t.Fatalf("Issue did not populate PoolSlotIndex")
+	}
+	pool := p.pools[PatPoolKey{Namespace: "ns", Secret: "pool", Key: "pats"}]
+	if !pool.leased[*res.PoolSlotIndex] {
+		t.Fatalf("expected slot %d leased after Issue", *res.PoolSlotIndex)
+	}
+
+	if err := p.Revoke(context.Background(), res.LeaseID); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if pool.leased[*res.PoolSlotIndex] {
+		t.Fatalf("Revoke did not free slot %d", *res.PoolSlotIndex)
+	}
+}
+
+func TestPATPoolProvider_ReserveSlot_MarksLeased(t *testing.T) {
+	t.Parallel()
+	p := &PATPoolProvider{}
+	key := PatPoolKey{Namespace: "ns", Secret: "pool", Key: "pats"}
+	p.pools = map[PatPoolKey]*patPool{
+		key: {
+			entries:  []string{"ghp_a", "ghp_b"},
+			leased:   []bool{false, false},
+			byBearer: map[string]*patLease{},
+		},
+	}
+	p.ReserveSlot(key, 1, "lease-x")
+	if !p.pools[key].leased[1] {
+		t.Fatalf("ReserveSlot did not mark slot 1 leased")
+	}
+	if p.pools[key].leased[0] {
+		t.Fatalf("ReserveSlot wrongly marked slot 0 leased")
+	}
+}
+
+func TestPATPoolProvider_ReserveSlot_OutOfRange_NoOp(t *testing.T) {
+	t.Parallel()
+	p := &PATPoolProvider{}
+	key := PatPoolKey{Namespace: "ns", Secret: "pool", Key: "pats"}
+	p.pools = map[PatPoolKey]*patPool{
+		key: {entries: []string{"ghp_a"}, leased: []bool{false}, byBearer: map[string]*patLease{}},
+	}
+	p.ReserveSlot(key, 7, "lease-x") // out of range; expected to no-op without panic
+	if p.pools[key].leased[0] {
+		t.Fatalf("out-of-range ReserveSlot wrongly mutated state")
+	}
+}
+
 func TestPATPool_ConcurrentIssueNoDuplicates(t *testing.T) {
 	t.Parallel()
 

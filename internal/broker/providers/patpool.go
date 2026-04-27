@@ -87,13 +87,14 @@ type PATPoolProvider struct {
 	clockSource
 
 	mu    sync.Mutex
-	pools map[patPoolKey]*patPool
+	pools map[PatPoolKey]*patPool
 }
 
-// patPoolKey names one pool — one (namespace, secretName, secretKey)
+// PatPoolKey names one pool — one (namespace, secretName, secretKey)
 // tuple. The broker enforces that secretRef.namespace == the run's
-// namespace; this struct mirrors that scope.
-type patPoolKey struct {
+// namespace; this struct mirrors that scope. Exported so the broker's
+// startup reconstruction (F-14) can construct one externally.
+type PatPoolKey struct {
 	Namespace string
 	Secret    string
 	Key       string
@@ -129,6 +130,9 @@ type patLease struct {
 	// and SubstituteAuth would still be served (B-06; engineering shape
 	// of F-14).
 	LeasedPAT string
+	// LeaseID is the IssueResult.LeaseID handed back to the controller.
+	// Revoke matches on this field. F-11.
+	LeaseID string
 }
 
 // Prom metrics. Registered with the process default registerer so
@@ -185,13 +189,13 @@ func (p *PATPoolProvider) Issue(ctx context.Context, req IssueRequest) (IssueRes
 			req.Namespace, cfg.SecretRef.Name, cfg.SecretRef.Key)
 	}
 
-	key := patPoolKey{Namespace: req.Namespace, Secret: cfg.SecretRef.Name, Key: cfg.SecretRef.Key}
+	key := PatPoolKey{Namespace: req.Namespace, Secret: cfg.SecretRef.Name, Key: cfg.SecretRef.Key}
 	now := p.now()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.pools == nil {
-		p.pools = make(map[patPoolKey]*patPool)
+		p.pools = make(map[PatPoolKey]*patPool)
 	}
 	pool := p.pools[key]
 	if pool == nil {
@@ -219,6 +223,7 @@ func (p *PATPoolProvider) Issue(ctx context.Context, req IssueRequest) (IssueRes
 	}
 	expires := now.Add(ttl)
 
+	leaseID := "pat-" + bearer[len(patPoolBearerPrefix):len(patPoolBearerPrefix)+8]
 	pool.leased[idx] = true
 	pool.byBearer[bearer] = &patLease{
 		Index:          idx,
@@ -227,22 +232,75 @@ func (p *PATPoolProvider) Issue(ctx context.Context, req IssueRequest) (IssueRes
 		ExpiresAt:      expires,
 		AllowedHosts:   cfg.Hosts,
 		LeasedPAT:      pool.entries[idx],
+		LeaseID:        leaseID,
 	}
 	patPoolLeased.WithLabelValues(key.Namespace, key.Secret, key.Key).Set(float64(countLeased(pool.leased)))
 
+	slotIdx := idx
 	return IssueResult{
 		Value:        bearer,
-		LeaseID:      "pat-" + bearer[len(patPoolBearerPrefix):len(patPoolBearerPrefix)+8],
+		LeaseID:      leaseID,
 		ExpiresAt:    expires,
 		DeliveryMode: "ProxyInjected",
 		// PATPool has no built-in default; admission requires
 		// grant.Provider.Hosts to be non-empty. Pass through.
-		Hosts: cfg.Hosts,
+		Hosts:         cfg.Hosts,
+		PoolSecretRef: cfg.SecretRef,
+		PoolSlotIndex: &slotIdx,
 	}, nil
 }
 
-// Revoke implementation lands in Task 6.
-func (p *PATPoolProvider) Revoke(_ context.Context, _ string) error { return nil }
+// Revoke walks the pool maps for a lease whose LeaseID matches and
+// drops it (freeing the slot via the existing releaseLocked helper).
+// Idempotent — unknown leaseID returns nil. F-11.
+func (p *PATPoolProvider) Revoke(_ context.Context, leaseID string) error {
+	if leaseID == "" {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for k, pool := range p.pools {
+		for bearer, lease := range pool.byBearer {
+			if lease.LeaseID == leaseID {
+				p.releaseLocked(k, pool, bearer)
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
+// ReserveSlot marks pool[key].leased[slotIndex] = true with no
+// bearer-side state — used by the broker's startup reconstruction
+// (F-14) where the bearer bytes are deliberately not persisted on
+// HarnessRun.status. Out-of-range slotIndex is a no-op.
+func (p *PATPoolProvider) ReserveSlot(key PatPoolKey, slotIndex int, leaseID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pools == nil {
+		p.pools = map[PatPoolKey]*patPool{}
+	}
+	pool, ok := p.pools[key]
+	if !ok {
+		// No in-memory pool yet for this key: create a placeholder
+		// large enough to record the reservation. The first real Issue
+		// for this pool reads the Secret and reconciles via
+		// reconcilePoolLocked, which preserves leased[] so this entry
+		// survives. We don't have entries[] here without a Secret read;
+		// callers (reconstructLeases) pass slotIndex < pool size; we
+		// size leased to slotIndex+1 minimum so the assignment fits.
+		pool = &patPool{
+			entries:  nil, // populated on next Issue's reconcilePoolLocked
+			leased:   make([]bool, slotIndex+1),
+			byBearer: map[string]*patLease{},
+		}
+		p.pools[key] = pool
+	}
+	if slotIndex < 0 || slotIndex >= len(pool.leased) {
+		return
+	}
+	pool.leased[slotIndex] = true
+}
 
 // SubstituteAuth resolves a Paddock bearer to the leased PAT and
 // returns the git Basic-auth swap. Returns Matched=true on any
@@ -260,7 +318,7 @@ func (p *PATPoolProvider) SubstituteAuth(ctx context.Context, req SubstituteRequ
 	// return a credential. B-06.
 	p.mu.Lock()
 	var (
-		matchedKey   patPoolKey
+		matchedKey   PatPoolKey
 		matchedPool  *patPool
 		matchedLease *patLease
 	)
@@ -351,7 +409,7 @@ func (p *PATPoolProvider) SubstituteAuth(ctx context.Context, req SubstituteRequ
 // pool state: new entries get a false slot, missing entries are pruned
 // from any stale leases. Expired leases are released. Call with p.mu
 // held.
-func (p *PATPoolProvider) reconcilePoolLocked(key patPoolKey, pool *patPool, fresh []string, now time.Time) {
+func (p *PATPoolProvider) reconcilePoolLocked(key PatPoolKey, pool *patPool, fresh []string, now time.Time) {
 	// Sweep expired leases first — frees slots for reuse even when the
 	// Secret hasn't changed.
 	for bearer, lease := range pool.byBearer {
@@ -404,7 +462,7 @@ func (p *PATPoolProvider) reconcilePoolLocked(key patPoolKey, pool *patPool, fre
 
 // releaseLocked drops a bearer's lease and frees its pool slot.
 // Call with p.mu held.
-func (p *PATPoolProvider) releaseLocked(key patPoolKey, pool *patPool, bearer string) {
+func (p *PATPoolProvider) releaseLocked(key PatPoolKey, pool *patPool, bearer string) {
 	lease, ok := pool.byBearer[bearer]
 	if !ok {
 		return

@@ -109,6 +109,13 @@ type IssueResult struct {
 	// from grant.Provider.DeliveryMode.InContainer.Reason. Empty for
 	// ProxyInjected delivery. UserSuppliedSecret-only.
 	InContainerReason string
+
+	// PoolSecretRef and PoolSlotIndex are PATPool-specific lease metadata
+	// — populated only by PATPoolProvider, used by the broker handler to
+	// surface them in IssueResponse so the controller can persist them
+	// onto HarnessRun.status.issuedLeases[*].poolRef. F-14.
+	PoolSecretRef *paddockv1alpha1.SecretKeyReference
+	PoolSlotIndex *int
 }
 
 // ErrNotImplemented is returned by a Provider when it cannot back the
