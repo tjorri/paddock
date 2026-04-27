@@ -67,7 +67,7 @@ func isClusterInternal(s string) bool {
 // credentials[].provider.hosts (and proxyInjected.hosts), and
 // HarnessTemplate.spec.requires.egress[].host.
 //
-// Rules (Phase 2h Theme 3, F-23/F-34):
+// Rules (Phase 2h Theme 3, F-23/F-34/F-35):
 //   - Empty / whitespace-only is field.Required.
 //   - Bare "*" alone (catch-all) is rejected; bare "*." (empty suffix)
 //     is rejected.
@@ -76,6 +76,9 @@ func isClusterInternal(s string) bool {
 //     cluster.local, *.cluster.local) are rejected — for both literal
 //     and "*."-prefixed forms.
 //   - IP literals (v4 and v6, with or without brackets) are rejected.
+//   - Host must not contain a port (use the egress grant's "ports" field).
+//   - Host must be a lowercase RFC 1123 DNS subdomain (after stripping
+//     a leading "*." for wildcards).
 func validateExternalHost(p *field.Path, raw string) field.ErrorList {
 	var errs field.ErrorList
 	host := strings.TrimSpace(raw)
