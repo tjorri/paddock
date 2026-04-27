@@ -152,10 +152,15 @@ var (
 		Name: "paddock_broker_patpool_exhausted_total",
 		Help: "Count of Issue calls that failed because a Paddock pool was fully leased. High values suggest the operator should grow the pool or migrate to GitHubAppProvider.",
 	}, []string{"namespace", "secret", "key"})
+
+	patPoolReconstructSkipped = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "paddock_broker_patpool_reconstruct_skipped_total",
+		Help: "Count of HarnessRun.status.issuedLeases entries skipped during broker startup reconstruction. Common reasons: pool shrank since last broker uptime (slot-out-of-range), Secret unreadable.",
+	}, []string{"namespace", "secret", "key", "reason"})
 )
 
 func init() {
-	prometheus.MustRegister(patPoolSize, patPoolLeased, patPoolExhausted)
+	prometheus.MustRegister(patPoolSize, patPoolLeased, patPoolExhausted, patPoolReconstructSkipped)
 }
 
 // Compile-time checks.
@@ -540,4 +545,27 @@ func indexOf(ss []string, v string) int {
 		}
 	}
 	return -1
+}
+
+// ParsePoolEntriesForTest is the test/reconstruction-side accessor for
+// parsePoolEntries. The receiver-less name signals it's a pure helper.
+func ParsePoolEntriesForTest(raw []byte) []string { return parsePoolEntries(raw) }
+
+// PoolReconstructSkippedInc bumps the reconstruct-skipped counter.
+// Exported so the broker's reconstruct.go can reach it without
+// importing internal metric handles.
+func PoolReconstructSkippedInc(key PatPoolKey, reason string) {
+	patPoolReconstructSkipped.WithLabelValues(key.Namespace, key.Secret, key.Key, reason).Inc()
+}
+
+// PoolForTest returns the in-memory pool for the given key. Tests only.
+func (p *PATPoolProvider) PoolForTest(key PatPoolKey) *patPool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.pools[key]
+}
+
+// LeasedForTest returns the leased[] slice. Tests only.
+func (pool *patPool) LeasedForTest() []bool {
+	return pool.leased
 }

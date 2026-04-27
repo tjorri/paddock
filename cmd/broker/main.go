@@ -152,6 +152,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Reconstruct PATPool slot reservations from HarnessRun.status.issuedLeases
+	// so the broker doesn't dual-lease a PAT across a restart (F-14). Non-fatal:
+	// partial state is safe — affected runs will get fresh leases on next reconcile.
+	if err := broker.ReconstructLeases(ctx, cachedClient, registry); err != nil {
+		setupLog.Error(err, "lease reconstruction had errors; broker continues with partial state")
+	}
+
 	srv := &broker.Server{
 		Client:    cachedClient,
 		Auth:      &broker.Authenticator{Client: kclient},
