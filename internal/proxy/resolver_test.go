@@ -95,3 +95,37 @@ func TestResolver_SingleflightCoalesces(t *testing.T) {
 		t.Errorf("inner lookup called %d times; expected 1 (singleflight should coalesce)", got)
 	}
 }
+
+func TestResolver_TTLExpiry(t *testing.T) {
+	stub := &stubResolver{hostToIPs: map[string][]net.IP{
+		"ttl.example.com": {net.ParseIP("9.9.9.9")},
+	}}
+	r := newCachingResolverWithLookup(stub.lookup, 10*time.Millisecond, 16)
+
+	// First lookup populates cache.
+	if _, err := r.LookupHost(context.Background(), "ttl.example.com"); err != nil {
+		t.Fatalf("lookup 1: %v", err)
+	}
+	if got := stub.calls.Load(); got != 1 {
+		t.Fatalf("after first lookup: calls = %d, want 1", got)
+	}
+
+	// Within TTL: cache hit, no extra lookup.
+	if _, err := r.LookupHost(context.Background(), "ttl.example.com"); err != nil {
+		t.Fatalf("lookup 2: %v", err)
+	}
+	if got := stub.calls.Load(); got != 1 {
+		t.Fatalf("within TTL: calls = %d, want 1 (cache hit expected)", got)
+	}
+
+	// Wait past TTL.
+	time.Sleep(20 * time.Millisecond)
+
+	// Past TTL: re-fetch.
+	if _, err := r.LookupHost(context.Background(), "ttl.example.com"); err != nil {
+		t.Fatalf("lookup 3: %v", err)
+	}
+	if got := stub.calls.Load(); got != 2 {
+		t.Errorf("past TTL: calls = %d, want 2 (re-fetch expected)", got)
+	}
+}

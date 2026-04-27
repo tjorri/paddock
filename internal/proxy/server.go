@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -135,6 +136,11 @@ type Server struct {
 	// cmd/proxy/main.go --deny-cidr (controller passes RFC1918 + link-local
 	// + cluster pod+service CIDRs). nil means no denied-CIDR check.
 	DeniedCIDRs *DeniedCIDRSet
+
+	// defaultResolverOnce and defaultResolver back the lazy-init fallback
+	// returned by resolver() when Resolver is nil. See resolver().
+	defaultResolverOnce sync.Once
+	defaultResolver     Resolver
 }
 
 // ServeHTTP dispatches CONNECT (MITM path) from plain HTTP requests
@@ -338,11 +344,19 @@ func (s *Server) log() logr.Logger {
 	return s.Logger
 }
 
+// resolver returns Server.Resolver when set, otherwise a process-wide
+// shared default resolver lazily constructed on first call. Production
+// callers always set Resolver explicitly (cmd/proxy/main.go); the
+// fallback exists only so unit-test Server values without Resolver
+// don't panic on the dial path.
 func (s *Server) resolver() Resolver {
 	if s.Resolver != nil {
 		return s.Resolver
 	}
-	return NewCachingResolver(30*time.Second, 256)
+	s.defaultResolverOnce.Do(func() {
+		s.defaultResolver = NewCachingResolver(30*time.Second, 256)
+	})
+	return s.defaultResolver
 }
 
 // splitConnectTarget parses the host:port from a CONNECT request line.
