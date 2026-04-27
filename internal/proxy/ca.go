@@ -17,6 +17,7 @@ limitations under the License.
 package proxy
 
 import (
+	"container/list"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -31,7 +32,11 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
+
+const defaultLeafCacheCapacity = 1024
 
 // MITMCertificateAuthority forges leaf certificates on demand, signed by
 // a root CA keypair loaded from disk. The forged leaves terminate the
@@ -39,14 +44,31 @@ import (
 // milestones, rewrite) the plaintext HTTP exchange before re-encrypting
 // upstream. Cert-manager owns the root; the controller copies the
 // keypair into a per-run Secret (see ADR-0013 §7.3).
+//
+// The forged-leaf cache is bounded LRU (default 1024 entries; F-28).
+// Concurrent forges for the same SNI are coalesced via singleflight.
 type MITMCertificateAuthority struct {
 	caCert     *x509.Certificate
 	caKey      any
 	leafKey    *ecdsa.PrivateKey // shared across all forged leaves
 	leafExpiry time.Duration
 
-	mu    sync.Mutex
-	cache map[string]*tls.Certificate // keyed by SNI/host
+	mu       sync.Mutex
+	cache    map[string]*lruEntry
+	order    *list.List
+	capacity int
+
+	sf singleflight.Group
+
+	// signLeafHook lets tests count signLeaf invocations to assert
+	// singleflight coalescing. Production callers leave it nil.
+	signLeafHook func()
+}
+
+type lruEntry struct {
+	host string
+	cert *tls.Certificate
+	el   *list.Element
 }
 
 // LoadMITMCertificateAuthority reads a PEM cert + key pair from
@@ -102,7 +124,9 @@ func NewMITMCertificateAuthority(certPEM, keyPEM []byte) (*MITMCertificateAuthor
 		caKey:      caKey,
 		leafKey:    leafKey,
 		leafExpiry: 24 * time.Hour,
-		cache:      map[string]*tls.Certificate{},
+		cache:      make(map[string]*lruEntry),
+		order:      list.New(),
+		capacity:   defaultLeafCacheCapacity,
 	}, nil
 }
 
@@ -126,13 +150,85 @@ func (ca *MITMCertificateAuthority) ForgeFor(host string) (*tls.Certificate, err
 	return ca.forge(host)
 }
 
-func (ca *MITMCertificateAuthority) forge(host string) (*tls.Certificate, error) {
+// SetCacheCapacity adjusts the LRU bound at runtime. If n <= 0 the default
+// (1024) is used. Any entries beyond the new bound are evicted immediately.
+// Exported so tests can use a small capacity without recompiling.
+func (ca *MITMCertificateAuthority) SetCacheCapacity(n int) {
 	ca.mu.Lock()
 	defer ca.mu.Unlock()
-	if c, ok := ca.cache[host]; ok {
-		return c, nil
+	if n <= 0 {
+		n = defaultLeafCacheCapacity
 	}
+	ca.capacity = n
+	for ca.order.Len() > ca.capacity {
+		ca.evictOldestLocked()
+	}
+}
 
+func (ca *MITMCertificateAuthority) cacheLen() int {
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+	return ca.order.Len()
+}
+
+func (ca *MITMCertificateAuthority) cacheHas(host string) bool {
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+	_, ok := ca.cache[host]
+	return ok
+}
+
+func (ca *MITMCertificateAuthority) evictOldestLocked() {
+	oldest := ca.order.Back()
+	if oldest == nil {
+		return
+	}
+	host := oldest.Value.(string)
+	ca.order.Remove(oldest)
+	delete(ca.cache, host)
+}
+
+func (ca *MITMCertificateAuthority) forge(host string) (*tls.Certificate, error) {
+	v, err, _ := ca.sf.Do(host, func() (any, error) {
+		ca.mu.Lock()
+		if e, ok := ca.cache[host]; ok {
+			ca.order.MoveToFront(e.el)
+			ca.mu.Unlock()
+			return e.cert, nil
+		}
+		ca.mu.Unlock()
+
+		cert, err := ca.signLeaf(host)
+		if err != nil {
+			return nil, err
+		}
+
+		ca.mu.Lock()
+		defer ca.mu.Unlock()
+		// Re-check after sign: another goroutine may have inserted while
+		// we were signing (singleflight covers same-key, but cross-key
+		// concurrent inserts can still race the LRU bookkeeping).
+		if e, ok := ca.cache[host]; ok {
+			ca.order.MoveToFront(e.el)
+			return e.cert, nil
+		}
+		el := ca.order.PushFront(host)
+		ca.cache[host] = &lruEntry{host: host, cert: cert, el: el}
+		if ca.order.Len() > ca.capacity {
+			ca.evictOldestLocked()
+		}
+		return cert, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*tls.Certificate), nil
+}
+
+func (ca *MITMCertificateAuthority) signLeaf(host string) (*tls.Certificate, error) {
+	if ca.signLeafHook != nil {
+		ca.signLeafHook()
+	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
 		return nil, fmt.Errorf("serial: %w", err)
@@ -150,7 +246,6 @@ func (ca *MITMCertificateAuthority) forge(host string) (*tls.Certificate, error)
 	} else {
 		tpl.DNSNames = []string{host}
 	}
-
 	der, err := x509.CreateCertificate(rand.Reader, tpl, ca.caCert, &ca.leafKey.PublicKey, ca.caKey)
 	if err != nil {
 		return nil, fmt.Errorf("sign leaf: %w", err)
@@ -159,13 +254,11 @@ func (ca *MITMCertificateAuthority) forge(host string) (*tls.Certificate, error)
 	if err != nil {
 		return nil, fmt.Errorf("parse forged leaf: %w", err)
 	}
-	cert := &tls.Certificate{
+	return &tls.Certificate{
 		Certificate: [][]byte{der, ca.caCert.Raw},
 		PrivateKey:  ca.leafKey,
 		Leaf:        leaf,
-	}
-	ca.cache[host] = cert
-	return cert, nil
+	}, nil
 }
 
 // parsePrivateKey accepts PEM-encoded PKCS#1, PKCS#8 or EC keys —
