@@ -20,7 +20,9 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,10 +59,11 @@ func patPoolGrant() paddockv1alpha1.CredentialGrant {
 }
 
 func TestPATPool_IssueThenSubstitute(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_alice\nghp_bob\n")).Build()
 	clock := time.Unix(1_700_000_000, 0)
-	p := &PATPoolProvider{Client: c, Now: func() time.Time { return clock }}
+	p := &PATPoolProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return clock }}}
 
 	res, err := p.Issue(context.Background(), IssueRequest{
 		RunName:        "cc-1",
@@ -98,6 +101,7 @@ func TestPATPool_IssueThenSubstitute(t *testing.T) {
 }
 
 func TestPATPool_ParallelLeasesPickDifferentEntries(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_alice\nghp_bob\n")).Build()
 	p := &PATPoolProvider{Client: c}
@@ -129,6 +133,7 @@ func TestPATPool_ParallelLeasesPickDifferentEntries(t *testing.T) {
 }
 
 func TestPATPool_Exhaustion(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_only\n")).Build()
 	p := &PATPoolProvider{Client: c}
@@ -150,10 +155,11 @@ func TestPATPool_Exhaustion(t *testing.T) {
 }
 
 func TestPATPool_ExpiredLeaseReleasesSlot(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_only\n")).Build()
 	clock := time.Unix(1_700_000_000, 0)
-	p := &PATPoolProvider{Client: c, Now: func() time.Time { return clock }}
+	p := &PATPoolProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return clock }}}
 
 	_, err := p.Issue(context.Background(), IssueRequest{
 		RunName: "cc-1", Namespace: "my-team",
@@ -174,6 +180,7 @@ func TestPATPool_ExpiredLeaseReleasesSlot(t *testing.T) {
 }
 
 func TestPATPool_SubstituteUnknownBearerShortCircuits(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).Build()
 	p := &PATPoolProvider{Client: c}
 	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
@@ -188,6 +195,7 @@ func TestPATPool_SubstituteUnknownBearerShortCircuits(t *testing.T) {
 }
 
 func TestPATPool_SubstituteUnknownPrefixFallsThrough(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).Build()
 	p := &PATPoolProvider{Client: c}
 	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
@@ -202,6 +210,7 @@ func TestPATPool_SubstituteUnknownPrefixFallsThrough(t *testing.T) {
 }
 
 func TestPATPool_PoolShrinkDropsStaleLease(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_alice\nghp_bob\n")).Build()
 	p := &PATPoolProvider{Client: c}
@@ -275,6 +284,7 @@ func TestPATPool_PoolShrinkDropsStaleLease(t *testing.T) {
 }
 
 func TestPATPool_ParsePoolEntries(t *testing.T) {
+	t.Parallel()
 	got := parsePoolEntries([]byte(`
 # rotated 2026-04-20 by alice
 ghp_alice
@@ -291,6 +301,7 @@ ghp_bob
 }
 
 func TestPATPool_EmptyPool(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("\n# only comments\n")).Build()
 	p := &PATPoolProvider{Client: c}
@@ -304,6 +315,7 @@ func TestPATPool_EmptyPool(t *testing.T) {
 }
 
 func TestPATPoolProvider_SubstituteHostNotAllowed(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_pool_a\nghp_pool_b\n")).Build()
 	p := &PATPoolProvider{Client: c}
@@ -334,7 +346,60 @@ func TestPATPoolProvider_SubstituteHostNotAllowed(t *testing.T) {
 	}
 }
 
+func TestPATPool_RevokedPATIsNotServed(t *testing.T) {
+	t.Parallel()
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
+		WithObjects(patPoolSecret("ghp_alice\nghp_bob\n")).Build()
+	clock := time.Unix(1_700_000_000, 0)
+	p := &PATPoolProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return clock }}}
+
+	// Issue a bearer; it leases ghp_alice (index 0).
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName: "cc-1", Namespace: "my-team",
+		CredentialName: "GITHUB_TOKEN", Grant: patPoolGrant(),
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	// First substitute call works — sanity check.
+	if _, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName: "cc-1", Namespace: "my-team",
+		Host: "github.com", IncomingBearer: res.Value,
+	}); err != nil {
+		t.Fatalf("pre-revoke SubstituteAuth: %v", err)
+	}
+
+	// Operator rotates: ghp_alice removed, only ghp_bob remains.
+	secret := &corev1.Secret{}
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: "my-team", Name: "paddock-pat-pool"},
+		secret); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	secret.Data["pool"] = []byte("ghp_bob\n")
+	if err := c.Update(context.Background(), secret); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// SubstituteAuth must NOT serve the revoked PAT.
+	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName: "cc-1", Namespace: "my-team",
+		Host: "github.com", IncomingBearer: res.Value,
+	})
+	if !sub.Matched {
+		t.Fatalf("Matched = false; want true (still our prefix)")
+	}
+	if err == nil {
+		t.Fatalf("expected error after PAT revoked, got nil (would have served stale PAT)")
+	}
+	if !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("error %q does not mention revocation; want a revoked-PAT signal", err)
+	}
+}
+
 func TestPATPoolProvider_SubstituteResultFieldsPopulated(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_pool_a\n")).Build()
 	p := &PATPoolProvider{Client: c}
@@ -360,5 +425,83 @@ func TestPATPoolProvider_SubstituteResultFieldsPopulated(t *testing.T) {
 	}
 	if len(sub.AllowedHeaders) == 0 {
 		t.Errorf("AllowedHeaders empty; want non-empty allowlist")
+	}
+}
+
+func TestPATPool_ConcurrentIssueNoDuplicates(t *testing.T) {
+	t.Parallel()
+
+	const (
+		poolSize = 5
+		attempts = 50
+	)
+	entries := make([]string, poolSize)
+	for i := range entries {
+		entries[i] = fmt.Sprintf("ghp_pat_%d", i)
+	}
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
+		WithObjects(patPoolSecret(strings.Join(entries, "\n") + "\n")).Build()
+	p := &PATPoolProvider{Client: c}
+
+	type result struct {
+		bearer string
+		err    error
+	}
+	resultsCh := make(chan result, attempts)
+
+	var wg sync.WaitGroup
+	wg.Add(attempts)
+	for i := 0; i < attempts; i++ {
+		go func(i int) {
+			defer wg.Done()
+			res, err := p.Issue(context.Background(), IssueRequest{
+				RunName:        fmt.Sprintf("cc-%d", i),
+				Namespace:      "my-team",
+				CredentialName: "GITHUB_TOKEN",
+				Grant:          patPoolGrant(),
+			})
+			resultsCh <- result{bearer: res.Value, err: err}
+		}(i)
+	}
+	wg.Wait()
+	close(resultsCh)
+
+	var (
+		successes []string
+		exhausted int
+	)
+	for r := range resultsCh {
+		switch {
+		case r.err == nil:
+			successes = append(successes, r.bearer)
+		case errors.Is(r.err, ErrPoolExhausted):
+			exhausted++
+		default:
+			t.Errorf("unexpected error: %v", r.err)
+		}
+	}
+
+	if len(successes) != poolSize {
+		t.Fatalf("got %d successes, want %d (pool size)", len(successes), poolSize)
+	}
+	if exhausted != attempts-poolSize {
+		t.Fatalf("got %d exhausted errors, want %d", exhausted, attempts-poolSize)
+	}
+
+	// Each successful bearer must resolve to a distinct PAT.
+	seen := make(map[string]string, len(successes))
+	for _, bearer := range successes {
+		sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+			Namespace: "my-team", Host: "github.com",
+			IncomingBearer: bearer,
+		})
+		if err != nil {
+			t.Fatalf("SubstituteAuth(%s): %v", bearer, err)
+		}
+		auth := sub.SetHeaders["Authorization"]
+		if prev, ok := seen[auth]; ok {
+			t.Fatalf("two bearers resolved to the same PAT: %s and %s (auth=%q)", prev, bearer, auth)
+		}
+		seen[auth] = bearer
 	}
 }

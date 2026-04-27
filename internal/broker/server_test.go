@@ -164,6 +164,7 @@ func post(t *testing.T, srv *broker.Server, runName, runNS, bearer, body string)
 }
 
 func TestIssue_Success(t *testing.T) {
+	t.Parallel()
 	srv, c := setup(t)
 	body, _ := json.Marshal(brokerapi.IssueRequest{Name: "DEMO_TOKEN"})
 	rr := post(t, srv, "hello", "", "token-abc", string(body))
@@ -237,6 +238,7 @@ func (r *recordingAuditSink) events() []*paddockv1alpha1.AuditEvent {
 }
 
 func TestIssue_AuditFailure_Returns503AndNoCredential(t *testing.T) {
+	t.Parallel()
 	srv, _ := setup(t)
 	srv.Audit = &broker.AuditWriter{Sink: errorSink{err: errors.New("etcd partition")}}
 
@@ -250,6 +252,7 @@ func TestIssue_AuditFailure_Returns503AndNoCredential(t *testing.T) {
 }
 
 func TestIssue_DenyAuditFailure_Returns503(t *testing.T) {
+	t.Parallel()
 	srv, _ := setup(t)
 	srv.Audit = &broker.AuditWriter{Sink: errorSink{err: errors.New("etcd partition")}}
 
@@ -264,6 +267,7 @@ func TestIssue_DenyAuditFailure_Returns503(t *testing.T) {
 // for a UserSuppliedSecret+ProxyInjected grant and asserts the response
 // carries the ProxyInjected delivery mode plus the grant's host list.
 func TestIssue_Success_ProxyInjectedHosts(t *testing.T) {
+	t.Parallel()
 	srv, c := setup(t)
 
 	// Replace the in-cluster BrokerPolicy's credential grant with a
@@ -307,6 +311,7 @@ func TestIssue_Success_ProxyInjectedHosts(t *testing.T) {
 // built-in AnthropicAPI defaults (ProxyInjected + [api.anthropic.com])
 // when the grant doesn't override Hosts.
 func TestIssue_Success_AnthropicAPI(t *testing.T) {
+	t.Parallel()
 	const ns = "my-team"
 
 	tpl := &paddockv1alpha1.HarnessTemplate{
@@ -386,6 +391,7 @@ func TestIssue_Success_AnthropicAPI(t *testing.T) {
 }
 
 func TestIssue_MissingAuth(t *testing.T) {
+	t.Parallel()
 	srv, _ := setup(t)
 	body, _ := json.Marshal(brokerapi.IssueRequest{Name: "DEMO_TOKEN"})
 	rr := post(t, srv, "hello", "", "", string(body))
@@ -395,6 +401,7 @@ func TestIssue_MissingAuth(t *testing.T) {
 }
 
 func TestIssue_RunNotFound(t *testing.T) {
+	t.Parallel()
 	srv, _ := setup(t)
 	body, _ := json.Marshal(brokerapi.IssueRequest{Name: "DEMO_TOKEN"})
 	rr := post(t, srv, "nosuch", "", "token", string(body))
@@ -409,6 +416,7 @@ func TestIssue_RunNotFound(t *testing.T) {
 }
 
 func TestIssue_CredentialNotDeclared(t *testing.T) {
+	t.Parallel()
 	srv, c := setup(t)
 	body, _ := json.Marshal(brokerapi.IssueRequest{Name: "OTHER"})
 	rr := post(t, srv, "hello", "", "token", string(body))
@@ -432,6 +440,7 @@ func TestIssue_CredentialNotDeclared(t *testing.T) {
 }
 
 func TestIssue_NoMatchingPolicy(t *testing.T) {
+	t.Parallel()
 	srv, _ := setup(t)
 
 	// Delete the BrokerPolicy so nothing grants the credential.
@@ -458,6 +467,7 @@ func TestIssue_NoMatchingPolicy(t *testing.T) {
 }
 
 func TestIssue_CrossNamespaceDenied(t *testing.T) {
+	t.Parallel()
 	srv, _ := setup(t)
 	// Override auth to a caller in a different namespace, non-controller.
 	srv.Auth = stubAuth{identity: broker.CallerIdentity{Namespace: "other", ServiceAccount: "default"}}
@@ -470,6 +480,7 @@ func TestIssue_CrossNamespaceDenied(t *testing.T) {
 }
 
 func TestIssue_ControllerCanCrossNamespace(t *testing.T) {
+	t.Parallel()
 	srv, _ := setup(t)
 	// Controller SA is permitted to ask about runs in any namespace.
 	srv.Auth = stubAuth{identity: broker.CallerIdentity{
@@ -486,6 +497,7 @@ func TestIssue_ControllerCanCrossNamespace(t *testing.T) {
 }
 
 func TestIssue_WrongMethodRejected(t *testing.T) {
+	t.Parallel()
 	srv, _ := setup(t)
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -523,6 +535,7 @@ func postValidateEgress(t *testing.T, srv *broker.Server, runName, runNS, bearer
 // DiscoveryAllow=true so the proxy can emit an egress-discovery-allow
 // AuditEvent instead of denying.
 func TestValidateEgress_DiscoveryAllow(t *testing.T) {
+	t.Parallel()
 	const ns = "my-team"
 
 	tpl := &paddockv1alpha1.HarnessTemplate{
@@ -591,6 +604,7 @@ func TestValidateEgress_DiscoveryAllow(t *testing.T) {
 }
 
 func TestIssue_GetRunInfraError_EmitsAudit(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().
 		WithScheme(buildScheme(t)).
 		WithInterceptorFuncs(interceptor.Funcs{
@@ -630,6 +644,7 @@ func TestIssue_GetRunInfraError_EmitsAudit(t *testing.T) {
 }
 
 func TestIssue_ResolveTemplateInfraError_EmitsAudit(t *testing.T) {
+	t.Parallel()
 	run := &paddockv1alpha1.HarnessRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
 		Spec: paddockv1alpha1.HarnessRunSpec{
@@ -766,6 +781,7 @@ func setupSubstituteAuth(t *testing.T, sub *stubSubstituter) (*broker.Server, cl
 }
 
 func TestSubstituteAuth_GrantedEmitsCredentialIssuedAudit(t *testing.T) {
+	t.Parallel()
 	sub := &stubSubstituter{
 		name:           "anthropic-stub",
 		matched:        true,
@@ -798,6 +814,7 @@ func TestSubstituteAuth_GrantedEmitsCredentialIssuedAudit(t *testing.T) {
 }
 
 func TestSubstituteAuth_SubstituteFailedEmitsCredentialDeniedAudit(t *testing.T) {
+	t.Parallel()
 	sub := &stubSubstituter{
 		name:           "anthropic-stub",
 		matched:        true,
@@ -833,6 +850,7 @@ func TestSubstituteAuth_SubstituteFailedEmitsCredentialDeniedAudit(t *testing.T)
 }
 
 func TestSubstituteAuth_BearerUnknownEmitsCredentialDeniedAudit(t *testing.T) {
+	t.Parallel()
 	sub := &stubSubstituter{name: "anthropic-stub", matched: false}
 	srv, _ := setupSubstituteAuth(t, sub)
 	rec := &recordingAuditSink{}
@@ -860,6 +878,7 @@ func TestSubstituteAuth_BearerUnknownEmitsCredentialDeniedAudit(t *testing.T) {
 }
 
 func TestSubstituteAuth_RunNotFound_DeniesAndAudits(t *testing.T) {
+	t.Parallel()
 	sub := &stubSubstituter{name: "anthropic-stub", matched: true,
 		setHdrs: map[string]string{"x-api-key": "real-key"}}
 	srv, _ := setupSubstituteAuth(t, sub)
@@ -891,6 +910,7 @@ func TestSubstituteAuth_RunNotFound_DeniesAndAudits(t *testing.T) {
 }
 
 func TestSubstituteAuth_RunCancelled_DeniesAndAudits(t *testing.T) {
+	t.Parallel()
 	sub := &stubSubstituter{name: "anthropic-stub", matched: true,
 		setHdrs: map[string]string{"x-api-key": "real-key"}}
 	srv, c := setupSubstituteAuth(t, sub)
@@ -931,6 +951,7 @@ func TestSubstituteAuth_RunCancelled_DeniesAndAudits(t *testing.T) {
 }
 
 func TestIssue_ListBrokerPoliciesInfraError_EmitsAudit(t *testing.T) {
+	t.Parallel()
 	tpl := &paddockv1alpha1.HarnessTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "echo", Namespace: "team-a"},
 		Spec: paddockv1alpha1.HarnessTemplateSpec{
@@ -991,6 +1012,7 @@ func TestIssue_ListBrokerPoliciesInfraError_EmitsAudit(t *testing.T) {
 }
 
 func TestSubstituteAuth_PolicyRevoked_DeniesAndAudits(t *testing.T) {
+	t.Parallel()
 	sub := &stubSubstituter{
 		name:           "anthropic-stub",
 		matched:        true,
@@ -1030,6 +1052,7 @@ func TestSubstituteAuth_PolicyRevoked_DeniesAndAudits(t *testing.T) {
 }
 
 func TestSubstituteAuth_EgressRevoked_DeniesAndAudits(t *testing.T) {
+	t.Parallel()
 	sub := &stubSubstituter{
 		name:           "anthropic-stub",
 		matched:        true,

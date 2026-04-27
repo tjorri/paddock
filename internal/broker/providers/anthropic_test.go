@@ -47,9 +47,10 @@ func anthropicSecret(value string) *corev1.Secret {
 }
 
 func TestAnthropicAPIProvider_IssueThenSubstitute(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(anthropicSecret("sk-real")).Build()
 	now := time.Unix(1_700_000_000, 0)
-	p := &AnthropicAPIProvider{Client: c, Now: func() time.Time { return now }}
+	p := &AnthropicAPIProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return now }}}
 
 	res, err := p.Issue(context.Background(), IssueRequest{
 		RunName:        "demo",
@@ -93,6 +94,7 @@ func TestAnthropicAPIProvider_IssueThenSubstitute(t *testing.T) {
 }
 
 func TestAnthropicAPIProvider_SubstituteStripsBearerPrefix(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(anthropicSecret("sk-real")).Build()
 	p := &AnthropicAPIProvider{Client: c}
 	res, err := p.Issue(context.Background(), IssueRequest{
@@ -115,6 +117,7 @@ func TestAnthropicAPIProvider_SubstituteStripsBearerPrefix(t *testing.T) {
 }
 
 func TestAnthropicAPIProvider_SubstituteUnknownPrefix(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).Build()
 	p := &AnthropicAPIProvider{Client: c}
 	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
@@ -129,6 +132,7 @@ func TestAnthropicAPIProvider_SubstituteUnknownPrefix(t *testing.T) {
 }
 
 func TestAnthropicAPIProvider_SubstituteUnknownBearer(t *testing.T) {
+	t.Parallel()
 	// Prefix matches ours but the bearer isn't in the map — e.g. the broker
 	// restarted and lost its in-memory leases, or an attacker guessed the
 	// prefix. Provider claims Matched=true with an error so the broker
@@ -147,9 +151,10 @@ func TestAnthropicAPIProvider_SubstituteUnknownBearer(t *testing.T) {
 }
 
 func TestAnthropicAPIProvider_SubstituteExpiredBearer(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(anthropicSecret("sk")).Build()
 	clock := time.Unix(1_700_000_000, 0)
-	p := &AnthropicAPIProvider{Client: c, Now: func() time.Time { return clock }}
+	p := &AnthropicAPIProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return clock }}}
 	res, err := p.Issue(context.Background(), IssueRequest{
 		Namespace: "my-team", CredentialName: "K", Grant: anthropicGrant(),
 	})
@@ -170,6 +175,7 @@ func TestAnthropicAPIProvider_SubstituteExpiredBearer(t *testing.T) {
 }
 
 func TestAnthropicAPIProvider_IssueMissingSecret(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).Build()
 	p := &AnthropicAPIProvider{Client: c}
 	_, err := p.Issue(context.Background(), IssueRequest{
@@ -181,6 +187,7 @@ func TestAnthropicAPIProvider_IssueMissingSecret(t *testing.T) {
 }
 
 func TestAnthropicAPIProvider_SubstituteHostNotAllowed_Default(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(anthropicSecret("sk-real")).Build()
 	p := &AnthropicAPIProvider{Client: c}
 	res, err := p.Issue(context.Background(), IssueRequest{
@@ -209,6 +216,7 @@ func TestAnthropicAPIProvider_SubstituteHostNotAllowed_Default(t *testing.T) {
 }
 
 func TestAnthropicAPIProvider_SubstituteHostAllowed_Override(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(anthropicSecret("sk-real")).Build()
 	p := &AnthropicAPIProvider{Client: c}
 	grant := anthropicGrant()
@@ -246,6 +254,7 @@ func TestAnthropicAPIProvider_SubstituteHostAllowed_Override(t *testing.T) {
 }
 
 func TestAnthropicAPIProvider_SubstituteResultFieldsPopulated(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(anthropicSecret("sk-real")).Build()
 	p := &AnthropicAPIProvider{Client: c}
 	res, err := p.Issue(context.Background(), IssueRequest{

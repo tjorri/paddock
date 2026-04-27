@@ -17,7 +17,10 @@ limitations under the License.
 package providers
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"fmt"
 	"strings"
 )
 
@@ -68,4 +71,16 @@ func ExtractBearer(v string) string {
 	default:
 		return v
 	}
+}
+
+// mintBearer returns prefix + 48 random hex chars (24 bytes of
+// crypto/rand-sourced entropy). Shared shape for every provider's
+// bearer issuance — every provider's prefix + the same opaque tail
+// keeps audit + log greppability uniform across providers (B-08).
+func mintBearer(prefix string) (string, error) {
+	var buf [24]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("generating bearer: %w", err)
+	}
+	return prefix + hex.EncodeToString(buf[:]), nil
 }

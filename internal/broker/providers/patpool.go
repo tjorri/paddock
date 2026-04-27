@@ -18,9 +18,7 @@ package providers
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -34,6 +32,7 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
+	"paddock.dev/paddock/internal/policy"
 )
 
 // patPoolBearerPrefix marks bearers minted by this provider. Same
@@ -85,9 +84,7 @@ type PATPoolProvider struct {
 	// bearer resolves to which PAT. Operators should append, not insert.
 	Client client.Client
 
-	// Now is the wall-clock source for TTL accounting. Zero defaults
-	// to time.Now — tests inject a fixed clock.
-	Now func() time.Time
+	clockSource
 
 	mu    sync.Mutex
 	pools map[patPoolKey]*patPool
@@ -125,6 +122,13 @@ type patLease struct {
 	// for. Populated at Issue from grant.Provider.Hosts (admission
 	// requires non-empty for PATPool — see brokerpolicy_webhook.go). F-09.
 	AllowedHosts []string
+	// LeasedPAT is the literal PAT string this lease was minted against.
+	// SubstituteAuth re-reads the pool Secret and validates that the
+	// entry at lease.Index still matches LeasedPAT before returning —
+	// without this check, a PAT removed from the Secret between Issue
+	// and SubstituteAuth would still be served (B-06; engineering shape
+	// of F-14).
+	LeasedPAT string
 }
 
 // Prom metrics. Registered with the process default registerer so
@@ -205,7 +209,7 @@ func (p *PATPoolProvider) Issue(ctx context.Context, req IssueRequest) (IssueRes
 			countLeased(pool.leased), len(pool.entries))
 	}
 
-	bearer, err := mintPATBearer()
+	bearer, err := mintBearer(patPoolBearerPrefix)
 	if err != nil {
 		return IssueResult{}, err
 	}
@@ -222,6 +226,7 @@ func (p *PATPoolProvider) Issue(ctx context.Context, req IssueRequest) (IssueRes
 		CredentialName: req.CredentialName,
 		ExpiresAt:      expires,
 		AllowedHosts:   cfg.Hosts,
+		LeasedPAT:      pool.entries[idx],
 	}
 	patPoolLeased.WithLabelValues(key.Namespace, key.Secret, key.Key).Set(float64(countLeased(pool.leased)))
 
@@ -243,8 +248,10 @@ func (p *PATPoolProvider) SubstituteAuth(ctx context.Context, req SubstituteRequ
 		return brokerapi.SubstituteResult{Matched: false}, nil
 	}
 
+	// Re-read the pool Secret + reconcile in-memory state so a PAT
+	// rotated/removed between Issue and now is reflected before we
+	// return a credential. B-06.
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	var (
 		matchedKey   patPoolKey
 		matchedPool  *patPool
@@ -258,25 +265,59 @@ func (p *PATPoolProvider) SubstituteAuth(ctx context.Context, req SubstituteRequ
 			break
 		}
 	}
+	p.mu.Unlock()
 	if matchedLease == nil {
 		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("patpool bearer not recognised")
+	}
+
+	// Re-read the backing Secret outside the lock so a slow apiserver
+	// doesn't block other Issue/Substitute calls. The pool key carries
+	// everything needed to resolve the Secret.
+	freshEntries, err := p.readPool(ctx, matchedKey.Namespace,
+		&paddockv1alpha1.SecretKeyReference{
+			Name: matchedKey.Secret, Key: matchedKey.Key,
+		})
+	if err != nil {
+		return brokerapi.SubstituteResult{Matched: true},
+			fmt.Errorf("re-reading pool secret: %w", err)
+	}
+
+	now := p.now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Reconcile under the lock so a PAT removed from the Secret since
+	// we leased is folded into in-memory state before we serve.
+	p.reconcilePoolLocked(matchedKey, matchedPool, freshEntries, now)
+	// Re-fetch the lease under the lock — reconcile may have dropped
+	// it (PAT no longer in pool), or a parallel caller may have
+	// released it between our unlock and re-lock above.
+	matchedLease, ok := matchedPool.byBearer[bearer]
+	if !ok {
+		return brokerapi.SubstituteResult{Matched: true},
+			fmt.Errorf("patpool PAT revoked; bearer's PAT is no longer in the pool")
 	}
 	if req.Namespace != "" && matchedKey.Namespace != req.Namespace {
 		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("bearer lease namespace %q does not match caller namespace %q",
 			matchedKey.Namespace, req.Namespace)
 	}
-	if p.now().After(matchedLease.ExpiresAt) {
+	if now.After(matchedLease.ExpiresAt) {
 		p.releaseLocked(matchedKey, matchedPool, bearer)
 		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("patpool bearer expired")
 	}
 	if matchedLease.Index < 0 || matchedLease.Index >= len(matchedPool.entries) {
-		// Pool Secret shrunk under us since we leased. Releasing
-		// restores the bookkeeping; the caller sees an error and the
-		// reconciler requeues for a fresh lease.
+		// Reconcile should have dropped this; defensive fallthrough.
 		p.releaseLocked(matchedKey, matchedPool, bearer)
 		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("patpool shrank; bearer's lease index is stale")
 	}
-	if !hostMatchesGlobs(req.Host, matchedLease.AllowedHosts) {
+	// Defence in depth: even after reconcile, explicitly verify the
+	// entry at the lease index matches the PAT we leased. Catches any
+	// future reconcile bug that drops PATs without dropping the lease.
+	if matchedPool.entries[matchedLease.Index] != matchedLease.LeasedPAT {
+		p.releaseLocked(matchedKey, matchedPool, bearer)
+		return brokerapi.SubstituteResult{Matched: true},
+			fmt.Errorf("patpool PAT revoked; entry at lease index does not match leased PAT")
+	}
+	if !policy.AnyHostMatches(matchedLease.AllowedHosts, req.Host) {
 		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("bearer host %q not in lease's allowed hosts %v", req.Host, matchedLease.AllowedHosts)
 	}
@@ -397,21 +438,6 @@ func parsePoolEntries(raw []byte) []string {
 		out = append(out, l)
 	}
 	return out
-}
-
-func mintPATBearer() (string, error) {
-	var buf [24]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", fmt.Errorf("generating bearer: %w", err)
-	}
-	return patPoolBearerPrefix + hex.EncodeToString(buf[:]), nil
-}
-
-func (p *PATPoolProvider) now() time.Time {
-	if p.Now != nil {
-		return p.Now()
-	}
-	return time.Now()
 }
 
 func firstFreeIndex(leased []bool) int {

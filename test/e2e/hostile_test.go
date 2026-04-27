@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -78,12 +79,50 @@ var _ = Describe("Phase 2a P0 hotfix validation (hostile harness)", Ordered, fun
 	})
 
 	AfterAll(func() {
-		// Wait for namespace + finalizer drain so AfterSuite's
-		// `make undeploy` doesn't race the controller-manager
-		// teardown against in-flight CR finalizers.
-		_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", hostileNamespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
-		_, _ = utils.Run(exec.Command("kubectl", "delete", "clusterharnesstemplate", "evil-echo-tg2", "--ignore-not-found"))
-		_, _ = utils.Run(exec.Command("kubectl", "delete", "clusterharnesstemplate", "evil-echo-tg7", "--ignore-not-found"))
+		// KEEP_E2E_RUN=1 leaves tenant state behind so a contributor
+		// can poke at the cluster post-failure. Same convention as
+		// e2e_test.go's pipeline AfterAll.
+		if os.Getenv("KEEP_E2E_RUN") == "1" {
+			return
+		}
+		// Each spec in this Describe creates its own per-spec
+		// namespace (paddock-hostile-tgXX); only the BeforeAll
+		// namespace is shared. End-of-spec deletes use --wait=false,
+		// so finalizers may still be running when AfterAll runs.
+		// Drain explicitly here while the controller is still alive
+		// — otherwise stuck finalizers pin the namespace until
+		// AfterSuite's drain catches them, and the suite's runtime
+		// budget pays twice.
+		hostileNamespaces := []string{
+			hostileNamespace,
+			"paddock-hostile-tg2", "paddock-hostile-tg7",
+			"paddock-hostile-tg10a", "paddock-hostile-tg13a",
+			"paddock-hostile-tg25a",
+		}
+
+		// 1. Kick every namespace's reconcile-delete chain in parallel.
+		for _, ns := range hostileNamespaces {
+			runWithTimeout(10*time.Second, "kubectl", "delete", "ns", ns,
+				"--wait=false", "--ignore-not-found=true")
+		}
+
+		// 2. Wait for each to terminate; force-clear on timeout. Same
+		//    120s budget as the pipeline AfterAll — covers HarnessRun
+		//    Job teardown + Workspace finalizer requeue cadence.
+		for _, ns := range hostileNamespaces {
+			if waitForNamespaceGone(ns, 120*time.Second) {
+				continue
+			}
+			fmt.Fprintf(GinkgoWriter,
+				"WARNING: namespace %s stuck in Terminating after 120s; "+
+					"controller-side finalizer drain likely broken — force-clearing\n", ns)
+			forceClearFinalizers(ns)
+			waitForNamespaceGone(ns, 20*time.Second)
+		}
+
+		// 3. Cluster-scoped templates this Describe owns.
+		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", "evil-echo-tg2", "--ignore-not-found=true")
+		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", "evil-echo-tg7", "--ignore-not-found=true")
 	})
 
 	Context("F-19: per-run NetworkPolicy denies cooperative-mode bypass to in-cluster IPs", func() {

@@ -18,8 +18,6 @@ package providers
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
@@ -31,6 +29,7 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
+	"paddock.dev/paddock/internal/policy"
 )
 
 // anthropicBearerPrefix is both the "how the proxy recognises this
@@ -64,9 +63,7 @@ type AnthropicAPIProvider struct {
 	// (so rotations land on the next request without bearer re-issue).
 	Client client.Client
 
-	// Now is the wall-clock source for TTL accounting. Zero defaults to
-	// time.Now — tests inject a fixed clock.
-	Now func() time.Time
+	clockSource
 
 	mu      sync.Mutex
 	bearers map[string]*anthropicLease
@@ -119,14 +116,10 @@ func (p *AnthropicAPIProvider) Issue(ctx context.Context, req IssueRequest) (Iss
 			cfg.SecretRef.Key, req.Namespace, cfg.SecretRef.Name)
 	}
 
-	// 24 random bytes → 48 hex chars. Paired with the 14-char prefix
-	// that's 62 chars of bearer — plenty of entropy, short enough for
-	// Authorization headers.
-	var buf [24]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return IssueResult{}, fmt.Errorf("generating bearer: %w", err)
+	bearer, err := mintBearer(anthropicBearerPrefix)
+	if err != nil {
+		return IssueResult{}, err
 	}
-	bearer := anthropicBearerPrefix + hex.EncodeToString(buf[:])
 
 	now := p.now()
 	ttl := defaultAnthropicTTL
@@ -207,7 +200,7 @@ func (p *AnthropicAPIProvider) SubstituteAuth(ctx context.Context, req Substitut
 		p.mu.Unlock()
 		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("anthropic bearer expired")
 	}
-	if !hostMatchesGlobs(req.Host, lease.AllowedHosts) {
+	if !policy.AnyHostMatches(lease.AllowedHosts, req.Host) {
 		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("bearer host %q not in lease's allowed hosts %v", req.Host, lease.AllowedHosts)
 	}
@@ -245,11 +238,4 @@ func (p *AnthropicAPIProvider) SubstituteAuth(ctx context.Context, req Substitut
 		// this name before returning the substituted credential.
 		CredentialName: lease.CredentialName,
 	}, nil
-}
-
-func (p *AnthropicAPIProvider) now() time.Time {
-	if p.Now != nil {
-		return p.Now()
-	}
-	return time.Now()
 }

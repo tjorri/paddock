@@ -25,7 +25,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -42,6 +41,7 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
+	"paddock.dev/paddock/internal/policy"
 )
 
 // githubAppBearerPrefix is the "I minted this" marker. Shape matches
@@ -96,9 +96,7 @@ type GitHubAppProvider struct {
 	// future milestones can expose it on BrokerPolicy for GHE installs.
 	APIEndpoint string
 
-	// Now is the wall-clock source for TTL accounting. Zero defaults
-	// to time.Now — tests inject a fixed clock.
-	Now func() time.Time
+	clockSource
 
 	mu      sync.Mutex
 	bearers map[string]*githubLease
@@ -181,11 +179,10 @@ func (p *GitHubAppProvider) Issue(ctx context.Context, req IssueRequest) (IssueR
 			req.Namespace, cfg.SecretRef.Name, err)
 	}
 
-	var buf [24]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return IssueResult{}, fmt.Errorf("generating bearer: %w", err)
+	bearer, err := mintBearer(githubAppBearerPrefix)
+	if err != nil {
+		return IssueResult{}, err
 	}
-	bearer := githubAppBearerPrefix + hex.EncodeToString(buf[:])
 
 	// Repositories list: the BrokerPolicy's gitRepos — bounded to
 	// this policy's owner-declared scope. The GitHub API intersects
@@ -273,7 +270,7 @@ func (p *GitHubAppProvider) SubstituteAuth(ctx context.Context, req SubstituteRe
 		p.mu.Unlock()
 		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("github bearer expired")
 	}
-	if !hostMatchesGlobs(req.Host, lease.AllowedHosts) {
+	if !policy.AnyHostMatches(lease.AllowedHosts, req.Host) {
 		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("bearer host %q not in lease's allowed hosts %v", req.Host, lease.AllowedHosts)
 	}
@@ -428,13 +425,6 @@ func (p *GitHubAppProvider) sweep(now time.Time) {
 			delete(p.tokens, key)
 		}
 	}
-}
-
-func (p *GitHubAppProvider) now() time.Time {
-	if p.Now != nil {
-		return p.Now()
-	}
-	return time.Now()
 }
 
 // parsePrivateKey accepts the two shapes GitHub ships App private keys

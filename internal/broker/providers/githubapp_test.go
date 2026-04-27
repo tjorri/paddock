@@ -143,6 +143,7 @@ func githubRepos() []paddockv1alpha1.GitRepoGrant {
 }
 
 func TestGitHubAppProvider_IssueThenSubstitute(t *testing.T) {
+	t.Parallel()
 	fg := newFakeGitHub(t)
 	clock := time.Unix(1_700_000_000, 0)
 	fg.expiresAt = clock.Add(time.Hour)
@@ -152,7 +153,7 @@ func TestGitHubAppProvider_IssueThenSubstitute(t *testing.T) {
 		Client:      c,
 		HTTPClient:  fg.server.Client(),
 		APIEndpoint: fg.server.URL,
-		Now:         func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 
 	res, err := p.Issue(context.Background(), IssueRequest{
@@ -210,6 +211,7 @@ func TestGitHubAppProvider_IssueThenSubstitute(t *testing.T) {
 }
 
 func TestGitHubAppProvider_TokenSharedAcrossBearers(t *testing.T) {
+	t.Parallel()
 	// The run-sharing invariant: two bearers issued for the same
 	// (run, credential) resolve to the *same* GitHub installation
 	// token. Models the seed Job + agent Pod both asking for the
@@ -221,7 +223,7 @@ func TestGitHubAppProvider_TokenSharedAcrossBearers(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(githubSecret(key)).Build()
 	p := &GitHubAppProvider{
 		Client: c, HTTPClient: fg.server.Client(), APIEndpoint: fg.server.URL,
-		Now: func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 
 	first, err := p.Issue(context.Background(), IssueRequest{
@@ -261,6 +263,7 @@ func TestGitHubAppProvider_TokenSharedAcrossBearers(t *testing.T) {
 }
 
 func TestGitHubAppProvider_TokenDistinctAcrossRuns(t *testing.T) {
+	t.Parallel()
 	// Different runs must not share tokens — one rogue run cannot burn
 	// another run's rate-limit slice.
 	fg := newFakeGitHub(t)
@@ -270,7 +273,7 @@ func TestGitHubAppProvider_TokenDistinctAcrossRuns(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(githubSecret(key)).Build()
 	p := &GitHubAppProvider{
 		Client: c, HTTPClient: fg.server.Client(), APIEndpoint: fg.server.URL,
-		Now: func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 
 	for _, run := range []string{"cc-1", "cc-2"} {
@@ -297,6 +300,7 @@ func TestGitHubAppProvider_TokenDistinctAcrossRuns(t *testing.T) {
 }
 
 func TestGitHubAppProvider_UnknownPrefixFallsThrough(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).Build()
 	p := &GitHubAppProvider{Client: c}
 	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
@@ -311,6 +315,7 @@ func TestGitHubAppProvider_UnknownPrefixFallsThrough(t *testing.T) {
 }
 
 func TestGitHubAppProvider_UnknownBearerClaimsMatch(t *testing.T) {
+	t.Parallel()
 	// Prefix matches ours but bearer not in the lease store. Provider
 	// must claim Matched=true with an error so the broker short-circuits.
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).Build()
@@ -327,6 +332,7 @@ func TestGitHubAppProvider_UnknownBearerClaimsMatch(t *testing.T) {
 }
 
 func TestGitHubAppProvider_ExpiredBearer(t *testing.T) {
+	t.Parallel()
 	fg := newFakeGitHub(t)
 	key := generateRSAKey(t)
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(githubSecret(key)).Build()
@@ -335,7 +341,7 @@ func TestGitHubAppProvider_ExpiredBearer(t *testing.T) {
 		Client:      c,
 		HTTPClient:  fg.server.Client(),
 		APIEndpoint: fg.server.URL,
-		Now:         func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 	res, err := p.Issue(context.Background(), IssueRequest{
 		RunName: "cc-1", Namespace: "my-team",
@@ -357,6 +363,7 @@ func TestGitHubAppProvider_ExpiredBearer(t *testing.T) {
 }
 
 func TestGitHubAppProvider_IssueMissingConfig(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).Build()
 	p := &GitHubAppProvider{Client: c}
 	cases := []struct {
@@ -395,6 +402,7 @@ func TestGitHubAppProvider_IssueMissingConfig(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			_, err := p.Issue(context.Background(), IssueRequest{
 				RunName: "r", Namespace: "my-team",
 				CredentialName: "X", Grant: c.g,
@@ -407,6 +415,7 @@ func TestGitHubAppProvider_IssueMissingConfig(t *testing.T) {
 }
 
 func TestGitHubAppProvider_IssueBadPEM(t *testing.T) {
+	t.Parallel()
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "paddock-github-app", Namespace: "my-team"},
 		Data:       map[string][]byte{"private-key": []byte("not a valid pem")},
@@ -422,6 +431,7 @@ func TestGitHubAppProvider_IssueBadPEM(t *testing.T) {
 }
 
 func TestGitHubAppProvider_GitHubServerError(t *testing.T) {
+	t.Parallel()
 	key := generateRSAKey(t)
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(githubSecret(key)).Build()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -451,6 +461,7 @@ func TestGitHubAppProvider_GitHubServerError(t *testing.T) {
 }
 
 func TestExtractBearer(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in, want string
 	}{
@@ -487,6 +498,7 @@ func sliceEqual(a, b []string) bool {
 // signed by the correct key and carries the expected claims. No
 // external JWT library in the test so the assertion stays narrow.
 func TestSignAppJWT_RoundTrip(t *testing.T) {
+	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("rsa.GenerateKey: %v", err)
@@ -527,6 +539,7 @@ func TestSignAppJWT_RoundTrip(t *testing.T) {
 
 // TestParsePrivateKey accepts both shapes GitHub ships.
 func TestParsePrivateKey(t *testing.T) {
+	t.Parallel()
 	k, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("rsa.GenerateKey: %v", err)
@@ -546,6 +559,7 @@ func TestParsePrivateKey(t *testing.T) {
 		"pkcs8": pkcs8,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			parsed, err := parsePrivateKey(pemBytes)
 			if err != nil {
 				t.Fatalf("parse: %v", err)
@@ -556,12 +570,14 @@ func TestParsePrivateKey(t *testing.T) {
 		})
 	}
 	t.Run("bad-type", func(t *testing.T) {
+		t.Parallel()
 		bad := pem.EncodeToMemory(&pem.Block{Type: "DSA PRIVATE KEY", Bytes: []byte{1, 2, 3}})
 		if _, err := parsePrivateKey(bad); err == nil {
 			t.Fatalf("expected error for non-RSA PEM")
 		}
 	})
 	t.Run("not-pem", func(t *testing.T) {
+		t.Parallel()
 		if _, err := parsePrivateKey([]byte("nope")); err == nil {
 			t.Fatalf("expected error for non-PEM input")
 		}
@@ -569,6 +585,7 @@ func TestParsePrivateKey(t *testing.T) {
 }
 
 func TestGitHubAppProvider_SubstituteHostNotAllowed_Default(t *testing.T) {
+	t.Parallel()
 	fg := newFakeGitHub(t)
 	clock := time.Unix(1_700_000_000, 0)
 	fg.expiresAt = clock.Add(time.Hour)
@@ -578,7 +595,7 @@ func TestGitHubAppProvider_SubstituteHostNotAllowed_Default(t *testing.T) {
 		Client:      c,
 		HTTPClient:  fg.server.Client(),
 		APIEndpoint: fg.server.URL,
-		Now:         func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 
 	res, err := p.Issue(context.Background(), IssueRequest{
@@ -607,6 +624,7 @@ func TestGitHubAppProvider_SubstituteHostNotAllowed_Default(t *testing.T) {
 }
 
 func TestGitHubAppProvider_SubstituteHostAllowed_Defaults(t *testing.T) {
+	t.Parallel()
 	fg := newFakeGitHub(t)
 	clock := time.Unix(1_700_000_000, 0)
 	fg.expiresAt = clock.Add(time.Hour)
@@ -616,7 +634,7 @@ func TestGitHubAppProvider_SubstituteHostAllowed_Defaults(t *testing.T) {
 		Client:      c,
 		HTTPClient:  fg.server.Client(),
 		APIEndpoint: fg.server.URL,
-		Now:         func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 	res, err := p.Issue(context.Background(), IssueRequest{
 		RunName: "demo", Namespace: "my-team",
@@ -644,6 +662,7 @@ func TestGitHubAppProvider_SubstituteHostAllowed_Defaults(t *testing.T) {
 }
 
 func TestGitHubAppProvider_SubstituteResultFieldsPopulated(t *testing.T) {
+	t.Parallel()
 	fg := newFakeGitHub(t)
 	clock := time.Unix(1_700_000_000, 0)
 	fg.expiresAt = clock.Add(time.Hour)
@@ -653,7 +672,7 @@ func TestGitHubAppProvider_SubstituteResultFieldsPopulated(t *testing.T) {
 		Client:      c,
 		HTTPClient:  fg.server.Client(),
 		APIEndpoint: fg.server.URL,
-		Now:         func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 	res, err := p.Issue(context.Background(), IssueRequest{
 		RunName: "demo", Namespace: "my-team",
@@ -689,6 +708,7 @@ func TestGitHubAppProvider_SubstituteResultFieldsPopulated(t *testing.T) {
 // just repo names (GitHub scopes by installation, so owners are
 // implicit).
 func TestRepoNamesFromGitRepos(t *testing.T) {
+	t.Parallel()
 	got := repoNamesFromGitRepos([]paddockv1alpha1.GitRepoGrant{
 		{Owner: "x", Repo: "a"},
 		{Owner: "y", Repo: " b "},
