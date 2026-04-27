@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -28,8 +29,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	brokerclient "paddock.dev/paddock/internal/brokerclient"
+	"paddock.dev/paddock/internal/controller/testutil"
 )
 
 // waitWorkspaceActive waits for the Workspace controller to promote
@@ -343,6 +348,78 @@ var _ = Describe("HarnessRun controller", func() {
 				g.Expect(c).NotTo(BeNil())
 				g.Expect(c.Reason).To(Equal("TemplateNotFound"))
 			}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+		})
+	})
+
+	Context("broker-leases finalizer", func() {
+		const revokeNS = "revoke-test"
+
+		BeforeEach(func() {
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: revokeNS},
+			})).To(SatisfyAny(Succeed(), WithTransform(apierrors.IsAlreadyExists, BeTrue())))
+		})
+
+		newRevokeRun := func(name string) *paddockv1alpha1.HarnessRun {
+			run := &paddockv1alpha1.HarnessRun{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: revokeNS},
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					TemplateRef: paddockv1alpha1.TemplateRef{Name: "test"},
+					Prompt:      "hi",
+				},
+			}
+			controllerutil.AddFinalizer(run, BrokerLeasesFinalizer)
+			Expect(k8sClient.Create(ctx, run)).To(Succeed())
+			// Re-fetch so ResourceVersion is current.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: revokeNS}, run)).To(Succeed())
+			return run
+		}
+
+		It("revokes every IssuedLease and then removes the broker-leases finalizer on delete", func() {
+			fb := &testutil.FakeBroker{}
+			r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb, Recorder: record.NewFakeRecorder(8)}
+			run := newRevokeRun("run-revoke-a")
+			run.Status.IssuedLeases = []paddockv1alpha1.IssuedLease{
+				{Provider: "AnthropicAPI", LeaseID: "anth-1", CredentialName: "anth"},
+				{Provider: "PATPool", LeaseID: "pat-1", CredentialName: "gh"},
+			}
+
+			_, err := r.reconcileDelete(ctx, run)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fb.RevokeCalls).To(HaveLen(2))
+			Expect(fb.RevokeCalls[0].Lease.LeaseID).To(Equal("anth-1"))
+			Expect(fb.RevokeCalls[1].Lease.LeaseID).To(Equal("pat-1"))
+			Expect(controllerutil.ContainsFinalizer(run, BrokerLeasesFinalizer)).To(BeFalse())
+		})
+
+		It("force-clears the broker-leases finalizer when broker is unreachable", func() {
+			fb := &testutil.FakeBroker{RevokeErr: fmt.Errorf("connection refused")}
+			rec := record.NewFakeRecorder(8)
+			r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb, Recorder: rec}
+			run := newRevokeRun("run-revoke-b")
+			run.Status.IssuedLeases = []paddockv1alpha1.IssuedLease{{Provider: "AnthropicAPI", LeaseID: "anth-1", CredentialName: "anth"}}
+
+			_, err := r.reconcileDelete(ctx, run)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(controllerutil.ContainsFinalizer(run, BrokerLeasesFinalizer)).To(BeFalse())
+			// RevokeFailed event was recorded:
+			select {
+			case ev := <-rec.Events:
+				Expect(ev).To(ContainSubstring("RevokeFailed"))
+			default:
+				Fail("expected RevokeFailed event")
+			}
+		})
+
+		It("treats 404 NotFound from an older broker as success-equivalent", func() {
+			fb := &testutil.FakeBroker{RevokeErr: &brokerclient.BrokerError{Status: 404, Code: "NotFound", Message: "no such endpoint"}}
+			r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb, Recorder: record.NewFakeRecorder(8)}
+			run := newRevokeRun("run-revoke-c")
+			run.Status.IssuedLeases = []paddockv1alpha1.IssuedLease{{Provider: "AnthropicAPI", LeaseID: "anth-1", CredentialName: "anth"}}
+
+			_, err := r.reconcileDelete(ctx, run)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(controllerutil.ContainsFinalizer(run, BrokerLeasesFinalizer)).To(BeFalse())
 		})
 	})
 

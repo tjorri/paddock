@@ -45,7 +45,7 @@ func TestReconcile_TerminalWithJobAlive_KeepsReconciling(t *testing.T) {
 			Namespace:       "team-a",
 			Generation:      7,
 			ResourceVersion: "1",
-			Finalizers:      []string{HarnessRunFinalizer},
+			Finalizers:      []string{HarnessRunFinalizer, BrokerLeasesFinalizer},
 		},
 		Spec: paddockv1alpha1.HarnessRunSpec{
 			TemplateRef: paddockv1alpha1.TemplateRef{Name: "some-template", Kind: "ClusterHarnessTemplate"},
@@ -99,7 +99,7 @@ func TestReconcile_TerminalWithJobGone_ShortCircuits(t *testing.T) {
 			Namespace:       "team-a",
 			Generation:      7,
 			ResourceVersion: "1",
-			Finalizers:      []string{HarnessRunFinalizer},
+			Finalizers:      []string{HarnessRunFinalizer, BrokerLeasesFinalizer},
 		},
 		Spec: paddockv1alpha1.HarnessRunSpec{
 			TemplateRef: paddockv1alpha1.TemplateRef{Name: "some-template", Kind: "ClusterHarnessTemplate"},
