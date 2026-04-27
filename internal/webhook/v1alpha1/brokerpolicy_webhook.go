@@ -410,21 +410,9 @@ func validateEgressDiscovery(p *field.Path, ed *paddockv1alpha1.EgressDiscoveryS
 }
 
 func validateHosts(p *field.Path, hosts []string) field.ErrorList {
-	var errs field.ErrorList
+	errs := make(field.ErrorList, 0, len(hosts))
 	for i, h := range hosts {
-		entry := p.Index(i)
-		host := strings.TrimSpace(h)
-		if host == "" {
-			errs = append(errs, field.Required(entry, ""))
-			continue
-		}
-		if strings.HasPrefix(host, "*.") && strings.Contains(host[2:], "*") {
-			errs = append(errs, field.Invalid(entry, h,
-				"only a single leading '*.' wildcard is permitted"))
-		} else if !strings.HasPrefix(host, "*.") && strings.Contains(host, "*") {
-			errs = append(errs, field.Invalid(entry, h,
-				"wildcard '*' is only permitted as a leading '*.' segment"))
-		}
+		errs = append(errs, validateExternalHost(p.Index(i), h)...)
 	}
 	return errs
 }
@@ -433,18 +421,7 @@ func validateEgressGrants(p *field.Path, grants []paddockv1alpha1.EgressGrant) f
 	var errs field.ErrorList
 	for i, g := range grants {
 		entry := p.Index(i)
-		host := strings.TrimSpace(g.Host)
-		if host == "" {
-			errs = append(errs, field.Required(entry.Child("host"), ""))
-			continue
-		}
-		if strings.HasPrefix(host, "*.") && strings.Contains(host[2:], "*") {
-			errs = append(errs, field.Invalid(entry.Child("host"), g.Host,
-				"only a single leading '*.' wildcard is permitted"))
-		} else if !strings.HasPrefix(host, "*.") && strings.Contains(host, "*") {
-			errs = append(errs, field.Invalid(entry.Child("host"), g.Host,
-				"wildcard '*' is only permitted as a leading '*.' segment"))
-		}
+		errs = append(errs, validateExternalHost(entry.Child("host"), g.Host)...)
 		for j, port := range g.Ports {
 			if port < 0 || port > 65535 {
 				errs = append(errs, field.Invalid(entry.Child("ports").Index(j),

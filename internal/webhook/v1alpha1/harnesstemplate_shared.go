@@ -18,7 +18,6 @@ package v1alpha1
 
 import (
 	"fmt"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
@@ -121,18 +120,7 @@ func validateRequireSpec(p *field.Path, req *paddockv1alpha1.RequireSpec) field.
 	egressPath := p.Child("egress")
 	for i, e := range req.Egress {
 		entry := egressPath.Index(i)
-		host := strings.TrimSpace(e.Host)
-		if host == "" {
-			errs = append(errs, field.Required(entry.Child("host"), ""))
-			continue
-		}
-		if strings.HasPrefix(host, "*.") && strings.Contains(host[2:], "*") {
-			errs = append(errs, field.Invalid(entry.Child("host"), e.Host,
-				"only a single leading '*.' wildcard is permitted"))
-		} else if !strings.HasPrefix(host, "*.") && strings.Contains(host, "*") {
-			errs = append(errs, field.Invalid(entry.Child("host"), e.Host,
-				"wildcard '*' is only permitted as a leading '*.' segment"))
-		}
+		errs = append(errs, validateExternalHost(entry.Child("host"), e.Host)...)
 		for j, port := range e.Ports {
 			if port < 0 || port > 65535 {
 				errs = append(errs, field.Invalid(entry.Child("ports").Index(j),
