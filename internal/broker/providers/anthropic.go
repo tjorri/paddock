@@ -29,6 +29,7 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
+	policy "paddock.dev/paddock/internal/policy"
 )
 
 // anthropicBearerPrefix is both the "how the proxy recognises this
@@ -199,7 +200,7 @@ func (p *AnthropicAPIProvider) SubstituteAuth(ctx context.Context, req Substitut
 		p.mu.Unlock()
 		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("anthropic bearer expired")
 	}
-	if !hostMatchesGlobs(req.Host, lease.AllowedHosts) {
+	if !policy.AnyHostMatches(lease.AllowedHosts, req.Host) {
 		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("bearer host %q not in lease's allowed hosts %v", req.Host, lease.AllowedHosts)
 	}

@@ -31,6 +31,7 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
+	policy "paddock.dev/paddock/internal/policy"
 )
 
 const userSuppliedBearerPrefix = "pdk-usersecret-"
@@ -173,7 +174,7 @@ func (p *UserSuppliedSecretProvider) SubstituteAuth(ctx context.Context, req Sub
 		p.mu.Unlock()
 		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("UserSuppliedSecret bearer expired")
 	}
-	if !hostMatchesGlobs(req.Host, lease.ProxyInjected.Hosts) {
+	if !policy.AnyHostMatches(lease.ProxyInjected.Hosts, req.Host) {
 		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("bearer host %q not in grant's allowed hosts %v", req.Host, lease.ProxyInjected.Hosts)
 	}
@@ -232,26 +233,4 @@ func (p *UserSuppliedSecretProvider) SubstituteAuth(ctx context.Context, req Sub
 			fmt.Errorf("lease for %s has no substitution pattern set", bearer)
 	}
 	return res, nil
-}
-
-// hostMatchesGlobs does a limited glob match: either exact host equality
-// or a `*.example.com` style wildcard that matches any single-or-multi
-// label subdomain but not the bare apex (to avoid surprising the
-// operator). Case/whitespace insensitive.
-func hostMatchesGlobs(host string, hosts []string) bool {
-	host = strings.ToLower(strings.TrimSpace(host))
-	for _, h := range hosts {
-		h = strings.ToLower(strings.TrimSpace(h))
-		if strings.HasPrefix(h, "*.") {
-			suffix := h[1:]
-			if strings.HasSuffix(host, suffix) && host != suffix[1:] {
-				return true
-			}
-			continue
-		}
-		if h == host {
-			return true
-		}
-	}
-	return false
 }

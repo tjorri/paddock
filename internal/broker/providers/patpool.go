@@ -32,6 +32,7 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
+	policy "paddock.dev/paddock/internal/policy"
 )
 
 // patPoolBearerPrefix marks bearers minted by this provider. Same
@@ -272,7 +273,7 @@ func (p *PATPoolProvider) SubstituteAuth(ctx context.Context, req SubstituteRequ
 		p.releaseLocked(matchedKey, matchedPool, bearer)
 		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("patpool shrank; bearer's lease index is stale")
 	}
-	if !hostMatchesGlobs(req.Host, matchedLease.AllowedHosts) {
+	if !policy.AnyHostMatches(matchedLease.AllowedHosts, req.Host) {
 		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("bearer host %q not in lease's allowed hosts %v", req.Host, matchedLease.AllowedHosts)
 	}

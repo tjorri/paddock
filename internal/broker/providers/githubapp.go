@@ -41,6 +41,7 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
+	policy "paddock.dev/paddock/internal/policy"
 )
 
 // githubAppBearerPrefix is the "I minted this" marker. Shape matches
@@ -269,7 +270,7 @@ func (p *GitHubAppProvider) SubstituteAuth(ctx context.Context, req SubstituteRe
 		p.mu.Unlock()
 		return brokerapi.SubstituteResult{Matched: true}, fmt.Errorf("github bearer expired")
 	}
-	if !hostMatchesGlobs(req.Host, lease.AllowedHosts) {
+	if !policy.AnyHostMatches(lease.AllowedHosts, req.Host) {
 		return brokerapi.SubstituteResult{Matched: true},
 			fmt.Errorf("bearer host %q not in lease's allowed hosts %v", req.Host, lease.AllowedHosts)
 	}
