@@ -9,6 +9,7 @@
 
 Paddock is an open-source, Kubernetes-native platform for running headless AI agent harnesses — Claude Code, Codex CLI, OpenCode, Pi, or anything else you can put in a container — as templated, sandboxed, observable batch workloads. v0.3 adds a capability-scoped **broker** for credential issuance and a per-run **egress proxy** that MITMs TLS so the agent never sees upstream API keys.
 
+- **Documentation:** [`docs/`](docs/) — start here for the audience-routed entry point (evaluator, operator, harness author, contributor, security reviewer).
 - **Why it exists and what it is:** [`VISION.md`](VISION.md).
 - **Core v0.1 spec:** [`docs/internal/specs/0001-core-v0.1.md`](docs/internal/specs/0001-core-v0.1.md).
 - **v0.3 broker/proxy spec:** [`docs/internal/specs/0002-broker-proxy-v0.3.md`](docs/internal/specs/0002-broker-proxy-v0.3.md).
