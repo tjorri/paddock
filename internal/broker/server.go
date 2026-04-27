@@ -41,6 +41,15 @@ import (
 	"paddock.dev/paddock/internal/policy"
 )
 
+const maxRequestBodyBytes = 64 << 10 // 64 KiB; Issue / ValidateEgress / SubstituteAuth / Revoke bodies are tiny
+
+func limitBody(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		next(w, r)
+	}
+}
+
 // Server is the HTTP handler set for the broker. Register it on a
 // net/http.Server configured for mTLS on :8443.
 type Server struct {
@@ -60,10 +69,10 @@ type Server struct {
 
 // Register installs the broker's handlers on the given mux.
 func (s *Server) Register(mux *http.ServeMux) {
-	mux.HandleFunc(brokerapi.PathIssue, s.handleIssue)
-	mux.HandleFunc(brokerapi.PathRevoke, s.handleRevoke)
-	mux.HandleFunc(brokerapi.PathValidateEgress, s.handleValidateEgress)
-	mux.HandleFunc(brokerapi.PathSubstituteAuth, s.handleSubstituteAuth)
+	mux.HandleFunc(brokerapi.PathIssue, limitBody(s.handleIssue))
+	mux.HandleFunc(brokerapi.PathRevoke, limitBody(s.handleRevoke))
+	mux.HandleFunc(brokerapi.PathValidateEgress, limitBody(s.handleValidateEgress))
+	mux.HandleFunc(brokerapi.PathSubstituteAuth, limitBody(s.handleSubstituteAuth))
 }
 
 // handleIssue is the core endpoint. It authenticates the caller, looks

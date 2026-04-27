@@ -1532,3 +1532,22 @@ func TestAuditWriter_NewAuditWriter_HappyPath(t *testing.T) {
 		t.Errorf("recorded %d events, want 1", got)
 	}
 }
+
+func TestHandleIssue_OversizeBody_BadRequest(t *testing.T) {
+	t.Parallel()
+	srv, _ := setup(t)
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	body := bytes.Repeat([]byte("x"), 100<<10) // 100 KiB > 64 KiB cap
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, brokerapi.PathIssue, bytes.NewReader(body))
+	r.Header.Set("Authorization", "Bearer t")
+	r.Header.Set(brokerapi.HeaderRun, "hello")
+	r.Header.Set(brokerapi.HeaderNamespace, "my-team")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+}
