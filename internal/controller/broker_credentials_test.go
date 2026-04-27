@@ -17,9 +17,7 @@ limitations under the License.
 package controller
 
 import (
-	"context"
 	"fmt"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -28,45 +26,13 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 	"paddock.dev/paddock/internal/brokerclient"
+	"paddock.dev/paddock/internal/controller/testutil"
 )
-
-// fakeBroker is an in-memory BrokerIssuer for reconciler tests.
-type fakeBroker struct {
-	values map[string]string                  // credential name → value
-	errs   map[string]error                   // credential name → fatal error
-	meta   map[string]brokerapi.IssueResponse // credential name → per-credential metadata (Provider / DeliveryMode / Hosts / InContainerReason). Optional; when absent the response falls back to the Static/empty defaults.
-	calls  int
-}
-
-func (f *fakeBroker) Issue(_ context.Context, _ string, _ string, credentialName string) (*brokerapi.IssueResponse, error) {
-	f.calls++
-	if err, ok := f.errs[credentialName]; ok {
-		return nil, err
-	}
-	v, ok := f.values[credentialName]
-	if !ok {
-		return nil, &brokerclient.BrokerError{Status: 404, Code: brokerapi.CodeCredentialNotFound, Message: credentialName}
-	}
-	resp := brokerapi.IssueResponse{
-		Value:     v,
-		LeaseID:   "lease-" + credentialName,
-		ExpiresAt: time.Now().Add(1 * time.Hour),
-		Provider:  "Static",
-	}
-	if m, ok := f.meta[credentialName]; ok {
-		if m.Provider != "" {
-			resp.Provider = m.Provider
-		}
-		resp.DeliveryMode = m.DeliveryMode
-		resp.Hosts = m.Hosts
-		resp.InContainerReason = m.InContainerReason
-	}
-	return &resp, nil
-}
 
 var _ = Describe("ensureBrokerCredentials", func() {
 	const ns = "broker-creds-test"
@@ -125,7 +91,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 	})
 
 	It("materialises an owned Secret when the broker issues", func() {
-		fb := &fakeBroker{values: map[string]string{
+		fb := &testutil.FakeBroker{Values: map[string]string{
 			"TOKEN_A": "value-a",
 			"TOKEN_B": "value-b",
 		}}
@@ -135,7 +101,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		ok, _, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("TOKEN_A", "TOKEN_B"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
-		Expect(fb.calls).To(Equal(2))
+		Expect(fb.Calls).To(Equal(2))
 
 		var got corev1.Secret
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -148,12 +114,12 @@ var _ = Describe("ensureBrokerCredentials", func() {
 	})
 
 	It("returns per-credential delivery metadata alongside the Secret", func() {
-		fb := &fakeBroker{
-			values: map[string]string{
+		fb := &testutil.FakeBroker{
+			Values: map[string]string{
 				"ANTHROPIC_API_KEY":    "sk-ant-test",
 				"SLACK_SIGNING_SECRET": "slack-signing",
 			},
-			meta: map[string]brokerapi.IssueResponse{
+			Meta: map[string]brokerapi.IssueResponse{
 				"ANTHROPIC_API_KEY": {
 					Provider:     "AnthropicAPI",
 					DeliveryMode: "ProxyInjected",
@@ -192,7 +158,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 	})
 
 	It("returns a fatal reason on a PolicyMissing broker error", func() {
-		fb := &fakeBroker{errs: map[string]error{
+		fb := &testutil.FakeBroker{Errs: map[string]error{
 			"K": &brokerclient.BrokerError{Status: 403, Code: brokerapi.CodePolicyMissing, Message: "no grant"},
 		}}
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
@@ -206,7 +172,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 	})
 
 	It("swallows transient broker-unreachable failures so the caller sets BrokerUnavailable", func() {
-		fb := &fakeBroker{errs: map[string]error{"K": fmt.Errorf("connection refused")}}
+		fb := &testutil.FakeBroker{Errs: map[string]error{"K": fmt.Errorf("connection refused")}}
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("transient")
 
@@ -222,7 +188,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 	})
 
 	It("deletes a stale broker-creds Secret when requires goes empty", func() {
-		fb := &fakeBroker{values: map[string]string{"OLD": "v"}}
+		fb := &testutil.FakeBroker{Values: map[string]string{"OLD": "v"}}
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("stale")
 
@@ -240,5 +206,123 @@ var _ = Describe("ensureBrokerCredentials", func() {
 			Name: brokerCredsSecretName("stale"), Namespace: ns,
 		}, &got)
 		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	})
+})
+
+var _ = Describe("reconcileCredentials", func() {
+	const ns = "rc-creds-test"
+
+	BeforeEach(func() {
+		Expect(k8sClient.Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: ns},
+		})).To(SatisfyAny(Succeed(), WithTransform(apierrors.IsAlreadyExists, BeTrue())))
+	})
+
+	It("returns success outcome and sets BrokerReady=True when the broker issues all credentials", func() {
+		fb := &testutil.FakeBroker{Values: map[string]string{"K": "v"}}
+		r := &HarnessRunReconciler{
+			Client:       k8sClient,
+			Scheme:       k8sClient.Scheme(),
+			Recorder:     record.NewFakeRecorder(8),
+			BrokerClient: fb,
+		}
+		run := &paddockv1alpha1.HarnessRun{
+			ObjectMeta: metav1.ObjectMeta{Name: "rc-success", Namespace: ns},
+			Spec:       paddockv1alpha1.HarnessRunSpec{TemplateRef: paddockv1alpha1.TemplateRef{Name: "tpl"}, Prompt: "hi"},
+		}
+		Expect(k8sClient.Create(ctx, run)).To(Succeed())
+		// Re-fetch so UID is populated.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: run.Name, Namespace: ns}, run)).To(Succeed())
+
+		out, err := r.reconcileCredentials(ctx, run, &resolvedTemplate{
+			Spec: paddockv1alpha1.HarnessTemplateSpec{
+				Requires: paddockv1alpha1.RequireSpec{
+					Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "K"}},
+				},
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.fatal).To(BeFalse())
+		Expect(out.requeue).To(BeFalse())
+		Expect(run.Status.Credentials).To(HaveLen(1))
+
+		var ready *metav1.Condition
+		for i, c := range run.Status.Conditions {
+			if c.Type == paddockv1alpha1.HarnessRunConditionBrokerReady {
+				ready = &run.Status.Conditions[i]
+			}
+		}
+		Expect(ready).NotTo(BeNil())
+		Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("returns requeue outcome when the broker is unavailable", func() {
+		fb := &testutil.FakeBroker{Errs: map[string]error{"K": fmt.Errorf("connection refused")}}
+		r := &HarnessRunReconciler{
+			Client:       k8sClient,
+			Scheme:       k8sClient.Scheme(),
+			Recorder:     record.NewFakeRecorder(8),
+			BrokerClient: fb,
+		}
+		run := &paddockv1alpha1.HarnessRun{
+			ObjectMeta: metav1.ObjectMeta{Name: "rc-requeue", Namespace: ns},
+			Spec:       paddockv1alpha1.HarnessRunSpec{TemplateRef: paddockv1alpha1.TemplateRef{Name: "tpl"}, Prompt: "hi"},
+		}
+		Expect(k8sClient.Create(ctx, run)).To(Succeed())
+		// Re-fetch so UID is populated.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: run.Name, Namespace: ns}, run)).To(Succeed())
+
+		out, err := r.reconcileCredentials(ctx, run, &resolvedTemplate{
+			Spec: paddockv1alpha1.HarnessTemplateSpec{
+				Requires: paddockv1alpha1.RequireSpec{
+					Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "K"}},
+				},
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.fatal).To(BeFalse())
+		Expect(out.requeue).To(BeTrue())
+
+		Expect(run.Status.Phase).To(Equal(paddockv1alpha1.HarnessRunPhasePending))
+
+		var brokerReady *metav1.Condition
+		for i, c := range run.Status.Conditions {
+			if c.Type == paddockv1alpha1.HarnessRunConditionBrokerReady {
+				brokerReady = &run.Status.Conditions[i]
+			}
+		}
+		Expect(brokerReady).NotTo(BeNil())
+		Expect(brokerReady.Status).To(Equal(metav1.ConditionFalse))
+		Expect(brokerReady.Reason).To(Equal("BrokerUnavailable"))
+	})
+
+	It("returns fatal outcome when the broker returns a permission error", func() {
+		fb := &testutil.FakeBroker{
+			Errs: map[string]error{
+				"K": &brokerclient.BrokerError{Status: 403, Code: brokerapi.CodePolicyMissing, Message: "no policy grant"},
+			},
+		}
+		r := &HarnessRunReconciler{
+			Client:       k8sClient,
+			Scheme:       k8sClient.Scheme(),
+			Recorder:     record.NewFakeRecorder(8),
+			BrokerClient: fb,
+		}
+		run := &paddockv1alpha1.HarnessRun{
+			ObjectMeta: metav1.ObjectMeta{Name: "rc-fatal", Namespace: ns},
+			Spec:       paddockv1alpha1.HarnessRunSpec{TemplateRef: paddockv1alpha1.TemplateRef{Name: "tpl"}, Prompt: "hi"},
+		}
+		Expect(k8sClient.Create(ctx, run)).To(Succeed())
+
+		out, err := r.reconcileCredentials(ctx, run, &resolvedTemplate{
+			Spec: paddockv1alpha1.HarnessTemplateSpec{
+				Requires: paddockv1alpha1.RequireSpec{
+					Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "K"}},
+				},
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.fatal).To(BeTrue())
+		Expect(out.fatalReason).To(Equal("BrokerDenied"))
 	})
 })

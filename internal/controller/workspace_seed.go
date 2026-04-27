@@ -25,9 +25,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
@@ -659,101 +657,6 @@ func workspaceLabels(ws *paddockv1alpha1.Workspace) map[string]string {
 // seedNetworkPolicyName returns the per-seed-Pod NP's name.
 func seedNetworkPolicyName(ws *paddockv1alpha1.Workspace) string {
 	return seedJobName(ws) + "-egress"
-}
-
-// buildSeedNetworkPolicy mirrors buildRunNetworkPolicy for workspace
-// seed Pods. Selector matches the workspace's seed Pod (which is
-// labeled paddock.dev/workspace=<name>). Egress shape is identical:
-// DNS to kube-dns, TCP 443/80 to public-internet excluding cluster
-// CIDRs and RFC1918 + link-local. See finding F-45.
-func buildSeedNetworkPolicy(ws *paddockv1alpha1.Workspace, cfg networkPolicyConfig) *networkingv1.NetworkPolicy {
-	tcp := corev1.ProtocolTCP
-	udp := corev1.ProtocolUDP
-	dnsPort := intstr.FromInt32(53)
-	httpsPort := intstr.FromInt32(443)
-	httpPort := intstr.FromInt32(80)
-	exceptCIDRs := buildExceptCIDRs(cfg)
-
-	rules := []networkingv1.NetworkPolicyEgressRule{
-		{
-			To: []networkingv1.NetworkPolicyPeer{
-				{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"kubernetes.io/metadata.name": "kube-system",
-						},
-					},
-					PodSelector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"k8s-app": "kube-dns"},
-					},
-				},
-			},
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &udp, Port: &dnsPort},
-				{Protocol: &tcp, Port: &dnsPort},
-			},
-		},
-		{
-			To: []networkingv1.NetworkPolicyPeer{
-				{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR, Except: exceptCIDRs}},
-			},
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcp, Port: &httpsPort},
-			},
-		},
-		{
-			To: []networkingv1.NetworkPolicyPeer{
-				{IPBlock: &networkingv1.IPBlock{CIDR: openCIDR, Except: exceptCIDRs}},
-			},
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcp, Port: &httpPort},
-			},
-		},
-	}
-	if brokerRule := buildBrokerEgressRule(cfg); brokerRule != nil {
-		rules = append(rules, *brokerRule)
-	}
-	// Apiserver allow rule. Sidecars (collector for AuditEvent emission,
-	// adapter for status writes) need TCP/443 to the kube-apiserver.
-	// Pod-wide because NetworkPolicy operates at pod level; the agent
-	// container shares the network namespace with sidecars. F-38 (Phase
-	// 2a) ensures the agent has automountServiceAccountToken=false, so
-	// the apiserver rejects any request the agent might forge.
-	if len(cfg.APIServerIPs) > 0 {
-		apiPeers := make([]networkingv1.NetworkPolicyPeer, 0, len(cfg.APIServerIPs))
-		for _, ip := range cfg.APIServerIPs {
-			apiPeers = append(apiPeers, networkingv1.NetworkPolicyPeer{
-				IPBlock: &networkingv1.IPBlock{CIDR: ip.String() + "/32"},
-			})
-		}
-		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
-			To: apiPeers,
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcp, Port: &httpsPort},
-			},
-		})
-	}
-
-	return &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      seedNetworkPolicyName(ws),
-			Namespace: ws.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":      "paddock",
-				"app.kubernetes.io/component": "workspace-seed-egress",
-				"paddock.dev/workspace":       ws.Name,
-			},
-		},
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
-				MatchLabels: map[string]string{"paddock.dev/workspace": ws.Name},
-			},
-			PolicyTypes: []networkingv1.PolicyType{
-				networkingv1.PolicyTypeEgress,
-			},
-			Egress: rules,
-		},
-	}
 }
 
 // describeSeed produces a short human-readable summary of the seed source

@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -102,8 +101,10 @@ var _ = BeforeSuite(func() {
 		Expect(mgr.Start(ctx)).To(Succeed())
 	}()
 
-	// Settle — controllers take a moment to start their watches.
-	time.Sleep(500 * time.Millisecond)
+	// Wait for controller-runtime informer caches to sync before any
+	// spec runs. Replaces an earlier 500ms sleep that was brittle on
+	// loaded CI hosts and wasteful on fast workstations.
+	Expect(mgr.GetCache().WaitForCacheSync(ctx)).To(BeTrue())
 })
 
 var _ = AfterSuite(func() {

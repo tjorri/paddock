@@ -346,8 +346,10 @@ func TestNetworkPolicyEnforced(t *testing.T) {
 	}
 	for _, c := range cases {
 		r := &HarnessRunReconciler{
-			NetworkPolicyEnforce:     c.mode,
-			NetworkPolicyAutoEnabled: c.autoEnabled,
+			ProxyBrokerConfig: ProxyBrokerConfig{
+				NetworkPolicyEnforce:     c.mode,
+				NetworkPolicyAutoEnabled: c.autoEnabled,
+			},
 		}
 		if got := r.networkPolicyEnforced(); got != c.want {
 			t.Errorf("mode=%q auto=%v -> %v, want %v", c.mode, c.autoEnabled, got, c.want)

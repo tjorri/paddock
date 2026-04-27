@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"reflect"
 	"strings"
 	"time"
@@ -85,20 +84,6 @@ type HarnessRunReconciler struct {
 	// are held with BrokerReady=False.
 	BrokerClient BrokerIssuer
 
-	// ProxyImage is the image used for the per-run egress proxy
-	// sidecar. When empty, no proxy sidecar is injected and
-	// EgressConfigured stays False with reason=ProxyNotConfigured.
-	ProxyImage string
-
-	// ProxyCAClusterIssuer is the name of a cert-manager ClusterIssuer
-	// (kind: CA) that signs per-run intermediate CAs. The controller
-	// creates a Certificate resource per HarnessRun in the run's
-	// namespace; cert-manager produces the per-run Secret with the
-	// intermediate keypair. Empty disables proxy integration. The
-	// cluster root private key never leaves cert-manager's signing
-	// path. F-18 / Phase 2f.
-	ProxyCAClusterIssuer string
-
 	// ProxyAllowList is a static comma-separated host:port allow-list
 	// passed to every run's proxy sidecar via --allow. Populated from
 	// --proxy-allow at manager startup. M7 replaces the static list
@@ -111,53 +96,14 @@ type HarnessRunReconciler struct {
 	// every run resolves to cooperative regardless of PSA labels.
 	IPTablesInitImage string
 
-	// NetworkPolicyEnforce selects whether per-run NetworkPolicy
-	// objects are emitted (ADR-0013 §7.4). "auto" defers to the CNI
-	// probe result stored in NetworkPolicyAutoEnabled.
-	NetworkPolicyEnforce NetworkPolicyEnforceMode
-
-	// NetworkPolicyAutoEnabled is set at manager startup from
-	// DetectNetworkPolicyCNI when NetworkPolicyEnforce="auto". True
-	// means "auto" resolves to on; false means off. Ignored when
-	// NetworkPolicyEnforce is on or off explicitly.
-	NetworkPolicyAutoEnabled bool
-
-	// ClusterPodCIDR is the cluster's pod CIDR (e.g. 10.244.0.0/16).
-	// Excluded from per-run NetworkPolicy public-internet egress so a
-	// hostile agent cannot reach co-tenant pods. Set via
-	// --cluster-pod-cidr manager flag. See finding F-19.
-	ClusterPodCIDR string
-	// ClusterServiceCIDR is the cluster's service CIDR. Same purpose as
-	// ClusterPodCIDR; set via --cluster-service-cidr.
-	ClusterServiceCIDR string
-	// APIServerIPs is the set of IPv4 addresses the controller's
-	// kubeconfig resolves the kube-apiserver to. Set once at manager
-	// startup; per-run NetworkPolicies include a TCP/443 allow rule
-	// for each entry so sidecars (collector, adapter) can reach the
-	// apiserver. F-41 / Phase 2d.
-	APIServerIPs []net.IP
-
-	// BrokerEndpoint is the in-cluster broker URL the proxy sidecar
-	// calls for ValidateEgress + SubstituteAuth. Empty disables
-	// broker-backed proxy enforcement — the proxy then falls back to
-	// the static --proxy-allow list. Set from the same --broker-endpoint
-	// flag the reconciler uses for credential issuance.
-	BrokerEndpoint string
-
-	// BrokerNamespace is the namespace where the broker is deployed
-	// (default `paddock-system`). Used by the per-run NetworkPolicy
-	// to allow broker egress when NP enforcement is on. See F-19.
-	BrokerNamespace string
-
-	// BrokerCASource names the cert-manager-issued broker-serving-cert
-	// Secret whose ca.crt is copied into per-run broker-ca Secrets so
-	// the proxy can verify the broker's TLS. Zero Name disables the
-	// broker-CA copy regardless of BrokerEndpoint.
-	BrokerCASource BrokerCASource
-
 	// Audit emits per-decision AuditEvents. Nil-safe — when unset (e.g.
 	// in unit tests), all emits are no-ops. F-40.
 	Audit *ControllerAudit
+
+	// ProxyBrokerConfig carries the shared cluster-and-manager config
+	// used to render run-pod proxy sidecars and per-run NetworkPolicies.
+	// Populated once in cmd/main.go and embedded in both reconcilers.
+	ProxyBrokerConfig
 }
 
 // +kubebuilder:rbac:groups=paddock.dev,resources=harnessruns,verbs=get;list;watch;create;update;patch;delete
@@ -349,80 +295,24 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	})
 
 	// 4a. Issue broker-backed credentials for any requires.credentials
-	// the template declares (ADR-0015). The broker has already answered
-	// admission-time policy questions; here we materialise values into
-	// an owned Secret the agent container consumes via envFrom.
-	credsOk, credStatus, brFatalReason, brFatalMsg, brErr := r.ensureBrokerCredentials(ctx, &run, tpl)
-	if brErr != nil {
-		return ctrl.Result{}, brErr
+	// the template declares (ADR-0015). Delegated to
+	// reconcileCredentials, which sets BrokerReady +
+	// BrokerCredentialsReady, emits per-credential events, and writes
+	// status.credentials.
+	credOutcome, credErr := r.reconcileCredentials(ctx, &run, tpl)
+	if credErr != nil {
+		return ctrl.Result{}, credErr
 	}
-	if brFatalReason != "" {
-		r.fail(&run, paddockv1alpha1.HarnessRunConditionBrokerReady, brFatalReason, brFatalMsg)
+	if credOutcome.fatal {
+		r.fail(&run, paddockv1alpha1.HarnessRunConditionBrokerReady, credOutcome.fatalReason, credOutcome.fatalMsg)
 		return r.commitStatus(ctx, &run, origStatus)
 	}
-	if !credsOk {
-		setCondition(&run.Status.Conditions, metav1.Condition{
-			Type:               paddockv1alpha1.HarnessRunConditionBrokerReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             "BrokerUnavailable",
-			Message:            "waiting on broker to issue credentials",
-			ObservedGeneration: run.Generation,
-		})
-		run.Status.Phase = paddockv1alpha1.HarnessRunPhasePending
+	if credOutcome.requeue {
 		if _, err := r.commitStatus(ctx, &run, origStatus); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
-	// Persist per-credential delivery metadata + summary condition.
-	// status.credentials is overwritten on every successful pass so it
-	// always reflects the latest broker response. Events are emitted
-	// unconditionally — the EventRecorder dedupes by reason/message so
-	// a steady-state reconcile loop won't spam the event stream.
-	run.Status.Credentials = credStatus
-	nProxy, nInContainer := 0, 0
-	for _, c := range credStatus {
-		switch c.DeliveryMode {
-		case paddockv1alpha1.DeliveryModeProxyInjected:
-			nProxy++
-		case paddockv1alpha1.DeliveryModeInContainer:
-			nInContainer++
-		}
-	}
-	setCondition(&run.Status.Conditions, metav1.Condition{
-		Type:   paddockv1alpha1.HarnessRunConditionBrokerCredentialsReady,
-		Status: metav1.ConditionTrue,
-		Reason: "AllIssued",
-		Message: fmt.Sprintf("%d credentials issued: %d proxy-injected, %d in-container",
-			len(credStatus), nProxy, nInContainer),
-		ObservedGeneration: run.Generation,
-	})
-	for _, c := range credStatus {
-		switch c.DeliveryMode {
-		case paddockv1alpha1.DeliveryModeProxyInjected:
-			r.Recorder.Eventf(&run, corev1.EventTypeNormal, "CredentialIssued",
-				"name=%s mode=ProxyInjected provider=%s", c.Name, c.Provider)
-		case paddockv1alpha1.DeliveryModeInContainer:
-			reason := c.InContainerReason
-			if len(reason) > 60 {
-				reason = reason[:60] + "..."
-			}
-			r.Recorder.Eventf(&run, corev1.EventTypeNormal, "InContainerCredentialDelivered",
-				"name=%s reason=%q", c.Name, reason)
-		}
-	}
-
-	brokerMsg := "no broker credentials required"
-	if len(tpl.Spec.Requires.Credentials) > 0 {
-		brokerMsg = fmt.Sprintf("broker issued %d credential(s)", len(tpl.Spec.Requires.Credentials))
-	}
-	setCondition(&run.Status.Conditions, metav1.Condition{
-		Type:               paddockv1alpha1.HarnessRunConditionBrokerReady,
-		Status:             metav1.ConditionTrue,
-		Reason:             "Issued",
-		Message:            brokerMsg,
-		ObservedGeneration: run.Generation,
-	})
 
 	// 4b. Materialise the per-run proxy-tls Secret and flip
 	// EgressConfigured (ADR-0013 §7.3). When proxy integration is
@@ -430,6 +320,7 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// with a clear reason — the Pod still proceeds (the broker has
 	// already been the gate on credential flow) but the agent has no
 	// MITM proxy in front of it.
+	var decision policy.InterceptionDecision
 	if r.proxyConfigured() {
 		ok, err := r.ensureProxyTLS(ctx, &run)
 		if err != nil {
@@ -471,7 +362,8 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			}
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
-		decision, mErr := r.resolveInterceptionMode(ctx, &run, tpl)
+		var mErr error
+		decision, mErr = r.resolveInterceptionMode(ctx, &run, tpl)
 		if mErr != nil {
 			return ctrl.Result{}, mErr
 		}
@@ -551,7 +443,7 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// 6. Ensure the Job.
-	job, err := r.ensureJob(ctx, &run, tpl, ws.Status.PVCName)
+	job, err := r.ensureJob(ctx, &run, tpl, ws.Status.PVCName, decision)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -641,6 +533,109 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// credentialsReconcileOutcome is the four-way return shape of
+// reconcileCredentials. The caller in Reconcile switches on it to
+// decide whether to fail+commit, requeue+commit, or proceed.
+type credentialsReconcileOutcome struct {
+	requeue     bool // when true, caller commits + requeues 10s
+	fatal       bool // when true, caller marks BrokerReady fatal and commits
+	fatalReason string
+	fatalMsg    string
+}
+
+// reconcileCredentials issues per-credential bearers via the broker,
+// updates per-credential status + summary conditions + events, and
+// reports back to the Reconcile loop how to proceed.
+//
+// Outcome interpretation (in caller):
+//   - err != nil: transient failure; return (ctrl.Result{}, err) without
+//     committing status changes the method has already written.
+//   - outcome.fatal == true: r.fail with outcome.fatalReason/Msg, then
+//     commitStatus.
+//   - outcome.requeue == true: commitStatus then requeue 10s. On requeue,
+//     the method has already written BrokerReady=False and Phase=Pending
+//     to the run; the caller need only commit.
+//   - otherwise: continue Reconcile.
+//
+// The method is idempotent: a steady-state reconcile loop with no
+// broker change emits no new events (the EventRecorder dedupes by
+// reason/message).
+func (r *HarnessRunReconciler) reconcileCredentials(
+	ctx context.Context,
+	run *paddockv1alpha1.HarnessRun,
+	tpl *resolvedTemplate,
+) (credentialsReconcileOutcome, error) {
+	credsOk, credStatus, brFatalReason, brFatalMsg, brErr := r.ensureBrokerCredentials(ctx, run, tpl)
+	if brErr != nil {
+		return credentialsReconcileOutcome{}, brErr
+	}
+	if brFatalReason != "" {
+		return credentialsReconcileOutcome{fatal: true, fatalReason: brFatalReason, fatalMsg: brFatalMsg}, nil
+	}
+	if !credsOk {
+		setCondition(&run.Status.Conditions, metav1.Condition{
+			Type:               paddockv1alpha1.HarnessRunConditionBrokerReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "BrokerUnavailable",
+			Message:            "waiting on broker to issue credentials",
+			ObservedGeneration: run.Generation,
+		})
+		run.Status.Phase = paddockv1alpha1.HarnessRunPhasePending
+		return credentialsReconcileOutcome{requeue: true}, nil
+	}
+
+	// Persist per-credential delivery metadata + summary condition.
+	// status.credentials is overwritten on every successful pass so it
+	// always reflects the latest broker response. Events are emitted
+	// unconditionally — the EventRecorder dedupes by reason/message so
+	// a steady-state reconcile loop won't spam the event stream.
+	run.Status.Credentials = credStatus
+	nProxy, nInContainer := 0, 0
+	for _, c := range credStatus {
+		switch c.DeliveryMode {
+		case paddockv1alpha1.DeliveryModeProxyInjected:
+			nProxy++
+		case paddockv1alpha1.DeliveryModeInContainer:
+			nInContainer++
+		}
+	}
+	setCondition(&run.Status.Conditions, metav1.Condition{
+		Type:   paddockv1alpha1.HarnessRunConditionBrokerCredentialsReady,
+		Status: metav1.ConditionTrue,
+		Reason: "AllIssued",
+		Message: fmt.Sprintf("%d credentials issued: %d proxy-injected, %d in-container",
+			len(credStatus), nProxy, nInContainer),
+		ObservedGeneration: run.Generation,
+	})
+	for _, c := range credStatus {
+		switch c.DeliveryMode {
+		case paddockv1alpha1.DeliveryModeProxyInjected:
+			r.Recorder.Eventf(run, corev1.EventTypeNormal, "CredentialIssued",
+				"name=%s mode=ProxyInjected provider=%s", c.Name, c.Provider)
+		case paddockv1alpha1.DeliveryModeInContainer:
+			reason := c.InContainerReason
+			if len(reason) > 60 {
+				reason = reason[:60] + "..."
+			}
+			r.Recorder.Eventf(run, corev1.EventTypeNormal, "InContainerCredentialDelivered",
+				"name=%s reason=%q", c.Name, reason)
+		}
+	}
+
+	brokerMsg := "no broker credentials required"
+	if len(tpl.Spec.Requires.Credentials) > 0 {
+		brokerMsg = fmt.Sprintf("broker issued %d credential(s)", len(tpl.Spec.Requires.Credentials))
+	}
+	setCondition(&run.Status.Conditions, metav1.Condition{
+		Type:               paddockv1alpha1.HarnessRunConditionBrokerReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "Issued",
+		Message:            brokerMsg,
+		ObservedGeneration: run.Generation,
+	})
+	return credentialsReconcileOutcome{}, nil
 }
 
 // ensureWorkspace returns the Workspace this run uses. If
@@ -1049,13 +1044,21 @@ func parseResultJSON(data string) (*paddockv1alpha1.HarnessRunOutputs, error) {
 	return &out, nil
 }
 
-// ensureJob builds and creates the backing Job. No-op when one already
-// exists (Job spec is immutable once the HarnessRun spec is).
+// ensureJob builds and creates the backing Job. No-op when one
+// already exists. The `decision` parameter is the resolved
+// interception mode for the proxy-enabled path; callers in the
+// non-proxy-configured path may pass a zero-value decision (it
+// won't be consulted). Resolving once at the top of Reconcile
+// (rather than recomputing here) avoids a duplicate
+// BrokerPolicy List + PSA-label read and closes a small TOCTOU
+// window where the EgressConfigured condition and the Job spec
+// could disagree if a BrokerPolicy changed between reads.
 func (r *HarnessRunReconciler) ensureJob(
 	ctx context.Context,
 	run *paddockv1alpha1.HarnessRun,
 	tpl *resolvedTemplate,
 	pvcName string,
+	decision policy.InterceptionDecision,
 ) (*batchv1.Job, error) {
 	in := podSpecInputs{
 		workspacePVC:    pvcName,
@@ -1071,10 +1074,6 @@ func (r *HarnessRunReconciler) ensureJob(
 		in.proxyImage = r.ProxyImage
 		in.proxyTLSSecret = proxyTLSSecretName(run.Name)
 		in.proxyAllowList = r.ProxyAllowList
-		decision, err := r.resolveInterceptionMode(ctx, run, tpl)
-		if err != nil {
-			return nil, err
-		}
 		if decision.Unavailable {
 			// The reconcile CA-ready path above already emitted the
 			// event and marked the run Failed. Defensive guard: refuse

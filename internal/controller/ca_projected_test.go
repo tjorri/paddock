@@ -36,10 +36,12 @@ func TestEnsureProxyTLS_EmitsCAProjectedOnCreate(t *testing.T) {
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(run).Build()
 	rec := &capturedSink{}
 	r := &HarnessRunReconciler{
-		Client:               cli,
-		Scheme:               scheme,
-		Audit:                &ControllerAudit{Sink: rec},
-		ProxyCAClusterIssuer: "paddock-proxy-ca-issuer",
+		Client: cli,
+		Scheme: scheme,
+		Audit:  &ControllerAudit{Sink: rec},
+		ProxyBrokerConfig: ProxyBrokerConfig{
+			ProxyCAClusterIssuer: "paddock-proxy-ca-issuer",
+		},
 	}
 
 	if _, err := r.ensureProxyTLS(context.Background(), run); err != nil {
@@ -81,12 +83,14 @@ func TestEnsureBrokerCA_EmitsCAProjectedOnCreate(t *testing.T) {
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(srcSecret).Build()
 	rec := &capturedSink{}
 	r := &HarnessRunReconciler{
-		Client:         cli,
-		Scheme:         scheme,
-		Audit:          &ControllerAudit{Sink: rec},
-		BrokerEndpoint: "https://broker.paddock-system.svc:8443",
-		ProxyImage:     "paddock-proxy:dev",
-		BrokerCASource: BrokerCASource{Name: "paddock-broker-serving-cert", Namespace: "paddock-system"},
+		Client: cli,
+		Scheme: scheme,
+		Audit:  &ControllerAudit{Sink: rec},
+		ProxyBrokerConfig: ProxyBrokerConfig{
+			BrokerEndpoint: "https://broker.paddock-system.svc:8443",
+			ProxyImage:     "paddock-proxy:dev",
+			BrokerCASource: BrokerCASource{Name: "paddock-broker-serving-cert", Namespace: "paddock-system"},
+		},
 	}
 
 	ok, err := r.ensureBrokerCA(context.Background(), run)

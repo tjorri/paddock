@@ -36,9 +36,11 @@ func TestEnsureSeedProxyTLS_PerWorkspaceIsolation(t *testing.T) {
 	}
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(wsA, wsB).Build()
 	r := &WorkspaceReconciler{
-		Client:               cli,
-		Scheme:               scheme,
-		ProxyCAClusterIssuer: "paddock-proxy-ca-issuer",
+		Client: cli,
+		Scheme: scheme,
+		ProxyBrokerConfig: ProxyBrokerConfig{
+			ProxyCAClusterIssuer: "paddock-proxy-ca-issuer",
+		},
 	}
 
 	if _, err := r.ensureSeedProxyTLS(context.Background(), wsA); err != nil {
