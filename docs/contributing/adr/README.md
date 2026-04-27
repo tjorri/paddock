@@ -28,6 +28,7 @@ Do not use an ADR for routine implementation decisions that the code itself make
 - [ADR-0015 — Broker Provider interface — Issue/Renew/Revoke, no direct Secret path](0015-provider-interface.md)
 - [ADR-0016 — AuditEvent retention — write-once CRD with TTL reaper, debounced writes](0016-auditevent-retention.md)
 - [ADR-0017 — Controller optimistic-concurrency conflict handling](0017-controller-conflict-handling.md)
+- [ADR-0018 — Third-party container image policy](0018-third-party-image-policy.md)
 
 ## Conventions
 
