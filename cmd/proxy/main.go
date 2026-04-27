@@ -33,6 +33,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -44,6 +46,11 @@ import (
 	"paddock.dev/paddock/internal/auditing"
 	"paddock.dev/paddock/internal/proxy"
 )
+
+// auditSinkTypeNoop is the type string returned by buildAuditSink when
+// audit is disabled or unavailable. Named constant avoids goconst lint
+// noise across the five return sites.
+const auditSinkTypeNoop = "noop"
 
 var (
 	scheme   = runtime.NewScheme()
@@ -87,10 +94,11 @@ func main() {
 		"Static egress allow-list: comma-separated host:port entries. "+
 			"Port '*' matches any. Host may lead with '*.' for a wildcard subdomain. Empty means deny-all. "+
 			"M7 replaces this with live broker.ValidateEgress calls.")
-	flag.StringVar(&mode, "mode", "cooperative",
-		"Interception mode. 'cooperative' listens for HTTP CONNECT; 'transparent' listens for raw TCP "+
+	flag.StringVar(&mode, "mode", "",
+		"Interception mode (required, no default). 'cooperative' listens for HTTP CONNECT; 'transparent' listens for raw TCP "+
 			"redirected by iptables and recovers the destination via SO_ORIGINAL_DST (Linux only). "+
-			"Selected at Pod-build time by the reconciler; the binary is otherwise identical.")
+			"Selected at Pod-build time by the reconciler; the binary is otherwise identical. "+
+			"F-27: explicit choice required to prevent silent fallback to cooperative.")
 	flag.DurationVar(&shutdownGrace, "shutdown-grace", 10*time.Second,
 		"Time to wait for in-flight connections to drain on SIGTERM.")
 	flag.DurationVar(&idleTimeout, "idle-timeout", 60*time.Second,
@@ -120,6 +128,22 @@ func main() {
 
 	if runNamespace == "" {
 		runNamespace = os.Getenv("POD_NAMESPACE")
+	}
+
+	// F-27 refuse-to-start gates. Each gate exits 1 with a specific error
+	// so an operator who deployed a silently-broken config gets a loud
+	// failure rather than a silently-degraded proxy.
+	if mode == "" {
+		setupLog.Error(nil, "--mode is required (no default): set 'transparent' or 'cooperative'")
+		os.Exit(1)
+	}
+	if mode != "transparent" && mode != "cooperative" {
+		setupLog.Error(nil, "--mode must be 'transparent' or 'cooperative'", "got", mode)
+		os.Exit(1)
+	}
+	if allowList == "" && brokerEndpoint == "" && !disableAudit {
+		setupLog.Error(nil, "default-deny + no audit is never intentional; set --allow / --broker-endpoint, or pass --disable-audit explicitly to acknowledge")
+		os.Exit(1)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -155,7 +179,13 @@ func main() {
 		setupLog.Info("broker integration disabled; using static --allow list")
 	}
 
-	audit := buildAuditSink(disableAudit, runName, runNamespace)
+	audit, auditSinkType := buildAuditSink(disableAudit, runName, runNamespace)
+	if auditSinkType == auditSinkTypeNoop && !disableAudit {
+		setupLog.Error(nil, "audit sink resolved to noop without --disable-audit; refusing to start (F-27)",
+			"runName", runName, "runNamespace", runNamespace)
+		os.Exit(1)
+	}
+	proxy.SetAuditSinkType(auditSinkType)
 
 	upstreamCfg, err := buildUpstreamTLSConfig(upstreamCABundle)
 	if err != nil {
@@ -173,9 +203,11 @@ func main() {
 		Logger:            logger,
 	}
 
+	prometheus.MustRegister(proxy.AuditSinkGauge)
 	probeMux := http.NewServeMux()
 	probeMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	probeMux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	probeMux.Handle("/metrics", promhttp.Handler())
 	probeSrv := &http.Server{
 		Addr:              probeAddr,
 		Handler:           probeMux,
@@ -269,31 +301,33 @@ func waitForShutdown(ctx context.Context, errCh <-chan error, grace time.Duratio
 // when audit is disabled / a run name is missing. The fallback path now
 // logs a warning so silently-disabled audit is visible in proxy startup
 // logs (F-24).
-func buildAuditSink(disabled bool, runName, runNamespace string) proxy.AuditSink {
+// Returns the sink and a type string ("client" or "noop") for use with
+// proxy.SetAuditSinkType and the F-27 refuse-to-start gate.
+func buildAuditSink(disabled bool, runName, runNamespace string) (proxy.AuditSink, string) {
 	if disabled {
 		setupLog.Info("audit disabled by flag; proxy egress events will not be persisted")
-		return proxy.NoopAuditSink{}
+		return proxy.NoopAuditSink{}, auditSinkTypeNoop
 	}
 	if runName == "" || runNamespace == "" {
 		setupLog.Info("audit disabled: run name or namespace missing; proxy egress events will not be persisted",
 			"runName", runName, "runNamespace", runNamespace)
-		return proxy.NoopAuditSink{}
+		return proxy.NoopAuditSink{}, auditSinkTypeNoop
 	}
 	cfg, err := ctrl.GetConfig()
 	if err != nil {
 		setupLog.Error(err, "unable to load kubeconfig; audit disabled")
-		return proxy.NoopAuditSink{}
+		return proxy.NoopAuditSink{}, auditSinkTypeNoop
 	}
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		setupLog.Error(err, "unable to build audit client; audit disabled")
-		return proxy.NoopAuditSink{}
+		return proxy.NoopAuditSink{}, auditSinkTypeNoop
 	}
 	return &proxy.ClientAuditSink{
 		Sink:      &auditing.KubeSink{Client: c, Component: "proxy"},
 		Namespace: runNamespace,
 		RunName:   runName,
-	}
+	}, "client"
 }
 
 // buildUpstreamTLSConfig loads the system roots (or an empty pool on
