@@ -135,20 +135,20 @@ func repoManifestJSON(repos []paddockv1alpha1.WorkspaceGitSource) string {
 	return string(b)
 }
 
-// isSSHURL reports whether url uses an ssh transport (ssh:// or the
+// isSSHURL reports whether raw uses an ssh transport (ssh:// or the
 // scp-style git@host:path form).
-func isSSHURL(url string) bool {
-	if strings.HasPrefix(url, "ssh://") {
+func isSSHURL(raw string) bool {
+	if strings.HasPrefix(raw, "ssh://") {
 		return true
 	}
 	// scp-style is git@host:path — it never carries a scheme
 	// separator. Bail before the scp-style check so a URL like
 	// https://user@host:port/repo isn't misread as SSH.
-	if strings.Contains(url, "://") {
+	if strings.Contains(raw, "://") {
 		return false
 	}
-	if at := strings.Index(url, "@"); at > 0 {
-		rest := url[at+1:]
+	if at := strings.Index(raw, "@"); at > 0 {
+		rest := raw[at+1:]
 		if colon := strings.Index(rest, ":"); colon > 0 && !strings.Contains(rest[:colon], "/") {
 			return true
 		}

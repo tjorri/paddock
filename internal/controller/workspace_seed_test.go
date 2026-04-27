@@ -175,8 +175,13 @@ func TestRepoManifestJSON_ScrubsUserinfo(t *testing.T) {
 }
 
 func TestSeedInitContainer_BrokerBackedAppendsPostCloneRewrite(t *testing.T) {
+	// Feed a URL with userinfo (the threat F-50 names) — even though the
+	// webhook rejects this at admission, the post-clone rewrite is the
+	// last-line defence if a URL bypassed admission via direct API write.
+	// Asserting the rewrite scrubs the userinfo proves the layer actually
+	// defends against the threat, not just that it's wired.
 	repo := paddockv1alpha1.WorkspaceGitSource{
-		URL:  "https://github.com/org/repo.git",
+		URL:  "https://x:secret@github.com/org/repo.git",
 		Path: "repo",
 		BrokerCredentialRef: &paddockv1alpha1.BrokerCredentialReference{
 			Name: "hr-1-broker-creds", Key: "GITHUB_TOKEN",
@@ -189,8 +194,21 @@ func TestSeedInitContainer_BrokerBackedAppendsPostCloneRewrite(t *testing.T) {
 	if !strings.Contains(c.Command[2], "remote set-url origin") {
 		t.Fatalf("post-clone rewrite missing: %s", c.Command[2])
 	}
+	// The rewrite must target the scrubbed URL.
 	if !strings.Contains(c.Command[2], "https://github.com/org/repo.git") {
 		t.Fatalf("rewrite target missing scrubbed URL: %s", c.Command[2])
+	}
+	// The clone line carries the original URL (git needs to connect to
+	// it). The rewrite line — everything after 'remote set-url origin' —
+	// must be the scrubbed form. Slice on that marker so the assertion
+	// is precise about which line is being checked.
+	idx := strings.LastIndex(c.Command[2], "remote set-url origin")
+	if idx < 0 {
+		t.Fatalf("could not locate rewrite line: %s", c.Command[2])
+	}
+	rewriteSuffix := c.Command[2][idx:]
+	if strings.Contains(rewriteSuffix, "secret") || strings.Contains(rewriteSuffix, "x:") {
+		t.Fatalf("rewrite line contains userinfo (credential leaked into .git/config): %s", rewriteSuffix)
 	}
 }
 
