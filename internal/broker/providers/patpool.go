@@ -231,9 +231,13 @@ func (p *PATPoolProvider) Issue(ctx context.Context, req IssueRequest) (IssueRes
 	patPoolLeased.WithLabelValues(key.Namespace, key.Secret, key.Key).Set(float64(countLeased(pool.leased)))
 
 	return IssueResult{
-		Value:     bearer,
-		LeaseID:   "pat-" + bearer[len(patPoolBearerPrefix):len(patPoolBearerPrefix)+8],
-		ExpiresAt: expires,
+		Value:        bearer,
+		LeaseID:      "pat-" + bearer[len(patPoolBearerPrefix):len(patPoolBearerPrefix)+8],
+		ExpiresAt:    expires,
+		DeliveryMode: "ProxyInjected",
+		// PATPool has no built-in default; admission requires
+		// grant.Provider.Hosts to be non-empty. Pass through.
+		Hosts: cfg.Hosts,
 	}, nil
 }
 

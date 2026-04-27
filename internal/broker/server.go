@@ -152,16 +152,27 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt: result.ExpiresAt,
 		Provider:  audit.Provider,
 	}
-	populateDeliveryMetadata(&resp, grant)
+	populateDeliveryMetadata(&resp, result, grant)
 	writeJSON(w, http.StatusOK, resp)
 }
 
 // populateDeliveryMetadata fills DeliveryMode / Hosts / InContainerReason
-// on an IssueResponse from the grant that was matched. Built-in providers
-// are always ProxyInjected with baked-in default hosts (overridable via
-// grant.Provider.Hosts); UserSuppliedSecret takes its delivery mode from
-// grant.Provider.DeliveryMode.
-func populateDeliveryMetadata(resp *brokerapi.IssueResponse, grant *paddockv1alpha1.CredentialGrant) {
+// on an IssueResponse from the provider's IssueResult. Built-in providers
+// populate result.DeliveryMode + result.Hosts; the per-grant switch is
+// kept as a safety net during the B-02 migration and will be removed in
+// the follow-up commit.
+func populateDeliveryMetadata(resp *brokerapi.IssueResponse, result providers.IssueResult, grant *paddockv1alpha1.CredentialGrant) {
+	// Provider-supplied path (B-02 migration target). When a provider
+	// has been updated to populate IssueResult.DeliveryMode, trust it.
+	if result.DeliveryMode != "" {
+		resp.DeliveryMode = result.DeliveryMode
+		resp.Hosts = result.Hosts
+		resp.InContainerReason = result.InContainerReason
+		return
+	}
+	// Legacy switch — fallback for any provider that hasn't yet been
+	// migrated to populate IssueResult. Removed in Task 3b once the
+	// four bundled providers all populate IssueResult directly.
 	if grant == nil {
 		return
 	}

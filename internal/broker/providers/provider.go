@@ -82,6 +82,26 @@ type IssueResult struct {
 	// ExpiresAt is the absolute instant the value becomes stale. Zero
 	// signals "no expiry" (Static default).
 	ExpiresAt time.Time
+
+	// DeliveryMode tells the broker how the credential reaches the
+	// agent: "ProxyInjected" (substitute-auth via MITM proxy; the
+	// agent sees only a Paddock-issued bearer) or "InContainer" (the
+	// raw credential lands in the run pod's <run>-broker-creds Secret).
+	// Empty is treated as "ProxyInjected" by the broker for backwards
+	// compatibility with providers that haven't migrated yet (B-02).
+	DeliveryMode string
+
+	// Hosts is the allowed-hosts list for ProxyInjected delivery —
+	// the destinations the proxy may substitute this credential for.
+	// For InContainer delivery this is empty. Built-in providers
+	// populate the default list when grant.Provider.Hosts is empty;
+	// UserSuppliedSecret takes the override from the grant.
+	Hosts []string
+
+	// InContainerReason is the operator-supplied justification copied
+	// from grant.Provider.DeliveryMode.InContainer.Reason. Empty for
+	// ProxyInjected delivery. UserSuppliedSecret-only.
+	InContainerReason string
 }
 
 // ErrNotImplemented is returned by a Provider when it cannot back the
