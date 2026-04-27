@@ -71,6 +71,9 @@ type AuditEventSpec struct {
 	// RunRef identifies the HarnessRun this decision pertains to. May be
 	// empty for events emitted outside a run context (e.g. broker
 	// startup diagnostics — not currently emitted).
+	//
+	// Names prefixed "seed-" denote a workspace-seed-time decision; the
+	// suffix is the Workspace name (F-52).
 	// +optional
 	RunRef *LocalObjectReference `json:"runRef,omitempty"`
 

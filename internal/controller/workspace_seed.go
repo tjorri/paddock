@@ -290,9 +290,6 @@ func buildSeedProxySidecar(ws *paddockv1alpha1.Workspace, in seedJobInputs) core
 		"--broker-endpoint=" + in.brokerEndpoint,
 		"--broker-token-path=" + brokerTokenPath,
 		"--broker-ca-path=" + brokerCAPath,
-		// Seeds don't need AuditEvent writes — the run's audit trail
-		// is enough. Skipping avoids a new RBAC grant on the seed SA.
-		"--disable-audit",
 	}
 	uid := int64(proxyRunAsUID)
 	return corev1.Container{

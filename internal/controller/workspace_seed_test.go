@@ -371,6 +371,33 @@ func TestSeedJob_PullPolicyForTagOnlyImage(t *testing.T) {
 	}
 }
 
+func TestSeedProxySidecar_AuditEnabled(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+	}
+	in := seedJobInputs{
+		proxyImage:     "paddock-proxy:dev",
+		proxyTLSSecret: "ws-1-proxy-tls",
+		brokerEndpoint: "https://paddock-broker.paddock-system.svc:8443",
+		brokerCASecret: "ws-1-broker-ca",
+	}
+	proxy := buildSeedProxySidecar(ws, in)
+	for _, a := range proxy.Args {
+		if a == "--disable-audit" {
+			t.Errorf("seed proxy args still contain --disable-audit; expected audit enabled (F-52)")
+		}
+	}
+	sawRunName := false
+	for _, a := range proxy.Args {
+		if a == "--run-name=seed-ws-1" {
+			sawRunName = true
+		}
+	}
+	if !sawRunName {
+		t.Errorf("seed proxy missing --run-name=seed-ws-1; want present so AuditEvent runRef.name is seed-<ws>")
+	}
+}
+
 func TestSeedJob_Deadlines(t *testing.T) {
 	ws := &paddockv1alpha1.Workspace{
 		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},

@@ -89,7 +89,6 @@ func TestSeedJob_BrokerBackedRepoWiring(t *testing.T) {
 		"--broker-endpoint=" + brokerSeedInputs().brokerEndpoint,
 		"--broker-token-path=" + brokerTokenPath,
 		"--broker-ca-path=" + brokerCAPath,
-		"--disable-audit",
 	}
 	for _, s := range mustContain {
 		if !strings.Contains(args, s) {

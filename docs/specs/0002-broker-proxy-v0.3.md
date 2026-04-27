@@ -384,6 +384,10 @@ A TTL controller in the manager reaps `AuditEvent` objects older than `auditRete
 
 Broker + proxy debounce AuditEvent writes (≤ 1 per 500 ms per run) so a pathological prompt-injection that attempts hundreds of blocked destinations doesn't flood etcd. Summary events (`kind: egress-block-summary, spec.count: 47, spec.sampleDestinations: […]`) collapse the burst.
 
+- `runRef.name` values prefixed `seed-` denote a workspace-seed-time
+  decision (the suffix is the Workspace name). Workspace-seed proxies
+  attribute their per-CONNECT decisions this way (F-52).
+
 ## 10. Updated Pod shape
 
 ```
