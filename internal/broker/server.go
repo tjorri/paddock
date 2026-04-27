@@ -178,17 +178,25 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// populateDeliveryMetadata fills DeliveryMode / Hosts / InContainerReason
-// on an IssueResponse from the provider's IssueResult. Each built-in
-// provider populates result.DeliveryMode + result.Hosts (and
-// InContainerReason for UserSuppliedSecret InContainer mode); a future
-// provider must do the same to participate in delivery dispatch.
-// Compiler enforcement on IssueResult fields makes "I forgot to
-// populate the metadata" a build error, not a runtime miss.
+// populateDeliveryMetadata copies provider-populated metadata from the
+// IssueResult onto the wire IssueResponse. **Future provider authors
+// must extend this function** when they add new IssueResult fields —
+// Go has no compile-time check for struct-field copying, and a missed
+// field silently drops on the wire (see F-14 fix history: PoolSecretRef
+// and PoolSlotIndex were added to IssueResult and IssueResponse but
+// initially missed here, breaking the F-14 PATPool reconstruction path
+// end-to-end).
 func populateDeliveryMetadata(resp *brokerapi.IssueResponse, result providers.IssueResult) {
 	resp.DeliveryMode = result.DeliveryMode
 	resp.Hosts = result.Hosts
 	resp.InContainerReason = result.InContainerReason
+	if result.PoolSecretRef != nil {
+		resp.PoolSecretRef = &brokerapi.PoolSecretRef{
+			Name: result.PoolSecretRef.Name,
+			Key:  result.PoolSecretRef.Key,
+		}
+	}
+	resp.PoolSlotIndex = result.PoolSlotIndex
 }
 
 // issue is the broker's core decision function. Returns (result, grant, audit, err).

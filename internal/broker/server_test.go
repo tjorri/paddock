@@ -1642,3 +1642,100 @@ func TestHandleSubstituteAuth_RateLimited_AuditFail_Returns503(t *testing.T) {
 		t.Fatalf("status = %d body = %s; want 503 when audit fails on rate-limited path", w.Code, w.Body.String())
 	}
 }
+
+// TestHandleIssue_PATPool_PopulatesPoolSecretRefAndSlotIndex is a regression
+// test for the F-14 end-to-end gap: populateDeliveryMetadata initially omitted
+// PoolSecretRef and PoolSlotIndex, so the wire response always carried nil pool
+// fields even though PATPoolProvider.Issue populated them on IssueResult. This
+// test drives the full HTTP handler path (no FakeBroker) and asserts the wire
+// response carries both pool fields.
+func TestHandleIssue_PATPool_PopulatesPoolSecretRefAndSlotIndex(t *testing.T) {
+	t.Parallel()
+	const ns = "my-team"
+
+	poolSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool", Namespace: ns},
+		Data:       map[string][]byte{"pats": []byte("ghp_alice\nghp_bob\n")},
+	}
+	tpl := &paddockv1alpha1.HarnessTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessTemplateSpec{
+			Harness: "echo",
+			Image:   "paddock-echo:v1",
+			Command: []string{"/bin/echo"},
+			Requires: paddockv1alpha1.RequireSpec{
+				Credentials: []paddockv1alpha1.CredentialRequirement{
+					{Name: "GITHUB_TOKEN"},
+				},
+			},
+		},
+	}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-pat", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Prompt:      "hi",
+		},
+	}
+	bp := &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "allow-pat", Namespace: ns},
+		Spec: paddockv1alpha1.BrokerPolicySpec{
+			AppliesToTemplates: []string{"echo"},
+			Grants: paddockv1alpha1.BrokerPolicyGrants{
+				Credentials: []paddockv1alpha1.CredentialGrant{{
+					Name: "GITHUB_TOKEN",
+					Provider: paddockv1alpha1.ProviderConfig{
+						Kind:      "PATPool",
+						SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "pool", Key: "pats"},
+						Hosts:     []string{"github.com"},
+					},
+				}},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(buildScheme(t)).
+		WithObjects(tpl, run, bp, poolSecret).
+		Build()
+
+	registry, err := providers.NewRegistry(
+		&providers.UserSuppliedSecretProvider{Client: c},
+		&providers.PATPoolProvider{Client: c},
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	srv := &broker.Server{
+		Client:    c,
+		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
+		Providers: registry,
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
+	}
+
+	body, _ := json.Marshal(brokerapi.IssueRequest{Name: "GITHUB_TOKEN"})
+	rr := post(t, srv, "hr-pat", ns, "token-abc", string(body))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got brokerapi.IssueResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.PoolSecretRef == nil {
+		t.Fatalf("PoolSecretRef = nil; populateDeliveryMetadata did not copy pool fields onto wire response")
+	}
+	if got.PoolSecretRef.Name != "pool" {
+		t.Errorf("PoolSecretRef.Name = %q, want %q", got.PoolSecretRef.Name, "pool")
+	}
+	if got.PoolSecretRef.Key != "pats" {
+		t.Errorf("PoolSecretRef.Key = %q, want %q", got.PoolSecretRef.Key, "pats")
+	}
+	if got.PoolSlotIndex == nil {
+		t.Fatalf("PoolSlotIndex = nil; populateDeliveryMetadata did not copy pool slot index onto wire response")
+	}
+	if *got.PoolSlotIndex < 0 {
+		t.Errorf("PoolSlotIndex = %d, want >= 0", *got.PoolSlotIndex)
+	}
+}
