@@ -103,7 +103,13 @@ func (p *UserSuppliedSecretProvider) Issue(ctx context.Context, req IssueRequest
 		if cfg.RotationSeconds != nil && *cfg.RotationSeconds > 0 {
 			expiresAt = p.now().Add(time.Duration(*cfg.RotationSeconds) * time.Second)
 		}
-		return IssueResult{Value: string(data), LeaseID: leaseID, ExpiresAt: expiresAt}, nil
+		return IssueResult{
+			Value:             string(data),
+			LeaseID:           leaseID,
+			ExpiresAt:         expiresAt,
+			DeliveryMode:      "InContainer",
+			InContainerReason: cfg.DeliveryMode.InContainer.Reason,
+		}, nil
 	}
 
 	// ProxyInjected path: mint an opaque bearer and keep the real
@@ -145,9 +151,11 @@ func (p *UserSuppliedSecretProvider) Issue(ctx context.Context, req IssueRequest
 	p.mu.Unlock()
 
 	return IssueResult{
-		Value:     bearer,
-		LeaseID:   "uss-" + bearer[len(userSuppliedBearerPrefix):len(userSuppliedBearerPrefix)+8],
-		ExpiresAt: expires,
+		Value:        bearer,
+		LeaseID:      "uss-" + bearer[len(userSuppliedBearerPrefix):len(userSuppliedBearerPrefix)+8],
+		ExpiresAt:    expires,
+		DeliveryMode: "ProxyInjected",
+		Hosts:        cfg.DeliveryMode.ProxyInjected.Hosts,
 	}, nil
 }
 

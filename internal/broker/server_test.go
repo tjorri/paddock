@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/auditing"
 	"paddock.dev/paddock/internal/broker"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 	"paddock.dev/paddock/internal/broker/providers"
@@ -142,7 +143,7 @@ func setup(t *testing.T) (*broker.Server, client.Client) {
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Client: c},
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
 	}, c
 }
 
@@ -240,7 +241,7 @@ func (r *recordingAuditSink) events() []*paddockv1alpha1.AuditEvent {
 func TestIssue_AuditFailure_Returns503AndNoCredential(t *testing.T) {
 	t.Parallel()
 	srv, _ := setup(t)
-	srv.Audit = &broker.AuditWriter{Sink: errorSink{err: errors.New("etcd partition")}}
+	srv.Audit = broker.NewAuditWriter(errorSink{err: errors.New("etcd partition")})
 
 	rr := post(t, srv, "hello", "my-team", "valid-token", `{"name":"DEMO_TOKEN"}`)
 	if rr.Code != http.StatusServiceUnavailable {
@@ -254,7 +255,7 @@ func TestIssue_AuditFailure_Returns503AndNoCredential(t *testing.T) {
 func TestIssue_DenyAuditFailure_Returns503(t *testing.T) {
 	t.Parallel()
 	srv, _ := setup(t)
-	srv.Audit = &broker.AuditWriter{Sink: errorSink{err: errors.New("etcd partition")}}
+	srv.Audit = broker.NewAuditWriter(errorSink{err: errors.New("etcd partition")})
 
 	// Ask for a credential the template does not declare → CredentialNotFound.
 	rr := post(t, srv, "hello", "my-team", "valid-token", `{"name":"NO_SUCH_CRED"}`)
@@ -364,7 +365,7 @@ func TestIssue_Success_AnthropicAPI(t *testing.T) {
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Client: c},
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
 	}
 
 	body, _ := json.Marshal(brokerapi.IssueRequest{Name: "ANTHROPIC"})
@@ -472,9 +473,13 @@ func TestIssue_CrossNamespaceDenied(t *testing.T) {
 	// Override auth to a caller in a different namespace, non-controller.
 	srv.Auth = stubAuth{identity: broker.CallerIdentity{Namespace: "other", ServiceAccount: "default"}}
 
+	// handleIssue now shares resolveRunIdentity with the other two
+	// handlers; a non-controller caller asking about another namespace's
+	// run gets 400 BadRequest (the consistent shape), not the older 403
+	// Forbidden the inlined code returned. B-04.
 	body, _ := json.Marshal(brokerapi.IssueRequest{Name: "DEMO_TOKEN"})
 	rr := post(t, srv, "hello", "my-team", "token", string(body))
-	if rr.Code != http.StatusForbidden {
+	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
 }
@@ -579,7 +584,7 @@ func TestValidateEgress_DiscoveryAllow(t *testing.T) {
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Client: c},
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
 	}
 
 	body, _ := json.Marshal(brokerapi.ValidateEgressRequest{Host: "example.com", Port: 443})
@@ -625,7 +630,7 @@ func TestIssue_GetRunInfraError_EmitsAudit(t *testing.T) {
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: "team-a", ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Sink: rec},
+		Audit:     broker.NewAuditWriter(rec),
 	}
 	rr := post(t, srv, "hr-1", "team-a", "valid-token", `{"name":"DEMO_TOKEN"}`)
 	if rr.Code != http.StatusInternalServerError && rr.Code != http.StatusServiceUnavailable {
@@ -681,7 +686,7 @@ func TestIssue_ResolveTemplateInfraError_EmitsAudit(t *testing.T) {
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: "team-a", ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Sink: rec},
+		Audit:     broker.NewAuditWriter(rec),
 	}
 	rr := post(t, srv, "hr-1", "team-a", "valid-token", `{"name":"DEMO_TOKEN"}`)
 	if rr.Code != http.StatusInternalServerError && rr.Code != http.StatusServiceUnavailable {
@@ -776,7 +781,7 @@ func setupSubstituteAuth(t *testing.T, sub *stubSubstituter) (*broker.Server, cl
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Client: c},
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
 	}, c
 }
 
@@ -790,7 +795,7 @@ func TestSubstituteAuth_GrantedEmitsCredentialIssuedAudit(t *testing.T) {
 	}
 	srv, _ := setupSubstituteAuth(t, sub)
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -823,7 +828,7 @@ func TestSubstituteAuth_SubstituteFailedEmitsCredentialDeniedAudit(t *testing.T)
 	}
 	srv, _ := setupSubstituteAuth(t, sub)
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -854,7 +859,7 @@ func TestSubstituteAuth_BearerUnknownEmitsCredentialDeniedAudit(t *testing.T) {
 	sub := &stubSubstituter{name: "anthropic-stub", matched: false}
 	srv, _ := setupSubstituteAuth(t, sub)
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -883,7 +888,7 @@ func TestSubstituteAuth_RunNotFound_DeniesAndAudits(t *testing.T) {
 		setHdrs: map[string]string{"x-api-key": "real-key"}}
 	srv, _ := setupSubstituteAuth(t, sub)
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -924,7 +929,7 @@ func TestSubstituteAuth_RunCancelled_DeniesAndAudits(t *testing.T) {
 		t.Fatalf("update run status: %v", err)
 	}
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -993,7 +998,7 @@ func TestIssue_ListBrokerPoliciesInfraError_EmitsAudit(t *testing.T) {
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: "team-a", ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Sink: rec},
+		Audit:     broker.NewAuditWriter(rec),
 	}
 	rr := post(t, srv, "hr-1", "team-a", "valid-token", `{"name":"DEMO_TOKEN"}`)
 	if rr.Code != http.StatusInternalServerError && rr.Code != http.StatusServiceUnavailable {
@@ -1024,7 +1029,7 @@ func TestSubstituteAuth_PolicyRevoked_DeniesAndAudits(t *testing.T) {
 	// the test stub's credentialName to ANTHROPIC_API_KEY (no matching grant
 	// in the fixture) so the re-check fails with PolicyRevoked.
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -1061,7 +1066,7 @@ func TestSubstituteAuth_EgressRevoked_DeniesAndAudits(t *testing.T) {
 	}
 	srv, c := setupSubstituteAuth(t, sub)
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -1087,4 +1092,242 @@ func TestSubstituteAuth_EgressRevoked_DeniesAndAudits(t *testing.T) {
 		t.Errorf("kind = %q, want credential-denied", wrote[0].Spec.Kind)
 	}
 	_ = c
+}
+
+func TestAuditWriter_NewAuditWriter_PanicsOnNilSink(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("NewAuditWriter(nil) did not panic")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("panic value = %T, want string", r)
+		}
+		if !strings.Contains(msg, "sink must not be nil") {
+			t.Errorf("panic msg = %q, want contains 'sink must not be nil'", msg)
+		}
+	}()
+	_ = broker.NewAuditWriter(nil)
+}
+
+func TestAuditWriter_ZeroValue_PanicsOnFirstSink(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("(&AuditWriter{}).sink() via Write did not panic")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("panic value = %T, want string", r)
+		}
+		if !strings.Contains(msg, "NewAuditWriter") {
+			t.Errorf("panic msg = %q, want contains 'NewAuditWriter'", msg)
+		}
+	}()
+	w := &broker.AuditWriter{}
+	_ = w.CredentialIssued(context.Background(), broker.CredentialAudit{})
+}
+
+// TestSubstituteAuth_Core_TableDriven exercises Server.substituteAuth
+// directly (via the SubstituteAuthForTest shim in internal_test.go),
+// so the F-10/F-21/F-25 re-validation paths are unit-tested without
+// going through the HTTP shell. The HTTP-shell behaviour is covered
+// by the existing TestSubstituteAuth_*_DeniesAndAudits tests.
+//
+// Added in B-01 part 2.
+func TestSubstituteAuth_Core_TableDriven(t *testing.T) {
+	const (
+		ns      = "team-a"
+		runName = "hr-1"
+	)
+	type want struct {
+		isAllow      bool
+		appErrCode   string
+		appErrStatus int
+		auditReason  string // substring match
+	}
+	// happyPathServer returns a server where substituteAuth succeeds:
+	// stub provider matches, BrokerPolicy grants STUB_CRED, egress grant
+	// covers api.anthropic.com:443.
+	happyPathServer := func(t *testing.T) *broker.Server {
+		t.Helper()
+		sub := &stubSubstituter{
+			name:           "anthropic-stub",
+			matched:        true,
+			credentialName: "STUB_CRED",
+			setHdrs:        map[string]string{"x-api-key": "real-key"},
+		}
+		srv, _ := setupSubstituteAuth(t, sub)
+		return srv
+	}
+	cases := []struct {
+		name    string
+		setup   func(t *testing.T) *broker.Server
+		runName string // override for RunNotFound
+		req     brokerapi.SubstituteAuthRequest
+		want    want
+	}{
+		{
+			name:    "AllowPath",
+			setup:   happyPathServer,
+			runName: runName,
+			req: brokerapi.SubstituteAuthRequest{
+				Host: "api.anthropic.com", Port: 443,
+				IncomingXAPIKey: "paddock-bearer-x",
+			},
+			want: want{isAllow: true, auditReason: "substituted upstream credential"},
+		},
+		{
+			name:    "RunNotFound",
+			setup:   happyPathServer,
+			runName: "no-such-run", // the run hr-1 exists; ask for a different one
+			req: brokerapi.SubstituteAuthRequest{
+				Host: "api.anthropic.com", Port: 443,
+				IncomingXAPIKey: "paddock-bearer-x",
+			},
+			want: want{
+				appErrCode: "RunTerminated", appErrStatus: http.StatusNotFound,
+				auditReason: "run not found",
+			},
+		},
+		{
+			name: "RunCancelled",
+			setup: func(t *testing.T) *broker.Server {
+				t.Helper()
+				sub := &stubSubstituter{
+					name:           "anthropic-stub",
+					matched:        true,
+					credentialName: "STUB_CRED",
+					setHdrs:        map[string]string{"x-api-key": "real-key"},
+				}
+				srv, c := setupSubstituteAuth(t, sub)
+				var run paddockv1alpha1.HarnessRun
+				if err := c.Get(context.Background(),
+					types.NamespacedName{Name: runName, Namespace: ns}, &run); err != nil {
+					t.Fatalf("get run: %v", err)
+				}
+				run.Status.Phase = paddockv1alpha1.HarnessRunPhaseCancelled
+				if err := c.Status().Update(context.Background(), &run); err != nil {
+					t.Fatalf("update run status: %v", err)
+				}
+				return srv
+			},
+			runName: runName,
+			req: brokerapi.SubstituteAuthRequest{
+				Host: "api.anthropic.com", Port: 443,
+				IncomingXAPIKey: "paddock-bearer-x",
+			},
+			want: want{
+				appErrCode: "RunTerminated", appErrStatus: http.StatusForbidden,
+				auditReason: "run terminated",
+			},
+		},
+		{
+			name: "BearerUnknown",
+			setup: func(t *testing.T) *broker.Server {
+				t.Helper()
+				sub := &stubSubstituter{name: "anthropic-stub", matched: false}
+				srv, _ := setupSubstituteAuth(t, sub)
+				return srv
+			},
+			runName: runName,
+			req: brokerapi.SubstituteAuthRequest{
+				Host: "api.anthropic.com", Port: 443,
+				IncomingXAPIKey: "no-such-prefix-bearer",
+			},
+			want: want{
+				appErrCode: "BearerUnknown", appErrStatus: http.StatusNotFound,
+				auditReason: "no registered provider",
+			},
+		},
+		{
+			name: "PolicyRevoked",
+			setup: func(t *testing.T) *broker.Server {
+				t.Helper()
+				// Stub claims the bearer with credentialName=ANTHROPIC_API_KEY,
+				// but the BrokerPolicy in setupSubstituteAuth only grants
+				// STUB_CRED — so the F-10 policy re-check fails.
+				sub := &stubSubstituter{
+					name:           "anthropic-stub",
+					matched:        true,
+					credentialName: "ANTHROPIC_API_KEY",
+					setHdrs:        map[string]string{"x-api-key": "real-key"},
+				}
+				srv, _ := setupSubstituteAuth(t, sub)
+				return srv
+			},
+			runName: runName,
+			req: brokerapi.SubstituteAuthRequest{
+				Host: "api.anthropic.com", Port: 443,
+				IncomingXAPIKey: "paddock-bearer-x",
+			},
+			want: want{
+				appErrCode: "PolicyRevoked", appErrStatus: http.StatusForbidden,
+				auditReason: "policy revoked",
+			},
+		},
+		{
+			name:    "EgressRevoked",
+			setup:   happyPathServer,
+			runName: runName,
+			req: brokerapi.SubstituteAuthRequest{
+				// evil.com is not in the policy's egress grants.
+				Host: "evil.com", Port: 443,
+				IncomingXAPIKey: "paddock-bearer-x",
+			},
+			want: want{
+				appErrCode: "EgressRevoked", appErrStatus: http.StatusForbidden,
+				auditReason: "egress revoked",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := tc.setup(t)
+			resp, audit, err := srv.SubstituteAuthForTest(context.Background(), ns, tc.runName, tc.req)
+			switch {
+			case tc.want.isAllow:
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+				if audit == nil || !strings.Contains(audit.Reason, tc.want.auditReason) {
+					t.Fatalf("audit = %+v, want reason contains %q", audit, tc.want.auditReason)
+				}
+				if resp.SetHeaders == nil && resp.RemoveHeaders == nil {
+					t.Errorf("response had neither SetHeaders nor RemoveHeaders; expected substituted credential")
+				}
+			default:
+				if err == nil {
+					t.Fatalf("err = nil, want app error %s", tc.want.appErrCode)
+				}
+				var appErr *broker.ApplicationErrorForTest
+				if !errors.As(err, &appErr) {
+					t.Fatalf("err = %v, want *applicationError", err)
+				}
+				if appErr.Code() != tc.want.appErrCode {
+					t.Errorf("code = %q, want %q", appErr.Code(), tc.want.appErrCode)
+				}
+				if appErr.Status() != tc.want.appErrStatus {
+					t.Errorf("status = %d, want %d", appErr.Status(), tc.want.appErrStatus)
+				}
+				if audit == nil || !strings.Contains(strings.ToLower(audit.Reason), tc.want.auditReason) {
+					t.Fatalf("audit = %+v, want reason contains %q", audit, tc.want.auditReason)
+				}
+			}
+		})
+	}
+}
+
+func TestAuditWriter_NewAuditWriter_HappyPath(t *testing.T) {
+	rec := &recordingAuditSink{}
+	w := broker.NewAuditWriter(rec)
+	if err := w.CredentialIssued(context.Background(), broker.CredentialAudit{
+		RunName: "hr-1", Namespace: "team-a", CredentialName: "DEMO",
+	}); err != nil {
+		t.Fatalf("CredentialIssued: %v", err)
+	}
+	if got := len(rec.events()); got != 1 {
+		t.Errorf("recorded %d events, want 1", got)
+	}
 }

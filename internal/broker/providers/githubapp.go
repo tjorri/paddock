@@ -231,9 +231,11 @@ func (p *GitHubAppProvider) Issue(ctx context.Context, req IssueRequest) (IssueR
 	p.mu.Unlock()
 
 	return IssueResult{
-		Value:     bearer,
-		LeaseID:   "gha-" + bearer[len(githubAppBearerPrefix):len(githubAppBearerPrefix)+8],
-		ExpiresAt: expires,
+		Value:        bearer,
+		LeaseID:      "gha-" + bearer[len(githubAppBearerPrefix):len(githubAppBearerPrefix)+8],
+		ExpiresAt:    expires,
+		DeliveryMode: "ProxyInjected",
+		Hosts:        allowedHosts,
 	}, nil
 }
 

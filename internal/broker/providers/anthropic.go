@@ -161,8 +161,10 @@ func (p *AnthropicAPIProvider) Issue(ctx context.Context, req IssueRequest) (Iss
 		// the full bearer into AuditEvents. Prefix picks the first 8
 		// random hex chars; collision probability is 1/2^32 per run, and
 		// LeaseID only needs to be unique within the broker's lifetime.
-		LeaseID:   "anth-" + bearer[len(anthropicBearerPrefix):len(anthropicBearerPrefix)+8],
-		ExpiresAt: expires,
+		LeaseID:      "anth-" + bearer[len(anthropicBearerPrefix):len(anthropicBearerPrefix)+8],
+		ExpiresAt:    expires,
+		DeliveryMode: "ProxyInjected",
+		Hosts:        allowedHosts,
 	}, nil
 }
 
