@@ -426,50 +426,84 @@ func (s *Server) handleSubstituteAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// F-10: re-fetch HarnessRun on every SubstituteAuth call so a
-	// run that was deleted or transitioned to a terminal phase since
-	// the bearer was issued cannot continue substituting credentials.
-	// Cached client; sub-millisecond informer-cache lookup.
-	var run paddockv1alpha1.HarnessRun
-	if err := s.Client.Get(ctx, types.NamespacedName{Name: runName, Namespace: runNamespace}, &run); err != nil {
-		if apierrors.IsNotFound(err) {
-			runTerminatedAudit := CredentialAudit{
-				RunName:        runName,
-				Namespace:      runNamespace,
-				CredentialName: req.Host,
-				Reason:         "run not found",
-			}
-			if wErr := s.Audit.CredentialDenied(ctx, runTerminatedAudit); wErr != nil {
+	resp, audit, err := s.substituteAuth(ctx, runNamespace, runName, req)
+	if err != nil {
+		// Deny path: write audit BEFORE returning the error to the
+		// caller. F-12 / F-10 audit-write-then-respond contract.
+		if audit != nil {
+			if wErr := s.Audit.CredentialDenied(ctx, *audit); wErr != nil {
 				logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
 				writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
 					"paddock-broker: audit unavailable, please retry")
 				return
 			}
-			writeError(w, http.StatusNotFound, "RunTerminated", "run not found")
+		}
+		var appErr *applicationError
+		if errors.As(err, &appErr) {
+			writeError(w, appErr.status, appErr.code, appErr.message)
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "ProviderFailure", err.Error())
 		return
 	}
-	switch run.Status.Phase {
-	case paddockv1alpha1.HarnessRunPhaseCancelled,
-		paddockv1alpha1.HarnessRunPhaseSucceeded,
-		paddockv1alpha1.HarnessRunPhaseFailed:
-		runTerminatedAudit := CredentialAudit{
-			RunName:        runName,
-			Namespace:      runNamespace,
-			CredentialName: req.Host,
-			Reason:         fmt.Sprintf("run terminated: %s", run.Status.Phase),
-		}
-		if wErr := s.Audit.CredentialDenied(ctx, runTerminatedAudit); wErr != nil {
-			logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
+
+	// Success: write audit BEFORE writing response (same F-12 shape as
+	// handleIssue).
+	if audit != nil {
+		if wErr := s.Audit.CredentialIssued(ctx, *audit); wErr != nil {
+			logger.Error(wErr, "writing substitute-auth issuance AuditEvent", "run", runName)
 			writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
 				"paddock-broker: audit unavailable, please retry")
 			return
 		}
-		writeError(w, http.StatusForbidden, "RunTerminated",
-			fmt.Sprintf("run terminated: %s", run.Status.Phase))
-		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// substituteAuth is the broker's core substitute-auth decision
+// function. Returns (response, audit, err). audit is non-nil whenever
+// a decision was made (so the caller records either credential-issued
+// or credential-denied). err is the surface error for the caller's
+// HTTP response; applicationError is preferred so the handler can
+// map directly to status/code without re-deriving "is this a 4xx or
+// a 5xx" logic.
+//
+// Mirrors Server.issue() — see the comment there for the same shape.
+//
+// Extracted from handleSubstituteAuth as B-01 part 2.
+func (s *Server) substituteAuth(
+	ctx context.Context,
+	runNamespace, runName string,
+	req brokerapi.SubstituteAuthRequest,
+) (brokerapi.SubstituteAuthResponse, *CredentialAudit, error) {
+	// F-10: re-fetch HarnessRun on every SubstituteAuth call so a
+	// run that was deleted or transitioned to a terminal phase since
+	// the bearer was issued cannot continue substituting credentials.
+	var run paddockv1alpha1.HarnessRun
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: runName, Namespace: runNamespace}, &run); err != nil {
+		if apierrors.IsNotFound(err) {
+			return brokerapi.SubstituteAuthResponse{}, &CredentialAudit{
+					RunName:        runName,
+					Namespace:      runNamespace,
+					CredentialName: req.Host,
+					Reason:         "run not found",
+				},
+				&applicationError{status: http.StatusNotFound, code: "RunTerminated", message: "run not found"}
+		}
+		return brokerapi.SubstituteAuthResponse{}, nil, fmt.Errorf("loading run: %w", err)
+	}
+	switch run.Status.Phase {
+	case paddockv1alpha1.HarnessRunPhaseCancelled,
+		paddockv1alpha1.HarnessRunPhaseSucceeded,
+		paddockv1alpha1.HarnessRunPhaseFailed:
+		reason := fmt.Sprintf("run terminated: %s", run.Status.Phase)
+		return brokerapi.SubstituteAuthResponse{}, &CredentialAudit{
+				RunName:        runName,
+				Namespace:      runNamespace,
+				CredentialName: req.Host,
+				Reason:         reason,
+			},
+			&applicationError{status: http.StatusForbidden, code: "RunTerminated", message: reason}
 	}
 
 	pReq := providers.SubstituteRequest{
@@ -497,46 +531,25 @@ func (s *Server) handleSubstituteAuth(w http.ResponseWriter, r *http.Request) {
 			if !outcome.Matched {
 				continue
 			}
-			// Matched: write audit (if applicable) and the response.
 			if outcome.InfraErr != nil {
-				writeError(w, http.StatusInternalServerError, "ProviderFailure", outcome.InfraErr.Error())
-				return
+				return brokerapi.SubstituteAuthResponse{}, nil, outcome.InfraErr
 			}
 			if outcome.AppErr != nil {
-				if wErr := s.Audit.CredentialDenied(ctx, outcome.Audit); wErr != nil {
-					logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
-					writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
-						"paddock-broker: audit unavailable, please retry")
-					return
-				}
-				writeError(w, outcome.AppErr.status, outcome.AppErr.code, outcome.AppErr.message)
-				return
+				audit := outcome.Audit
+				return brokerapi.SubstituteAuthResponse{}, &audit, outcome.AppErr
 			}
-			// Success branch.
-			if wErr := s.Audit.CredentialIssued(ctx, outcome.Audit); wErr != nil {
-				logger.Error(wErr, "writing substitute-auth issuance AuditEvent", "run", runName)
-				writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
-					"paddock-broker: audit unavailable, please retry")
-				return
-			}
-			writeJSON(w, http.StatusOK, outcome.Response)
-			return
+			audit := outcome.Audit
+			return outcome.Response, &audit, nil
 		}
 	}
-	bearerUnknownAudit := CredentialAudit{
-		RunName:        runName,
-		Namespace:      runNamespace,
-		CredentialName: req.Host,
-		Reason:         "no registered provider owns the supplied bearer",
-	}
-	if wErr := s.Audit.CredentialDenied(ctx, bearerUnknownAudit); wErr != nil {
-		logger.Error(wErr, "writing substitute-auth denial AuditEvent", "run", runName)
-		writeError(w, http.StatusServiceUnavailable, "AuditUnavailable",
-			"paddock-broker: audit unavailable, please retry")
-		return
-	}
-	writeError(w, http.StatusNotFound, "BearerUnknown",
-		"no registered provider owns the supplied bearer")
+	return brokerapi.SubstituteAuthResponse{}, &CredentialAudit{
+			RunName:        runName,
+			Namespace:      runNamespace,
+			CredentialName: req.Host,
+			Reason:         "no registered provider owns the supplied bearer",
+		},
+		&applicationError{status: http.StatusNotFound, code: "BearerUnknown",
+			message: "no registered provider owns the supplied bearer"}
 }
 
 // resolveRunIdentity extracts (runName, runNamespace) from request
