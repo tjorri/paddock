@@ -32,7 +32,7 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
-	policy "paddock.dev/paddock/internal/policy"
+	"paddock.dev/paddock/internal/policy"
 )
 
 // patPoolBearerPrefix marks bearers minted by this provider. Same
