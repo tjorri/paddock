@@ -559,4 +559,166 @@ var _ = Describe("BrokerPolicy Webhook", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("PATPool requires hosts"))
 	})
+
+	Context("F-34 cluster-internal and IP-literal host rejection", func() {
+		denied := []string{
+			"*",
+			"localhost",
+			"kubernetes.default.svc",
+			"*.svc.cluster.local",
+			"127.0.0.1",
+			"10.0.0.1",
+			"169.254.169.254",
+			"::1",
+		}
+		for _, h := range denied {
+			It("rejects egress host "+h, func() {
+				spec := minimalSpec()
+				spec.Grants.Egress = []paddockv1alpha1.EgressGrant{{Host: h, Ports: []int32{443}}}
+				err := validate(spec)
+				Expect(err).To(HaveOccurred())
+			})
+		}
+
+		It("rejects a proxyInjected host that is cluster-internal", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "*.svc.cluster.local", Ports: []int32{443},
+			})
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+				Name: "INTERNAL",
+				Provider: paddockv1alpha1.ProviderConfig{
+					Kind:      "UserSuppliedSecret",
+					SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+					DeliveryMode: &paddockv1alpha1.DeliveryMode{
+						ProxyInjected: &paddockv1alpha1.ProxyInjectedDelivery{
+							Hosts:  []string{"foo.svc.cluster.local"},
+							Header: &paddockv1alpha1.HeaderSubstitution{Name: "X-Custom"},
+						},
+					},
+				},
+			}}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("rejects a provider host with a port", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "api.example.com", Ports: []int32{443},
+			})
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+				Name: "ANTHROPIC",
+				Provider: paddockv1alpha1.ProviderConfig{
+					Kind:      "AnthropicAPI",
+					SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+					Hosts:     []string{"api.example.com:443"},
+				},
+			}}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must not contain a port"))
+		})
+
+		It("rejects a mixed-case egress host", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = []paddockv1alpha1.EgressGrant{{Host: "Api.Example.com", Ports: []int32{443}}}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("RFC 1123"))
+		})
+	})
+
+	It("rejects an appliesToTemplates entry that is not a valid glob", func() {
+		spec := minimalSpec()
+		spec.AppliesToTemplates = []string{"claude-code-["}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("appliesToTemplates"))
+		Expect(err.Error()).To(ContainSubstring("not a valid glob"))
+	})
+
+	It("rejects an appliesToTemplates entry with a trailing backslash", func() {
+		spec := minimalSpec()
+		spec.AppliesToTemplates = []string{`claude-code-\`}
+		err := validate(spec)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("appliesToTemplates"))
+		Expect(err.Error()).To(ContainSubstring("not a valid glob"))
+	})
+
+	It("admits a valid prefix glob in appliesToTemplates", func() {
+		spec := minimalSpec()
+		spec.AppliesToTemplates = []string{"claude-code-*"}
+		Expect(validate(spec)).To(Succeed())
+	})
+
+	Context("F-36 GitHubApp appId/installationId must be positive integers", func() {
+		ghAppGrant := func(appID, instID string) paddockv1alpha1.CredentialGrant {
+			return paddockv1alpha1.CredentialGrant{
+				Name: "GH",
+				Provider: paddockv1alpha1.ProviderConfig{
+					Kind:           "GitHubApp",
+					AppID:          appID,
+					InstallationID: instID,
+					SecretRef:      &paddockv1alpha1.SecretKeyReference{Name: "gh", Key: "pem"},
+					Hosts:          []string{"api.github.com"},
+				},
+			}
+		}
+
+		It("admits a numeric appId and installationId", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "api.github.com", Ports: []int32{443},
+			})
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{ghAppGrant("12345", "67890")}
+			Expect(validate(spec)).To(Succeed())
+		})
+
+		It("rejects a non-numeric appId", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "api.github.com", Ports: []int32{443},
+			})
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{ghAppGrant("broken", "67890")}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("appId"))
+			Expect(err.Error()).To(ContainSubstring("positive integer"))
+		})
+
+		It("rejects a non-numeric installationId", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "api.github.com", Ports: []int32{443},
+			})
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{ghAppGrant("12345", "abc")}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("installationId"))
+			Expect(err.Error()).To(ContainSubstring("positive integer"))
+		})
+
+		It("rejects a leading-zero appId", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "api.github.com", Ports: []int32{443},
+			})
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{ghAppGrant("0123", "67890")}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("rejects an over-length appId", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "api.github.com", Ports: []int32{443},
+			})
+			tooLong := "1234567890123456789012" // 22 digits, exceeds 20-digit cap
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{ghAppGrant(tooLong, "67890")}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+		})
+	})
 })

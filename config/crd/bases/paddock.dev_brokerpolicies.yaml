@@ -116,8 +116,11 @@ spec:
                             supplies its configuration.
                           properties:
                             appId:
-                              description: AppID is the GitHub App numeric ID (GitHubApp
-                                only).
+                              description: |-
+                                AppID is the GitHub App numeric ID (GitHubApp only). Must be a
+                                positive integer of at most 20 digits when set; required for
+                                GitHubApp providers (admission rejects empty for that kind).
+                              pattern: ^[1-9][0-9]{0,19}$
                               type: string
                             deliveryMode:
                               description: |-
@@ -201,8 +204,11 @@ spec:
                                 type: string
                               type: array
                             installationId:
-                              description: InstallationID is the GitHub App installation
-                                ID (GitHubApp only).
+                              description: |-
+                                InstallationID is the GitHub App installation ID (GitHubApp only).
+                                Must be a positive integer of at most 20 digits when set;
+                                required for GitHubApp providers.
+                              pattern: ^[1-9][0-9]{0,19}$
                               type: string
                             kind:
                               description: Kind names the provider implementation.

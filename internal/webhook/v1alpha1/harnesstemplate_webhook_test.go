@@ -192,6 +192,38 @@ var _ = Describe("HarnessTemplate Webhook", func() {
 			Expect(err.Error()).To(ContainSubstring("wildcard"))
 		})
 
+		It("rejects an egress host that is cluster-internal", func() {
+			obj := &paddockv1alpha1.HarnessTemplate{
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Harness: "echo",
+					Image:   "paddock-echo:v1",
+					Command: []string{"/bin/echo"},
+					Requires: paddockv1alpha1.RequireSpec{
+						Egress: []paddockv1alpha1.EgressRequirement{{Host: "kubernetes.default.svc", Ports: []int32{443}}},
+					},
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("cluster-internal"))
+		})
+
+		It("rejects an egress host that is an IP literal", func() {
+			obj := &paddockv1alpha1.HarnessTemplate{
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Harness: "echo",
+					Image:   "paddock-echo:v1",
+					Command: []string{"/bin/echo"},
+					Requires: paddockv1alpha1.RequireSpec{
+						Egress: []paddockv1alpha1.EgressRequirement{{Host: "10.0.0.1", Ports: []int32{443}}},
+					},
+				},
+			}
+			_, err := validator.ValidateCreate(ctx, obj)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("IP literal"))
+		})
+
 		It("rejects an egress port out of range", func() {
 			obj := &paddockv1alpha1.HarnessTemplate{
 				Spec: paddockv1alpha1.HarnessTemplateSpec{

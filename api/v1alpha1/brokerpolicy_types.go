@@ -85,12 +85,18 @@ type ProviderConfig struct {
 	// +optional
 	SecretRef *SecretKeyReference `json:"secretRef,omitempty"`
 
-	// AppID is the GitHub App numeric ID (GitHubApp only).
+	// AppID is the GitHub App numeric ID (GitHubApp only). Must be a
+	// positive integer of at most 20 digits when set; required for
+	// GitHubApp providers (admission rejects empty for that kind).
 	// +optional
+	// +kubebuilder:validation:Pattern=`^[1-9][0-9]{0,19}$`
 	AppID string `json:"appId,omitempty"`
 
 	// InstallationID is the GitHub App installation ID (GitHubApp only).
+	// Must be a positive integer of at most 20 digits when set;
+	// required for GitHubApp providers.
 	// +optional
+	// +kubebuilder:validation:Pattern=`^[1-9][0-9]{0,19}$`
 	InstallationID string `json:"installationId,omitempty"`
 
 	// RotationSeconds optionally overrides the provider's default TTL.

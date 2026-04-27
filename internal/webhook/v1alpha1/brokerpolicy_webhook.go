@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	"paddock.dev/paddock/internal/auditing"
+	"paddock.dev/paddock/internal/policy"
 )
 
 var brokerpolicylog = logf.Log.WithName("brokerpolicy-resource")
@@ -38,6 +40,13 @@ var brokerpolicylog = logf.Log.WithName("brokerpolicy-resource")
 // windows short-lived. Operators who want a different cap need an
 // operator-flag-tunable variant (deferred from v0.4).
 const MaxDiscoveryWindow = 7 * 24 * time.Hour
+
+// gitHubAppNumericID matches a positive integer of 1–20 digits with no
+// leading zero. Mirrors the kubebuilder pattern annotation on
+// BrokerPolicy.spec.grants[].credentials[].provider.{appId,installationId};
+// the webhook check provides a friendlier error message than the CRD's
+// "spec.… in body should match …" envelope.
+var gitHubAppNumericID = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
 
 // SetupBrokerPolicyWebhookWithManager registers the validating webhook
 // for BrokerPolicy with the manager. sink receives one AuditEvent per
@@ -137,9 +146,15 @@ func validateBrokerPolicySpec(spec *paddockv1alpha1.BrokerPolicySpec, now time.T
 			"at least one template selector is required"))
 	}
 	for i, sel := range spec.AppliesToTemplates {
-		if strings.TrimSpace(sel) == "" {
-			errs = append(errs, field.Invalid(specPath.Child("appliesToTemplates").Index(i),
-				sel, "selector must not be empty"))
+		entry := specPath.Child("appliesToTemplates").Index(i)
+		trimmed := strings.TrimSpace(sel)
+		if trimmed == "" {
+			errs = append(errs, field.Invalid(entry, sel, "selector must not be empty"))
+			continue
+		}
+		if err := policy.ValidateAppliesToTemplate(trimmed); err != nil {
+			errs = append(errs, field.Invalid(entry, sel,
+				"selector is not a valid glob pattern: "+err.Error()))
 		}
 	}
 
@@ -231,9 +246,15 @@ func validateProviderConfig(p *field.Path, cfg paddockv1alpha1.ProviderConfig) f
 	case "GitHubApp":
 		if cfg.AppID == "" {
 			errs = append(errs, field.Required(p.Child("appId"), "required for GitHubApp provider"))
+		} else if !gitHubAppNumericID.MatchString(cfg.AppID) {
+			errs = append(errs, field.Invalid(p.Child("appId"), cfg.AppID,
+				"appId must be a positive integer (1-20 digits); find it on the GitHub App settings page (https://github.com/settings/apps/<app>) or via gh api /app"))
 		}
 		if cfg.InstallationID == "" {
 			errs = append(errs, field.Required(p.Child("installationId"), "required for GitHubApp provider"))
+		} else if !gitHubAppNumericID.MatchString(cfg.InstallationID) {
+			errs = append(errs, field.Invalid(p.Child("installationId"), cfg.InstallationID,
+				"installationId must be a positive integer (1-20 digits); find it via gh api /users/{user}/installation or in the installation URL https://github.com/settings/installations/<id>"))
 		}
 		if cfg.SecretRef == nil {
 			errs = append(errs, field.Required(p.Child("secretRef"),
@@ -410,21 +431,9 @@ func validateEgressDiscovery(p *field.Path, ed *paddockv1alpha1.EgressDiscoveryS
 }
 
 func validateHosts(p *field.Path, hosts []string) field.ErrorList {
-	var errs field.ErrorList
+	errs := make(field.ErrorList, 0, len(hosts))
 	for i, h := range hosts {
-		entry := p.Index(i)
-		host := strings.TrimSpace(h)
-		if host == "" {
-			errs = append(errs, field.Required(entry, ""))
-			continue
-		}
-		if strings.HasPrefix(host, "*.") && strings.Contains(host[2:], "*") {
-			errs = append(errs, field.Invalid(entry, h,
-				"only a single leading '*.' wildcard is permitted"))
-		} else if !strings.HasPrefix(host, "*.") && strings.Contains(host, "*") {
-			errs = append(errs, field.Invalid(entry, h,
-				"wildcard '*' is only permitted as a leading '*.' segment"))
-		}
+		errs = append(errs, validateExternalHost(p.Index(i), h)...)
 	}
 	return errs
 }
@@ -433,18 +442,7 @@ func validateEgressGrants(p *field.Path, grants []paddockv1alpha1.EgressGrant) f
 	var errs field.ErrorList
 	for i, g := range grants {
 		entry := p.Index(i)
-		host := strings.TrimSpace(g.Host)
-		if host == "" {
-			errs = append(errs, field.Required(entry.Child("host"), ""))
-			continue
-		}
-		if strings.HasPrefix(host, "*.") && strings.Contains(host[2:], "*") {
-			errs = append(errs, field.Invalid(entry.Child("host"), g.Host,
-				"only a single leading '*.' wildcard is permitted"))
-		} else if !strings.HasPrefix(host, "*.") && strings.Contains(host, "*") {
-			errs = append(errs, field.Invalid(entry.Child("host"), g.Host,
-				"wildcard '*' is only permitted as a leading '*.' segment"))
-		}
+		errs = append(errs, validateExternalHost(entry.Child("host"), g.Host)...)
 		for j, port := range g.Ports {
 			if port < 0 || port > 65535 {
 				errs = append(errs, field.Invalid(entry.Child("ports").Index(j),

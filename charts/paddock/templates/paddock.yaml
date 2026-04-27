@@ -285,22 +285,6 @@ rules:
       - patch
       - update
       - watch
-  # F-18 / Phase 2f: the controller creates per-run/per-Workspace
-  # cert-manager.io/v1 Certificate resources signed by the
-  # paddock-proxy-ca-issuer ClusterIssuer. controller-runtime's cache
-  # also list/watches Certificates cluster-wide because the type is
-  # registered in the manager's scheme.
-  - apiGroups:
-      - cert-manager.io
-    resources:
-      - certificates
-    verbs:
-      - create
-      - get
-      - list
-      - patch
-      - update
-      - watch
   - apiGroups:
       - ""
     resources:
@@ -330,6 +314,17 @@ rules:
     verbs:
       - create
       - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - cert-manager.io
+    resources:
+      - certificates
+    verbs:
+      - create
       - get
       - list
       - patch
@@ -370,6 +365,16 @@ rules:
   - apiGroups:
       - paddock.dev
     resources:
+      - brokerpolicies/status
+      - harnessruns/status
+      - workspaces/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - paddock.dev
+    resources:
       - harnessruns
       - workspaces
     verbs:
@@ -386,15 +391,6 @@ rules:
       - harnessruns/finalizers
       - workspaces/finalizers
     verbs:
-      - update
-  - apiGroups:
-      - paddock.dev
-    resources:
-      - harnessruns/status
-      - workspaces/status
-    verbs:
-      - get
-      - patch
       - update
   - apiGroups:
       - rbac.authorization.k8s.io
@@ -655,6 +651,8 @@ spec:
     matchLabels:
       app.kubernetes.io/component: broker
       app.kubernetes.io/name: paddock
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
@@ -733,6 +731,11 @@ spec:
     matchLabels:
       app.kubernetes.io/name: paddock
       control-plane: controller-manager
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
   template:
     metadata:
       annotations:
@@ -756,9 +759,6 @@ spec:
             - --proxy-ca-cluster-issuer-name=paddock-proxy-ca-issuer
             - --proxy-allow={{ .Values.proxyAllowList | default "" }}
             - --iptables-init-image={{ if .Values.iptablesInitImage.repository }}{{ .Values.iptablesInitImage.repository }}:{{ .Values.iptablesInitImage.tag | default .Chart.AppVersion }}{{ end }}
-            {{- if .Values.seedImage }}
-            - --seed-image={{ .Values.seedImage }}
-            {{- end }}
             - --networkpolicy-enforce={{ .Values.proxy.networkPolicy.enforce | default "auto" }}
             - --broker-ca-secret-name=broker-serving-cert
             - --broker-ca-secret-namespace=paddock-system
@@ -897,23 +897,6 @@ spec:
     - key encipherment
     - cert sign
 ---
-# F-18 / Phase 2f: ClusterIssuer of kind: CA referencing the
-# paddock-proxy-ca Secret. Per-run/per-Workspace Certificate resources
-# created by the controller name this ClusterIssuer to receive
-# intermediate CAs signed by the cluster root. cert-manager must be
-# running with --cluster-resource-namespace=paddock-system so this
-# ClusterIssuer can read the source Secret.
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: paddock-proxy-ca-issuer
-  labels:
-    app.kubernetes.io/name: paddock
-    app.kubernetes.io/component: proxy-ca-issuer
-spec:
-  ca:
-    secretName: paddock-proxy-ca
----
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -931,6 +914,20 @@ spec:
     kind: Issuer
     name: paddock-selfsigned-issuer
   secretName: webhook-server-cert
+---
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  labels:
+    app.kubernetes.io/component: proxy-ca-issuer
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: paddock
+  name: paddock-proxy-ca-issuer
+  namespace: paddock-system
+spec:
+  ca:
+    secretName: paddock-proxy-ca
 ---
 ---
 apiVersion: cert-manager.io/v1

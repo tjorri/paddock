@@ -24,6 +24,7 @@ package policy
 import (
 	"context"
 	"fmt"
+	"path"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -69,15 +70,33 @@ func RequiresEmpty(r paddockv1alpha1.RequireSpec) bool {
 
 // AppliesToTemplate reports whether a BrokerPolicy's
 // appliesToTemplates selector list matches the given template name.
-// A selector of "*" matches anything; otherwise an exact name match is
-// required. See ADR-0014.
+//
+// Selector dialect (Phase 2h Theme 3, F-30): shell-style globs via
+// path.Match. "*" matches any sequence of characters; "?" matches one;
+// "[abc]" character classes are supported. Malformed patterns silently
+// do not match — admission's ValidateAppliesToTemplate catches them at
+// CRD-write time so a malformed selector never reaches this function in
+// production.
 func AppliesToTemplate(selectors []string, templateName string) bool {
 	for _, sel := range selectors {
-		if sel == "*" || sel == templateName {
+		if sel == "*" {
+			return true
+		}
+		ok, err := path.Match(sel, templateName)
+		if err == nil && ok {
 			return true
 		}
 	}
 	return false
+}
+
+// ValidateAppliesToTemplate reports a non-nil error when selector is
+// not a syntactically valid path.Match pattern. Admission uses this to
+// reject malformed entries on BrokerPolicy.spec.appliesToTemplates so
+// the runtime matcher never sees ErrBadPattern.
+func ValidateAppliesToTemplate(selector string) error {
+	_, err := path.Match(selector, "")
+	return err
 }
 
 func getHarnessTemplate(ctx context.Context, c client.Client, namespace, name string) (*paddockv1alpha1.HarnessTemplateSpec, string, error) {

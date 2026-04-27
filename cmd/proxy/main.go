@@ -139,7 +139,7 @@ func main() {
 	if brokerEndpoint != "" {
 		bc, err := proxy.NewBrokerClient(brokerEndpoint, brokerTokenPath, brokerCAPath, runName, runNamespace)
 		if err != nil {
-			setupLog.Error(err, "build broker client")
+			setupLog.Error(err, "broker-endpoint validation failed", "endpoint", brokerEndpoint)
 			os.Exit(1)
 		}
 		validator = bc
