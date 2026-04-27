@@ -78,8 +78,10 @@ var _ = Describe("Phase 2a P0 hotfix validation (hostile harness)", Ordered, fun
 	})
 
 	AfterAll(func() {
-		// Best-effort cleanup. CI tears down the cluster anyway.
-		_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", hostileNamespace, "--ignore-not-found", "--wait=false"))
+		// Wait for namespace + finalizer drain so AfterSuite's
+		// `make undeploy` doesn't race the controller-manager
+		// teardown against in-flight CR finalizers.
+		_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", hostileNamespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 		_, _ = utils.Run(exec.Command("kubectl", "delete", "clusterharnesstemplate", "evil-echo-tg2", "--ignore-not-found"))
 		_, _ = utils.Run(exec.Command("kubectl", "delete", "clusterharnesstemplate", "evil-echo-tg7", "--ignore-not-found"))
 	})
@@ -341,7 +343,9 @@ spec:
 			By("cleanup")
 			_, _ = utils.Run(exec.Command("kubectl", "delete", "job", "-n", seedNamespace, workspaceName+"-probe", "--wait=false"))
 			_, _ = utils.Run(exec.Command("kubectl", "delete", "networkpolicy", "-n", seedNamespace, workspaceName+"-seed-egress", "--wait=false"))
-			_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", seedNamespace, "--wait=false"))
+			// Wait for namespace + finalizer drain so AfterSuite's
+			// `make undeploy` doesn't race CR finalizers.
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", seedNamespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 		})
 	})
 
@@ -506,8 +510,12 @@ spec:
 			}
 
 			By("cleaning up TG-19 namespace")
+			// Wait for namespace + finalizer drain so AfterSuite's
+			// `make undeploy` doesn't race CR finalizers — the
+			// controller has to be alive to remove HarnessRun /
+			// Workspace finalizers before the namespace can disappear.
 			_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-				"delete", "ns", tg19Namespace, "--ignore-not-found", "--wait=false"))
+				"delete", "ns", tg19Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 		})
 	})
 
@@ -522,8 +530,10 @@ spec:
 				"delete", "ns", f32Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 			mustCreateNamespace(f32Namespace)
 			DeferCleanup(func() {
+				// Wait for namespace + finalizer drain (see TG-19 cleanup
+				// note above for why AfterSuite needs a clean slate).
 				_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-					"delete", "ns", f32Namespace, "--ignore-not-found", "--wait=false"))
+					"delete", "ns", f32Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 			})
 
 			invalidName := "f32-invalid-spec"
@@ -578,8 +588,10 @@ spec:
 				"delete", "ns", tgNamespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 			mustCreateNamespace(tgNamespace)
 			DeferCleanup(func() {
+				// Wait for namespace + finalizer drain (see TG-19 cleanup
+				// note above for why AfterSuite needs a clean slate).
 				_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-					"delete", "ns", tgNamespace, "--ignore-not-found", "--wait=false"))
+					"delete", "ns", tgNamespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 			})
 
 			mustApplyToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", tgNamespace)
@@ -632,8 +644,10 @@ spec:
 				"delete", "ns", tgNamespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 			mustCreateNamespace(tgNamespace)
 			DeferCleanup(func() {
+				// Wait for namespace + finalizer drain (see TG-19 cleanup
+				// note above for why AfterSuite needs a clean slate).
 				_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-					"delete", "ns", tgNamespace, "--ignore-not-found", "--wait=false"))
+					"delete", "ns", tgNamespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 			})
 
 			mustApplyToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", tgNamespace)
@@ -694,8 +708,10 @@ spec:
 				"delete", "ns", tgNamespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 			mustCreateNamespace(tgNamespace)
 			DeferCleanup(func() {
+				// Wait for namespace + finalizer drain (see TG-19 cleanup
+				// note above for why AfterSuite needs a clean slate).
 				_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-					"delete", "ns", tgNamespace, "--ignore-not-found", "--wait=false"))
+					"delete", "ns", tgNamespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 			})
 
 			mustApplyToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", tgNamespace)
