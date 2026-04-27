@@ -67,4 +67,4 @@ writable rootfs or run as UID 0.
 Unit tests use `k8s.io/pod-security-admission/policy` to validate the
 built pod spec at PSS-baseline (pod overall) and each first-party
 container at PSS-restricted. See
-`docs/plans/2026-04-26-v0.4-security-review-phase-2e-design.md` §3, §7.
+`docs/superpowers/specs/2026-04-26-v0.4-security-review-phase-2e-design.md` §3, §7.

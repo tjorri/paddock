@@ -15,7 +15,7 @@
 > but the written order keeps reviewer cost monotonically rising.
 
 **Goal:** Land the nine controller dedup/cleanup items C-01 through
-C-09 from `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+C-09 from `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
 as a single coherent "controller hygiene pass" PR.
 
 **Architecture:** Four phases, nine tasks, all on
@@ -43,10 +43,10 @@ Tools: `Read`, `Edit`, `Write`, `Bash` (`go test`, `golangci-lint`,
 - **Branch:** `feature/controller-dedup-pass` (already created,
   rebased onto `main` at commit `a071380`, force-pushed to origin).
 - **Working directory:** `/Users/ttj/projects/personal/paddock`.
-- **Spec:** `docs/plans/2026-04-26-controller-dedup-pass-design.md` —
+- **Spec:** `docs/superpowers/specs/2026-04-26-controller-dedup-pass-design.md` —
   re-read whenever a task says "per the design."
 - **Findings reference:** mini-cards C-01 through C-09 in
-  `docs/plans/2026-04-26-core-systems-tech-review-findings.md`.
+  `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`.
 - **Pre-commit hook** runs `go vet -tags=e2e ./...` and
   `golangci-lint run`. Don't bypass; fix and create a new commit.
 - **Test cadence:** after every task, `go test ./internal/controller/...`
@@ -2283,7 +2283,7 @@ Expected: clean.
 
 - [ ] **Verify each acceptance criterion from the design doc**
 
-Cross-check against `docs/plans/2026-04-26-controller-dedup-pass-design.md`
+Cross-check against `docs/superpowers/specs/2026-04-26-controller-dedup-pass-design.md`
 §Acceptance criteria:
 
 | Criterion | Verify with |

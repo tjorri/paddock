@@ -1,10 +1,10 @@
 # Plan D design: bounded egress discovery window
 
 - Status: Design approved
-- Implements: [spec 0003 §3.6](../specs/0003-broker-secret-injection-v0.4.md#36-observability-and-bounded-discovery-window) (second half — bounded discovery window; the deny-by-default + observability half landed in Plan C)
+- Implements: [spec 0003 §3.6](../../internal/specs/0003-broker-secret-injection-v0.4.md#36-observability-and-bounded-discovery-window) (second half — bounded discovery window; the deny-by-default + observability half landed in Plan C)
 - Roadmap context: [v0.4 followups](./2026-04-24-v04-followups-roadmap.md) § "Plan D"
 - Predecessors: Plan A (broker secret injection core), Plan B (interception opt-in), Plan C (`paddock policy suggest`)
-- Successor artifact: implementation plan at `docs/plans/2026-04-25-egress-discovery-window.md` (written next)
+- Successor artifact: implementation plan at `docs/superpowers/plans/2026-04-25-egress-discovery-window.md` (written next)
 
 ## Summary
 
@@ -371,7 +371,7 @@ The defensive recompute in `FilterUnexpired` (rather than blindly trusting `Disc
 
 ## Documentation
 
-Append a "Discovery window" section to `docs/migrations/v0.3-to-v0.4.md` after Plan C's "Bootstrapping an allowlist" section. Show:
+Append a "Discovery window" section to `docs/internal/migrations/v0.3-to-v0.4.md` after Plan C's "Bootstrapping an allowlist" section. Show:
 
 - The minimal `egressDiscovery` block in YAML.
 - The two conditions to watch for (`DiscoveryModeActive`, `DiscoveryExpired`).
@@ -398,9 +398,9 @@ Append a "Discovery window" section to `docs/migrations/v0.3-to-v0.4.md` after P
 | `internal/broker/server.go` | DiscoveryActive plumbing | +20 |
 | `cmd/main.go` | wire BrokerPolicyReconciler | +5 |
 | `internal/cli/policy.go` + test | extend suggest filter | +30 |
-| `docs/migrations/v0.3-to-v0.4.md` | "Discovery window" section | +50 |
-| `docs/plans/2026-04-25-egress-discovery-window-design.md` | this doc | ~480 |
-| `docs/plans/2026-04-25-egress-discovery-window.md` | implementation plan (next) | ~700 |
+| `docs/internal/migrations/v0.3-to-v0.4.md` | "Discovery window" section | +50 |
+| `docs/superpowers/specs/2026-04-25-egress-discovery-window-design.md` | this doc | ~480 |
+| `docs/superpowers/plans/2026-04-25-egress-discovery-window.md` | implementation plan (next) | ~700 |
 
 **~910 LOC of code/test/docs**, plus ~1180 LOC of plan documents. ~7-8 implementation tasks distributed across small focused changes.
 

@@ -1,9 +1,9 @@
 # Plan C design: `paddock policy suggest` + observability
 
 - Status: Design approved
-- Implements: [spec 0003 §3.6](../specs/0003-broker-secret-injection-v0.4.md#36-observability-and-bounded-discovery-window) (first half — deny-by-default + observability; the bounded discovery window is Plan D)
+- Implements: [spec 0003 §3.6](../../internal/specs/0003-broker-secret-injection-v0.4.md#36-observability-and-bounded-discovery-window) (first half — deny-by-default + observability; the bounded discovery window is Plan D)
 - Roadmap context: [v0.4 followups](./2026-04-24-v04-followups-roadmap.md) § "Plan C"
-- Successor artifact: implementation plan at `docs/plans/2026-04-24-policy-suggest-observability.md` (written next)
+- Successor artifact: implementation plan at `docs/superpowers/plans/2026-04-24-policy-suggest-observability.md` (written next)
 
 ## Summary
 
@@ -116,7 +116,7 @@ No integration tests needed. The CLI does not touch any running cluster surface 
 
 ## Documentation
 
-Add a "Bootstrapping an allowlist" subsection to `docs/migrations/v0.3-to-v0.4.md` (after the existing `## Interception mode` section added by Plan B). Per the roadmap's Plan E note and user memory about user-facing docs being first-class deliverables alongside the implementation, docs ship with the feature:
+Add a "Bootstrapping an allowlist" subsection to `docs/internal/migrations/v0.3-to-v0.4.md` (after the existing `## Interception mode` section added by Plan B). Per the roadmap's Plan E note and user memory about user-facing docs being first-class deliverables alongside the implementation, docs ship with the feature:
 
 ```markdown
 ## Bootstrapping an allowlist
@@ -143,9 +143,9 @@ audited, the iteration loop is:
 |---|---|---|
 | `internal/cli/policy.go` (or new `policy_suggest.go`) | New `policy suggest` command + helpers | ~100 |
 | `internal/cli/policy_suggest_test.go` | Fake-client unit tests, 8 cases | ~200 |
-| `docs/migrations/v0.3-to-v0.4.md` | "Bootstrapping an allowlist" subsection | ~25 |
-| `docs/plans/2026-04-24-policy-suggest-observability-design.md` | This design doc | ~200 |
-| `docs/plans/2026-04-24-policy-suggest-observability.md` | Implementation plan (written next) | ~400 |
+| `docs/internal/migrations/v0.3-to-v0.4.md` | "Bootstrapping an allowlist" subsection | ~25 |
+| `docs/superpowers/specs/2026-04-24-policy-suggest-observability-design.md` | This design doc | ~200 |
+| `docs/superpowers/plans/2026-04-24-policy-suggest-observability.md` | Implementation plan (written next) | ~400 |
 
 **Implementation plan task count:** ~4 tasks (CLI + test RED/GREEN pair, docs, optional polish pass).
 

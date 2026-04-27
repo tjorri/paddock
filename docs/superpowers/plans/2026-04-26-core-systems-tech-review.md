@@ -10,8 +10,8 @@
 > Task 6 synthesizes after 2–5 are all done. Tasks 7–10 are sequential.
 
 **Goal:** Produce the engineering-quality review described in
-`docs/plans/2026-04-26-core-systems-tech-review-design.md`. Deliverable
-is `docs/plans/2026-04-26-core-systems-tech-review-findings.md`.
+`docs/superpowers/specs/2026-04-26-core-systems-tech-review-design.md`. Deliverable
+is `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`.
 
 **Architecture:** Two phases. **Analysis phase** (Tasks 1–6) reads code
 and prior art, writing per-area observation notes to scratch files at
@@ -33,7 +33,7 @@ parallelizing the per-subsystem analysis in Tasks 2–4.
 - **Working directory:** `/Users/ttj/projects/personal/paddock-2`.
 - **Scratch files:** `/tmp/paddock-tech-review-{prior-art,controller,
   broker,proxy,tldr,synthesis}.md`. Not committed; deleted at the end.
-- **Spec:** `docs/plans/2026-04-26-core-systems-tech-review-design.md` —
+- **Spec:** `docs/superpowers/specs/2026-04-26-core-systems-tech-review-design.md` —
   re-read it whenever a task says "per the spec."
 - **Lenses (from spec §4):**
   - Deep: **Architecture & boundaries** (1), **Reuse & duplication** (2),
@@ -53,22 +53,22 @@ parallelizing the per-subsystem analysis in Tasks 2–4.
 ## Task 1: Read the prior art
 
 **Files:**
-- Read: `docs/security/2026-04-25-v0.4-audit-findings.md`
-- Read: `docs/security/2026-04-25-v0.4-test-gaps.md`
-- Read: `docs/adr/0009-sidecar-ordering.md`,
-  `docs/adr/0011-prompt-materialisation-uses-secret.md`,
-  `docs/adr/0012-broker-architecture.md`,
-  `docs/adr/0013-proxy-interception-modes.md`,
-  `docs/adr/0014-capability-model-and-admission.md`,
-  `docs/adr/0015-provider-interface.md`,
-  `docs/adr/0016-auditevent-retention.md`,
-  `docs/adr/0017-controller-conflict-handling.md`
+- Read: `docs/internal/security-audits/2026-04-25-v0.4-audit-findings.md`
+- Read: `docs/internal/security-audits/2026-04-25-v0.4-test-gaps.md`
+- Read: `docs/contributing/adr/0009-sidecar-ordering.md`,
+  `docs/contributing/adr/0011-prompt-materialisation-uses-secret.md`,
+  `docs/contributing/adr/0012-broker-architecture.md`,
+  `docs/contributing/adr/0013-proxy-interception-modes.md`,
+  `docs/contributing/adr/0014-capability-model-and-admission.md`,
+  `docs/contributing/adr/0015-provider-interface.md`,
+  `docs/contributing/adr/0016-auditevent-retention.md`,
+  `docs/contributing/adr/0017-controller-conflict-handling.md`
 - Write: `/tmp/paddock-tech-review-prior-art.md`
 
 - [ ] **Step 1: Read both v0.4 security docs in full**
 
-Open `docs/security/2026-04-25-v0.4-audit-findings.md` and
-`docs/security/2026-04-25-v0.4-test-gaps.md`. For each finding,
+Open `docs/internal/security-audits/2026-04-25-v0.4-audit-findings.md` and
+`docs/internal/security-audits/2026-04-25-v0.4-test-gaps.md`. For each finding,
 capture: (a) which subsystem it touches (controller/broker/proxy/
 shared/other), (b) the anchor or section heading you can link to,
 (c) a one-sentence summary.
@@ -534,22 +534,22 @@ This feeds the spec §9 step-5 section.
 ## Task 7: Initialize the review document with structure
 
 **Files:**
-- Create: `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+- Create: `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
 
 - [ ] **Step 1: Write the document skeleton**
 
 Create
-`docs/plans/2026-04-26-core-systems-tech-review-findings.md` with
+`docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md` with
 this exact skeleton (sections empty for now):
 
 ```markdown
 # Core-systems engineering-quality review
 
-> **Companion to:** `docs/security/2026-04-25-v0.4-audit-findings.md`
-> (security) and `docs/security/2026-04-25-v0.4-test-gaps.md`
+> **Companion to:** `docs/internal/security-audits/2026-04-25-v0.4-audit-findings.md`
+> (security) and `docs/internal/security-audits/2026-04-25-v0.4-test-gaps.md`
 > (coverage). This review covers the engineering-quality dimension:
 > architecture, reuse, testability. See the spec at
-> `docs/plans/2026-04-26-core-systems-tech-review-design.md`.
+> `docs/superpowers/specs/2026-04-26-core-systems-tech-review-design.md`.
 
 ## 1. Context
 
@@ -585,7 +585,7 @@ this exact skeleton (sections empty for now):
 - [ ] **Step 2: Commit the skeleton**
 
 ```bash
-git add docs/plans/2026-04-26-core-systems-tech-review-findings.md
+git add docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md
 git commit -m "docs(plans): scaffold core-systems tech-review findings doc
 
 Empty section skeleton; content fills in over subsequent commits."
@@ -597,8 +597,8 @@ Empty section skeleton; content fills in over subsequent commits."
 
 **Files:**
 - Read (scratch): all six `/tmp/paddock-tech-review-*.md` files.
-- Read (spec): `docs/plans/2026-04-26-core-systems-tech-review-design.md`
-- Edit: `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+- Read (spec): `docs/superpowers/specs/2026-04-26-core-systems-tech-review-design.md`
+- Edit: `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
 
 - [ ] **Step 1: Write the Context section (§1)**
 
@@ -655,7 +655,7 @@ words.
 - [ ] **Step 4: Commit progress**
 
 ```bash
-git add docs/plans/2026-04-26-core-systems-tech-review-findings.md
+git add docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md
 git commit -m "docs(plans): write context + deep-lens + TLDR sections of tech review"
 ```
 
@@ -665,7 +665,7 @@ git commit -m "docs(plans): write context + deep-lens + TLDR sections of tech re
 
 **Files:**
 - Read: `/tmp/paddock-tech-review-synthesis.md`
-- Edit: `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+- Edit: `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
 
 - [ ] **Step 1: Group mini-cards by subsystem**
 
@@ -716,7 +716,7 @@ good shape>".
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/plans/2026-04-26-core-systems-tech-review-findings.md
+git add docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md
 git commit -m "docs(plans): write prioritized backlog and non-findings of tech review"
 ```
 
@@ -725,8 +725,8 @@ git commit -m "docs(plans): write prioritized backlog and non-findings of tech r
 ## Task 10: Polish, spec-coverage check, scratch cleanup
 
 **Files:**
-- Read: `docs/plans/2026-04-26-core-systems-tech-review-design.md`
-- Edit (final pass): `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+- Read: `docs/superpowers/specs/2026-04-26-core-systems-tech-review-design.md`
+- Edit (final pass): `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
 - Delete: `/tmp/paddock-tech-review-*.md`
 
 - [ ] **Step 1: Spec-coverage check**
@@ -773,7 +773,7 @@ rm /tmp/paddock-tech-review-*.md
 - [ ] **Step 4: Final commit**
 
 ```bash
-git add docs/plans/2026-04-26-core-systems-tech-review-findings.md
+git add docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md
 git commit -m "docs(plans): polish core-systems tech-review findings"
 ```
 
@@ -788,14 +788,14 @@ gh pr create --title "docs(plans): core-systems engineering-quality review" \
 ## Summary
 - Adds the engineering-quality review of the controller, broker, and proxy
   subsystems (companion to the v0.4 security audit).
-- Three deliverables under `docs/plans/`: spec (`-design.md`), plan
+- Three deliverables under `docs/superpowers/plans/`: spec (`-design.md`), plan
   (unsuffixed), and the review itself (`-findings.md`).
 - Prioritized backlog of P0/P1/P2 mini-cards for refactor leverage.
 
 ## Files
-- `docs/plans/2026-04-26-core-systems-tech-review-design.md` (spec)
-- `docs/plans/2026-04-26-core-systems-tech-review.md` (plan)
-- `docs/plans/2026-04-26-core-systems-tech-review-findings.md` (review)
+- `docs/superpowers/specs/2026-04-26-core-systems-tech-review-design.md` (spec)
+- `docs/superpowers/plans/2026-04-26-core-systems-tech-review.md` (plan)
+- `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md` (review)
 
 ## Test plan
 - [ ] Read the findings doc end-to-end; confirm 30–45 min read time.

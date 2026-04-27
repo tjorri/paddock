@@ -2,10 +2,10 @@
 
 - Owner: @tjorri
 - Date: 2026-04-27
-- Status: Design (spec). Plan to follow at `docs/plans/2026-04-27-theme-1-workspace-seed-security.md`.
+- Status: Design (spec). Plan to follow at `docs/superpowers/plans/2026-04-27-theme-1-workspace-seed-security.md`.
 - Tracks: GitHub issue #42.
 - Predecessors: Phase 2c (audit fail-closed), 2d (Owns()), 2e (per-container PSS), 2f (per-run intermediate CA), 2g (substitute-auth hygiene + admission AuditEvents).
-- Related: `docs/plans/2026-04-26-v0.4-security-recheck-roadmap.md` (Theme 1 section); `docs/security/2026-04-25-v0.4-audit-findings.md` (F-46–F-52 detail blocks).
+- Related: `docs/superpowers/plans/2026-04-26-v0.4-security-recheck-roadmap.md` (Theme 1 section); `docs/internal/security-audits/2026-04-25-v0.4-audit-findings.md` (F-46–F-52 detail blocks).
 
 ## Context
 
@@ -44,9 +44,9 @@ Same files the issue calls out, plus a small refactor and four new docs:
 - `internal/controller/workspace_controller.go` — `Owns(&corev1.ServiceAccount{}, &rbacv1.Role{}, &rbacv1.RoleBinding{})` for the new per-Workspace seed RBAC bundle; reaction to the new terminal `BrokerCAMisconfigured` / `ProxyCAMisconfigured` reasons.
 - `cmd/main.go` — `--seed-image` flag (F-49).
 - `charts/paddock/values.yaml` + templates — `controller.seedImage` value (F-49).
-- `docs/adr/0018-third-party-image-policy.md` — new ADR articulating the third-party image trust criteria (F-49).
-- `docs/adr/0006-git-credentials.md` — trailing "Phase 2h update (2026-04-27)" section noting "URLs must not contain userinfo" (F-50).
-- `docs/specs/0002-broker-proxy-v0.3.md` — one-line addition to the AuditEvent section: `runRef.name` values prefixed `seed-` denote workspace-seed-time decisions (F-52).
+- `docs/contributing/adr/0018-third-party-image-policy.md` — new ADR articulating the third-party image trust criteria (F-49).
+- `docs/contributing/adr/0006-git-credentials.md` — trailing "Phase 2h update (2026-04-27)" section noting "URLs must not contain userinfo" (F-50).
+- `docs/internal/specs/0002-broker-proxy-v0.3.md` — one-line addition to the AuditEvent section: `runRef.name` values prefixed `seed-` denote workspace-seed-time decisions (F-52).
 - `docs/security/threat-model.md` — T-5 row updated from "Paddock-authored seed image" framing to a citation of the new ADR.
 - `CONTRIBUTING.md` — one-line pointer to the new ADR for image-choice decisions.
 - `CHANGELOG.md` — owned by `release-please`; not edited manually. Conventional Commit messages provide the entries.
@@ -97,10 +97,10 @@ Pattern reuse from Phase 2:
 - `ImagePullPolicy`:
   - Default (digest-pinned) → `IfNotPresent` is safe; digest is content-addressed.
   - Operator override with a tag-only ref → reconciler emits a startup-time `WARN third-party-image-policy: --seed-image is tag-pinned, not digest-pinned` and forces `ImagePullPolicy: Always`.
-- New ADR `docs/adr/0018-third-party-image-policy.md`:
+- New ADR `docs/contributing/adr/0018-third-party-image-policy.md`:
   - Criteria: audited (manifest + base layers reviewed against published vendor advisories); digest-pinned in source code, not just tag; operator override available; ImagePullPolicy=Always when override drops back to a tag-only ref; CI vulnerability-scanned where the image is bundled into a Paddock-built layer (Trivy on first-party images covers transitive base layers; direct-use third-party images like `alpine/git` rely on the vendor's advisory feed plus a stated audit cadence captured in the ADR).
   - Sweep: at plan-writing time, audit `images/*/Dockerfile` base layers, every image string in `internal/controller/`, and any test-helper images. Capture the audit result in the ADR's "Initial sweep" section.
-- Threat model T-5 row updated from "Paddock-authored seed image" framing to "third-party seed image used under the policy in `docs/adr/0018-third-party-image-policy.md`".
+- Threat model T-5 row updated from "Paddock-authored seed image" framing to "third-party seed image used under the policy in `docs/contributing/adr/0018-third-party-image-policy.md`".
 - `CONTRIBUTING.md` gets a one-line pointer.
 
 ### F-50 — Userinfo in URL
@@ -125,7 +125,7 @@ Pattern reuse from Phase 2:
 
 - Drop `--disable-audit` from `buildSeedProxySidecar`'s args slice.
 - `--run-name=seed-<ws>` and `--run-namespace=<ns>` already populate `ClientAuditSink.RunName` / `Namespace` correctly; the resulting AuditEvent's `spec.runRef.name` is `seed-<ws>`. No proxy-side code change beyond the flag removal.
-- AuditEvent godoc on `AuditEventSpec.RunRef` (`api/v1alpha1/auditevent_types.go`) gets a one-line addition: "Names prefixed `seed-` denote a workspace-seed-time decision; the suffix is the Workspace name." Same line added to spec `docs/specs/0002-broker-proxy-v0.3.md`'s AuditEvent section.
+- AuditEvent godoc on `AuditEventSpec.RunRef` (`api/v1alpha1/auditevent_types.go`) gets a one-line addition: "Names prefixed `seed-` denote a workspace-seed-time decision; the suffix is the Workspace name." Same line added to spec `docs/internal/specs/0002-broker-proxy-v0.3.md`'s AuditEvent section.
 - RBAC: covered by the F-48 Role (`auditevents.paddock.dev` `create`).
 - Inherits Phase 2c fail-closed semantics for free — no new error-handling code.
 

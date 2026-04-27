@@ -98,4 +98,4 @@ Controller flag changes: `--proxy-ca-secret-name` and
 `--proxy-ca-secret-namespace` removed; `--proxy-ca-cluster-issuer-name`
 added (default `paddock-proxy-ca-issuer`).
 
-See `docs/plans/2026-04-26-v0.4-security-review-phase-2f-design.md`.
+See `docs/superpowers/specs/2026-04-26-v0.4-security-review-phase-2f-design.md`.

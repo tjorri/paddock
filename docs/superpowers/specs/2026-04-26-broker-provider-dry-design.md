@@ -1,7 +1,7 @@
 # Broker provider DRY + tests — design
 
 **Status:** Design draft 2026-04-26
-**Spec source:** `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+**Spec source:** `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
 **Mini-cards in scope:** B-03, B-05, B-06, B-07, B-08, B-09, B-10, XC-03
 **Sequence position:** Fourth of five thematic refactors. Independent
 of the brokerclient, proxy-mitm, and controller-dedup refactors; can
@@ -228,7 +228,7 @@ separately).
 
 ## References
 
-- **Findings:** `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+- **Findings:** `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
   - B-03 (unify `hostMatchesGlobs` with `policy.EgressHostMatches`)
   - B-05 (PATPool concurrent-Issue stress test)
   - B-06 (PATPool stale-PAT window)

@@ -1,7 +1,7 @@
 # v0.4 follow-up roadmap: Plans B–E
 
-**Related spec:** `docs/specs/0003-broker-secret-injection-v0.4.md`
-**Related plan (shipped):** `docs/plans/2026-04-24-broker-secret-injection-core.md` (Plan A)
+**Related spec:** `docs/internal/specs/0003-broker-secret-injection-v0.4.md`
+**Related plan (shipped):** `docs/superpowers/plans/2026-04-24-broker-secret-injection-core.md` (Plan A)
 
 This is a lightweight planning memo — not an executable plan. It captures what's left of spec 0003 after Plan A lands, the patterns Plan A established that the follow-ups should reuse, and known complexity spots. Use it as the starting point when writing the full plan for each follow-up.
 
@@ -92,8 +92,8 @@ Implements spec 0003 §5.
 - Updated security-overview section in spec 0002 reflecting the new admission guarantees.
 
 **Things to reuse**
-- The migration doc `docs/migrations/v0.3-to-v0.4.md` establishes the tone and YAML-example style. Extend that voice.
-- `docs/specs/0003-broker-secret-injection-v0.4.md` §3.9 has a full worked example that the "UserSuppliedSecret with proxyInjected" cookbook can specialize.
+- The migration doc `docs/internal/migrations/v0.3-to-v0.4.md` establishes the tone and YAML-example style. Extend that voice.
+- `docs/internal/specs/0003-broker-secret-injection-v0.4.md` §3.9 has a full worked example that the "UserSuppliedSecret with proxyInjected" cookbook can specialize.
 - ADR-0015 (`provider-interface.md`) is the existing provider-author-facing doc — extend it rather than duplicate.
 
 **Known complexity**

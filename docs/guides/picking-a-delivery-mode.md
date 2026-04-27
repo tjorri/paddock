@@ -107,6 +107,6 @@ each pattern.
   per-pattern setup.
 - [anthropic-api.md](./anthropic-api.md), [github-app.md](./github-app.md),
   [pat-pool.md](./pat-pool.md) — vertical providers.
-- [Spec 0003 §3.1](../specs/0003-broker-secret-injection-v0.4.md) — design
+- [Spec 0003 §3.1](../internal/specs/0003-broker-secret-injection-v0.4.md) — design
   intent for the unified `UserSuppliedSecret` model and the explicit
   delivery-mode opt-in.

@@ -35,7 +35,7 @@ Failure is loud: `backoffLimit: 0`, so a missing-key or bad-credentials failure 
 ## Consequences
 
 - Private-repo seeding works end-to-end without the broker (which is v0.4+). When the broker arrives, it synthesises short-lived Secrets matching the same schema; the Workspace controller doesn't change.
-- Users have to know that `password` is the key for a PAT. Documented in the Go doc comment on `CredentialsSecretRef` and in `docs/specs/0001-core-v0.1.md` §2.3.
+- Users have to know that `password` is the key for a PAT. Documented in the Go doc comment on `CredentialsSecretRef` and in `docs/internal/specs/0001-core-v0.1.md` §2.3.
 - `StrictHostKeyChecking=accept-new` trusts the remote on first connection. For the tightly scoped seed pod this is acceptable; locked-down environments can pin a `known_hosts` via a future `knownHostsSecretRef` without changing today's contract.
 - The tmpfs scratch mount means credential artefacts live only in the pod's memory; a `kubectl cp` from the PVC cannot exfiltrate them.
 

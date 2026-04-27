@@ -139,7 +139,7 @@ type Options struct {
 // F-29: a hostile env or a future config-pull regression that hands
 // brokerclient.New a redirected endpoint would otherwise leak the
 // projected SA bearer to whatever URL is supplied. See
-// docs/security/2026-04-25-v0.4-audit-findings.md.
+// docs/internal/security-audits/2026-04-25-v0.4-audit-findings.md.
 func validateBrokerEndpoint(endpoint string) error {
 	trimmed := strings.TrimRight(endpoint, "/")
 	u, err := url.Parse(trimmed)

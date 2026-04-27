@@ -104,7 +104,7 @@ spec:
 ## See also
 
 - [picking-a-delivery-mode.md](./picking-a-delivery-mode.md) — entry point.
-- [Spec 0003 §3.7](../specs/0003-broker-secret-injection-v0.4.md) — design
+- [Spec 0003 §3.7](../internal/specs/0003-broker-secret-injection-v0.4.md) — design
   intent for the explicit interception opt-in.
-- [ADR-0013](../adr/0013-proxy-interception-modes.md) — historical decision
+- [ADR-0013](../contributing/adr/0013-proxy-interception-modes.md) — historical decision
   record on transparent vs cooperative.

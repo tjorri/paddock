@@ -29,18 +29,18 @@ The v0.4 release tightens the admission story per spec 0003:
 
 - **Deny-by-default egress.** The v0.3 `denyMode: warn` escape hatch is
   removed. Bounded discovery windows replace it for bootstrap iteration —
-  see [discovery-window.md](../cookbooks/discovery-window.md) and spec
+  see [discovery-window.md](../../guides/discovery-window.md) and spec
   0003 §3.6.
 - **In-container credential delivery is opt-in.** The renamed
   `UserSuppliedSecret` provider requires
   `deliveryMode.inContainer.accepted: true` plus a ≥20-char written
   reason for any credential the agent container will see in plaintext.
-  See spec 0003 §3.1 and [usersuppliedsecret.md](../cookbooks/usersuppliedsecret.md).
+  See spec 0003 §3.1 and [usersuppliedsecret.md](../../guides/usersuppliedsecret.md).
 - **Cooperative interception is opt-in.** The v0.3 silent fallback to
   cooperative when PSA blocks `NET_ADMIN` is replaced by an explicit
   `spec.interception.cooperativeAccepted` opt-in. Without it, the run
   fails closed with `Condition: InterceptionUnavailable`. See spec 0003
-  §3.7 and [interception-mode.md](../cookbooks/interception-mode.md).
+  §3.7 and [interception-mode.md](../../guides/interception-mode.md).
 - **Bounded discovery is admission-gated.** `spec.egressDiscovery` is
   capped at 7 days; expired windows make policies non-effective and
   HarnessRun admission rejects new runs against them. See spec 0003 §3.6.
@@ -309,7 +309,7 @@ Rotation: cert-manager renews the CA on its own cadence; the controller rolls ru
 
 #### Phase 2f update (2026-04-26): per-run intermediate CA
 
-Each run now gets a unique intermediate CA issued by cert-manager via a `ClusterIssuer` of `kind: CA` named `paddock-proxy-ca-issuer` (which references the existing cluster-wide `paddock-proxy-ca` Secret as its signing root). The controller creates a per-run `Certificate` resource in the run's namespace with `isCA: true`; cert-manager produces the backing `<run>-proxy-tls` Secret with the per-run intermediate keypair. The agent's CA-trust env vars (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, etc.) now point at the per-run intermediate cert (`tls.crt`) — NOT the cluster root cert. The cluster root private key never leaves cert-manager's signing path; tenant A's agent does not trust leaves signed by tenant B's intermediate. The proxy sidecar's chain (`[leaf, intermediate]`) validates against the agent's intermediate trust anchor. The seed-Pod path (Workspaces) gets analogous per-Workspace treatment (1y duration / 30d renewBefore). See ADR-0013 "Phase 2f update" and `docs/plans/2026-04-26-v0.4-security-review-phase-2f-design.md`.
+Each run now gets a unique intermediate CA issued by cert-manager via a `ClusterIssuer` of `kind: CA` named `paddock-proxy-ca-issuer` (which references the existing cluster-wide `paddock-proxy-ca` Secret as its signing root). The controller creates a per-run `Certificate` resource in the run's namespace with `isCA: true`; cert-manager produces the backing `<run>-proxy-tls` Secret with the per-run intermediate keypair. The agent's CA-trust env vars (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, etc.) now point at the per-run intermediate cert (`tls.crt`) — NOT the cluster root cert. The cluster root private key never leaves cert-manager's signing path; tenant A's agent does not trust leaves signed by tenant B's intermediate. The proxy sidecar's chain (`[leaf, intermediate]`) validates against the agent's intermediate trust anchor. The seed-Pod path (Workspaces) gets analogous per-Workspace treatment (1y duration / 30d renewBefore). See ADR-0013 "Phase 2f update" and `docs/superpowers/specs/2026-04-26-v0.4-security-review-phase-2f-design.md`.
 
 ### 7.4 NetworkPolicy layer
 
@@ -542,7 +542,7 @@ Parked as TODOs; answered in M0 ADRs or in-milestone:
 - **Broker HA mode.** Default 1 replica; leader election trivial since the broker is stateless. v0.3 ships `replicas: N` as a supported chart value but we don't write load tests.
 - **AuditEvent → external sink.** 30-day etcd retention is fine for demos; production wants S3 or a log pipeline. The shape should support a streaming export hook, but v0.3 ships only the CRD.
 - **Proxy `cooperative` mode threat disclosure.** Documented as weaker; what's the enforceable form? Add a BrokerPolicy field `minInterceptionMode: transparent` that rejects runs trying to weaken?
-- ~~**Per-run intermediate CA** so the cluster root key never leaves `paddock-system`.~~ Resolved in Phase 2f (2026-04-26); see `docs/plans/2026-04-26-v0.4-security-review-phase-2f-design.md`.
+- ~~**Per-run intermediate CA** so the cluster root key never leaves `paddock-system`.~~ Resolved in Phase 2f (2026-04-26); see `docs/superpowers/specs/2026-04-26-v0.4-security-review-phase-2f-design.md`.
 
 ## 17. What's explicitly not v0.3
 

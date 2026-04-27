@@ -4,13 +4,13 @@
 
 **Goal:** Add a fourth `paddock policy` verb — `suggest` — that reads existing `AuditEvent` CRDs for denied egress (kind=egress-block) in the current namespace, groups by (host, port), and prints a ready-to-paste `BrokerPolicy.spec.grants.egress` YAML snippet.
 
-**Architecture:** Pure consumer of already-emitted data. No changes to proxy, broker, API types, admission webhooks, or the reconciler — only `internal/cli/` gets new files. Run-scoped via `--run <name>` (default mode); namespace-wide via `--all`; optional `--since <duration>` window. See `docs/plans/2026-04-24-policy-suggest-observability-design.md` for the three resolved open questions (AuditEvents only, both scopes supported, aggregation deferred).
+**Architecture:** Pure consumer of already-emitted data. No changes to proxy, broker, API types, admission webhooks, or the reconciler — only `internal/cli/` gets new files. Run-scoped via `--run <name>` (default mode); namespace-wide via `--all`; optional `--since <duration>` window. See `docs/superpowers/specs/2026-04-24-policy-suggest-observability-design.md` for the three resolved open questions (AuditEvents only, both scopes supported, aggregation deferred).
 
 **Tech Stack:** Go, Cobra, controller-runtime client, Ginkgo/Gomega NOT used here (the CLI tests are plain `*testing.T` + `sigs.k8s.io/controller-runtime/pkg/client/fake`).
 
-**Related spec:** `docs/specs/0003-broker-secret-injection-v0.4.md` §3.6 (first half — observability; the bounded discovery window is Plan D).
-**Related design doc:** `docs/plans/2026-04-24-policy-suggest-observability-design.md`.
-**Related roadmap:** `docs/plans/2026-04-24-v04-followups-roadmap.md` § "Plan C".
+**Related spec:** `docs/internal/specs/0003-broker-secret-injection-v0.4.md` §3.6 (first half — observability; the bounded discovery window is Plan D).
+**Related design doc:** `docs/superpowers/specs/2026-04-24-policy-suggest-observability-design.md`.
+**Related roadmap:** `docs/superpowers/plans/2026-04-24-v04-followups-roadmap.md` § "Plan C".
 
 **Out-of-scope for this plan:**
 
@@ -32,7 +32,7 @@
 
 ### Files modified — docs
 
-- `docs/migrations/v0.3-to-v0.4.md` — append a `## Bootstrapping an allowlist` section after the existing `## Interception mode` section (landed by Plan B).
+- `docs/internal/migrations/v0.3-to-v0.4.md` — append a `## Bootstrapping an allowlist` section after the existing `## Interception mode` section (landed by Plan B).
 
 ### Files NOT touched
 
@@ -593,19 +593,19 @@ Conventional Commits; `feat(cli):` since this adds a new verb. No `!` (the CLI i
 ## Task 3: Docs — "Bootstrapping an allowlist" migration subsection
 
 **Files:**
-- Modify: `docs/migrations/v0.3-to-v0.4.md`
+- Modify: `docs/internal/migrations/v0.3-to-v0.4.md`
 
 - [ ] **Step 1: Find the current insertion point**
 
-Run: `grep -n '^## ' docs/migrations/v0.3-to-v0.4.md`
+Run: `grep -n '^## ' docs/internal/migrations/v0.3-to-v0.4.md`
 Expected: a list of section headers ending with `## Interception mode` (the Plan B docs section). The new `## Bootstrapping an allowlist` section goes after that one.
 
-Run: `tail -20 docs/migrations/v0.3-to-v0.4.md`
+Run: `tail -20 docs/internal/migrations/v0.3-to-v0.4.md`
 Expected: the tail of the file ends the Interception mode section with its fenced YAML example about `cooperativeAccepted` and a short trailing paragraph about the 20-character reason minimum.
 
 - [ ] **Step 2: Append the section**
 
-Append the following to the end of `docs/migrations/v0.3-to-v0.4.md`:
+Append the following to the end of `docs/internal/migrations/v0.3-to-v0.4.md`:
 
 ```markdown
 
@@ -659,16 +659,16 @@ or `kubectl get auditevents -l paddock.dev/kind=egress-block`.
 
 - [ ] **Step 3: Verify the document still renders**
 
-Run: `grep -c '^## ' docs/migrations/v0.3-to-v0.4.md`
+Run: `grep -c '^## ' docs/internal/migrations/v0.3-to-v0.4.md`
 Expected: the header count increased by 1 compared to before Step 2.
 
-Run: `head -c 1 docs/migrations/v0.3-to-v0.4.md` then `tail -c 1 docs/migrations/v0.3-to-v0.4.md`
+Run: `head -c 1 docs/internal/migrations/v0.3-to-v0.4.md` then `tail -c 1 docs/internal/migrations/v0.3-to-v0.4.md`
 Expected: starts with `#` (the top-level heading); ends with a newline (the file should not have been truncated). If the tail is missing a newline, add one.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docs/migrations/v0.3-to-v0.4.md
+git add docs/internal/migrations/v0.3-to-v0.4.md
 git commit -m "docs(migration): add bootstrapping-an-allowlist workflow for policy suggest"
 ```
 
@@ -711,7 +711,7 @@ Expected: three implementation commits on top of the design-doc commit (`8c13813
 - `docs(migration): add bootstrapping-an-allowlist workflow for policy suggest`
 
 Run: `git show --stat HEAD~1 HEAD` (the two implementation commits)
-Expected: the feat commit touches only `internal/cli/policy.go` and `internal/cli/policy_suggest_test.go`; the docs commit touches only `docs/migrations/v0.3-to-v0.4.md`.
+Expected: the feat commit touches only `internal/cli/policy.go` and `internal/cli/policy_suggest_test.go`; the docs commit touches only `docs/internal/migrations/v0.3-to-v0.4.md`.
 
 - [ ] **Step 4: If anything is off, fix it in a new commit**
 
@@ -725,7 +725,7 @@ No commit at Step 4 unless a fix is needed.
 
 **Spec coverage:** Every §3.6 first-half requirement maps to a Plan C task or a pre-existing code path (see Task 4 Step 1 table).
 
-**Placeholder scan:** The only forward reference in the plan is to `docs/plans/2026-04-24-policy-suggest-observability-design.md` (the design doc committed at `8c13813`) and to `docs/plans/2026-04-24-v04-followups-roadmap.md` — both exist in the worktree already.
+**Placeholder scan:** The only forward reference in the plan is to `docs/superpowers/specs/2026-04-24-policy-suggest-observability-design.md` (the design doc committed at `8c13813`) and to `docs/superpowers/plans/2026-04-24-v04-followups-roadmap.md` — both exist in the worktree already.
 
 **Type consistency:** `suggestOptions` fields (`runName`, `allInNamespace`, `since`) are named identically in Task 1's tests and Task 2's implementation. `hostPort` struct and `groupDeniedEgress` / `renderSuggestion` helpers are defined in Task 2 and referenced (indirectly via `runPolicySuggest`) from Task 1's tests.
 

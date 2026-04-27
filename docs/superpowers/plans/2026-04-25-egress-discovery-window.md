@@ -8,8 +8,8 @@
 
 **Tech Stack:** Go, Kubebuilder v4, controller-runtime, controller-gen, Ginkgo/Gomega (envtest), plain `*testing.T` + `fake.Client` (unit).
 
-**Related spec:** `docs/specs/0003-broker-secret-injection-v0.4.md` §3.6 second half.
-**Related design doc:** `docs/plans/2026-04-25-egress-discovery-window-design.md` (resolved 5 open questions).
+**Related spec:** `docs/internal/specs/0003-broker-secret-injection-v0.4.md` §3.6 second half.
+**Related design doc:** `docs/superpowers/specs/2026-04-25-egress-discovery-window-design.md` (resolved 5 open questions).
 **Predecessors:** Plans A, B, C (all merged to `main`).
 
 **Out-of-scope:**
@@ -46,7 +46,7 @@
 - `internal/cli/policy.go` — `runPolicySuggestTo` extends label selector to include `egress-discovery-allow`.
 - `internal/cli/policy_suggest_test.go` — add discovery-allow case.
 - `cmd/main.go` — wire `BrokerPolicyReconciler` alongside existing reconcilers.
-- `docs/migrations/v0.3-to-v0.4.md` — append `## Discovery window` section.
+- `docs/internal/migrations/v0.3-to-v0.4.md` — append `## Discovery window` section.
 
 ### Files created
 
@@ -1695,11 +1695,11 @@ git commit -m "feat(cli): include egress-discovery-allow events in policy sugges
 ## Task 9: Migration doc — "Discovery window" cookbook
 
 **Files:**
-- Modify: `docs/migrations/v0.3-to-v0.4.md`
+- Modify: `docs/internal/migrations/v0.3-to-v0.4.md`
 
 - [ ] **Step 1: Append the section**
 
-Append the following to the end of `docs/migrations/v0.3-to-v0.4.md` (the file currently ends with the "Bootstrapping an allowlist" section added by Plan C):
+Append the following to the end of `docs/internal/migrations/v0.3-to-v0.4.md` (the file currently ends with the "Bootstrapping an allowlist" section added by Plan C):
 
 ```markdown
 
@@ -1790,16 +1790,16 @@ default — set the shortest `expiresAt` your workflow tolerates.
 
 - [ ] **Step 2: Verify the file structure**
 
-Run: `grep -c '^## ' docs/migrations/v0.3-to-v0.4.md`
+Run: `grep -c '^## ' docs/internal/migrations/v0.3-to-v0.4.md`
 Expected: header count increased by 1 (or by the count of `### ` subsections plus 1; verify the structure is what you wrote).
 
-Run: `tail -c 1 docs/migrations/v0.3-to-v0.4.md | od -c | head -1`
+Run: `tail -c 1 docs/internal/migrations/v0.3-to-v0.4.md | od -c | head -1`
 Expected: ends with newline. If not, append one.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add docs/migrations/v0.3-to-v0.4.md
+git add docs/internal/migrations/v0.3-to-v0.4.md
 git commit -m "docs(migration): document BrokerPolicy.spec.egressDiscovery workflow and any-wins merge"
 ```
 

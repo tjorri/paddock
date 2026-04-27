@@ -1,7 +1,7 @@
 # Controller dedup pass — design
 
 **Status:** Design draft 2026-04-26
-**Spec source:** `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+**Spec source:** `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
 **Mini-cards in scope:** C-01 through C-09 (all nine controller items)
 **Sequence position:** Third of five thematic refactors. Independent of
 the brokerclient and proxy-mitm refactors; can land in any order
@@ -245,7 +245,7 @@ exported surface is a constructor + the methods that satisfy
 
 ## References
 
-- **Findings:** `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+- **Findings:** `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
   - C-01 through C-09 (all nine controller items)
 - **Security findings cross-referenced:** F-44, F-51 (CA-copy
   silent-loop pattern; relevant to C-01 because the extracted helper

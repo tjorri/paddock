@@ -100,5 +100,5 @@ spec:
 - [picking-a-delivery-mode.md](./picking-a-delivery-mode.md) — decision tree.
 - [usersuppliedsecret.md](./usersuppliedsecret.md) — for non-Anthropic LLM
   providers or Anthropic via a gateway.
-- [Spec 0003](../specs/0003-broker-secret-injection-v0.4.md) — design intent
+- [Spec 0003](../internal/specs/0003-broker-secret-injection-v0.4.md) — design intent
   for the v0.4 broker model.

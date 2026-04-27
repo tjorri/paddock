@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.x, controller-runtime, kubebuilder webhooks, cert-manager v1, Ginkgo/Gomega (webhook tests), plain `testing` (controller tests), Helm.
 
-**Spec:** `docs/plans/2026-04-27-theme-1-workspace-seed-security-design.md`.
+**Spec:** `docs/superpowers/specs/2026-04-27-theme-1-workspace-seed-security-design.md`.
 
 ---
 
@@ -1315,7 +1315,7 @@ these object types in tenant namespaces should review."
 - Modify: `internal/controller/workspace_seed_test.go`
 - Modify: `charts/paddock/values.yaml`
 - Modify: `charts/paddock/templates/paddock.yaml`
-- Create: `docs/adr/0018-third-party-image-policy.md`
+- Create: `docs/contributing/adr/0018-third-party-image-policy.md`
 - Modify: `docs/security/threat-model.md` (T-5 row update)
 - Modify: `CONTRIBUTING.md` (one-line pointer)
 
@@ -1516,7 +1516,7 @@ Expected: `--seed-image=foo/bar@sha256:abc` line present in the rendered Deploym
 
 - [ ] **Step 6.9: Write ADR-0018.**
 
-Create `docs/adr/0018-third-party-image-policy.md`:
+Create `docs/contributing/adr/0018-third-party-image-policy.md`:
 
 ```markdown
 # ADR-0018: Third-party container image policy
@@ -1591,7 +1591,7 @@ In `docs/security/threat-model.md`, locate the T-5 row and update the defence te
 
 ```markdown
 - T-5 (compromised seed image): mitigated by the third-party-image
-  policy in `docs/adr/0018-third-party-image-policy.md` — direct-use
+  policy in `docs/contributing/adr/0018-third-party-image-policy.md` — direct-use
   images are digest-pinned, operator-overrideable, and reviewed on a
   90-day cadence. The seed image is currently the third-party
   `alpine/git`; a Paddock-authored seed image is logged as a follow-up
@@ -1606,7 +1606,7 @@ In `CONTRIBUTING.md`, add (in the relevant section about images / Dockerfiles, o
 
 ```markdown
 - **Adding a third-party container image** — follow ADR-0018
-  (`docs/adr/0018-third-party-image-policy.md`): digest-pin in source,
+  (`docs/contributing/adr/0018-third-party-image-policy.md`): digest-pin in source,
   surface an operator override, add an entry to the ADR's image table.
 ```
 
@@ -1639,7 +1639,7 @@ git add internal/controller/workspace_seed.go \
         cmd/main.go \
         charts/paddock/values.yaml \
         charts/paddock/templates/paddock.yaml \
-        docs/adr/0018-third-party-image-policy.md \
+        docs/contributing/adr/0018-third-party-image-policy.md \
         docs/security/threat-model.md \
         CONTRIBUTING.md
 git commit -m "feat(security)!: F-49 digest-pin seed image + --seed-image flag + Helm value
@@ -2069,7 +2069,7 @@ Theme 6 fix is intended as a copy-and-adapt of this code."
 **Files:**
 - Modify: `internal/controller/workspace_seed.go` (drop `--disable-audit`)
 - Modify: `api/v1alpha1/auditevent_types.go` (one-line godoc update on `RunRef`)
-- Modify: `docs/specs/0002-broker-proxy-v0.3.md` (one-line addition to AuditEvent section)
+- Modify: `docs/internal/specs/0002-broker-proxy-v0.3.md` (one-line addition to AuditEvent section)
 - Modify: `internal/controller/workspace_seed_test.go`
 
 - [ ] **Step 8.1: Write the failing test.**
@@ -2154,7 +2154,7 @@ In `api/v1alpha1/auditevent_types.go`, around line 70 — update the existing go
 
 - [ ] **Step 8.6: Update spec 0002 with the prefix convention.**
 
-In `docs/specs/0002-broker-proxy-v0.3.md`, find the AuditEvent section (search for `auditevent` or `runRef`) and add a one-line note:
+In `docs/internal/specs/0002-broker-proxy-v0.3.md`, find the AuditEvent section (search for `auditevent` or `runRef`) and add a one-line note:
 
 ```markdown
 - `runRef.name` values prefixed `seed-` denote a workspace-seed-time
@@ -2176,7 +2176,7 @@ Expected: all PASS.
 git add internal/controller/workspace_seed.go \
         internal/controller/workspace_seed_test.go \
         api/v1alpha1/auditevent_types.go \
-        docs/specs/0002-broker-proxy-v0.3.md
+        docs/internal/specs/0002-broker-proxy-v0.3.md
 git commit -m "feat(security): F-52 enable audit on seed proxy
 
 The seed proxy sidecar no longer runs with --disable-audit. Per-CONNECT
@@ -2196,11 +2196,11 @@ spec 0002."
 **Why:** Small, separable doc-only commit so the ADR-0006 trailing-update lands cleanly.
 
 **Files:**
-- Modify: `docs/adr/0006-git-credentials.md`
+- Modify: `docs/contributing/adr/0006-git-credentials.md`
 
 - [ ] **Step 9.1: Append a "Phase 2h update (2026-04-27)" section.**
 
-In `docs/adr/0006-git-credentials.md`, append at the end:
+In `docs/contributing/adr/0006-git-credentials.md`, append at the end:
 
 ```markdown
 ## Phase 2h update (2026-04-27)
@@ -2217,7 +2217,7 @@ repos as defence-in-depth (F-50).
 - [ ] **Step 9.2: Commit.**
 
 ```bash
-git add docs/adr/0006-git-credentials.md
+git add docs/contributing/adr/0006-git-credentials.md
 git commit -m "docs(adr): note URL userinfo restriction in ADR-0006
 
 Trailing update under the existing flat-ADR convention. Records the
@@ -2367,8 +2367,8 @@ Per-finding `feat(security)!:` commits so `release-please` picks per-finding bre
 
 ## Design + plan
 
-- Spec: `docs/plans/2026-04-27-theme-1-workspace-seed-security-design.md`
-- Plan: `docs/plans/2026-04-27-theme-1-workspace-seed-security.md`
+- Spec: `docs/superpowers/specs/2026-04-27-theme-1-workspace-seed-security-design.md`
+- Plan: `docs/superpowers/plans/2026-04-27-theme-1-workspace-seed-security.md`
 
 ## Test plan
 

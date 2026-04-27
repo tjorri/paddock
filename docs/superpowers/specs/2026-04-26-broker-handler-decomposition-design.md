@@ -1,7 +1,7 @@
 # Broker handler decomposition — design
 
 **Status:** Design draft 2026-04-26
-**Spec source:** `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+**Spec source:** `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
 **Mini-cards in scope:** B-01, B-02, B-04, B-11
 **Sequence position:** Fifth and last of the thematic refactors. The
 larger-conceptual-change broker work; conceptually paired with
@@ -195,7 +195,7 @@ HTTP.
 
 ## References
 
-- **Findings:** `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+- **Findings:** `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
   - B-01 (extract `substituteAuth()` core)
   - B-02 (`Provider.DeliveryMetadata` interface)
   - B-04 (`handleIssue` calls `resolveRunIdentity`)

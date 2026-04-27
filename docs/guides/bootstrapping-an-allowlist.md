@@ -74,5 +74,5 @@ or `kubectl get auditevents -l paddock.dev/kind=egress-block`.
 - [picking-a-delivery-mode.md](./picking-a-delivery-mode.md) — entry point.
 - [discovery-window.md](./discovery-window.md) — time-bounded allow-and-log
   for larger surfaces where per-denial iteration is too slow.
-- [Spec 0003 §3.6](../specs/0003-broker-secret-injection-v0.4.md) — design
+- [Spec 0003 §3.6](../internal/specs/0003-broker-secret-injection-v0.4.md) — design
   intent for the deny-by-default + observability pillar of v0.4.

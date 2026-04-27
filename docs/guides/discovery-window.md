@@ -109,5 +109,5 @@ default — set the shortest `expiresAt` your workflow tolerates.
 - [picking-a-delivery-mode.md](./picking-a-delivery-mode.md) — entry point.
 - [bootstrapping-an-allowlist.md](./bootstrapping-an-allowlist.md) — the
   iterate-and-deny alternative for small surfaces.
-- [Spec 0003 §3.6](../specs/0003-broker-secret-injection-v0.4.md) — design
+- [Spec 0003 §3.6](../internal/specs/0003-broker-secret-injection-v0.4.md) — design
   intent for the bounded discovery window.

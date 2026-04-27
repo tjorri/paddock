@@ -1,7 +1,7 @@
 # Proxy MITM unification + tests — design
 
 **Status:** Design draft 2026-04-26
-**Spec source:** `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+**Spec source:** `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
 **Mini-cards in scope:** P-03, P-05, P-02, P-04, P-06, XC-04
 **Sequence position:** Second of five thematic refactors. Recommended
 after `feature/brokerclient-unification` because the proxy
@@ -188,7 +188,7 @@ not a leak.
 
 ## References
 
-- **Findings:** `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+- **Findings:** `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
   - P-03 (extract shared `doMITM`)
   - P-05 (extract shared `dialUpstreamTLS`)
   - P-02 (tests for `HandleTransparentConn` via net.Pipe)

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go, Kubebuilder v4, controller-runtime, controller-gen, Ginkgo/Gomega, envtest.
 
-**Related spec:** `docs/specs/0003-broker-secret-injection-v0.4.md`
+**Related spec:** `docs/internal/specs/0003-broker-secret-injection-v0.4.md`
 
 **Out-of-scope for this plan (will become Plans B–E):**
 - Plan B — Interception mode explicit opt-in (`spec.interception` on BrokerPolicy).
@@ -41,7 +41,7 @@
 - `internal/controller/broker_credentials.go` — return per-credential metadata so the reconciler can populate status.
 - `internal/controller/harnessrun_controller.go` — store the metadata on `HarnessRun.status.credentials`, emit events.
 - `cmd/broker/main.go` — register `UserSuppliedSecretProvider` in place of `StaticProvider`.
-- `docs/migrations/v0.3-to-v0.4.md` — short note that the CRD surface changed; re-author BrokerPolicy + HarnessTemplate objects per the new shape.
+- `docs/internal/migrations/v0.3-to-v0.4.md` — short note that the CRD surface changed; re-author BrokerPolicy + HarnessTemplate objects per the new shape.
 
 ### Files renamed / deleted
 
@@ -2101,7 +2101,7 @@ git commit -m "test(fixtures): migrate YAML fixtures to the new CRD surface"
 ## Task 16: Migration note + chart README
 
 **Files:**
-- Create: `docs/migrations/v0.3-to-v0.4.md`
+- Create: `docs/internal/migrations/v0.3-to-v0.4.md`
 - Modify: `charts/paddock/README.md` (run `ls charts/` first to confirm path)
 
 - [ ] **Step 1: Write the migration note**
@@ -2174,13 +2174,13 @@ spec:
 ```markdown
 ## Upgrading from v0.3
 
-v0.4 reworks the BrokerPolicy + HarnessTemplate CRDs. See [docs/migrations/v0.3-to-v0.4.md](../../docs/migrations/v0.3-to-v0.4.md) for the full migration.
+v0.4 reworks the BrokerPolicy + HarnessTemplate CRDs. See [docs/internal/migrations/v0.3-to-v0.4.md](../../docs/internal/migrations/v0.3-to-v0.4.md) for the full migration.
 ```
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add docs/migrations/v0.3-to-v0.4.md charts/paddock/README.md
+git add docs/internal/migrations/v0.3-to-v0.4.md charts/paddock/README.md
 git commit -m "docs: document v0.3 to v0.4 migration"
 ```
 
@@ -2206,7 +2206,7 @@ Plan A is complete. Plans B–E build on top.
 
 ## Self-Review Notes
 
-**Spec coverage (docs/specs/0003-broker-secret-injection-v0.4.md):**
+**Spec coverage (docs/internal/specs/0003-broker-secret-injection-v0.4.md):**
 
 - §3.1 unified UserSuppliedSecret + explicit deliveryMode — Tasks 1, 9, 10.
 - §3.2 substitution patterns — Task 1 (types), Task 10 (provider), Task 12 (proxy).

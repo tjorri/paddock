@@ -25,7 +25,7 @@ import (
 )
 
 // validateHarnessTemplateSpec enforces the shared validation rules for
-// ClusterHarnessTemplate and HarnessTemplate. See docs/adr/0003-template-
+// ClusterHarnessTemplate and HarnessTemplate. See docs/contributing/adr/0003-template-
 // override-semantics.md for the override rules.
 //
 // Cluster-scoped templates cannot carry baseTemplateRef and must supply

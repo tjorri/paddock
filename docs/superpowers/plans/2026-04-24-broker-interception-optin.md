@@ -8,9 +8,9 @@
 
 **Tech Stack:** Go, Kubebuilder v4, controller-runtime, controller-gen, Ginkgo/Gomega, envtest.
 
-**Related spec:** `docs/specs/0003-broker-secret-injection-v0.4.md` §3.7
-**Related roadmap:** `docs/plans/2026-04-24-v04-followups-roadmap.md` § "Plan B"
-**Preceded by (shipped):** `docs/plans/2026-04-24-broker-secret-injection-core.md` (Plan A)
+**Related spec:** `docs/internal/specs/0003-broker-secret-injection-v0.4.md` §3.7
+**Related roadmap:** `docs/superpowers/plans/2026-04-24-v04-followups-roadmap.md` § "Plan B"
+**Preceded by (shipped):** `docs/superpowers/plans/2026-04-24-broker-secret-injection-core.md` (Plan A)
 
 **Out-of-scope for this plan:**
 
@@ -36,7 +36,7 @@
 - Create: `internal/controller/interception_resolve_test.go` — unit tests for the reconciler's resolver wrapper (IPTablesInitImage shortcut) using a fake client. (Full Reconcile-path envtest is skipped: the existing envtest suite doesn't wire `ProxyImage` or `IPTablesInitImage`, so the interception branch never fires end-to-end. The Reconcile-path wiring added in Task 8 is short and mechanical — covered by code review.)
 - `internal/controller/pod_spec_test.go` — no behavioural change expected; existing transparent/cooperative fixtures keep working because `podSpecInputs.interceptionMode` is still plumbed through.
 - `charts/paddock/values.yaml` — update the stale `minInterceptionMode`-era comment on `iptablesInitImage` to mention `spec.interception.cooperativeAccepted` and the fail-closed behaviour.
-- `docs/migrations/v0.3-to-v0.4.md` — replace the "Plan B (separate release)" row with the now-landed `spec.interception` shape and add a short cookbook-style example.
+- `docs/internal/migrations/v0.3-to-v0.4.md` — replace the "Plan B (separate release)" row with the now-landed `spec.interception` shape and add a short cookbook-style example.
 
 ### Files NOT touched in this plan
 
@@ -1141,7 +1141,7 @@ git commit -m "feat(controller,policy): fail runs closed when transparent interc
 
 **Files:**
 - Modify: `charts/paddock/values.yaml`
-- Modify: `docs/migrations/v0.3-to-v0.4.md`
+- Modify: `docs/internal/migrations/v0.3-to-v0.4.md`
 
 - [ ] **Step 1: Update the iptables-init comment in the chart values**
 
@@ -1160,7 +1160,7 @@ Open `charts/paddock/values.yaml`. Find the block around lines 43–50 (the `ipt
 
 - [ ] **Step 2: Update the v0.3→v0.4 migration**
 
-Open `docs/migrations/v0.3-to-v0.4.md`. Find the row:
+Open `docs/internal/migrations/v0.3-to-v0.4.md`. Find the row:
 
 ```
 | `spec.minInterceptionMode`                              | Removed. Superseded by `spec.interception` in Plan B (separate release).   |
@@ -1227,7 +1227,7 @@ Expected: clean (this catches e2e-tagged fixtures if any reference a removed fie
 - [ ] **Step 4: Commit**
 
 ```bash
-git add charts/paddock/values.yaml docs/migrations/v0.3-to-v0.4.md
+git add charts/paddock/values.yaml docs/internal/migrations/v0.3-to-v0.4.md
 git commit -m "docs(migration,chart): wire BrokerPolicy.spec.interception into operator-facing docs"
 ```
 

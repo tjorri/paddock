@@ -2,7 +2,7 @@
 
 **Status:** Design approved 2026-04-26
 **Issue:** [#35](https://github.com/tjorri/paddock/issues/35)
-**ADR:** to be added as `docs/adr/0017-controller-conflict-handling.md`
+**ADR:** to be added as `docs/contributing/adr/0017-controller-conflict-handling.md`
 
 ## Problem
 
@@ -189,7 +189,7 @@ integration check; code review is the per-site check.
 
 ## ADR
 
-`docs/adr/0017-controller-conflict-handling.md`. Captures:
+`docs/contributing/adr/0017-controller-conflict-handling.md`. Captures:
 
 - The three options considered (swallow / Patch / RetryOnConflict).
 - Why we picked swallow-and-requeue (matches existing pattern, smallest

@@ -259,6 +259,6 @@ spec:
   for choosing between vertical providers and `UserSuppliedSecret` patterns.
 - [anthropic-api.md](./anthropic-api.md), [github-app.md](./github-app.md),
   [pat-pool.md](./pat-pool.md) — vertical providers, where applicable.
-- [Spec 0003 §3.1–§3.2](../specs/0003-broker-secret-injection-v0.4.md) —
+- [Spec 0003 §3.1–§3.2](../internal/specs/0003-broker-secret-injection-v0.4.md) —
   design intent for the unified `UserSuppliedSecret` model and substitution
   patterns.

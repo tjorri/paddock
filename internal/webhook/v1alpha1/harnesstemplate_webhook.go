@@ -39,7 +39,7 @@ func SetupHarnessTemplateWebhookWithManager(mgr ctrl.Manager) error {
 // +kubebuilder:webhook:path=/validate-paddock-dev-v1alpha1-harnesstemplate,mutating=false,failurePolicy=fail,sideEffects=None,groups=paddock.dev,resources=harnesstemplates,verbs=create;update,versions=v1alpha1,name=vharnesstemplate-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // HarnessTemplateCustomValidator validates a HarnessTemplate on admission.
-// See docs/adr/0003-template-override-semantics.md for rules.
+// See docs/contributing/adr/0003-template-override-semantics.md for rules.
 type HarnessTemplateCustomValidator struct{}
 
 var _ admission.Validator[*paddockv1alpha1.HarnessTemplate] = &HarnessTemplateCustomValidator{}

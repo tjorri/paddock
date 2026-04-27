@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-26
 **Status:** draft (pending merge)
-**Spec:** `docs/plans/2026-04-26-core-systems-tech-review-design.md`
+**Spec:** `docs/superpowers/specs/2026-04-26-core-systems-tech-review-design.md`
 **Scope:** `internal/controller/`, `internal/broker/`, `internal/proxy/` and their
   respective `cmd/` entry-points. Secondary scope: `internal/auditing/`,
   `internal/policy/` where a finding originates there.
@@ -13,8 +13,8 @@ concurrency, dependency hygiene, documentation). Largest subsystem first so
 cross-cutting observations accumulate before smaller subsystems are reached.
 
 **Cross-references:** This review is the engineering-quality counterpart to the v0.4
-security audit (`docs/security/2026-04-25-v0.4-audit-findings.md`, citations `F-NN`)
-and the test-gaps document (`docs/security/2026-04-25-v0.4-test-gaps.md`, citations
+security audit (`docs/internal/security-audits/2026-04-25-v0.4-audit-findings.md`, citations `F-NN`)
+and the test-gaps document (`docs/internal/security-audits/2026-04-25-v0.4-test-gaps.md`, citations
 `TG-NN`). Where a finding overlaps with either document it says so explicitly; the
 framing here is engineering shape, not threat.
 
@@ -38,8 +38,8 @@ Paddock's three core subsystems are:
 
 The review was performed against the `docs/core-systems-tech-review` branch, which
 contains the Phase 2g security hardening. All F-NN security findings mentioned in
-this document are listed in `docs/security/2026-04-25-v0.4-audit-findings.md`;
-TG-NN test-gap entries are in `docs/security/2026-04-25-v0.4-test-gaps.md`.
+this document are listed in `docs/internal/security-audits/2026-04-25-v0.4-audit-findings.md`;
+TG-NN test-gap entries are in `docs/internal/security-audits/2026-04-25-v0.4-test-gaps.md`.
 
 ---
 

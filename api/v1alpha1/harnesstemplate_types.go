@@ -25,7 +25,7 @@ import (
 // namespaced HarnessTemplate. A namespaced HarnessTemplate may reference a
 // ClusterHarnessTemplate via BaseTemplateRef to inherit its pod shape; in
 // that case only Defaults, Requires, and PodTemplateOverlay may be set.
-// See docs/adr/0003-template-override-semantics.md.
+// See docs/contributing/adr/0003-template-override-semantics.md.
 type HarnessTemplateSpec struct {
 	// BaseTemplateRef, when set on a namespaced HarnessTemplate, inherits
 	// the referenced ClusterHarnessTemplate's pod shape. Locked fields

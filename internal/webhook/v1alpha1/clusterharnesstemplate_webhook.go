@@ -40,7 +40,7 @@ func SetupClusterHarnessTemplateWebhookWithManager(mgr ctrl.Manager) error {
 
 // ClusterHarnessTemplateCustomValidator validates a ClusterHarnessTemplate
 // on admission. A cluster-scoped template must carry its own pod shape and
-// cannot inherit — see docs/adr/0003-template-override-semantics.md.
+// cannot inherit — see docs/contributing/adr/0003-template-override-semantics.md.
 type ClusterHarnessTemplateCustomValidator struct{}
 
 var _ admission.Validator[*paddockv1alpha1.ClusterHarnessTemplate] = &ClusterHarnessTemplateCustomValidator{}

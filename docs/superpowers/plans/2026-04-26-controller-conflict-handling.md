@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26+, controller-runtime, `k8s.io/apimachinery/pkg/api/errors` (`apierrors.IsConflict`).
 
-**Spec:** [`docs/plans/2026-04-26-controller-conflict-handling-design.md`](./2026-04-26-controller-conflict-handling-design.md)
+**Spec:** [`docs/superpowers/specs/2026-04-26-controller-conflict-handling-design.md`](../specs/2026-04-26-controller-conflict-handling-design.md)
 
 **Branch:** `chore/controller-conflict-handling-canonicalization` (already created, with the spec already committed as `docs(plans): controller optimistic-concurrency canonicalization design (#35)`).
 
@@ -17,7 +17,7 @@
 ## File Structure
 
 **New files:**
-- `docs/adr/0017-controller-conflict-handling.md` — the ADR.
+- `docs/contributing/adr/0017-controller-conflict-handling.md` — the ADR.
 
 **Modified files (13 sites across 10 files):**
 - `internal/controller/workspace_controller.go` — 3 sites (L114, L315, L358) + 1 `CreateOrUpdate` (L451).
@@ -27,7 +27,7 @@
 - `internal/controller/network_policy.go` — 1 `CreateOrUpdate`.
 - `internal/controller/workspace_broker.go` — 1 `CreateOrUpdate`.
 - `internal/controller/proxy_tls.go` — 1 `CreateOrUpdate`.
-- `docs/adr/README.md` — add the ADR-0017 entry to the index.
+- `docs/contributing/adr/README.md` — add the ADR-0017 entry to the index.
 - `CONTRIBUTING.md` — one-line pointer to ADR-0017.
 
 **Out of scope (already correct, do not touch):**
@@ -41,8 +41,8 @@
 ## Task 1: ADR-0017 — Controller Conflict Handling
 
 **Files:**
-- Create: `docs/adr/0017-controller-conflict-handling.md`
-- Modify: `docs/adr/README.md` (add index entry)
+- Create: `docs/contributing/adr/0017-controller-conflict-handling.md`
+- Modify: `docs/contributing/adr/README.md` (add index entry)
 
 **Why this commit first:** Every subsequent commit references "ADR-0017" in its message. Landing the ADR before the code changes lets reviewers click the ADR link from any of the chore commits and find a real document.
 
@@ -140,7 +140,7 @@ keystrokes, and inline is grep-discoverable.
 
 - [ ] **Step 1.2: Update the ADR index.**
 
-Modify `docs/adr/README.md`. Find the line:
+Modify `docs/contributing/adr/README.md`. Find the line:
 
 ```markdown
 - [ADR-0016 — AuditEvent retention — write-once CRD with TTL reaper, debounced writes](0016-auditevent-retention.md)
@@ -160,7 +160,7 @@ Expected: both clean (no Go files changed in this task, but the hook will run on
 - [ ] **Step 1.4: Stage and commit.**
 
 ```bash
-git add docs/adr/0017-controller-conflict-handling.md docs/adr/README.md
+git add docs/contributing/adr/0017-controller-conflict-handling.md docs/contributing/adr/README.md
 git commit -m "$(cat <<'EOF'
 docs(adr): ADR-0017 — controller optimistic-concurrency conflict handling
 
@@ -646,13 +646,13 @@ Expected: pre-commit hook passes, commit lands.
 In `CONTRIBUTING.md`, find this bullet at line 8:
 
 ```markdown
-- **Check the specs and ADRs** for existing decisions. v0.1 architecture lives in [`docs/specs/0001-core-v0.1.md`](docs/specs/0001-core-v0.1.md); v0.3's broker + proxy work in [`docs/specs/0002-broker-proxy-v0.3.md`](docs/specs/0002-broker-proxy-v0.3.md). Every architectural choice has an ADR under [`docs/adr/`](docs/adr/). If your change contradicts one, update the ADR (or add a new one) as part of the same PR.
+- **Check the specs and ADRs** for existing decisions. v0.1 architecture lives in [`docs/internal/specs/0001-core-v0.1.md`](docs/internal/specs/0001-core-v0.1.md); v0.3's broker + proxy work in [`docs/internal/specs/0002-broker-proxy-v0.3.md`](docs/internal/specs/0002-broker-proxy-v0.3.md). Every architectural choice has an ADR under [`docs/contributing/adr/`](docs/contributing/adr/). If your change contradicts one, update the ADR (or add a new one) as part of the same PR.
 ```
 
 Add a new bullet directly after it:
 
 ```markdown
-- **Reconciler conflict handling.** Every `r.Update`, `r.Status().Update`, and `controllerutil.CreateOrUpdate` in `internal/controller/` must treat `apierrors.IsConflict` as benign — see [ADR-0017](docs/adr/0017-controller-conflict-handling.md) for the three call-site shapes.
+- **Reconciler conflict handling.** Every `r.Update`, `r.Status().Update`, and `controllerutil.CreateOrUpdate` in `internal/controller/` must treat `apierrors.IsConflict` as benign — see [ADR-0017](docs/contributing/adr/0017-controller-conflict-handling.md) for the three call-site shapes.
 ```
 
 - [ ] **Step 5.2: Stage and commit.**
@@ -757,7 +757,7 @@ the user:
       `git diff main..HEAD -- internal/controller/`.
 - [ ] No site listed as "already correct" in the spec was modified.
 - [ ] Every commit message references `#35`.
-- [ ] ADR-0017 is in the `docs/adr/README.md` index.
+- [ ] ADR-0017 is in the `docs/contributing/adr/README.md` index.
 - [ ] CONTRIBUTING.md links ADR-0017.
 - [ ] The risk-mitigation debug-log from the spec was NOT shipped (it
       was a verification aid, not production code).

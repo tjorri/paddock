@@ -63,7 +63,7 @@ outages: every audit write would fail, every deny would convert to
 `Ignore` lets AuditEvent writes proceed when the webhook is unavailable.
 The cost is brief write-once-bypass during outages; operators monitor
 via `paddock_audit_write_failures_total` and the controller-pod
-readiness probe. See `docs/observability/audit-monitoring.md` for the
+readiness probe. See `docs/internal/observability/audit-monitoring.md` for the
 alert example.
 
 ## Phase 2c fail-closed semantics

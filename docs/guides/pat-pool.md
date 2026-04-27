@@ -120,4 +120,4 @@ spec:
 - [picking-a-delivery-mode.md](./picking-a-delivery-mode.md) — decision tree.
 - [github-app.md](./github-app.md) — for GitHub specifically when an App
   is available.
-- [Spec 0003](../specs/0003-broker-secret-injection-v0.4.md) — design intent.
+- [Spec 0003](../internal/specs/0003-broker-secret-injection-v0.4.md) — design intent.

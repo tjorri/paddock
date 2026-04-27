@@ -1,7 +1,7 @@
 # Broker-client unification — design
 
 **Status:** Design draft 2026-04-26
-**Spec source:** `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+**Spec source:** `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
 **Mini-cards in scope:** XC-01, XC-02, P-01, P-07
 **Sequence position:** First of five thematic refactors emerging from the
 core-systems engineering-quality review. Recommended ahead of
@@ -175,7 +175,7 @@ compile is green and tests pass.
 
 ## References
 
-- **Findings:** `docs/plans/2026-04-26-core-systems-tech-review-findings.md`
+- **Findings:** `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`
   - XC-01 (extract shared brokerclient infrastructure)
   - XC-02 (typed broker-error-code constants)
   - P-01 (proxy broker-client unit tests)

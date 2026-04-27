@@ -21,9 +21,9 @@ extracted earlier.
 `testing` stdlib (no testify). Existing Makefile targets (`make test`,
 `make test-e2e`) are the verification surface.
 
-**Spec source:** `docs/plans/2026-04-26-broker-provider-dry-design.md`
+**Spec source:** `docs/superpowers/specs/2026-04-26-broker-provider-dry-design.md`
 (brainstorm output; mini-cards B-03, B-05, B-06, B-07, B-08, B-09, B-10,
-XC-03 from `docs/plans/2026-04-26-core-systems-tech-review-findings.md`).
+XC-03 from `docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`).
 
 **Branch:** `feature/broker-provider-dry` (already exists; the design doc
 sits on it, rebased onto current `main`).

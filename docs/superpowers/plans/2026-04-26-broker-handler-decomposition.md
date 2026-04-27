@@ -12,7 +12,7 @@
 
 ## Spec source
 
-`docs/plans/2026-04-26-broker-handler-decomposition-design.md` — design doc, locked. GitHub issue #52.
+`docs/superpowers/specs/2026-04-26-broker-handler-decomposition-design.md` — design doc, locked. GitHub issue #52.
 
 ## File map
 
@@ -167,7 +167,7 @@ observable shape change: the cross-namespace caller case now returns
 400 BadRequest (matching the other two handlers) rather than 403
 Forbidden. Added a regression test that documents the new shape.
 
-Refs B-04 in docs/plans/2026-04-26-core-systems-tech-review-findings.md.
+Refs B-04 in docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md.
 EOF
 )"
 ```
@@ -358,7 +358,7 @@ Migrate every &broker.AuditWriter{...} literal site (cmd/broker, two
 test files) to use NewAuditWriter. The shim itself stays — full
 removal is the follow-up tracked in B-11.
 
-Refs B-11 in docs/plans/2026-04-26-core-systems-tech-review-findings.md.
+Refs B-11 in docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md.
 EOF
 )"
 ```
@@ -601,7 +601,7 @@ legacy switch for safety.
 The legacy switch is removed in the follow-up commit (B-02 part 2)
 once this commit's parity is confirmed by tests + e2e.
 
-Refs B-02 in docs/plans/2026-04-26-core-systems-tech-review-findings.md.
+Refs B-02 in docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md.
 EOF
 )"
 ```
@@ -698,7 +698,7 @@ Adding a new provider becomes a typed change with compiler
 enforcement on IssueResult fields rather than a manual update of
 server.go's switch.
 
-Refs B-02 in docs/plans/2026-04-26-core-systems-tech-review-findings.md.
+Refs B-02 in docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md.
 EOF
 )"
 ```
@@ -959,7 +959,7 @@ the handler. The handler is ~30 LOC shorter; dispatchSubstituter is
 calls. Sets the shape that part 2 (Server.substituteAuth core)
 will build on.
 
-Refs B-01 in docs/plans/2026-04-26-core-systems-tech-review-findings.md.
+Refs B-01 in docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md.
 EOF
 )"
 ```
@@ -1515,7 +1515,7 @@ existing per-path HTTP tests (TestSubstituteAuth_*_DeniesAndAudits)
 still pass — they now exercise the handler's audit-write/HTTP-mapping
 shell rather than the decision logic.
 
-Refs B-01 in docs/plans/2026-04-26-core-systems-tech-review-findings.md.
+Refs B-01 in docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md.
 EOF
 )"
 ```

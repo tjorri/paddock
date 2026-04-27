@@ -12,7 +12,7 @@
 
 ## Spec source
 
-`docs/plans/2026-04-26-proxy-mitm-unification-design.md` — design doc, locked. Issue #49.
+`docs/superpowers/specs/2026-04-26-proxy-mitm-unification-design.md` — design doc, locked. Issue #49.
 
 ## File map
 
@@ -255,7 +255,7 @@ with timeout. Move the shared body into Server.dialUpstreamTLS in a
 new internal/proxy/mitm.go. Both wrappers shrink to a single delegating
 line. No behaviour change.
 
-Refs P-05 in docs/plans/2026-04-26-core-systems-tech-review-findings.md.
+Refs P-05 in docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md.
 EOF
 )"
 ```
@@ -767,7 +767,7 @@ Also: the errCh single-receive pattern (XC-04) now lives in exactly
 one place with the inline comment explaining it.
 
 No behaviour change. Refs P-03 in
-docs/plans/2026-04-26-core-systems-tech-review-findings.md.
+docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md.
 EOF
 )"
 ```
@@ -1690,7 +1690,7 @@ and the buffered chan capacity (2) prevents its send from blocking.
 Kills a recurring 'is this a goroutine leak?' question in code
 review.
 
-Refs XC-04 in docs/plans/2026-04-26-core-systems-tech-review-findings.md.
+Refs XC-04 in docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md.
 EOF
 )"
 ```

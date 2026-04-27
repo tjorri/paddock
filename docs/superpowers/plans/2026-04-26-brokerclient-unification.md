@@ -28,7 +28,7 @@ via a short-lived alias bridge.
 new external dependencies.
 
 **Spec source:**
-[`docs/plans/2026-04-26-brokerclient-unification-design.md`](2026-04-26-brokerclient-unification-design.md).
+[`docs/superpowers/specs/2026-04-26-brokerclient-unification-design.md`](2026-04-26-brokerclient-unification-design.md).
 
 **Mini-cards:** XC-01 (extract shared brokerclient), XC-02 (typed
 error-code constants), P-01 (proxy broker-client unit tests), P-07

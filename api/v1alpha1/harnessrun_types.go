@@ -227,7 +227,7 @@ type HarnessRunStatus struct {
 // persisted to the Workspace PVC as events.jsonl. A ring buffer of the
 // most recent events is also surfaced on HarnessRun.status.recentEvents.
 //
-// See docs/adr/0001-paddockevent-schema-version.md for versioning rules.
+// See docs/contributing/adr/0001-paddockevent-schema-version.md for versioning rules.
 type PaddockEvent struct {
 	// SchemaVersion governs the semantics of this event. Bump when the
 	// semantics of existing fields change; add optional fields without

@@ -15,7 +15,7 @@ denied the action.
 
 ## Flags
 
-See `docs/security/2026-04-25-v0.4-test-gaps.md` §4 for the full
+See `docs/internal/security-audits/2026-04-25-v0.4-test-gaps.md` §4 for the full
 catalogue. As of v0.5.0, 15 flags are supported:
 
 - `--bypass-proxy-env` — unset HTTPS_PROXY before subsequent flags.

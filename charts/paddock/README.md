@@ -8,7 +8,7 @@ namespace.
 
 ## Prerequisites
 
-- Kubernetes 1.29+ (native sidecar support — [ADR-0009](../../docs/adr/0009-sidecar-ordering.md)).
+- Kubernetes 1.29+ (native sidecar support — [ADR-0009](../../docs/contributing/adr/0009-sidecar-ordering.md)).
 - [cert-manager](https://cert-manager.io) installed in the cluster.
   The chart renders a self-signed Issuer + two Certificates (webhook,
   broker-serving, MITM proxy CA) by default. Set `certManager.skip=true`
@@ -105,7 +105,7 @@ Each `*.tag` falls back to `Chart.AppVersion` when empty.
 Runs resolve to `transparent` mode when the namespace admits
 `NET_ADMIN` on init containers; to `cooperative` mode otherwise.
 Kubernetes PSA `restricted` and `baseline` both forbid NET_ADMIN —
-see [ADR-0013](../../docs/adr/0013-proxy-interception-modes.md) for
+see [ADR-0013](../../docs/contributing/adr/0013-proxy-interception-modes.md) for
 the decision. If you want transparent mode in a specific namespace,
 either remove PSA enforcement on that namespace or set the enforce
 label to `privileged`:
@@ -154,4 +154,4 @@ kubectl delete namespace paddock-system
 
 ## Upgrading from v0.3
 
-v0.4 reworks the BrokerPolicy + HarnessTemplate CRDs. See [docs/migrations/v0.3-to-v0.4.md](../../docs/migrations/v0.3-to-v0.4.md) for the full migration.
+v0.4 reworks the BrokerPolicy + HarnessTemplate CRDs. See [docs/internal/migrations/v0.3-to-v0.4.md](../../docs/internal/migrations/v0.3-to-v0.4.md) for the full migration.

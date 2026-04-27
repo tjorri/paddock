@@ -15,23 +15,23 @@ core subsystems — **`controller`**, **`broker`**, **`proxy`** — and a
 prioritized refactor backlog.
 
 The recent v0.4 security audit
-(`docs/security/2026-04-25-v0.4-audit-findings.md`) and test-gaps doc
-(`docs/security/2026-04-25-v0.4-test-gaps.md`) cover the security and
+(`docs/internal/security-audits/2026-04-25-v0.4-audit-findings.md`) and test-gaps doc
+(`docs/internal/security-audits/2026-04-25-v0.4-test-gaps.md`) cover the security and
 coverage dimensions. This review is the *engineering-quality counterpart*:
 architecture, code organization, reuse, testability — the kinds of issues
 that don't show up in a CVE catalogue but compound as the codebase grows.
 
 ## 2. Deliverables
 
-Three files in `docs/plans/`, following project convention (paired
+Three files in `docs/superpowers/plans/`, following project convention (paired
 `-design.md` + unsuffixed plan, plus a clearly-labeled output file for
 this work since the deliverable is a document rather than code):
 
-- **`docs/plans/2026-04-26-core-systems-tech-review-design.md`** — this
+- **`docs/superpowers/specs/2026-04-26-core-systems-tech-review-design.md`** — this
   document (the spec).
-- **`docs/plans/2026-04-26-core-systems-tech-review.md`** — the
+- **`docs/superpowers/plans/2026-04-26-core-systems-tech-review.md`** — the
   implementation plan that `writing-plans` produces from this spec.
-- **`docs/plans/2026-04-26-core-systems-tech-review-findings.md`** — the
+- **`docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`** — the
   review document itself, produced by executing the plan.
 
 ## 3. Scope
@@ -181,7 +181,7 @@ recommendation.
 
 ## 9. Structure of the review document
 
-The review (`docs/plans/2026-04-26-core-systems-tech-review-findings.md`)
+The review (`docs/superpowers/plans/2026-04-26-core-systems-tech-review-findings.md`)
 will follow this order:
 
 1. **Context** — what is being reviewed, methodology, what is *not* in

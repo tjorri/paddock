@@ -126,4 +126,4 @@ spec:
 - [picking-a-delivery-mode.md](./picking-a-delivery-mode.md) — decision tree.
 - [pat-pool.md](./pat-pool.md) — for other gitforges or for environments
   without a GitHub App.
-- [Spec 0003](../specs/0003-broker-secret-injection-v0.4.md) — design intent.
+- [Spec 0003](../internal/specs/0003-broker-secret-injection-v0.4.md) — design intent.

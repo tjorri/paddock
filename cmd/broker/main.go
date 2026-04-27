@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Command broker is the entrypoint for the paddock-broker Deployment.
-// See docs/specs/0002-broker-proxy-v0.3.md §6 and ADR-0012.
+// See docs/internal/specs/0002-broker-proxy-v0.3.md §6 and ADR-0012.
 package main
 
 import (

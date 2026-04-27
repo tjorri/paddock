@@ -165,7 +165,7 @@ type HarnessRunReconciler struct {
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch
 
 // Reconcile drives a HarnessRun through its lifecycle. See
-// docs/specs/0001-core-v0.1.md §3.3 for the state machine.
+// docs/internal/specs/0001-core-v0.1.md §3.3 for the state machine.
 func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
