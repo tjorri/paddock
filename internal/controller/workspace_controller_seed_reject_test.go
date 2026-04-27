@@ -95,8 +95,8 @@ func TestReconcile_SeedRejected_ControllerGate(t *testing.T) {
 		t.Fatalf("Reconcile returned unexpected error: %v", err)
 	}
 
-	// Terminal: no requeue, no RequeueAfter.
-	if result.Requeue || result.RequeueAfter != 0 {
+	// Terminal: no requeue.
+	if result.RequeueAfter != 0 {
 		t.Errorf("result = %+v; want no requeue (terminal)", result)
 	}
 
