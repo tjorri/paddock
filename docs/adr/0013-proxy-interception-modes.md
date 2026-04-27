@@ -101,7 +101,7 @@ added (default `paddock-proxy-ca-issuer`).
 See `docs/plans/2026-04-26-v0.4-security-review-phase-2f-design.md`.
 
 **Phase 2h Theme 4 update (2026-04-27).** Cooperative mode is retained
-for environmental compatibility (PSS-restricted-enforced namespaces,
+for environmental compatibility (PSA-`restricted`-enforced namespaces,
 eBPF-only / non-iptables clusters) but reclassified as single-point-of-
 trust loud opt-in:
 
