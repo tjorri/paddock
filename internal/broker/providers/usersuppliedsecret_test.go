@@ -90,6 +90,7 @@ func grantHeader(prefix string) paddockv1alpha1.CredentialGrant {
 }
 
 func TestUserSuppliedSecret_InContainerReturnsSecretValue(t *testing.T) {
+	t.Parallel()
 	c := newFakeClientWithSecret(t, "ns", "s", "k", "real-secret-value").Build()
 	p := &UserSuppliedSecretProvider{Client: c}
 
@@ -109,6 +110,7 @@ func TestUserSuppliedSecret_InContainerReturnsSecretValue(t *testing.T) {
 }
 
 func TestUserSuppliedSecret_ProxyInjectedReturnsOpaqueBearer(t *testing.T) {
+	t.Parallel()
 	c := newFakeClientWithSecret(t, "ns", "s", "k", "real-secret-value").Build()
 	p := &UserSuppliedSecretProvider{Client: c}
 
@@ -128,6 +130,7 @@ func TestUserSuppliedSecret_ProxyInjectedReturnsOpaqueBearer(t *testing.T) {
 }
 
 func TestUserSuppliedSecret_SubstituteAuth_HeaderPattern(t *testing.T) {
+	t.Parallel()
 	c := newFakeClientWithSecret(t, "ns", "s", "k", "real-api-key").Build()
 	p := &UserSuppliedSecretProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return time.Unix(1000, 0) }}}
 
@@ -154,6 +157,7 @@ func TestUserSuppliedSecret_SubstituteAuth_HeaderPattern(t *testing.T) {
 }
 
 func TestUserSuppliedSecret_SubstituteAuth_QueryParamPattern(t *testing.T) {
+	t.Parallel()
 	c := newFakeClientWithSecret(t, "ns", "s", "k", "secret-token").Build()
 	p := &UserSuppliedSecretProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return time.Unix(1000, 0) }}}
 
@@ -186,6 +190,7 @@ func TestUserSuppliedSecret_SubstituteAuth_QueryParamPattern(t *testing.T) {
 }
 
 func TestUserSuppliedSecret_SubstituteAuth_BasicAuthPattern(t *testing.T) {
+	t.Parallel()
 	c := newFakeClientWithSecret(t, "ns", "s", "k", "pat-value").Build()
 	p := &UserSuppliedSecretProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return time.Unix(1000, 0) }}}
 
@@ -221,6 +226,7 @@ func TestUserSuppliedSecret_SubstituteAuth_BasicAuthPattern(t *testing.T) {
 }
 
 func TestUserSuppliedSecret_SubstituteAuth_HostMismatchErrors(t *testing.T) {
+	t.Parallel()
 	c := newFakeClientWithSecret(t, "ns", "s", "k", "v").Build()
 	p := &UserSuppliedSecretProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return time.Unix(1000, 0) }}}
 
@@ -241,6 +247,7 @@ func TestUserSuppliedSecret_SubstituteAuth_HostMismatchErrors(t *testing.T) {
 }
 
 func TestUserSuppliedSecret_SubstituteAuth_UnknownBearerReturnsMatchedFalse(t *testing.T) {
+	t.Parallel()
 	c := newFakeClientWithSecret(t, "ns", "s", "k", "v").Build()
 	p := &UserSuppliedSecretProvider{Client: c}
 
@@ -256,6 +263,7 @@ func TestUserSuppliedSecret_SubstituteAuth_UnknownBearerReturnsMatchedFalse(t *t
 }
 
 func TestUserSuppliedSecret_SubstituteResultFieldsPopulated(t *testing.T) {
+	t.Parallel()
 	c := newFakeClientWithSecret(t, "ns", "s", "k", "real-token").Build()
 	p := &UserSuppliedSecretProvider{Client: c}
 	res, err := p.Issue(context.Background(), IssueRequest{

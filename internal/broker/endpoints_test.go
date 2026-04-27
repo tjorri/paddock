@@ -119,6 +119,7 @@ func postTo(t *testing.T, srv *broker.Server, path, runName, runNS, body string)
 }
 
 func TestValidateEgress_Allow(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupAnthropic(t)
 	body, _ := json.Marshal(brokerapi.ValidateEgressRequest{Host: "api.anthropic.com", Port: 443})
 	rr := postTo(t, srv, brokerapi.PathValidateEgress, "cc-1", "", string(body))
@@ -136,6 +137,7 @@ func TestValidateEgress_Allow(t *testing.T) {
 }
 
 func TestValidateEgress_Deny(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupAnthropic(t)
 	body, _ := json.Marshal(brokerapi.ValidateEgressRequest{Host: "evil.com", Port: 443})
 	rr := postTo(t, srv, brokerapi.PathValidateEgress, "cc-1", "", string(body))
@@ -150,6 +152,7 @@ func TestValidateEgress_Deny(t *testing.T) {
 }
 
 func TestSubstituteAuth_Success(t *testing.T) {
+	t.Parallel()
 	srv, ap := setupAnthropic(t)
 
 	// Issue a bearer first.
@@ -193,6 +196,7 @@ func TestSubstituteAuth_Success(t *testing.T) {
 }
 
 func TestSubstituteAuth_UnknownBearer(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupAnthropic(t)
 	body, _ := json.Marshal(brokerapi.SubstituteAuthRequest{
 		Host: "api.anthropic.com", Port: 443,
@@ -205,6 +209,7 @@ func TestSubstituteAuth_UnknownBearer(t *testing.T) {
 }
 
 func TestSubstituteAuth_MissingBearer(t *testing.T) {
+	t.Parallel()
 	srv, _ := setupAnthropic(t)
 	body, _ := json.Marshal(brokerapi.SubstituteAuthRequest{
 		Host: "api.anthropic.com", Port: 443,

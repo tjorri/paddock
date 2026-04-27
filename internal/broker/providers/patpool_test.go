@@ -59,6 +59,7 @@ func patPoolGrant() paddockv1alpha1.CredentialGrant {
 }
 
 func TestPATPool_IssueThenSubstitute(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_alice\nghp_bob\n")).Build()
 	clock := time.Unix(1_700_000_000, 0)
@@ -100,6 +101,7 @@ func TestPATPool_IssueThenSubstitute(t *testing.T) {
 }
 
 func TestPATPool_ParallelLeasesPickDifferentEntries(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_alice\nghp_bob\n")).Build()
 	p := &PATPoolProvider{Client: c}
@@ -131,6 +133,7 @@ func TestPATPool_ParallelLeasesPickDifferentEntries(t *testing.T) {
 }
 
 func TestPATPool_Exhaustion(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_only\n")).Build()
 	p := &PATPoolProvider{Client: c}
@@ -152,6 +155,7 @@ func TestPATPool_Exhaustion(t *testing.T) {
 }
 
 func TestPATPool_ExpiredLeaseReleasesSlot(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_only\n")).Build()
 	clock := time.Unix(1_700_000_000, 0)
@@ -176,6 +180,7 @@ func TestPATPool_ExpiredLeaseReleasesSlot(t *testing.T) {
 }
 
 func TestPATPool_SubstituteUnknownBearerShortCircuits(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).Build()
 	p := &PATPoolProvider{Client: c}
 	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
@@ -190,6 +195,7 @@ func TestPATPool_SubstituteUnknownBearerShortCircuits(t *testing.T) {
 }
 
 func TestPATPool_SubstituteUnknownPrefixFallsThrough(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).Build()
 	p := &PATPoolProvider{Client: c}
 	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
@@ -204,6 +210,7 @@ func TestPATPool_SubstituteUnknownPrefixFallsThrough(t *testing.T) {
 }
 
 func TestPATPool_PoolShrinkDropsStaleLease(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_alice\nghp_bob\n")).Build()
 	p := &PATPoolProvider{Client: c}
@@ -277,6 +284,7 @@ func TestPATPool_PoolShrinkDropsStaleLease(t *testing.T) {
 }
 
 func TestPATPool_ParsePoolEntries(t *testing.T) {
+	t.Parallel()
 	got := parsePoolEntries([]byte(`
 # rotated 2026-04-20 by alice
 ghp_alice
@@ -293,6 +301,7 @@ ghp_bob
 }
 
 func TestPATPool_EmptyPool(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("\n# only comments\n")).Build()
 	p := &PATPoolProvider{Client: c}
@@ -306,6 +315,7 @@ func TestPATPool_EmptyPool(t *testing.T) {
 }
 
 func TestPATPoolProvider_SubstituteHostNotAllowed(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_pool_a\nghp_pool_b\n")).Build()
 	p := &PATPoolProvider{Client: c}
@@ -389,6 +399,7 @@ func TestPATPool_RevokedPATIsNotServed(t *testing.T) {
 }
 
 func TestPATPoolProvider_SubstituteResultFieldsPopulated(t *testing.T) {
+	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_pool_a\n")).Build()
 	p := &PATPoolProvider{Client: c}
