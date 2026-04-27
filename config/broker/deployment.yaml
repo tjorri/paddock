@@ -8,6 +8,8 @@ metadata:
     app.kubernetes.io/component: broker
     app.kubernetes.io/managed-by: kustomize
 spec:
+  strategy:
+    type: Recreate
   replicas: 1
   selector:
     matchLabels:
