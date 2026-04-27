@@ -16,7 +16,13 @@ limitations under the License.
 
 package cli
 
-import "testing"
+import (
+	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+)
 
 // Earlier versions built the reader pod's Command via
 // `sh -c "cat %q"`, which was vulnerable to shell injection when the
@@ -52,6 +58,70 @@ func TestNewReaderPod_CommandAvoidsShell(t *testing.T) {
 			}
 			if cmd[2] != tc.filePath {
 				t.Errorf("Command[2] = %q, want %q — path must be a distinct argv element", cmd[2], tc.filePath)
+			}
+		})
+	}
+}
+
+func TestResolvedPathFile(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{ObjectMeta: metav1.ObjectMeta{Name: "r1"}}
+
+	cases := []struct {
+		name    string
+		file    string
+		wantErr bool
+		want    string
+	}{
+		{"absolute under workspace", "/workspace/foo.log", false, "/workspace/foo.log"},
+		{"workspace root", "/workspace", false, "/workspace"},
+		{"path-traversal", "/workspace/../etc/passwd", true, ""},
+		{"absolute outside workspace", "/etc/passwd", true, ""},
+		{"relative path", "raw.jsonl", true, ""},
+		{"double-slash and dot are cleaned", "/workspace//foo/./bar", false, "/workspace/foo/bar"},
+		{"workspace prefix sibling not allowed", "/workspaceother/foo", true, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := &logsOptions{file: tc.file}
+			got, err := o.resolvedPath(run)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for file=%q, got %q", tc.file, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for file=%q: %v", tc.file, err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolvedPathSelectorsUnchanged(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{ObjectMeta: metav1.ObjectMeta{Name: "r1"}}
+
+	cases := []struct {
+		name string
+		o    logsOptions
+		want string
+	}{
+		{"events default", logsOptions{}, "/workspace/.paddock/runs/r1/events.jsonl"},
+		{"raw", logsOptions{raw: true}, "/workspace/.paddock/runs/r1/raw.jsonl"},
+		{"result", logsOptions{result: true}, "/workspace/.paddock/runs/r1/result.json"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.o.resolvedPath(run)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
 	}

@@ -22,6 +22,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -35,6 +37,12 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
+
+// workspaceMount is the in-pod absolute path the workspace PVC is
+// mounted at. logs --file is constrained to paths rooted under this
+// directory so a stray --file=/etc/passwd or relative path can't
+// escape the workspace via the reader pod's `cat`.
+const workspaceMount = "/workspace"
 
 type logsOptions struct {
 	raw         bool
@@ -59,7 +67,7 @@ workspace PVC:
   --events  (default)   events.jsonl — parsed PaddockEvents
   --raw                 raw.jsonl — verbatim harness output
   --result              result.json — final structured output
-  --file=<path>         arbitrary absolute path inside the workspace
+  --file=<path>         absolute path rooted under /workspace
 
 The workspace PVC is ReadWriteOnce. While the run is still executing,
 the collector sidecar has the PVC attached and no other Pod can mount
@@ -73,7 +81,7 @@ deletes it.`,
 	}
 	cmd.Flags().BoolVar(&opts.raw, "raw", false, "Read raw.jsonl instead of events.jsonl")
 	cmd.Flags().BoolVar(&opts.result, "result", false, "Read result.json instead of events.jsonl")
-	cmd.Flags().StringVar(&opts.file, "file", "", "Arbitrary absolute path inside the workspace (overrides the selectors above)")
+	cmd.Flags().StringVar(&opts.file, "file", "", "Absolute path rooted under /workspace (overrides the selectors above; relative paths and paths outside the workspace are rejected)")
 	cmd.Flags().StringVar(&opts.readerImage, "reader-image", opts.readerImage, "Image for the helper reader Pod")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "Deadline for the reader Pod to complete")
 	cmd.Flags().BoolVar(&opts.keepPod, "keep-reader", false, "Leave the reader Pod behind after streaming (for debugging)")
@@ -121,7 +129,10 @@ func runLogs(ctx context.Context, cfg *genericclioptions.ConfigFlags, cmd *cobra
 		return fmt.Errorf("workspace %s has no backing PVC yet", ws.Name)
 	}
 
-	filePath := opts.resolvedPath(run)
+	filePath, err := opts.resolvedPath(run)
+	if err != nil {
+		return err
+	}
 
 	podName, err := readerPodName(name)
 	if err != nil {
@@ -155,19 +166,27 @@ func runLogs(ctx context.Context, cfg *genericclioptions.ConfigFlags, cmd *cobra
 }
 
 // resolvedPath turns the option selectors into the absolute file path
-// to cat inside the reader pod's /workspace mount.
-func (o *logsOptions) resolvedPath(run *paddockv1alpha1.HarnessRun) string {
+// to cat inside the reader pod's /workspace mount. Returns an error
+// if --file is supplied and points outside /workspace (after
+// path.Clean), so a rejected path never produces a reader Pod.
+func (o *logsOptions) resolvedPath(run *paddockv1alpha1.HarnessRun) (string, error) {
 	if o.file != "" {
-		return o.file
+		clean := path.Clean(o.file)
+		if clean != workspaceMount && !strings.HasPrefix(clean, workspaceMount+"/") {
+			return "", fmt.Errorf(
+				"--file must be an absolute path rooted under %s/ (got %q after path.Clean)",
+				workspaceMount, clean)
+		}
+		return clean, nil
 	}
 	base := fmt.Sprintf("/workspace/.paddock/runs/%s", run.Name)
 	switch {
 	case o.raw:
-		return base + "/raw.jsonl"
+		return base + "/raw.jsonl", nil
 	case o.result:
-		return base + "/result.json"
+		return base + "/result.json", nil
 	default:
-		return base + "/events.jsonl"
+		return base + "/events.jsonl", nil
 	}
 }
 
