@@ -248,13 +248,13 @@ func validateProviderConfig(p *field.Path, cfg paddockv1alpha1.ProviderConfig) f
 			errs = append(errs, field.Required(p.Child("appId"), "required for GitHubApp provider"))
 		} else if !gitHubAppNumericID.MatchString(cfg.AppID) {
 			errs = append(errs, field.Invalid(p.Child("appId"), cfg.AppID,
-				"appId must be a positive integer (1-20 digits); see kubectl get installation -o yaml | grep id or the GitHub App settings page"))
+				"appId must be a positive integer (1-20 digits); find it on the GitHub App settings page (https://github.com/settings/apps/<app>) or via gh api /app"))
 		}
 		if cfg.InstallationID == "" {
 			errs = append(errs, field.Required(p.Child("installationId"), "required for GitHubApp provider"))
 		} else if !gitHubAppNumericID.MatchString(cfg.InstallationID) {
 			errs = append(errs, field.Invalid(p.Child("installationId"), cfg.InstallationID,
-				"installationId must be a positive integer (1-20 digits); see kubectl get installation -o yaml | grep id or the GitHub App settings page"))
+				"installationId must be a positive integer (1-20 digits); find it via gh api /users/{user}/installation or in the installation URL https://github.com/settings/installations/<id>"))
 		}
 		if cfg.SecretRef == nil {
 			errs = append(errs, field.Required(p.Child("secretRef"),
