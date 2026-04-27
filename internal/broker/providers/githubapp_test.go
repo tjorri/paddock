@@ -704,6 +704,63 @@ func TestGitHubAppProvider_SubstituteResultFieldsPopulated(t *testing.T) {
 	}
 }
 
+func TestGitHubAppProvider_Revoke_DropsLease(t *testing.T) {
+	t.Parallel()
+	fg := newFakeGitHub(t)
+	clock := time.Unix(1_700_000_000, 0)
+	fg.expiresAt = clock.Add(time.Hour)
+	key := generateRSAKey(t)
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(githubSecret(key)).Build()
+	p := &GitHubAppProvider{
+		Client:      c,
+		HTTPClient:  fg.server.Client(),
+		APIEndpoint: fg.server.URL,
+		clockSource: clockSource{Now: func() time.Time { return clock }},
+	}
+
+	res, err := p.Issue(context.Background(), IssueRequest{
+		RunName:        "cc-1",
+		Namespace:      "my-team",
+		CredentialName: "GITHUB_TOKEN",
+		Grant:          githubGrant(),
+		GitRepos:       githubRepos(),
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if res.LeaseID == "" {
+		t.Fatal("Issue returned empty LeaseID")
+	}
+
+	// Lease must be present in the map before Revoke.
+	p.mu.Lock()
+	leaseCount := len(p.bearers)
+	p.mu.Unlock()
+	if leaseCount != 1 {
+		t.Fatalf("expected 1 lease after Issue, got %d", leaseCount)
+	}
+
+	if err := p.Revoke(context.Background(), res.LeaseID); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	// Lease must be gone after Revoke.
+	p.mu.Lock()
+	leaseCount = len(p.bearers)
+	p.mu.Unlock()
+	if leaseCount != 0 {
+		t.Fatalf("expected 0 leases after Revoke, got %d", leaseCount)
+	}
+}
+
+func TestGitHubAppProvider_Revoke_UnknownLeaseID_NoError(t *testing.T) {
+	t.Parallel()
+	p := &GitHubAppProvider{}
+	if err := p.Revoke(context.Background(), "gha-deadbeef"); err != nil {
+		t.Fatalf("Revoke with unknown LeaseID returned error: %v", err)
+	}
+}
+
 // TestRepoNamesFromGitRepos — double-check we flatten the grant into
 // just repo names (GitHub scopes by installation, so owners are
 // implicit).

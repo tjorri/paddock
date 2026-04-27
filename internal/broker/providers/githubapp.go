@@ -120,6 +120,10 @@ type githubLease struct {
 	// for. Populated at Issue from grant.Provider.Hosts (or default
 	// [github.com, api.github.com] when the grant omits it). F-09.
 	AllowedHosts []string
+	// LeaseID is the same opaque identifier returned in IssueResult.LeaseID
+	// to the controller. Stored on the lease so Revoke can lookup by
+	// LeaseID without a separate index. F-11.
+	LeaseID string
 }
 
 // githubTokenKey uniquely identifies one cached installation token.
@@ -183,6 +187,7 @@ func (p *GitHubAppProvider) Issue(ctx context.Context, req IssueRequest) (IssueR
 	if err != nil {
 		return IssueResult{}, err
 	}
+	leaseID := "gha-" + bearer[len(githubAppBearerPrefix):len(githubAppBearerPrefix)+8]
 
 	// Repositories list: the BrokerPolicy's gitRepos — bounded to
 	// this policy's owner-declared scope. The GitHub API intersects
@@ -217,6 +222,7 @@ func (p *GitHubAppProvider) Issue(ctx context.Context, req IssueRequest) (IssueR
 		APIEndpoint:    apiEndpoint,
 		ExpiresAt:      expires,
 		AllowedHosts:   allowedHosts,
+		LeaseID:        leaseID,
 	}
 
 	p.mu.Lock()
@@ -232,15 +238,29 @@ func (p *GitHubAppProvider) Issue(ctx context.Context, req IssueRequest) (IssueR
 
 	return IssueResult{
 		Value:        bearer,
-		LeaseID:      "gha-" + bearer[len(githubAppBearerPrefix):len(githubAppBearerPrefix)+8],
+		LeaseID:      leaseID,
 		ExpiresAt:    expires,
 		DeliveryMode: "ProxyInjected",
 		Hosts:        allowedHosts,
 	}, nil
 }
 
-// Revoke implementation lands in Task 5.
-func (p *GitHubAppProvider) Revoke(_ context.Context, _ string) error { return nil }
+// Revoke drops the in-memory lease entry whose LeaseID matches.
+// Idempotent — unknown leaseID returns nil. F-11.
+func (p *GitHubAppProvider) Revoke(_ context.Context, leaseID string) error {
+	if leaseID == "" {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for bearer, lease := range p.bearers {
+		if lease.LeaseID == leaseID {
+			delete(p.bearers, bearer)
+			return nil
+		}
+	}
+	return nil
+}
 
 // SubstituteAuth swaps a Paddock bearer for the real installation
 // token at MITM time. Returns Matched=true whenever the bearer looks
