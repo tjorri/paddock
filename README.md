@@ -17,20 +17,7 @@ For deeper internal reading: [`VISION.md`](VISION.md) (product north star), [`do
 
 ## What's in the box
 
-| Component | Role |
-|---|---|
-| `ClusterHarnessTemplate` / `HarnessTemplate` | Pod shape + `requires` capability declarations |
-| `HarnessRun` | One invocation of a template with a prompt |
-| `Workspace` | PVC with optional multi-repo git seeding |
-| `BrokerPolicy` | Operator's consent surface: which credentials + egress + gitRepos the broker will back |
-| `AuditEvent` | Per-decision security trail with TTL-based retention |
-| Controller-manager + webhook | Reconcilers, admission (template + run + broker policy + audit event) |
-| Generic collector sidecar | Writes agent output into the owned `<run>-out` ConfigMap |
-| Per-harness adapters | Convert raw agent output to `PaddockEvent`s |
-| **Broker** | Issues short-lived credentials via pluggable Providers (`Static`, `AnthropicAPI`, `GitHubApp`, `PATPool`) |
-| **Per-run egress proxy** | L7 HTTPS MITM; calls broker `ValidateEgress` per connection and `SubstituteAuth` per request so the agent only sees Paddock-issued bearers |
-| **iptables-init** (transparent mode) | NET_ADMIN init container that installs REDIRECT rules so the agent can't bypass the proxy |
-| `kubectl-paddock` plugin | `submit`, `status`, `list`, `events`, `logs`, `cancel`, `policy`, `audit`, `describe` |
+Paddock is built around five CRDs (`HarnessTemplate` / `ClusterHarnessTemplate`, `HarnessRun`, `Workspace`, `BrokerPolicy`, `AuditEvent`), a control plane (controller + admission webhooks + capability-scoped broker), and per-run sidecars (egress proxy + adapter + collector + a transparent-mode iptables-init). See [`docs/concepts/components.md`](docs/concepts/components.md) for the full inventory.
 
 Reference harnesses: `paddock-echo` (deterministic CI fixture) and Claude Code (real-agent demo).
 
