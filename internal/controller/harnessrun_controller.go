@@ -352,6 +352,23 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
+	// Persist Status.IssuedLeases (and the rest of the status mutations
+	// reconcileCredentials accumulated) BEFORE proceeding to the proxy-TLS
+	// reconcile that follows. If a downstream step (e.g., ensureProxyTLS
+	// re-reading a freshly-created Certificate) returns an error, the
+	// reconciler short-circuits with `return ctrl.Result{}, err` and
+	// SKIPS the end-of-Reconcile commitStatus at line ~562. The next
+	// reconcile then sees an empty status.issuedLeases and calls
+	// broker.Issue again — leaking a fresh PATPool slot every cycle and
+	// hitting PoolExhausted within seconds. The cachedBrokerCredentials
+	// fast-path in ensureBrokerCredentials only fires when status carries
+	// the lease, so the commit MUST happen here, not after the proxy-TLS
+	// reconcile.
+	if outcome, err := r.commitStatus(ctx, &run, origStatus); err != nil {
+		return outcome, err
+	}
+	origStatus = run.Status.DeepCopy()
+
 	// 4b. Materialise the per-run proxy-tls Secret and flip
 	// EgressConfigured (ADR-0013 §7.3). When proxy integration is
 	// disabled at the manager level, EgressConfigured lands as False
