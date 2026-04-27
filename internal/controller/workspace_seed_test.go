@@ -228,3 +228,29 @@ func TestScrubURLUserinfo(t *testing.T) {
 		}
 	}
 }
+
+func TestSeedJob_Deadlines(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+		Spec: paddockv1alpha1.WorkspaceSpec{
+			Seed: &paddockv1alpha1.WorkspaceSeed{
+				Repos: []paddockv1alpha1.WorkspaceGitSource{
+					{URL: "https://example.com/foo.git", Path: "foo"},
+				},
+			},
+		},
+	}
+	job := seedJobForWorkspace(ws, "alpine/git@sha256:0000000000000000000000000000000000000000000000000000000000000000", seedJobInputs{})
+	if job.Spec.ActiveDeadlineSeconds == nil || *job.Spec.ActiveDeadlineSeconds != 600 {
+		t.Errorf("Job.ActiveDeadlineSeconds = %v, want 600", job.Spec.ActiveDeadlineSeconds)
+	}
+	if job.Spec.Template.Spec.ActiveDeadlineSeconds == nil || *job.Spec.Template.Spec.ActiveDeadlineSeconds != 600 {
+		t.Errorf("Pod.ActiveDeadlineSeconds = %v, want 600", job.Spec.Template.Spec.ActiveDeadlineSeconds)
+	}
+	if job.Spec.Template.Spec.TerminationGracePeriodSeconds == nil || *job.Spec.Template.Spec.TerminationGracePeriodSeconds != 30 {
+		t.Errorf("Pod.TerminationGracePeriodSeconds = %v, want 30", job.Spec.Template.Spec.TerminationGracePeriodSeconds)
+	}
+	if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != 3600 {
+		t.Errorf("Job.TTLSecondsAfterFinished = %v, want 3600", job.Spec.TTLSecondsAfterFinished)
+	}
+}

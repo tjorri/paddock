@@ -41,6 +41,22 @@ type seedJobInputs struct {
 	brokerCASecret string
 }
 
+const (
+	// seedActiveDeadlineSeconds caps total seed Job runtime. ≈10× the
+	// typical clone time, well under the 3600 s broker-token TTL — keeps
+	// the broker-leased credential surface bounded against hostile/slow
+	// git hosts (F-47).
+	seedActiveDeadlineSeconds int64 = 600
+
+	// seedTerminationGracePeriodSeconds pins the kubelet's grace period
+	// explicitly rather than inheriting the 30 s default. F-47.
+	seedTerminationGracePeriodSeconds int64 = 30
+
+	// seedTTLSecondsAfterFinished auto-reaps completed seed Jobs after
+	// 1 h. Operability win, no security delta. F-47.
+	seedTTLSecondsAfterFinished int32 = 3600
+)
+
 // seedJobForWorkspace returns the seed Job that clones spec.seed.repos
 // into the workspace PVC. The Job uses one init container per repo and
 // a main container that writes /workspace/.paddock/repos.json once all
@@ -169,6 +185,9 @@ PADDOCK_EOF`,
 	// backoffLimit=0: seed failures surface immediately; we don't want
 	// alpine/git retrying a bad URL six times.
 	var backoff int32
+	activeDeadline := seedActiveDeadlineSeconds
+	grace := seedTerminationGracePeriodSeconds
+	ttl := seedTTLSecondsAfterFinished
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -177,17 +196,21 @@ PADDOCK_EOF`,
 			Labels:    workspaceLabels(ws),
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit: &backoff,
+			BackoffLimit:            &backoff,
+			ActiveDeadlineSeconds:   &activeDeadline,
+			TTLSecondsAfterFinished: &ttl,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: workspaceLabels(ws),
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy:   corev1.RestartPolicyNever,
-					SecurityContext: seedPodSecurityContext(),
-					InitContainers:  initContainers,
-					Containers:      []corev1.Container{mainContainer},
-					Volumes:         volumes,
+					RestartPolicy:                 corev1.RestartPolicyNever,
+					SecurityContext:               seedPodSecurityContext(),
+					InitContainers:                initContainers,
+					Containers:                    []corev1.Container{mainContainer},
+					Volumes:                       volumes,
+					ActiveDeadlineSeconds:         &activeDeadline,
+					TerminationGracePeriodSeconds: &grace,
 				},
 			},
 		},
