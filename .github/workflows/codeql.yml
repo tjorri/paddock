@@ -1,0 +1,47 @@
+name: CodeQL
+
+# Advanced CodeQL setup. Replaces GitHub's default setup so we can pin
+# a config file (.github/codeql/codeql-config.yml) that excludes the
+# evil-echo hostile harness from analysis. After merging this workflow,
+# disable default setup under repo Settings → Code security → Code
+# scanning → "CodeQL analysis" → Switch to advanced.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly run, mirroring default-setup cadence.
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: go
+          config-file: ./.github/codeql/codeql-config.yml
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:go"
