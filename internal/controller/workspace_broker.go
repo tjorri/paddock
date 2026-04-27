@@ -21,8 +21,11 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
@@ -133,6 +136,84 @@ func (r *WorkspaceReconciler) ensureSeedBrokerCA(ctx context.Context, ws *paddoc
 		return false, nil
 	}
 	return true, nil
+}
+
+// ensureSeedRBAC provisions a per-Workspace ServiceAccount + Role +
+// RoleBinding granting the seed proxy sidecar create access to
+// AuditEvents in the Workspace's namespace. Mirrors the run-Pod's
+// ensureCollectorRBAC pattern (harnessrun_controller.go). All three
+// objects are owner-ref'd to the Workspace for cascade cleanup.
+//
+// F-48 (dedicated SA so default-SA automount can be disabled) +
+// F-52 (audit RBAC for the seed proxy's AuditEvent writes).
+func (r *WorkspaceReconciler) ensureSeedRBAC(ctx context.Context, ws *paddockv1alpha1.Workspace) error {
+	saName := seedSAName(ws)
+	labels := map[string]string{
+		"app.kubernetes.io/name":      "paddock",
+		"app.kubernetes.io/component": "workspace-seed",
+		"paddock.dev/workspace":       ws.Name,
+	}
+
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: ws.Namespace,
+			Labels:    labels,
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
+		return controllerutil.SetControllerReference(ws, sa, r.Scheme)
+	}); err != nil && !apierrors.IsConflict(err) {
+		return fmt.Errorf("seed serviceaccount: %w", err)
+	}
+
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: ws.Namespace,
+			Labels:    labels,
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
+		if err := controllerutil.SetControllerReference(ws, role, r.Scheme); err != nil {
+			return err
+		}
+		role.Rules = []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"paddock.dev"},
+				Resources: []string{"auditevents"},
+				Verbs:     []string{"create"},
+			},
+		}
+		return nil
+	}); err != nil && !apierrors.IsConflict(err) {
+		return fmt.Errorf("seed role: %w", err)
+	}
+
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: ws.Namespace,
+			Labels:    labels,
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rb, func() error {
+		if err := controllerutil.SetControllerReference(ws, rb, r.Scheme); err != nil {
+			return err
+		}
+		rb.Subjects = []rbacv1.Subject{
+			{Kind: "ServiceAccount", Name: saName, Namespace: ws.Namespace},
+		}
+		rb.RoleRef = rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     saName,
+		}
+		return nil
+	}); err != nil && !apierrors.IsConflict(err) {
+		return fmt.Errorf("seed rolebinding: %w", err)
+	}
+	return nil
 }
 
 // seedBrokerCredsReady checks that every BrokerCredentialRef the

@@ -276,6 +276,13 @@ func seedNetworkPolicyName(ws *paddockv1alpha1.Workspace) string {
 	return seedJobName(ws) + "-egress"
 }
 
+// seedSAName is the per-Workspace ServiceAccount the seed Pod runs
+// under. Holds RBAC for the seed proxy's AuditEvent writes (F-52).
+// Naming mirrors collectorSAName: predictable, derived from the parent.
+func seedSAName(ws *paddockv1alpha1.Workspace) string {
+	return "paddock-workspace-seed-" + ws.Name
+}
+
 // describeSeed produces a short human-readable summary of the seed source
 // for event messages.
 func describeSeed(ws *paddockv1alpha1.Workspace) string {

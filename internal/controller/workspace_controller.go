@@ -27,6 +27,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -68,6 +69,8 @@ type WorkspaceReconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile brings a Workspace to its desired state. See package doc and
 // docs/specs/0001-core-v0.1.md §3.2 for the state machine.
@@ -152,6 +155,14 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				}
 				return ctrl.Result{}, nil
 			}
+		}
+
+		// F-48 + F-52: per-Workspace SA + Role + RoleBinding so the seed
+		// Pod runs without the namespace default-SA token automounted,
+		// and the proxy sidecar can write AuditEvents.
+		if err := r.ensureSeedRBAC(ctx, &ws); err != nil {
+			logger.Error(err, "ensuring seed RBAC failed")
+			return ctrl.Result{}, err
 		}
 
 		// Broker-backed seeds require the per-run <run>-broker-creds
@@ -480,6 +491,9 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&batchv1.Job{}).
 		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(&corev1.ServiceAccount{}).
+		Owns(&rbacv1.Role{}).
+		Owns(&rbacv1.RoleBinding{}).
 		Named("workspace").
 		Complete(r)
 }

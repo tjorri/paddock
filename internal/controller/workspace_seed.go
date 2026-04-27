@@ -132,6 +132,43 @@ func seedJobForWorkspace(ws *paddockv1alpha1.Workspace, image string, seedInputs
 				},
 			},
 		)
+		// F-48 + F-52: with automount disabled at the Pod level, the
+		// proxy sidecar needs explicit access to the K8s API token to
+		// write AuditEvents. Mirrors the run-Pod's paddock-sa-token
+		// projected volume in pod_spec.go.
+		volumes = append(volumes, corev1.Volume{
+			Name: paddockSAVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{
+					Sources: []corev1.VolumeProjection{
+						{
+							ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+								Path:              "token",
+								ExpirationSeconds: ptr.To[int64](3600),
+							},
+						},
+						{
+							ConfigMap: &corev1.ConfigMapProjection{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "kube-root-ca.crt"},
+								Items: []corev1.KeyToPath{
+									{Key: "ca.crt", Path: "ca.crt"},
+								},
+							},
+						},
+						{
+							DownwardAPI: &corev1.DownwardAPIProjection{
+								Items: []corev1.DownwardAPIVolumeFile{
+									{
+										Path:     "namespace",
+										FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		})
 		initContainers = append(initContainers, buildSeedProxySidecar(ws, seedInputs))
 	}
 
@@ -204,12 +241,14 @@ PADDOCK_EOF`,
 					Labels: workspaceLabels(ws),
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy:                 corev1.RestartPolicyNever,
-					SecurityContext:               seedPodSecurityContext(),
-					InitContainers:                initContainers,
-					Containers:                    []corev1.Container{mainContainer},
-					Volumes:                       volumes,
-					ActiveDeadlineSeconds:         &activeDeadline,
+					RestartPolicy:                corev1.RestartPolicyNever,
+					ServiceAccountName:           seedSAName(ws),
+					AutomountServiceAccountToken: ptr.To(false),
+					SecurityContext:              seedPodSecurityContext(),
+					InitContainers:               initContainers,
+					Containers:                   []corev1.Container{mainContainer},
+					Volumes:                      volumes,
+					ActiveDeadlineSeconds:        &activeDeadline,
 					TerminationGracePeriodSeconds: &grace,
 				},
 			},
@@ -266,6 +305,7 @@ func buildSeedProxySidecar(ws *paddockv1alpha1.Workspace, in seedJobInputs) core
 			{Name: proxyCAVolumeName, MountPath: proxyCAMountPath, ReadOnly: true},
 			{Name: brokerTokenVolumeName, MountPath: brokerTokenMountPath, ReadOnly: true},
 			{Name: brokerCAVolumeName, MountPath: brokerCAMountPath, ReadOnly: true},
+			{Name: paddockSAVolumeName, MountPath: paddockSAMountPath, ReadOnly: true},
 		},
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{

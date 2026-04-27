@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -225,6 +226,83 @@ func TestScrubURLUserinfo(t *testing.T) {
 	for _, tc := range cases {
 		if got := scrubURLUserinfo(tc.in); got != tc.want {
 			t.Errorf("scrubURLUserinfo(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSeedJob_AutomountFalseAndDedicatedSA(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+		Spec: paddockv1alpha1.WorkspaceSpec{
+			Seed: &paddockv1alpha1.WorkspaceSeed{
+				Repos: []paddockv1alpha1.WorkspaceGitSource{
+					{URL: "https://example.com/foo.git", Path: "foo"},
+				},
+			},
+		},
+	}
+	job := seedJobForWorkspace(ws, "alpine/git@sha256:0000000000000000000000000000000000000000000000000000000000000000", seedJobInputs{})
+	podSpec := job.Spec.Template.Spec
+	if podSpec.AutomountServiceAccountToken == nil || *podSpec.AutomountServiceAccountToken {
+		t.Errorf("AutomountServiceAccountToken = %v, want false", podSpec.AutomountServiceAccountToken)
+	}
+	if podSpec.ServiceAccountName != seedSAName(ws) {
+		t.Errorf("ServiceAccountName = %q, want %q", podSpec.ServiceAccountName, seedSAName(ws))
+	}
+}
+
+func TestSeedProxySidecar_HasSATokenVolumeMount(t *testing.T) {
+	ws := &paddockv1alpha1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "team-a"},
+		Spec: paddockv1alpha1.WorkspaceSpec{
+			Seed: &paddockv1alpha1.WorkspaceSeed{
+				Repos: []paddockv1alpha1.WorkspaceGitSource{{
+					URL:  "https://github.com/org/repo.git",
+					Path: "repo",
+					BrokerCredentialRef: &paddockv1alpha1.BrokerCredentialReference{
+						Name: "hr-1-broker-creds", Key: "GITHUB_TOKEN",
+					},
+				}},
+			},
+		},
+	}
+	in := seedJobInputs{
+		proxyImage:     "paddock-proxy:dev",
+		proxyTLSSecret: "ws-1-proxy-tls",
+		brokerEndpoint: "https://paddock-broker.paddock-system.svc:8443",
+		brokerCASecret: "ws-1-broker-ca",
+	}
+	job := seedJobForWorkspace(ws, "alpine/git@sha256:0000000000000000000000000000000000000000000000000000000000000000", in)
+	var proxy *corev1.Container
+	for i, c := range job.Spec.Template.Spec.InitContainers {
+		if c.Name == proxyContainerName {
+			proxy = &job.Spec.Template.Spec.InitContainers[i]
+			break
+		}
+	}
+	if proxy == nil {
+		t.Fatal("proxy sidecar missing from init containers")
+	}
+	found := false
+	for _, m := range proxy.VolumeMounts {
+		if m.Name == paddockSAVolumeName && m.MountPath == paddockSAMountPath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("proxy sidecar missing %s mount at %s", paddockSAVolumeName, paddockSAMountPath)
+	}
+
+	// alpine/git init containers should NOT have the SA token mount
+	for _, c := range job.Spec.Template.Spec.InitContainers {
+		if c.Name == proxyContainerName {
+			continue
+		}
+		for _, m := range c.VolumeMounts {
+			if m.Name == paddockSAVolumeName {
+				t.Errorf("alpine/git container %q has SA token mount; expected only proxy sidecar", c.Name)
+			}
 		}
 	}
 }
