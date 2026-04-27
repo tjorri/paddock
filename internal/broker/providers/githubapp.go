@@ -239,6 +239,9 @@ func (p *GitHubAppProvider) Issue(ctx context.Context, req IssueRequest) (IssueR
 	}, nil
 }
 
+// Revoke implementation lands in Task 5.
+func (p *GitHubAppProvider) Revoke(_ context.Context, _ string) error { return nil }
+
 // SubstituteAuth swaps a Paddock bearer for the real installation
 // token at MITM time. Returns Matched=true whenever the bearer looks
 // like one of ours (prefix match) even on error, so the broker's

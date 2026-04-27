@@ -168,6 +168,9 @@ func (p *AnthropicAPIProvider) Issue(ctx context.Context, req IssueRequest) (Iss
 	}, nil
 }
 
+// Revoke implementation lands in Task 4.
+func (p *AnthropicAPIProvider) Revoke(_ context.Context, _ string) error { return nil }
+
 // SubstituteAuth implements providers.Substituter. Returns Matched=true
 // when IncomingBearer is one this provider minted — even on error
 // (expired / revoked) — so the broker doesn't fall through to the next

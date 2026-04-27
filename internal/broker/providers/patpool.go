@@ -241,6 +241,9 @@ func (p *PATPoolProvider) Issue(ctx context.Context, req IssueRequest) (IssueRes
 	}, nil
 }
 
+// Revoke implementation lands in Task 6.
+func (p *PATPoolProvider) Revoke(_ context.Context, _ string) error { return nil }
+
 // SubstituteAuth resolves a Paddock bearer to the leased PAT and
 // returns the git Basic-auth swap. Returns Matched=true on any
 // bearer that begins with our prefix — including unknown/expired

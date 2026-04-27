@@ -42,6 +42,13 @@ type Provider interface {
 	// (already-validated) BrokerPolicy grant that picked this provider;
 	// providers read their config from grant.Provider.
 	Issue(ctx context.Context, req IssueRequest) (IssueResult, error)
+
+	// Revoke releases the in-memory lease state for leaseID. Idempotent —
+	// revoking an unknown or already-expired leaseID returns nil.
+	// PATPool: marks the pool slot free + drops the bearer→lease entry.
+	// Anthropic / GitHubApp: drops the bearer→lease entry.
+	// UserSuppliedSecret: no-op (no in-memory state).
+	Revoke(ctx context.Context, leaseID string) error
 }
 
 // IssueRequest carries the broker-level inputs a provider needs.

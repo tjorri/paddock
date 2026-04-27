@@ -721,6 +721,8 @@ func (s *stubSubstituter) Issue(_ context.Context, _ providers.IssueRequest) (pr
 	return providers.IssueResult{}, errors.New("stub does not implement Issue")
 }
 
+func (s *stubSubstituter) Revoke(_ context.Context, _ string) error { return nil }
+
 func (s *stubSubstituter) SubstituteAuth(_ context.Context, _ providers.SubstituteRequest) (brokerapi.SubstituteResult, error) {
 	if !s.matched {
 		return brokerapi.SubstituteResult{Matched: false}, nil

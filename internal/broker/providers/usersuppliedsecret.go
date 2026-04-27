@@ -159,6 +159,12 @@ func (p *UserSuppliedSecretProvider) Issue(ctx context.Context, req IssueRequest
 	}, nil
 }
 
+// Revoke is a no-op: UserSuppliedSecret holds no per-issue lease state
+// (rotation drives invalidation; see §2.2 of Theme 2 design).
+func (*UserSuppliedSecretProvider) Revoke(_ context.Context, _ string) error {
+	return nil
+}
+
 func (p *UserSuppliedSecretProvider) SubstituteAuth(ctx context.Context, req SubstituteRequest) (brokerapi.SubstituteResult, error) {
 	bearer := ExtractBearer(req.IncomingBearer)
 	if !strings.HasPrefix(bearer, userSuppliedBearerPrefix) {
