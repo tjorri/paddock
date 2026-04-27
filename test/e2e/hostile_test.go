@@ -812,25 +812,17 @@ spec:
 
 	Context("F-14: broker survives restart without re-leasing PATPool slots", func() {
 		It("survives broker restart without slot collision", func() {
-			// SKIPPED in CI: this spec relies on two HarnessRuns acquiring
-			// PATPool leases concurrently from a 2-slot pool, then a broker
-			// restart preserving slot reservations. CI's pod-scheduling
-			// latency consistently exceeds the per-run timeout for the
-			// SECOND run to reach status.IssuedLeases populated.
-			//
-			// The F-14 invariant ("post-restart, the broker reserves the
-			// same slots that were leased pre-restart so a fresh Issue
-			// picks a different slot") is fully validated by:
-			//   - internal/broker/reconstruct_test.go::TestReconstructLeases_PATPool_ReservesSlot
-			//   - internal/broker/providers/patpool_test.go::TestPATPoolProvider_ReserveSlot_PlaceholderSurvivesNextIssue
-			//   - internal/broker/providers/patpool_test.go::TestPATPoolProvider_Revoke_FreesSlot
-			//
-			// Re-enabling this e2e requires either tuning the controller's
-			// MaxConcurrentReconciles or restructuring the test to drive
-			// broker leases without the full HarnessRun → Pod lifecycle.
-			// Tracked separately; see Theme 2 deferred work in design §9.
-			Skip("F-14 e2e flakes in CI; unit tests cover the reconstruction invariant — see comment")
-
+			// Reconciliation invariant under test: two HarnessRuns
+			// against a 2-slot PATPool each hold a distinct slot before
+			// AND after a broker rollout-restart. Pre-fix, the second
+			// run would never acquire a lease — the first run's
+			// reconcile loop kept calling /v1/issue every 5s (no
+			// idempotency), exhausting the 2-slot pool within ~10s.
+			// See commit history for the controller-side fast-path that
+			// fixed this; the unit tests in
+			// internal/broker/reconstruct_test.go and
+			// internal/broker/providers/patpool_test.go pin the
+			// reconstruction half.
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 			defer cancel()
 
@@ -871,10 +863,17 @@ spec:
     name: t2-patpool-tmpl
   prompt: "t2 restart test"
 `, runA, t2Namespace))
+			runAOK := false
 			Eventually(func() int {
 				return issuedLeaseCount(ctx, t2Namespace, runA)
 			}, 180*time.Second, 2*time.Second).Should(BeNumerically(">=", 1),
 				"run %s did not acquire a lease", runA)
+			runAOK = true
+			DeferCleanup(func() {
+				if !runAOK {
+					dumpRunDiagnostics(ctx, t2Namespace, runA)
+				}
+			})
 
 			By("starting run-b and waiting for it to acquire a lease")
 			mustApplyManifest(fmt.Sprintf(`
@@ -888,10 +887,21 @@ spec:
     name: t2-patpool-tmpl
   prompt: "t2 restart test"
 `, runB, t2Namespace))
+			runBOK := false
+			DeferCleanup(func() {
+				// On any failure (including run-b never leasing), dump
+				// describe + events + controller + broker logs for both
+				// runs so the next CI flake gives us real signal.
+				if !runBOK {
+					dumpRunDiagnostics(ctx, t2Namespace, runA)
+					dumpRunDiagnostics(ctx, t2Namespace, runB)
+				}
+			})
 			Eventually(func() int {
 				return issuedLeaseCount(ctx, t2Namespace, runB)
 			}, 180*time.Second, 2*time.Second).Should(BeNumerically(">=", 1),
 				"run %s did not acquire a lease", runB)
+			runBOK = true
 
 			slotA1 := poolSlotIndex(ctx, t2Namespace, runA)
 			slotB1 := poolSlotIndex(ctx, t2Namespace, runB)
@@ -1489,6 +1499,8 @@ func dumpRunDiagnostics(ctx context.Context, namespace, runName string) {
 	}
 	dump("harnessrun describe",
 		"-n", namespace, "describe", "harnessrun", runName)
+	dump("harnessrun yaml",
+		"-n", namespace, "get", "harnessrun", runName, "-o", "yaml")
 	dump("pods in run namespace",
 		"-n", namespace, "get", "pods", "-o", "wide")
 	dump("pod descriptions",
@@ -1497,4 +1509,6 @@ func dumpRunDiagnostics(ctx context.Context, namespace, runName string) {
 		"-n", namespace, "get", "events", "--sort-by=.lastTimestamp")
 	dump("controller-manager logs",
 		"-n", "paddock-system", "logs", "-l", "control-plane=controller-manager", "--tail=200")
+	dump("broker logs",
+		"-n", "paddock-system", "logs", "-l", "app.kubernetes.io/component=broker", "--tail=200")
 }
