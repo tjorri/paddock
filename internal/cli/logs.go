@@ -98,7 +98,7 @@ func validateReaderImage(image string, extra []string) error {
 	}
 	return fmt.Errorf(
 		"--reader-image %q is not on the allowlist; trusted prefixes: %s. "+
-			"Use --allow-reader-image-prefix=<prefix> to extend.",
+			"Use --allow-reader-image-prefix=<prefix> to extend",
 		image, strings.Join(allowed, ", "))
 }
 
