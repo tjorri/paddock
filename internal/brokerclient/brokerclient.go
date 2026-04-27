@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -122,6 +123,55 @@ type Options struct {
 	// read). Required — callers pick the budget appropriate to their
 	// path.
 	Timeout time.Duration
+
+	// UncheckedHTTPClient, when non-nil, is used as the underlying
+	// http.Client instead of constructing one from CABundlePath. It
+	// ALSO bypasses the URL-shape validation in New.
+	//
+	// This field exists solely for tests that point at an httptest.Server
+	// (whose URL is 127.0.0.1:PORT, not a canonical .svc:8443 endpoint).
+	// Production callers MUST leave this nil.
+	UncheckedHTTPClient *http.Client
+}
+
+// validateBrokerEndpoint enforces the canonical shape of the in-cluster
+// broker URL: scheme MUST be https, host MUST end in .svc or
+// .svc.cluster.local with at least two labels before that suffix, port
+// MUST be 8443, and the URL must have no path/query/fragment.
+//
+// F-29: a hostile env or a future config-pull regression that hands
+// brokerclient.New a redirected endpoint would otherwise leak the
+// projected SA bearer to whatever URL is supplied. See
+// docs/security/2026-04-25-v0.4-audit-findings.md.
+func validateBrokerEndpoint(endpoint string) error {
+	trimmed := strings.TrimRight(endpoint, "/")
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("endpoint is not a valid URL: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("endpoint scheme must be https; got %q", u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("endpoint host is empty")
+	}
+	host := strings.ToLower(u.Hostname())
+	if !(strings.HasSuffix(host, ".svc.cluster.local") || strings.HasSuffix(host, ".svc")) {
+		return fmt.Errorf("endpoint host must end in .svc or .svc.cluster.local; got %q", host)
+	}
+	if u.Port() != "8443" {
+		return fmt.Errorf("endpoint port must be 8443; got %q", u.Port())
+	}
+	if u.Path != "" && u.Path != "/" {
+		return fmt.Errorf("endpoint must have no path component; got %q", u.Path)
+	}
+	if u.RawQuery != "" {
+		return fmt.Errorf("endpoint must have no query component")
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("endpoint must have no fragment component")
+	}
+	return nil
 }
 
 // New constructs a Client. Endpoint is required (caller decides
@@ -130,6 +180,11 @@ func New(opts Options) (*Client, error) {
 	if opts.Endpoint == "" {
 		return nil, fmt.Errorf("brokerclient: endpoint is required")
 	}
+	if opts.UncheckedHTTPClient == nil {
+		if err := validateBrokerEndpoint(opts.Endpoint); err != nil {
+			return nil, fmt.Errorf("brokerclient: %w", err)
+		}
+	}
 	if opts.TokenReader == nil {
 		return nil, fmt.Errorf("brokerclient: TokenReader is required")
 	}
@@ -137,17 +192,24 @@ func New(opts Options) (*Client, error) {
 		return nil, fmt.Errorf("brokerclient: Timeout is required")
 	}
 
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
-	if opts.CABundlePath != "" {
-		pem, err := os.ReadFile(opts.CABundlePath)
-		if err != nil {
-			return nil, fmt.Errorf("reading broker CA at %s: %w", opts.CABundlePath, err)
+	hc := opts.UncheckedHTTPClient
+	if hc == nil {
+		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
+		if opts.CABundlePath != "" {
+			pem, err := os.ReadFile(opts.CABundlePath)
+			if err != nil {
+				return nil, fmt.Errorf("reading broker CA at %s: %w", opts.CABundlePath, err)
+			}
+			roots := x509.NewCertPool()
+			if !roots.AppendCertsFromPEM(pem) {
+				return nil, fmt.Errorf("broker CA at %s has no valid certificates", opts.CABundlePath)
+			}
+			tlsCfg.RootCAs = roots
 		}
-		roots := x509.NewCertPool()
-		if !roots.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("broker CA at %s has no valid certificates", opts.CABundlePath)
+		hc = &http.Client{
+			Timeout:   opts.Timeout,
+			Transport: &http.Transport{TLSClientConfig: tlsCfg},
 		}
-		tlsCfg.RootCAs = roots
 	}
 
 	return &Client{
@@ -155,10 +217,7 @@ func New(opts Options) (*Client, error) {
 		TokenReader:  opts.TokenReader,
 		RunName:      opts.RunName,
 		RunNamespace: opts.RunNamespace,
-		hc: &http.Client{
-			Timeout:   opts.Timeout,
-			Transport: &http.Transport{TLSClientConfig: tlsCfg},
-		},
+		hc:           hc,
 	}, nil
 }
 

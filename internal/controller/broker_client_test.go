@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -34,33 +33,30 @@ import (
 )
 
 // startTestBroker spins up a TLS httptest server that serves
-// brokerapi.PathIssue with the given handler. Writes the test server's
-// CA and a dummy token to tmpdir; returns (client, cleanup).
+// brokerapi.PathIssue with the given handler. Returns (client, cleanup).
+// Uses UncheckedHTTPClient to bypass the URL-shape validator (srv.URL
+// is 127.0.0.1:PORT, not a canonical .svc:8443 endpoint).
 func startTestBroker(t *testing.T, handler http.HandlerFunc) (*BrokerHTTPClient, func()) {
 	t.Helper()
 	srv := httptest.NewTLSServer(handler)
 
 	tmp := t.TempDir()
-
-	// Write the test server's certificate as a PEM-encoded "CA" the
-	// client will trust (httptest's cert is self-signed).
-	caPath := filepath.Join(tmp, "ca.crt")
-	cert := srv.Certificate()
-	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
-	if err := os.WriteFile(caPath, pemBytes, 0o600); err != nil {
-		t.Fatalf("write ca: %v", err)
-	}
-
 	tokenPath := filepath.Join(tmp, "token")
 	if err := os.WriteFile(tokenPath, []byte("fake-bearer"), 0o600); err != nil {
 		t.Fatalf("write token: %v", err)
 	}
 
-	c, err := NewBrokerHTTPClient(srv.URL, tokenPath, caPath)
+	tr := brokerclient.FileTokenReader(tokenPath)
+	c, err := brokerclient.New(brokerclient.Options{
+		Endpoint:            srv.URL,
+		TokenReader:         tr,
+		Timeout:             10 * time.Second,
+		UncheckedHTTPClient: srv.Client(),
+	})
 	if err != nil {
-		t.Fatalf("NewBrokerHTTPClient: %v", err)
+		t.Fatalf("brokerclient.New: %v", err)
 	}
-	return c, srv.Close
+	return &BrokerHTTPClient{TokenReader: tr, c: c}, srv.Close
 }
 
 func TestBrokerHTTPClient_Issue_Success(t *testing.T) {
@@ -126,11 +122,19 @@ func TestBrokerHTTPClient_Issue_TransportError(t *testing.T) {
 	tokenPath := filepath.Join(tmp, "token")
 	_ = os.WriteFile(tokenPath, []byte("t"), 0o600)
 
-	// Endpoint that will refuse connections — no httptest server running.
-	c, err := NewBrokerHTTPClient("https://127.0.0.1:1", tokenPath, "")
+	// Point at a port that will refuse connections. UncheckedHTTPClient
+	// bypasses the URL-shape validator (127.0.0.1 is not a .svc host).
+	tr := brokerclient.FileTokenReader(tokenPath)
+	bc, err := brokerclient.New(brokerclient.Options{
+		Endpoint:            "https://127.0.0.1:1",
+		TokenReader:         tr,
+		Timeout:             2 * time.Second,
+		UncheckedHTTPClient: &http.Client{Timeout: 2 * time.Second},
+	})
 	if err != nil {
-		t.Fatalf("NewBrokerHTTPClient: %v", err)
+		t.Fatalf("brokerclient.New: %v", err)
 	}
+	c := &BrokerHTTPClient{TokenReader: tr, c: bc}
 	_, err = c.Issue(testContext(t), "demo", "ns", "X")
 	if err == nil {
 		t.Fatalf("expected transport error")
@@ -151,7 +155,7 @@ func TestNewBrokerHTTPClient_EmptyEndpointDisables(t *testing.T) {
 }
 
 func TestNewBrokerHTTPClient_BadCAPath(t *testing.T) {
-	_, err := NewBrokerHTTPClient("https://example", "/tmp/token", "/nonexistent/ca")
+	_, err := NewBrokerHTTPClient("https://paddock-broker.paddock-system.svc:8443", "/tmp/token", "/nonexistent/ca")
 	if err == nil {
 		t.Fatalf("expected error for missing CA")
 	}
@@ -161,7 +165,7 @@ func TestNewBrokerHTTPClient_InvalidCAPEM(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "ca.crt")
 	_ = os.WriteFile(path, []byte("not a cert"), 0o600)
-	_, err := NewBrokerHTTPClient("https://example", "/tmp/token", path)
+	_, err := NewBrokerHTTPClient("https://paddock-broker.paddock-system.svc:8443", "/tmp/token", path)
 	if err == nil {
 		t.Fatalf("expected error for malformed CA")
 	}

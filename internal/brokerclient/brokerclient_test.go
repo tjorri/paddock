@@ -108,6 +108,23 @@ func startTestServer(t *testing.T, h http.HandlerFunc) (*httptest.Server, string
 	return srv, caPath, tokenPath
 }
 
+// buildTestClient constructs a Client wired directly to a test TLS
+// server, bypassing New's URL-shape validation (which requires a
+// canonical .svc:8443 endpoint). Only for use in tests that need to
+// talk to an httptest.Server.
+func buildTestClient(t *testing.T, srv *httptest.Server, tokenPath string, opts ...func(*Client)) *Client {
+	t.Helper()
+	c := &Client{
+		Endpoint:    srv.URL,
+		TokenReader: FileTokenReader(tokenPath),
+		hc:          srv.Client(),
+	}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
+}
+
 func testCtx(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -116,7 +133,7 @@ func testCtx(t *testing.T) context.Context {
 }
 
 func TestClient_Do_AttachesHeaders(t *testing.T) {
-	srv, caPath, tokenPath := startTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	srv, _, tokenPath := startTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer fake-bearer" {
 			t.Errorf("Authorization = %q", got)
 		}
@@ -132,17 +149,10 @@ func TestClient_Do_AttachesHeaders(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{}`))
 	})
-	c, err := New(Options{
-		Endpoint:     srv.URL,
-		CABundlePath: caPath,
-		TokenReader:  FileTokenReader(tokenPath),
-		RunName:      "demo",
-		RunNamespace: "ns",
-		Timeout:      2 * time.Second,
+	c := buildTestClient(t, srv, tokenPath, func(c *Client) {
+		c.RunName = "demo"
+		c.RunNamespace = "ns"
 	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
 	resp, err := c.Do(testCtx(t), "/v1/anything", []byte(`{}`))
 	if err != nil {
 		t.Fatalf("Do: %v", err)
@@ -151,23 +161,16 @@ func TestClient_Do_AttachesHeaders(t *testing.T) {
 }
 
 func TestClient_Do_OmitsNamespaceHeaderWhenEmpty(t *testing.T) {
-	srv, caPath, tokenPath := startTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	srv, _, tokenPath := startTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := r.Header[http.CanonicalHeaderKey(brokerapi.HeaderNamespace)]; ok {
 			t.Errorf("expected no X-Paddock-Run-Namespace header")
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{}`))
 	})
-	c, err := New(Options{
-		Endpoint:     srv.URL,
-		CABundlePath: caPath,
-		TokenReader:  FileTokenReader(tokenPath),
-		RunName:      "demo",
-		Timeout:      2 * time.Second,
+	c := buildTestClient(t, srv, tokenPath, func(c *Client) {
+		c.RunName = "demo"
 	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
 	resp, err := c.Do(testCtx(t), "/v1/anything", []byte(`{}`))
 	if err != nil {
 		t.Fatalf("Do: %v", err)
@@ -176,22 +179,15 @@ func TestClient_Do_OmitsNamespaceHeaderWhenEmpty(t *testing.T) {
 }
 
 func TestClient_Do_BrokerErrorEnvelope(t *testing.T) {
-	srv, caPath, tokenPath := startTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+	srv, _, tokenPath := startTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(brokerapi.ErrorResponse{Code: "Forbidden", Message: "no"})
 	})
-	c, err := New(Options{
-		Endpoint:     srv.URL,
-		CABundlePath: caPath,
-		TokenReader:  FileTokenReader(tokenPath),
-		RunName:      "demo",
-		Timeout:      2 * time.Second,
+	c := buildTestClient(t, srv, tokenPath, func(c *Client) {
+		c.RunName = "demo"
 	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	_, err = c.Do(testCtx(t), "/v1/anything", []byte(`{}`)) //nolint:bodyclose // Do closes body on non-2xx; nil resp returned on error
+	_, err := c.Do(testCtx(t), "/v1/anything", []byte(`{}`)) //nolint:bodyclose // Do closes body on non-2xx; nil resp returned on error
 	var be *BrokerError
 	if !errors.As(err, &be) {
 		t.Fatalf("expected *BrokerError, got %T: %v", err, err)
@@ -212,7 +208,7 @@ func TestNew_RequiresEndpoint(t *testing.T) {
 }
 
 func TestNew_RequiresTokenReader(t *testing.T) {
-	_, err := New(Options{Endpoint: "https://example", Timeout: time.Second})
+	_, err := New(Options{Endpoint: "https://paddock-broker.paddock-system.svc:8443", Timeout: time.Second})
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -223,7 +219,7 @@ func TestNew_RequiresTokenReader(t *testing.T) {
 
 func TestNew_RequiresTimeout(t *testing.T) {
 	_, err := New(Options{
-		Endpoint:    "https://example",
+		Endpoint:    "https://paddock-broker.paddock-system.svc:8443",
 		TokenReader: func() ([]byte, error) { return nil, nil },
 	})
 	if err == nil {
@@ -236,7 +232,7 @@ func TestNew_RequiresTimeout(t *testing.T) {
 
 func TestNew_BadCAPath(t *testing.T) {
 	_, err := New(Options{
-		Endpoint: "https://example", CABundlePath: "/nonexistent/ca",
+		Endpoint: "https://paddock-broker.paddock-system.svc:8443", CABundlePath: "/nonexistent/ca",
 		TokenReader: func() ([]byte, error) { return nil, nil },
 		Timeout:     time.Second,
 	})
@@ -250,7 +246,7 @@ func TestNew_InvalidPEM(t *testing.T) {
 	p := filepath.Join(tmp, "ca.crt")
 	_ = os.WriteFile(p, []byte("not a cert"), 0o600)
 	_, err := New(Options{
-		Endpoint: "https://example", CABundlePath: p,
+		Endpoint: "https://paddock-broker.paddock-system.svc:8443", CABundlePath: p,
 		TokenReader: func() ([]byte, error) { return nil, nil },
 		Timeout:     time.Second,
 	})
@@ -259,19 +255,77 @@ func TestNew_InvalidPEM(t *testing.T) {
 	}
 }
 
+func TestNew_RejectsBadEndpoint(t *testing.T) {
+	tmp := t.TempDir()
+	tokenPath := filepath.Join(tmp, "tok")
+	if err := os.WriteFile(tokenPath, []byte("t"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	tr := FileTokenReader(tokenPath)
+
+	cases := []struct {
+		name        string
+		endpoint    string
+		errContains string
+	}{
+		{name: "wrong scheme", endpoint: "http://paddock-broker.paddock-system.svc:8443", errContains: "scheme"},
+		{name: "external host", endpoint: "https://example.com:8443", errContains: "host"},
+		{name: "wrong port", endpoint: "https://paddock-broker.paddock-system.svc:9443", errContains: "port"},
+		{name: "no port", endpoint: "https://paddock-broker.paddock-system.svc", errContains: "port"},
+		{name: "with path", endpoint: "https://paddock-broker.paddock-system.svc:8443/extra", errContains: "path"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := New(Options{
+				Endpoint:    tc.endpoint,
+				TokenReader: tr,
+				Timeout:     time.Second,
+			})
+			if err == nil {
+				t.Fatalf("New(%q): expected error, got nil", tc.endpoint)
+			}
+			if !strings.Contains(err.Error(), tc.errContains) {
+				t.Fatalf("New(%q): err=%q does not contain %q", tc.endpoint, err.Error(), tc.errContains)
+			}
+		})
+	}
+}
+
+func TestNew_AcceptsCanonicalEndpoints(t *testing.T) {
+	tmp := t.TempDir()
+	tokenPath := filepath.Join(tmp, "tok")
+	if err := os.WriteFile(tokenPath, []byte("t"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	tr := FileTokenReader(tokenPath)
+	accepted := []string{
+		"https://paddock-broker.paddock-system.svc:8443",
+		"https://paddock-broker.paddock-system.svc.cluster.local:8443",
+	}
+	for _, ep := range accepted {
+		t.Run(ep, func(t *testing.T) {
+			c, err := New(Options{
+				Endpoint:    ep,
+				TokenReader: tr,
+				Timeout:     time.Second,
+			})
+			if err != nil {
+				t.Fatalf("New(%q): unexpected err %v", ep, err)
+			}
+			if c == nil {
+				t.Fatalf("New(%q): nil client", ep)
+			}
+		})
+	}
+}
+
 func TestClient_Do_TokenReaderError(t *testing.T) {
-	srv, caPath, _ := startTestServer(t, func(http.ResponseWriter, *http.Request) {
+	srv, _, _ := startTestServer(t, func(http.ResponseWriter, *http.Request) {
 		t.Fatalf("server should not be called when token-read fails")
 	})
-	c, err := New(Options{
-		Endpoint:     srv.URL,
-		CABundlePath: caPath,
-		TokenReader:  func() ([]byte, error) { return nil, errors.New("boom") },
-		Timeout:      2 * time.Second,
+	c := buildTestClient(t, srv, "", func(c *Client) {
+		c.TokenReader = func() ([]byte, error) { return nil, errors.New("boom") }
 	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
 	if _, err := c.Do(testCtx(t), "/v1/anything", []byte(`{}`)); err == nil { //nolint:bodyclose // Do returns nil resp on error
 		t.Fatalf("expected token-reader error")
 	}
