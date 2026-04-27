@@ -27,9 +27,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -52,9 +54,15 @@ var (
 	setupLog = ctrl.Log.WithName("broker-setup")
 )
 
+var readyzUnavailableTotal = prometheus.NewCounter(prometheus.CounterOpts{
+	Name: "paddock_broker_readyz_unavailable_total",
+	Help: "Count of /readyz responses returning 503 (cache not yet synced).",
+})
+
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(paddockv1alpha1.AddToScheme(scheme))
+	prometheus.MustRegister(readyzUnavailableTotal)
 }
 
 func main() {
@@ -129,10 +137,12 @@ func main() {
 			setupLog.Error(err, "cache stopped")
 		}
 	}()
+	var brokerReady atomic.Bool
 	if ok := mgrCache.WaitForCacheSync(ctx); !ok {
 		setupLog.Error(errors.New("cache did not sync"), "giving up")
 		os.Exit(1)
 	}
+	brokerReady.Store(true)
 	_ = directClient // reserved for future direct-Secret reads if we move off the cached client
 
 	kclient, err := kubernetes.NewForConfig(cfg)
@@ -193,8 +203,17 @@ func main() {
 	// Probe server on plain HTTP, separate addr so kubelet can hit it
 	// without client-cert plumbing.
 	probeMux := http.NewServeMux()
-	probeMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
-	probeMux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	probeMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})
+	probeMux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !brokerReady.Load() {
+			readyzUnavailableTotal.Inc()
+			http.Error(w, "cache not synced", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	})
 	// Expose the prometheus default registry so the provider metrics
 	// registered via init() (patpool_*, future per-provider stats) are
 	// scrapable without a separate metrics server. Co-hosted on the

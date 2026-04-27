@@ -60,22 +60,10 @@ type Server struct {
 
 // Register installs the broker's handlers on the given mux.
 func (s *Server) Register(mux *http.ServeMux) {
-	mux.HandleFunc(brokerapi.PathHealthz, s.handleHealthz)
-	mux.HandleFunc(brokerapi.PathReadyz, s.handleReadyz)
 	mux.HandleFunc(brokerapi.PathIssue, s.handleIssue)
 	mux.HandleFunc(brokerapi.PathRevoke, s.handleRevoke)
 	mux.HandleFunc(brokerapi.PathValidateEgress, s.handleValidateEgress)
 	mux.HandleFunc(brokerapi.PathSubstituteAuth, s.handleSubstituteAuth)
-}
-
-func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
-}
-
-func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
 }
 
 // handleIssue is the core endpoint. It authenticates the caller, looks
