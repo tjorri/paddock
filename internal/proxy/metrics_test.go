@@ -24,6 +24,31 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
+func TestActiveConnectionsAndRejectionsRegistered(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(ActiveConnections, ConnectionsRejected, HandshakeFailures)
+	ActiveConnections.Set(0)
+	defer ActiveConnections.Set(0)
+
+	ActiveConnections.Inc()
+	ConnectionsRejected.WithLabelValues("cap_exceeded").Inc()
+	HandshakeFailures.Inc()
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	names := make(map[string]bool)
+	for _, m := range mfs {
+		names[m.GetName()] = true
+	}
+	for _, want := range []string{"paddock_proxy_active_connections", "paddock_proxy_connections_rejected_total", "paddock_proxy_handshake_failures_total"} {
+		if !names[want] {
+			t.Errorf("missing metric %q in registry", want)
+		}
+	}
+}
+
 func TestAuditSinkGauge_RecordsType(t *testing.T) {
 	// Use an isolated registry so parallel tests don't cross-contaminate.
 	reg := prometheus.NewRegistry()

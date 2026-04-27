@@ -40,6 +40,30 @@ import (
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
 
+// Cooperative-mode HTTP server timeout constants. F-26.
+const (
+	httpReadTimeout       = 60 * time.Second
+	httpWriteTimeout      = 90 * time.Second
+	httpIdleTimeout       = 60 * time.Second
+	httpReadHeaderTimeout = 15 * time.Second
+	httpMaxHeaderBytes    = 16 << 10
+)
+
+// NewHTTPServer constructs the cooperative-mode http.Server with the
+// proxy's standard timeouts and limits. Caller wires it onto a
+// LimitedListener via Serve(). F-26.
+func NewHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		MaxHeaderBytes:    httpMaxHeaderBytes,
+	}
+}
+
 // Server is the HTTP CONNECT proxy. Zero value is not usable; populate
 // CA and Validator at minimum.
 type Server struct {

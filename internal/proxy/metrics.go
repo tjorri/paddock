@@ -47,3 +47,26 @@ func SetAuditSinkType(active string) {
 		AuditSinkGauge.WithLabelValues(label).Set(v)
 	}
 }
+
+// ActiveConnections is the gauge of currently held proxy connections,
+// covering both cooperative and transparent listeners. F-26.
+var ActiveConnections = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "paddock_proxy_active_connections",
+	Help: "Currently held proxy connections, both modes.",
+})
+
+// ConnectionsRejected counts connections rejected before reaching the
+// validator. Reasons: cap_exceeded, denied_destination_cidr,
+// dns_rebinding_mismatch, dns_resolution_failed, handshake_failed,
+// read_timeout. F-22, F-26.
+var ConnectionsRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "paddock_proxy_connections_rejected_total",
+	Help: "Connections rejected before reaching the validator, by reason.",
+}, []string{"reason"})
+
+// HandshakeFailures counts inner-TLS handshake failures (agent-side or
+// upstream-side). F-26.
+var HandshakeFailures = prometheus.NewCounter(prometheus.CounterOpts{
+	Name: "paddock_proxy_handshake_failures_total",
+	Help: "Inner-TLS handshake failures (agent or upstream).",
+})

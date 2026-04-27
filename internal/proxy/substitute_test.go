@@ -425,6 +425,42 @@ func TestSubstituteLoop_IdleTimeout(t *testing.T) {
 	_ = resp2.Body.Close()
 }
 
+// nopSubstituter satisfies Substituter with a pass-through no-op.
+type nopSubstituter struct{}
+
+func (nopSubstituter) SubstituteAuth(_ context.Context, _ string, _ int, headers http.Header) (brokerapi.SubstituteResult, error) {
+	return brokerapi.SubstituteResult{}, nil
+}
+
+// TestSubstitute_SlowLorisLoopDeadline asserts that handleSubstituted's
+// per-request SetReadDeadline causes the function to return within the
+// deadline window when no HTTP request is sent by the client. F-25/F-26.
+func TestSubstitute_SlowLorisLoopDeadline(t *testing.T) {
+	// net.Pipe returns synchronous in-memory conns that honour SetDeadline.
+	clientSide, proxySide := net.Pipe()
+	upstreamSide, upstreamOther := net.Pipe()
+
+	defer func() { _ = clientSide.Close() }()
+	defer func() { _ = upstreamSide.Close() }()
+	defer func() { _ = upstreamOther.Close() }()
+
+	const idleTimeout = 50 * time.Millisecond
+	done := make(chan error, 1)
+	go func() {
+		done <- handleSubstituted(context.Background(), proxySide, upstreamSide, "api.example.com", 443, nopSubstituter{}, idleTimeout)
+	}()
+
+	// The client (slow-loris) sends nothing. The per-iteration deadline
+	// must fire and cause handleSubstituted to return within
+	// idleTimeout + reasonable grace.
+	select {
+	case <-done:
+		// expected: handleSubstituted returned due to deadline
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("handleSubstituted did not exit on read deadline; slow-loris guard not effective")
+	}
+}
+
 func TestApplySubstitution_PreservesSetHeadersAndQueryParams(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), "GET",
 		"https://api.example.com/v1/x?key=stripped&api_key=replaced", nil)

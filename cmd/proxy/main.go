@@ -68,6 +68,7 @@ func main() {
 		mode                                string
 		shutdownGrace                       time.Duration
 		idleTimeout                         time.Duration
+		maxConnections                      int
 		disableAudit                        bool
 		upstreamCABundle                    string
 		brokerEndpoint                      string
@@ -110,6 +111,9 @@ func main() {
 		"Idle deadline applied to MITM bytes-shuttle and substitute-auth keep-alive loops. "+
 			"A connection with no traffic for this duration is closed so a revoked BrokerPolicy "+
 			"takes effect within this window on opaque tunnels too. Set to 0 to disable. F-25.")
+	flag.IntVar(&maxConnections, "max-connections", 256,
+		"Maximum concurrent proxy connections (both modes). Excess connections are "+
+			"rejected (503 cooperative; RST transparent) with audit. F-26.")
 	flag.BoolVar(&disableAudit, "disable-audit", false,
 		"Skip AuditEvent creation. Useful for local development without cluster credentials.")
 	flag.StringVar(&upstreamCABundle, "upstream-ca-bundle", "",
@@ -214,7 +218,12 @@ func main() {
 		Logger:            logger,
 	}
 
-	prometheus.MustRegister(proxy.AuditSinkGauge)
+	prometheus.MustRegister(
+		proxy.AuditSinkGauge,
+		proxy.ActiveConnections,
+		proxy.ConnectionsRejected,
+		proxy.HandshakeFailures,
+	)
 	probeMux := http.NewServeMux()
 	probeMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	probeMux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
@@ -259,14 +268,17 @@ func main() {
 			cancel()
 		}
 
-		httpSrv := &http.Server{
-			Addr:              listenAddr,
-			Handler:           p,
-			ReadHeaderTimeout: 15 * time.Second,
+		httpSrv := proxy.NewHTTPServer(listenAddr, p)
+		var coopLC net.ListenConfig
+		rawLn, err := coopLC.Listen(ctx, "tcp", listenAddr)
+		if err != nil {
+			setupLog.Error(err, "cooperative listen")
+			os.Exit(1)
 		}
+		ln := proxy.NewLimitedListener(rawLn, maxConnections, "cooperative")
 		go func() {
-			setupLog.Info("proxy listening", "addr", listenAddr)
-			errCh <- httpSrv.ListenAndServe()
+			setupLog.Info("proxy listening", "addr", listenAddr, "max-connections", maxConnections)
+			errCh <- httpSrv.Serve(ln)
 		}()
 		waitForShutdown(ctx, errCh, shutdownGrace, httpSrv, probeSrv)
 
@@ -277,13 +289,14 @@ func main() {
 		}
 		setupLog.Info("interception mode", "mode", mode, "listener", "raw TCP (SO_ORIGINAL_DST)")
 		var lc net.ListenConfig
-		ln, err := lc.Listen(ctx, "tcp", listenAddr)
+		rawLn, err := lc.Listen(ctx, "tcp", listenAddr)
 		if err != nil {
 			setupLog.Error(err, "transparent listen")
 			os.Exit(1)
 		}
+		ln := proxy.NewLimitedListener(rawLn, maxConnections, "transparent")
 		go func() {
-			setupLog.Info("proxy listening", "addr", listenAddr)
+			setupLog.Info("proxy listening", "addr", listenAddr, "max-connections", maxConnections)
 			errCh <- serveTransparent(ctx, ln, p)
 		}()
 		waitForShutdown(ctx, errCh, shutdownGrace, nil, probeSrv)
