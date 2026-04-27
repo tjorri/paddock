@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 	"paddock.dev/paddock/internal/brokerclient"
 )
@@ -203,6 +204,56 @@ func TestBrokerHTTPClient_Issue_TokenReaderError(t *testing.T) {
 	_, err := client.Issue(testContext(t), "demo", "ns", "X")
 	if err == nil {
 		t.Fatalf("expected token-reader error")
+	}
+}
+
+func TestBrokerHTTPClient_Revoke_Success_PostsToPathRevoke(t *testing.T) {
+	var gotPath string
+	var gotBody brokerapi.RevokeRequest
+	var gotRun, gotNs string
+	client, stop := startTestBroker(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotRun = r.Header.Get(brokerapi.HeaderRun)
+		gotNs = r.Header.Get(brokerapi.HeaderNamespace)
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	defer stop()
+
+	err := client.Revoke(testContext(t), "run-a", "ns", paddockv1alpha1.IssuedLease{
+		Provider: "PATPool", LeaseID: "lease-x", CredentialName: "gh",
+	})
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if gotPath != brokerapi.PathRevoke {
+		t.Fatalf("path = %s; want %s", gotPath, brokerapi.PathRevoke)
+	}
+	if gotRun != "run-a" || gotNs != "ns" {
+		t.Fatalf("run/ns headers = %s/%s", gotRun, gotNs)
+	}
+	if gotBody.Provider != "PATPool" || gotBody.LeaseID != "lease-x" || gotBody.CredentialName != "gh" {
+		t.Fatalf("body = %+v", gotBody)
+	}
+}
+
+func TestBrokerHTTPClient_Revoke_404_ReturnsBrokerError(t *testing.T) {
+	client, stop := startTestBroker(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(brokerapi.ErrorResponse{Code: "NotFound", Message: "no such endpoint"})
+	})
+	defer stop()
+
+	err := client.Revoke(testContext(t), "run-a", "ns", paddockv1alpha1.IssuedLease{
+		Provider: "X", LeaseID: "y", CredentialName: "c",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var be *brokerclient.BrokerError
+	if !errors.As(err, &be) || be.Status != 404 {
+		t.Fatalf("err = %T %v; want *BrokerError with Status=404", err, err)
 	}
 }
 

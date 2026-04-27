@@ -24,23 +24,44 @@ import (
 	"sync"
 	"time"
 
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 	"paddock.dev/paddock/internal/brokerclient"
 )
+
+// RevokeCall records one Revoke invocation for inspection in tests.
+type RevokeCall struct {
+	RunName, RunNamespace string
+	Lease                 paddockv1alpha1.IssuedLease
+}
 
 // FakeBroker is an in-memory BrokerIssuer for reconciler tests.
 // Satisfies the controller.BrokerIssuer interface — the controller
 // package's tests construct it as `&FakeBroker{Values: ...}` and
 // inject it into HarnessRunReconciler.BrokerClient.
 //
-// Concurrency: Issue is safe to call from multiple goroutines (the
-// only mutable field, Calls, is guarded by mu).
+// Concurrency: Issue and Revoke are safe to call from multiple goroutines
+// (mutable fields are guarded by mu).
 type FakeBroker struct {
-	Values map[string]string                  // credential name → value
-	Errs   map[string]error                   // credential name → fatal error
-	Meta   map[string]brokerapi.IssueResponse // credential name → response metadata override
-	mu     sync.Mutex
-	Calls  int
+	Values      map[string]string                  // credential name → value
+	Errs        map[string]error                   // credential name → fatal error
+	Meta        map[string]brokerapi.IssueResponse // credential name → response metadata override
+	mu          sync.Mutex
+	Calls       int
+	RevokeCalls []RevokeCall
+	RevokeErr   error // when set, Revoke returns this for every call
+}
+
+// Revoke implements controller.BrokerIssuer. Records every call so
+// tests can assert against the sequence of revokes the reconciler makes.
+func (f *FakeBroker) Revoke(_ context.Context, runName, runNamespace string, lease paddockv1alpha1.IssuedLease) error {
+	f.mu.Lock()
+	f.RevokeCalls = append(f.RevokeCalls, RevokeCall{
+		RunName: runName, RunNamespace: runNamespace, Lease: lease,
+	})
+	err := f.RevokeErr
+	f.mu.Unlock()
+	return err
 }
 
 // Issue implements controller.BrokerIssuer.
@@ -65,9 +86,17 @@ func (f *FakeBroker) Issue(_ context.Context, _ string, _ string, credentialName
 		if m.Provider != "" {
 			resp.Provider = m.Provider
 		}
+		if m.LeaseID != "" {
+			resp.LeaseID = m.LeaseID
+		}
+		if !m.ExpiresAt.IsZero() {
+			resp.ExpiresAt = m.ExpiresAt
+		}
 		resp.DeliveryMode = m.DeliveryMode
 		resp.Hosts = m.Hosts
 		resp.InContainerReason = m.InContainerReason
+		resp.PoolSecretRef = m.PoolSecretRef
+		resp.PoolSlotIndex = m.PoolSlotIndex
 	}
 	return &resp, nil
 }

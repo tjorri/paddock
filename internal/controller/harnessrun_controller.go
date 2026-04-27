@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"strings"
 	"time"
@@ -41,12 +42,38 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	brokerclient "paddock.dev/paddock/internal/brokerclient"
 	"paddock.dev/paddock/internal/policy"
 )
 
 // Finalizer that lets the run cancel its Job and release the
 // Workspace.status.activeRunRef before its object is garbage-collected.
 const HarnessRunFinalizer = "paddock.dev/harnessrun-finalizer"
+
+// BrokerLeasesFinalizer prevents a HarnessRun from being deleted before
+// the broker has been told to revoke every lease minted for the run.
+// reconcileDelete walks run.Status.IssuedLeases and posts /v1/revoke
+// per entry; if the broker is unreachable past brokerRevokeBudget, the
+// finalizer is force-cleared with a loud warning + Event so test
+// teardown cannot leak runs (project memory: sequence first, wait,
+// then force-clear). F-11.
+const BrokerLeasesFinalizer = "paddock.dev/broker-leases-finalizer"
+
+// brokerRevokeBudget returns the bounded total deadline for revoking
+// every lease on the run. 5s per lease, capped at 30s total — keeps
+// kubectl delete snappy while still giving the broker time to flush.
+func brokerRevokeBudget(run *paddockv1alpha1.HarnessRun) time.Duration {
+	const perLease = 5 * time.Second
+	const cap = 30 * time.Second
+	d := time.Duration(len(run.Status.IssuedLeases)) * perLease
+	if d > cap {
+		return cap
+	}
+	if d == 0 {
+		return perLease // no leases — still bound to one perLease tick for the no-op path
+	}
+	return d
+}
 
 // Typed sentinel errors from resolvePrompt. The reconciler uses these
 // to translate user-correctable failures (missing Secret, missing key)
@@ -153,6 +180,17 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	if !controllerutil.ContainsFinalizer(&run, HarnessRunFinalizer) {
 		controllerutil.AddFinalizer(&run, HarnessRunFinalizer)
+		if err := r.Update(ctx, &run); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	if !controllerutil.ContainsFinalizer(&run, BrokerLeasesFinalizer) {
+		controllerutil.AddFinalizer(&run, BrokerLeasesFinalizer)
 		if err := r.Update(ctx, &run); err != nil {
 			if apierrors.IsConflict(err) {
 				return ctrl.Result{Requeue: true}, nil
@@ -313,6 +351,23 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
+
+	// Persist Status.IssuedLeases (and the rest of the status mutations
+	// reconcileCredentials accumulated) BEFORE proceeding to the proxy-TLS
+	// reconcile that follows. If a downstream step (e.g., ensureProxyTLS
+	// re-reading a freshly-created Certificate) returns an error, the
+	// reconciler short-circuits with `return ctrl.Result{}, err` and
+	// SKIPS the end-of-Reconcile commitStatus at line ~562. The next
+	// reconcile then sees an empty status.issuedLeases and calls
+	// broker.Issue again — leaking a fresh PATPool slot every cycle and
+	// hitting PoolExhausted within seconds. The cachedBrokerCredentials
+	// fast-path in ensureBrokerCredentials only fires when status carries
+	// the lease, so the commit MUST happen here, not after the proxy-TLS
+	// reconcile.
+	if outcome, err := r.commitStatus(ctx, &run, origStatus); err != nil {
+		return outcome, err
+	}
+	origStatus = run.Status.DeepCopy()
 
 	// 4b. Materialise the per-run proxy-tls Secret and flip
 	// EgressConfigured (ADR-0013 §7.3). When proxy integration is
@@ -570,7 +625,7 @@ func (r *HarnessRunReconciler) reconcileCredentials(
 	run *paddockv1alpha1.HarnessRun,
 	tpl *resolvedTemplate,
 ) (credentialsReconcileOutcome, error) {
-	credsOk, credStatus, brFatalReason, brFatalMsg, brErr := r.ensureBrokerCredentials(ctx, run, tpl)
+	credsOk, credStatus, issuedLeases, brFatalReason, brFatalMsg, brErr := r.ensureBrokerCredentials(ctx, run, tpl)
 	if brErr != nil {
 		return credentialsReconcileOutcome{}, brErr
 	}
@@ -595,6 +650,18 @@ func (r *HarnessRunReconciler) reconcileCredentials(
 	// unconditionally — the EventRecorder dedupes by reason/message so
 	// a steady-state reconcile loop won't spam the event stream.
 	run.Status.Credentials = credStatus
+	// Persist what was issued so the broker-leases finalizer can revoke
+	// and the broker can reconstruct PATPool slots on restart. Replace
+	// rather than append to keep the slice authoritative for each
+	// successful Issue cycle.
+	// Replace only on a populated cycle: dropping requires.credentials
+	// must NOT erase prior leases — the broker-leases finalizer still
+	// has to revoke them on run delete. Status.Credentials, by contrast,
+	// tracks current-cycle delivery and is overwritten unconditionally
+	// above.
+	if len(issuedLeases) > 0 {
+		run.Status.IssuedLeases = issuedLeases
+	}
 	nProxy, nInContainer := 0, 0
 	for _, c := range credStatus {
 		switch c.DeliveryMode {
@@ -1124,6 +1191,29 @@ func (r *HarnessRunReconciler) ensureJob(
 func (r *HarnessRunReconciler) reconcileDelete(ctx context.Context, run *paddockv1alpha1.HarnessRun) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	// Step 0: revoke any broker-issued leases before clearing our
+	// broker-leases finalizer. Bounded budget; loud-warning force-clear
+	// on error so teardown is never pinned by an unreachable broker.
+	if controllerutil.ContainsFinalizer(run, BrokerLeasesFinalizer) {
+		revokeCtx, cancel := context.WithTimeout(ctx, brokerRevokeBudget(run))
+		err := r.revokeIssuedLeases(revokeCtx, run)
+		cancel()
+		if err != nil {
+			logger.Error(err, "broker revoke failed; force-removing finalizer to unblock teardown",
+				"run", run.Name, "leases", len(run.Status.IssuedLeases))
+			r.Recorder.Eventf(run, corev1.EventTypeWarning, "RevokeFailed",
+				"Broker revoke failed; finalizer force-removed: %v", err)
+		}
+		controllerutil.RemoveFinalizer(run, BrokerLeasesFinalizer)
+		if uErr := r.Update(ctx, run); uErr != nil && !apierrors.IsNotFound(uErr) {
+			if apierrors.IsConflict(uErr) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			return ctrl.Result{}, uErr
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	if !controllerutil.ContainsFinalizer(run, HarnessRunFinalizer) {
 		return ctrl.Result{}, nil
 	}
@@ -1200,6 +1290,70 @@ func (r *HarnessRunReconciler) reconcileDelete(ctx context.Context, run *paddock
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+// revokeIssuedLeases walks run.Status.IssuedLeases and POSTs /v1/revoke
+// for each entry. Returns an error aggregating all per-call failures so
+// reconcileDelete can decide whether to log + force-clear or retry.
+//
+// Per-call ctx timeout is the per-lease budget; 5xx/network errors are
+// retried up to 2 times with exponential backoff. 404 NotFound is
+// treated as success-equivalent (older broker without the endpoint).
+func (r *HarnessRunReconciler) revokeIssuedLeases(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
+	if len(run.Status.IssuedLeases) == 0 {
+		return nil
+	}
+	if r.BrokerClient == nil {
+		// No broker configured: leases are unrevocable but the run
+		// must still teardown. The force-clear branch in reconcileDelete
+		// handles this without polluting the audit trail.
+		return fmt.Errorf("no broker client configured")
+	}
+	var aggErrs []string
+	for _, lease := range run.Status.IssuedLeases {
+		err := r.revokeOneLeaseWithRetry(ctx, run.Name, run.Namespace, lease)
+		if err != nil {
+			aggErrs = append(aggErrs, fmt.Sprintf("%s/%s: %v", lease.Provider, lease.LeaseID, err))
+		}
+	}
+	if len(aggErrs) > 0 {
+		return fmt.Errorf("revoke failures: %s", strings.Join(aggErrs, "; "))
+	}
+	return nil
+}
+
+func (r *HarnessRunReconciler) revokeOneLeaseWithRetry(ctx context.Context, runName, runNamespace string, lease paddockv1alpha1.IssuedLease) error {
+	const maxAttempts = 3
+	const perCallTimeout = 5 * time.Second
+	var lastErr error
+	backoff := 250 * time.Millisecond
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		callCtx, cancel := context.WithTimeout(ctx, perCallTimeout)
+		err := r.BrokerClient.Revoke(callCtx, runName, runNamespace, lease)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		// 404 from an older broker without the endpoint → success-equivalent.
+		var be *brokerclient.BrokerError
+		if errors.As(err, &be) && be.Status == http.StatusNotFound {
+			return nil
+		}
+		// 4xx other than 404 → no point retrying (LeaseNotFound the
+		// broker reports as 204; Forbidden / BadRequest are caller bugs).
+		if errors.As(err, &be) && be.Status >= 400 && be.Status < 500 {
+			return err
+		}
+		lastErr = err
+		// Transient (5xx / network): backoff + retry.
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		backoff *= 2
+	}
+	return lastErr
 }
 
 // proxyConfigured reports whether the manager has the two knobs

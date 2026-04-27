@@ -41,6 +41,15 @@ import (
 	"paddock.dev/paddock/internal/policy"
 )
 
+const maxRequestBodyBytes = 64 << 10 // 64 KiB; Issue / ValidateEgress / SubstituteAuth / Revoke bodies are tiny
+
+func limitBody(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		next(w, r)
+	}
+}
+
 // Server is the HTTP handler set for the broker. Register it on a
 // net/http.Server configured for mTLS on :8443.
 type Server struct {
@@ -56,25 +65,19 @@ type Server struct {
 
 	// Audit writes AuditEvents for every decision.
 	Audit *AuditWriter
+
+	// RunLimiter, when non-nil, gates /v1/issue and /v1/substitute-auth
+	// against per-(namespace, run) token buckets. Tests may leave this
+	// nil to bypass rate limiting; production wires it via cmd/broker.
+	RunLimiter *RunLimiterRegistry
 }
 
 // Register installs the broker's handlers on the given mux.
 func (s *Server) Register(mux *http.ServeMux) {
-	mux.HandleFunc(brokerapi.PathHealthz, s.handleHealthz)
-	mux.HandleFunc(brokerapi.PathReadyz, s.handleReadyz)
-	mux.HandleFunc(brokerapi.PathIssue, s.handleIssue)
-	mux.HandleFunc(brokerapi.PathValidateEgress, s.handleValidateEgress)
-	mux.HandleFunc(brokerapi.PathSubstituteAuth, s.handleSubstituteAuth)
-}
-
-func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
-}
-
-func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
+	mux.HandleFunc(brokerapi.PathIssue, limitBody(s.handleIssue))
+	mux.HandleFunc(brokerapi.PathRevoke, limitBody(s.handleRevoke))
+	mux.HandleFunc(brokerapi.PathValidateEgress, limitBody(s.handleValidateEgress))
+	mux.HandleFunc(brokerapi.PathSubstituteAuth, limitBody(s.handleSubstituteAuth))
 }
 
 // handleIssue is the core endpoint. It authenticates the caller, looks
@@ -99,6 +102,25 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	runName, runNamespace, err := resolveRunIdentity(r, caller)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+
+	if s.RunLimiter != nil && !s.RunLimiter.Allow(runNamespace, runName, "issue") {
+		audit := &CredentialAudit{
+			RunName:        runName,
+			Namespace:      runNamespace,
+			CredentialName: "(rate-limit)",
+			Reason:         "per-run rate limit exceeded for /v1/issue",
+			When:           time.Now().UTC(),
+		}
+		if wErr := s.Audit.CredentialDenied(ctx, *audit); wErr != nil {
+			logger.Error(wErr, "writing rate-limit AuditEvent", "run", runName)
+			writeError(w, http.StatusServiceUnavailable, brokerapi.CodeAuditUnavailable,
+				"paddock-broker: audit unavailable, please retry")
+			return
+		}
+		writeError(w, http.StatusTooManyRequests, brokerapi.CodeRateLimited,
+			"per-run rate limit exceeded for /v1/issue")
 		return
 	}
 
@@ -156,17 +178,25 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// populateDeliveryMetadata fills DeliveryMode / Hosts / InContainerReason
-// on an IssueResponse from the provider's IssueResult. Each built-in
-// provider populates result.DeliveryMode + result.Hosts (and
-// InContainerReason for UserSuppliedSecret InContainer mode); a future
-// provider must do the same to participate in delivery dispatch.
-// Compiler enforcement on IssueResult fields makes "I forgot to
-// populate the metadata" a build error, not a runtime miss.
+// populateDeliveryMetadata copies provider-populated metadata from the
+// IssueResult onto the wire IssueResponse. **Future provider authors
+// must extend this function** when they add new IssueResult fields —
+// Go has no compile-time check for struct-field copying, and a missed
+// field silently drops on the wire (see F-14 fix history: PoolSecretRef
+// and PoolSlotIndex were added to IssueResult and IssueResponse but
+// initially missed here, breaking the F-14 PATPool reconstruction path
+// end-to-end).
 func populateDeliveryMetadata(resp *brokerapi.IssueResponse, result providers.IssueResult) {
 	resp.DeliveryMode = result.DeliveryMode
 	resp.Hosts = result.Hosts
 	resp.InContainerReason = result.InContainerReason
+	if result.PoolSecretRef != nil {
+		resp.PoolSecretRef = &brokerapi.PoolSecretRef{
+			Name: result.PoolSecretRef.Name,
+			Key:  result.PoolSecretRef.Key,
+		}
+	}
+	resp.PoolSlotIndex = result.PoolSlotIndex
 }
 
 // issue is the broker's core decision function. Returns (result, grant, audit, err).
@@ -412,6 +442,25 @@ func (s *Server) handleSubstituteAuth(w http.ResponseWriter, r *http.Request) {
 	runName, runNamespace, err := resolveRunIdentity(r, caller)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+
+	if s.RunLimiter != nil && !s.RunLimiter.Allow(runNamespace, runName, "substitute") {
+		audit := &CredentialAudit{
+			RunName:        runName,
+			Namespace:      runNamespace,
+			CredentialName: "(rate-limit)",
+			Reason:         "per-run rate limit exceeded for /v1/substitute-auth",
+			When:           time.Now().UTC(),
+		}
+		if wErr := s.Audit.CredentialDenied(ctx, *audit); wErr != nil {
+			logger.Error(wErr, "writing rate-limit AuditEvent", "run", runName)
+			writeError(w, http.StatusServiceUnavailable, brokerapi.CodeAuditUnavailable,
+				"paddock-broker: audit unavailable, please retry")
+			return
+		}
+		writeError(w, http.StatusTooManyRequests, brokerapi.CodeRateLimited,
+			"per-run rate limit exceeded for /v1/substitute-auth")
 		return
 	}
 

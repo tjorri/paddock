@@ -211,6 +211,16 @@ type HarnessRunStatus struct {
 	// F-43 / Phase 2d.
 	// +optional
 	NetworkPolicyEnforced *bool `json:"networkPolicyEnforced,omitempty"`
+
+	// IssuedLeases records every credential lease the broker has minted
+	// for this run. Populated by the controller after each successful
+	// Issue call; consumed by the controller's broker-leases finalizer
+	// to revoke leases at run-delete time, and by the broker on startup
+	// to reconstruct PATPool slot reservations across restarts. F-11, F-14.
+	// +listType=map
+	// +listMapKey=leaseID
+	// +optional
+	IssuedLeases []IssuedLease `json:"issuedLeases,omitempty"`
 }
 
 // PaddockEvent is a structured event emitted by an adapter sidecar and
@@ -293,6 +303,54 @@ type CredentialStatus struct {
 	// deliveryMode.inContainer.reason when DeliveryMode is InContainer.
 	// +optional
 	InContainerReason string `json:"inContainerReason,omitempty"`
+}
+
+// IssuedLease records one credential lease the broker minted for this
+// run. The controller appends one entry per successful broker.Issue call;
+// reconcileDelete walks the slice and posts /v1/revoke for each entry
+// before removing the broker-leases finalizer. Pre-1.0 evolves in place.
+type IssuedLease struct {
+	// Provider is the provider kind (matches BrokerPolicy
+	// grant.provider.kind). The broker dispatches /v1/revoke to the
+	// named provider's Revoke method.
+	// +kubebuilder:validation:Required
+	Provider string `json:"provider"`
+
+	// LeaseID is the provider-supplied identifier returned from
+	// IssueResult.LeaseID. Opaque to the controller; passed back unchanged.
+	// +kubebuilder:validation:Required
+	LeaseID string `json:"leaseID"`
+
+	// CredentialName is the requirement name from the template's
+	// spec.requires.credentials list. Used for audit correlation only —
+	// never load-bearing for revocation.
+	// +kubebuilder:validation:Required
+	CredentialName string `json:"credentialName"`
+
+	// ExpiresAt mirrors IssueResult.ExpiresAt. Reconstruction skips
+	// entries with ExpiresAt < now (no point rebuilding state for an
+	// already-dead lease). Optional: nil means "no expiry".
+	// +optional
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+
+	// PoolRef carries PATPool-specific reconstruction metadata.
+	// Populated only when Provider == "PATPool"; nil otherwise.
+	// Anonymous tagged-union pattern; future providers add their own
+	// optional ref alongside without breaking pre-1.0 in-place evolution.
+	// +optional
+	PoolRef *PoolLeaseRef `json:"poolRef,omitempty"`
+}
+
+// PoolLeaseRef is PATPool-specific metadata required to reconstruct
+// in-memory pool state at broker startup. (secretRef, slotIndex) lets
+// the broker re-acquire the slot; the existing LeasedPAT byte-equality
+// check at substitute time catches any pool-edit drift between Issue
+// and reconstruction.
+type PoolLeaseRef struct {
+	// +kubebuilder:validation:Required
+	SecretRef SecretKeyReference `json:"secretRef"`
+	// +kubebuilder:validation:Required
+	SlotIndex int `json:"slotIndex"`
 }
 
 // DeliveryModeName names one of the two status-reported delivery modes.

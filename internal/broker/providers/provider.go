@@ -42,6 +42,13 @@ type Provider interface {
 	// (already-validated) BrokerPolicy grant that picked this provider;
 	// providers read their config from grant.Provider.
 	Issue(ctx context.Context, req IssueRequest) (IssueResult, error)
+
+	// Revoke releases the in-memory lease state for leaseID. Idempotent —
+	// revoking an unknown or already-expired leaseID returns nil.
+	// PATPool: marks the pool slot free + drops the bearer→lease entry.
+	// Anthropic / GitHubApp: drops the bearer→lease entry.
+	// UserSuppliedSecret: no-op (no in-memory state).
+	Revoke(ctx context.Context, leaseID string) error
 }
 
 // IssueRequest carries the broker-level inputs a provider needs.
@@ -102,6 +109,13 @@ type IssueResult struct {
 	// from grant.Provider.DeliveryMode.InContainer.Reason. Empty for
 	// ProxyInjected delivery. UserSuppliedSecret-only.
 	InContainerReason string
+
+	// PoolSecretRef and PoolSlotIndex are PATPool-specific lease metadata
+	// — populated only by PATPoolProvider, used by the broker handler to
+	// surface them in IssueResponse so the controller can persist them
+	// onto HarnessRun.status.issuedLeases[*].poolRef. F-14.
+	PoolSecretRef *paddockv1alpha1.SecretKeyReference
+	PoolSlotIndex *int
 }
 
 // ErrNotImplemented is returned by a Provider when it cannot back the

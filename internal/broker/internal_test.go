@@ -22,6 +22,10 @@ import (
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 )
 
+// SubstituteBurstForTest exposes the unexported substituteBurst constant
+// so external tests can drain the bucket without hard-coding the value.
+const SubstituteBurstForTest = substituteBurst
+
 // SubstituteAuthForTest exposes the unexported substituteAuth method
 // to the external broker_test package. Test-only — not for use by
 // non-test code.

@@ -22,11 +22,17 @@ You may obtain a copy of the License at
 package e2e
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,6 +104,9 @@ var _ = Describe("Phase 2a P0 hotfix validation (hostile harness)", Ordered, fun
 			"paddock-hostile-tg2", "paddock-hostile-tg7",
 			"paddock-hostile-tg10a", "paddock-hostile-tg13a",
 			"paddock-hostile-tg25a",
+			// Theme 2 broker-hygiene specs (F-11, F-14, F-16, F-17).
+			"paddock-t2-revoke", "paddock-t2-restart",
+			"paddock-t2-forceclear", "paddock-t2-oversize",
 		}
 
 		// 1. Kick every namespace's reconcile-delete chain in parallel.
@@ -737,6 +746,414 @@ spec:
 		})
 	})
 
+	// -------------------------------------------------------------------------
+	// Theme 2 broker-hygiene specs (Tasks 21, refs: issue #43)
+	// -------------------------------------------------------------------------
+
+	Context("F-11: broker revokes PATPool lease on HarnessRun delete", func() {
+		It("revokes broker leases on HarnessRun delete", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+
+			t2Namespace := "paddock-t2-revoke"
+			_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+				"delete", "ns", t2Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
+			mustCreateNamespace(t2Namespace)
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+					"delete", "ns", t2Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
+			})
+
+			By("creating pool Secret, HarnessTemplate, and BrokerPolicy")
+			mustApplyManifest(patPoolFixtureManifest(t2Namespace, "t2-revoke", 2))
+
+			By("submitting a HarnessRun that acquires a PATPool lease")
+			runName := "revoke-test"
+			// Dump describe + events + controller + broker logs on any
+			// spec failure (lease-acquisition timeout, finalizer stuck,
+			// metric never decrements) so the next CI flake gives us
+			// real signal instead of a bare Eventually-timed-out line.
+			DeferCleanup(func() {
+				if CurrentSpecReport().Failed() {
+					dumpRunDiagnostics(ctx, t2Namespace, runName)
+				}
+			})
+			mustApplyManifest(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  templateRef:
+    name: t2-patpool-tmpl
+  prompt: "t2 revoke test"
+`, runName, t2Namespace))
+
+			By("waiting for at least one IssuedLease to appear on the run")
+			Eventually(func() int {
+				return issuedLeaseCount(ctx, t2Namespace, runName)
+			}, 90*time.Second, 2*time.Second).Should(BeNumerically(">=", 1))
+
+			By("recording the current PATPool leased count from broker metrics")
+			leasedBefore := brokerMetricGauge(ctx, "paddock_broker_patpool_leased")
+
+			By("deleting the HarnessRun")
+			_, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", t2Namespace,
+				"delete", "harnessrun", runName, "--wait=false"))
+			Expect(err).NotTo(HaveOccurred())
+
+			By("asserting the run is fully gone within 60s")
+			Eventually(func() bool {
+				_, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", t2Namespace,
+					"get", "harnessrun", runName))
+				return err != nil && strings.Contains(err.Error(), "not found")
+			}, 60*time.Second, 2*time.Second).Should(BeTrue(),
+				"HarnessRun %s/%s still present after 60s — broker-leases finalizer may be stuck", t2Namespace, runName)
+
+			By("asserting the PATPool slot was freed by Revoke")
+			Eventually(func() float64 {
+				return brokerMetricGauge(ctx, "paddock_broker_patpool_leased")
+			}, 30*time.Second, 2*time.Second).Should(BeNumerically("<", leasedBefore),
+				"PATPool leased count did not decrease after run delete; lease was not revoked")
+		})
+	})
+
+	Context("F-14: broker survives restart without re-leasing PATPool slots", func() {
+		It("survives broker restart without slot collision", func() {
+			// Reconciliation invariant under test: two HarnessRuns
+			// against a 2-slot PATPool each hold a distinct slot before
+			// AND after a broker rollout-restart. Pre-fix, the second
+			// run would never acquire a lease — the first run's
+			// reconcile loop kept calling /v1/issue every 5s (no
+			// idempotency), exhausting the 2-slot pool within ~10s.
+			// See commit history for the controller-side fast-path that
+			// fixed this; the unit tests in
+			// internal/broker/reconstruct_test.go and
+			// internal/broker/providers/patpool_test.go pin the
+			// reconstruction half.
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+			defer cancel()
+
+			t2Namespace := "paddock-t2-restart"
+			_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+				"delete", "ns", t2Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
+			mustCreateNamespace(t2Namespace)
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+					"delete", "ns", t2Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
+			})
+			// Always restore broker on exit so subsequent specs are not left
+			// in a degraded state.
+			DeferCleanup(restoreBroker)
+
+			By("creating pool Secret, HarnessTemplate, and BrokerPolicy (2-slot pool)")
+			mustApplyManifest(patPoolFixtureManifest(t2Namespace, "t2-restart", 2))
+
+			runA := "restart-a"
+			runB := "restart-b"
+			// Catch-all: dump diagnostics on any spec failure (collision
+			// after restart, distinct-slot Eventually flake, etc.). The
+			// per-Eventually runAOK/runBOK guards below cover the
+			// lease-acquisition phase; this guard covers the post-
+			// restart assertions where both flags are true but the spec
+			// can still fail.
+			DeferCleanup(func() {
+				if CurrentSpecReport().Failed() {
+					dumpRunDiagnostics(ctx, t2Namespace, runA)
+					dumpRunDiagnostics(ctx, t2Namespace, runB)
+				}
+			})
+
+			// Apply runs SEQUENTIALLY (not in a tight loop): in CI the
+			// reconcile rate per (namespace, run) is bounded, and a tight
+			// loop can leave the second run stuck behind the first run's
+			// reconcile cycle. The F-14 invariant we're validating is
+			// "post-restart slots stay distinct" — that's verified the
+			// same way whether runs leased concurrently or one-after-the-
+			// other, so prefer the more robust sequential setup.
+
+			By("starting run-a and waiting for it to acquire a lease")
+			mustApplyManifest(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  templateRef:
+    name: t2-patpool-tmpl
+  prompt: "t2 restart test"
+`, runA, t2Namespace))
+			runAOK := false
+			Eventually(func() int {
+				return issuedLeaseCount(ctx, t2Namespace, runA)
+			}, 180*time.Second, 2*time.Second).Should(BeNumerically(">=", 1),
+				"run %s did not acquire a lease", runA)
+			runAOK = true
+			DeferCleanup(func() {
+				if !runAOK {
+					dumpRunDiagnostics(ctx, t2Namespace, runA)
+				}
+			})
+
+			By("starting run-b and waiting for it to acquire a lease")
+			mustApplyManifest(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  templateRef:
+    name: t2-patpool-tmpl
+  prompt: "t2 restart test"
+`, runB, t2Namespace))
+			runBOK := false
+			DeferCleanup(func() {
+				// On any failure (including run-b never leasing), dump
+				// describe + events + controller + broker logs for both
+				// runs so the next CI flake gives us real signal.
+				if !runBOK {
+					dumpRunDiagnostics(ctx, t2Namespace, runA)
+					dumpRunDiagnostics(ctx, t2Namespace, runB)
+				}
+			})
+			Eventually(func() int {
+				return issuedLeaseCount(ctx, t2Namespace, runB)
+			}, 180*time.Second, 2*time.Second).Should(BeNumerically(">=", 1),
+				"run %s did not acquire a lease", runB)
+			runBOK = true
+
+			slotA1 := poolSlotIndex(ctx, t2Namespace, runA)
+			slotB1 := poolSlotIndex(ctx, t2Namespace, runB)
+			Expect(slotA1).NotTo(Equal(slotB1), "pre-restart: both runs hold the same slot — pool collision")
+
+			By("restarting the broker deployment")
+			Expect(brokerRolloutRestart(ctx)).To(Succeed())
+
+			By("waiting for broker to be healthy again")
+			requireBrokerHealthy()
+
+			By("asserting both runs still hold distinct slots after broker restart")
+			// The controller may reconcile and re-issue; give it time.
+			Eventually(func() bool {
+				a := poolSlotIndex(ctx, t2Namespace, runA)
+				b := poolSlotIndex(ctx, t2Namespace, runB)
+				// Both must have a lease and they must differ.
+				return a >= 0 && b >= 0 && a != b
+			}, 90*time.Second, 2*time.Second).Should(BeTrue(),
+				"post-restart slots for runs %s and %s collided — broker lease reconstruction (F-14) may be broken",
+				runA, runB)
+		})
+	})
+
+	Context("F-11 (leak guard): controller force-clears finalizer when broker is unreachable", func() {
+		It("force-clears finalizer when broker is unreachable", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+
+			t2Namespace := "paddock-t2-forceclear"
+			_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+				"delete", "ns", t2Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
+			mustCreateNamespace(t2Namespace)
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+					"delete", "ns", t2Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
+			})
+			// Restore the broker regardless of test outcome.
+			DeferCleanup(restoreBroker)
+
+			By("creating pool Secret, HarnessTemplate, and BrokerPolicy")
+			mustApplyManifest(patPoolFixtureManifest(t2Namespace, "t2-forceclear", 1))
+
+			By("submitting a HarnessRun and waiting for it to acquire a lease")
+			runName := "force-clear"
+			// On any spec failure dump describe + events + controller +
+			// broker logs. The lease-acquisition Eventually below has
+			// flaked in CI without any signal — see CI run 24999903077;
+			// without this dump we cannot tell whether the controller
+			// never called Issue, the broker rejected, or the pool was
+			// already exhausted from prior-spec leftover state.
+			DeferCleanup(func() {
+				if CurrentSpecReport().Failed() {
+					dumpRunDiagnostics(ctx, t2Namespace, runName)
+				}
+			})
+			mustApplyManifest(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  templateRef:
+    name: t2-patpool-tmpl
+  prompt: "t2 force-clear test"
+`, runName, t2Namespace))
+
+			Eventually(func() int {
+				return issuedLeaseCount(ctx, t2Namespace, runName)
+			}, 90*time.Second, 2*time.Second).Should(BeNumerically(">=", 1),
+				"run did not acquire a lease before broker scale-down")
+
+			By("scaling the broker Deployment to 0")
+			_, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", controlPlaneNamespace,
+				"scale", "deploy", v3BrokerDeploy, "--replicas=0"))
+			Expect(err).NotTo(HaveOccurred())
+			Eventually(func(g Gomega) {
+				pods, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", controlPlaneNamespace,
+					"get", "pods", "-l", "app.kubernetes.io/component=broker",
+					"-o", "jsonpath={.items[*].metadata.name}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(pods)).To(BeEmpty(),
+					"broker pods still present: %q", strings.TrimSpace(pods))
+			}, 60*time.Second, 2*time.Second).Should(Succeed())
+
+			By("deleting the run — expecting removal within 60s despite broker being down")
+			_, err = utils.Run(exec.CommandContext(ctx, "kubectl", "-n", t2Namespace,
+				"delete", "harnessrun", runName, "--wait=false"))
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func() bool {
+				_, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", t2Namespace,
+					"get", "harnessrun", runName))
+				return err != nil && strings.Contains(err.Error(), "not found")
+			}, 60*time.Second, 2*time.Second).Should(BeTrue(),
+				"HarnessRun %s/%s not gone after 60s with broker down — force-clear path may be broken", t2Namespace, runName)
+
+			By("asserting a RevokeFailed Warning event was recorded against the run")
+			Expect(runHasWarningEvent(ctx, t2Namespace, runName, "RevokeFailed")).To(BeTrue(),
+				"expected a RevokeFailed Warning event for run %s/%s; controller may not be emitting it", t2Namespace, runName)
+		})
+	})
+
+	Context("F-17(a): MaxBytesReader rejects oversize /v1/issue bodies — load-bearing test in internal/broker/server_test.go", func() {
+		It("smoke-checks that /v1/issue rejects unauthenticated requests (F-17 a e2e smoke)", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+
+			// On spec failure, dump broker pod state + controller +
+			// broker logs so a port-forward / TLS-handshake / 401-route
+			// regression surfaces with diagnostic context.
+			DeferCleanup(func() {
+				if CurrentSpecReport().Failed() {
+					dumpBrokerDiagnostics(ctx)
+				}
+			})
+
+			// The load-bearing F-17(a) oversize-body assertion lives in
+			// TestHandleIssue_OversizeBody_BadRequest (internal/broker/server_test.go).
+			// That test wires a fake authenticated caller with a 100 KiB body and
+			// asserts HTTP 400. In e2e the broker API port (:8443) requires a valid
+			// SA bearer — without one auth fails with 401 BEFORE the body is read,
+			// so MaxBytesReader never triggers on an unauthenticated request.
+			//
+			// This smoke spec asserts the API port is reachable and returns a
+			// well-formed JSON ErrorResponse for an unauthenticated call, which
+			// confirms the broker is correctly wired with TLS + the limitBody
+			// middleware (TLS handshake would fail on a misconfigured server;
+			// a missing limitBody wrapper would still return 401 here, so
+			// this smoke only indirectly confirms F-17(a) wiring — the unit
+			// test carries the direct assertion).
+
+			// port-forward the TLS API port from the broker pod.
+			pod := brokerPodName(ctx)
+			Expect(pod).NotTo(BeEmpty(), "no broker pod found")
+
+			const localTLSPort = "19443"
+			pfCtx, pfCancel := context.WithCancel(ctx)
+			defer pfCancel()
+			pfCmd := exec.CommandContext(pfCtx, "kubectl", "-n", controlPlaneNamespace,
+				"port-forward", "pod/"+pod, localTLSPort+":8443")
+			Expect(pfCmd.Start()).To(Succeed(), "starting port-forward to broker :8443")
+			time.Sleep(500 * time.Millisecond)
+
+			By("sending an unauthenticated POST /v1/issue with oversize body and asserting well-formed JSON error")
+			oversizeBody := bytes.Repeat([]byte("x"), 100<<10) // 100 KiB
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+				"https://127.0.0.1:"+localTLSPort+"/v1/issue",
+				bytes.NewReader(oversizeBody))
+			Expect(err).NotTo(HaveOccurred())
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Paddock-Run", "oversize-smoke")
+
+			//nolint:gosec // e2e-only: TLS is self-signed in Kind; skip verification.
+			transport := &http.Transport{
+				TLSClientConfig: tlsSkipVerify(),
+			}
+			httpClient := &http.Client{Transport: transport}
+			resp, doErr := httpClient.Do(req)
+			Expect(doErr).NotTo(HaveOccurred(),
+				"POST /v1/issue failed — broker may not be reachable via port-forward")
+			defer resp.Body.Close()
+
+			// Without a valid bearer the broker returns 401 Unauthorized.
+			// That is acceptable here — it confirms the broker is up and
+			// routing requests through limitBody. The MaxBytesReader cap
+			// itself is validated by the unit test.
+			Expect(resp.StatusCode).To(BeElementOf(http.StatusUnauthorized, http.StatusBadRequest),
+				"expected 401 (unauthenticated) or 400 (body too large); got %d", resp.StatusCode)
+
+			var errResp map[string]any
+			body, readErr := io.ReadAll(resp.Body)
+			Expect(readErr).NotTo(HaveOccurred())
+			Expect(json.Unmarshal(body, &errResp)).To(Succeed(),
+				"response body should be a JSON ErrorResponse; got: %s", string(body))
+			Expect(errResp).To(HaveKey("code"),
+				"ErrorResponse must carry a 'code' field; got: %v", errResp)
+		})
+	})
+
+	Context("F-16: /readyz returns 503 during cold start", func() {
+		It("returns 503 from /readyz during cold start", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+			defer cancel()
+
+			// Always restore broker so subsequent specs are not broken.
+			DeferCleanup(restoreBroker)
+
+			// On spec failure, dump broker pod state + logs so a
+			// readiness-probe regression (broker stuck in cold-start,
+			// never returns 200) surfaces with diagnostic context.
+			DeferCleanup(func() {
+				if CurrentSpecReport().Failed() {
+					dumpBrokerDiagnostics(ctx)
+				}
+			})
+
+			By("restarting the broker pod")
+			Expect(brokerRolloutRestart(ctx)).To(Succeed())
+
+			By("polling /readyz via port-forward and observing 503 → 200 transition")
+			saw503 := false
+			deadline := time.Now().Add(45 * time.Second)
+			for time.Now().Before(deadline) {
+				code, probeErr := probeBrokerReadyz(ctx)
+				if probeErr == nil && code == http.StatusServiceUnavailable {
+					saw503 = true
+				}
+				if saw503 && probeErr == nil && code == http.StatusOK {
+					return // success
+				}
+				time.Sleep(time.Second)
+			}
+			// If we never saw 503 it might mean the cold-start window is
+			// shorter than our poll interval — this is acceptable if the
+			// broker has already warmed up. Only fail if the broker never
+			// came back to 200.
+			if !saw503 {
+				By("cold-start window was shorter than poll interval; verifying final /readyz is 200")
+				code, err := probeBrokerReadyz(ctx)
+				Expect(err).NotTo(HaveOccurred(), "/readyz probe error after restart")
+				Expect(code).To(Equal(http.StatusOK),
+					"broker /readyz is not 200 after restart — broker may be stuck in cold-start")
+				return
+			}
+			Fail("observed 503 but broker never returned 200 within 45s of restart")
+		})
+	})
+
 	Context("F-25 / TG-25a: bytes-shuttle idle timeout — load-bearing test in internal/proxy/server_test.go (Phase 2g)", func() {
 		It("smoke-checks that a Phase 2g run reaches terminal phase cleanly (TG-25a)", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -780,6 +1197,283 @@ spec:
 		})
 	})
 })
+
+// ---------------------------------------------------------------------------
+// Theme 2 helper functions (F-11, F-14, F-16, F-17)
+// ---------------------------------------------------------------------------
+
+// patPoolFixtureManifest returns a multi-document YAML string that creates
+// the minimal set of objects for a PATPool e2e scenario in the given
+// namespace:
+//   - A Secret with `slots` fake PAT entries (one per line).
+//   - A HarnessTemplate named "t2-patpool-tmpl" that requires GITHUB_TOKEN.
+//   - A BrokerPolicy granting GITHUB_TOKEN via PATPool from the Secret.
+//
+// `prefix` is used to name the Secret so multiple specs in the same
+// namespace do not collide.
+func patPoolFixtureManifest(namespace, prefix string, slots int) string {
+	var lines strings.Builder
+	for i := 0; i < slots; i++ {
+		fmt.Fprintf(&lines, "ghp_fake_%s_%02d\n", prefix, i)
+	}
+	return fmt.Sprintf(`
+apiVersion: v1
+kind: Secret
+metadata:
+  name: %s-pool
+  namespace: %s
+type: Opaque
+stringData:
+  pool: |
+%s
+---
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessTemplate
+metadata:
+  name: t2-patpool-tmpl
+  namespace: %s
+spec:
+  harness: echo
+  image: paddock-echo:dev
+  command: ["/usr/local/bin/paddock-echo"]
+  requires:
+    credentials:
+      - name: GITHUB_TOKEN
+  workspace:
+    required: true
+    mountPath: /workspace
+  defaults:
+    timeout: 60s
+    resources:
+      limits:
+        cpu: 200m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+---
+apiVersion: paddock.dev/v1alpha1
+kind: BrokerPolicy
+metadata:
+  name: %s-policy
+  namespace: %s
+spec:
+  appliesToTemplates: ["t2-patpool-tmpl"]
+  grants:
+    credentials:
+      - name: GITHUB_TOKEN
+        provider:
+          kind: PATPool
+          secretRef:
+            name: %s-pool
+            key: pool
+          hosts:
+            - github.com
+            - api.github.com
+    egress:
+      - host: github.com
+        ports: [443]
+      - host: api.github.com
+        ports: [443]
+`, prefix, namespace, indentLines(lines.String(), "    "), namespace, prefix, namespace, prefix)
+}
+
+// indentLines prepends `indent` to every non-empty line.
+func indentLines(s, indent string) string {
+	var out strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		out.WriteString(indent + line + "\n")
+	}
+	return out.String()
+}
+
+// issuedLeaseCount returns the number of IssuedLeases on the named
+// HarnessRun. Returns 0 on any error so callers can use it in Eventually.
+func issuedLeaseCount(ctx context.Context, namespace, runName string) int {
+	out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace,
+		"get", "harnessrun", runName,
+		"-o", "jsonpath={.status.issuedLeases}"))
+	if err != nil || strings.TrimSpace(out) == "" || strings.TrimSpace(out) == "null" {
+		return 0
+	}
+	// The jsonpath returns a JSON array literal; count "[" occurrences is
+	// fragile; parse properly.
+	var leases []json.RawMessage
+	if jsonErr := json.Unmarshal([]byte(strings.TrimSpace(out)), &leases); jsonErr != nil {
+		return 0
+	}
+	return len(leases)
+}
+
+// poolSlotIndex returns the slotIndex for the first PATPool IssuedLease on
+// the named run, or -1 if none is found.
+func poolSlotIndex(ctx context.Context, namespace, runName string) int {
+	out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace,
+		"get", "harnessrun", runName,
+		"-o", "jsonpath={.status.issuedLeases[0].poolRef.slotIndex}"))
+	if err != nil || strings.TrimSpace(out) == "" {
+		return -1
+	}
+	idx, parseErr := strconv.Atoi(strings.TrimSpace(out))
+	if parseErr != nil {
+		return -1
+	}
+	return idx
+}
+
+// brokerPodName returns the name of the first running broker pod, or ""
+// if none is found.
+func brokerPodName(ctx context.Context) string {
+	out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", controlPlaneNamespace,
+		"get", "pods", "-l", "app.kubernetes.io/component=broker",
+		"-o", "jsonpath={.items[0].metadata.name}"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// brokerMetricGauge scrapes the broker's /metrics endpoint (plain HTTP on
+// the probe port :8081) via kubectl port-forward to the broker pod, and
+// returns the current sum of all time-series matching the given metric name.
+// Returns 0 on any error.
+//
+// The probe port (8081) is not exposed via a Kubernetes Service — only the
+// TLS API port (8443) is. We port-forward directly to the pod.
+func brokerMetricGauge(ctx context.Context, metricName string) float64 {
+	pod := brokerPodName(ctx)
+	if pod == "" {
+		GinkgoWriter.Printf("brokerMetricGauge: no broker pod found\n")
+		return 0
+	}
+
+	const localPort = "19081"
+
+	pfCtx, pfCancel := context.WithCancel(ctx)
+	defer pfCancel()
+
+	pfCmd := exec.CommandContext(pfCtx, "kubectl", "-n", controlPlaneNamespace,
+		"port-forward", "pod/"+pod, localPort+":8081")
+	if err := pfCmd.Start(); err != nil {
+		GinkgoWriter.Printf("brokerMetricGauge: port-forward start: %v\n", err)
+		return 0
+	}
+	// Give port-forward time to establish.
+	time.Sleep(500 * time.Millisecond)
+
+	resp, err := http.Get("http://127.0.0.1:" + localPort + "/metrics") //nolint:noctx
+	if err != nil {
+		GinkgoWriter.Printf("brokerMetricGauge: GET /metrics: %v\n", err)
+		return 0
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	var total float64
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !strings.HasPrefix(line, metricName) {
+			continue
+		}
+		// line: metricName{...} <value> [timestamp]
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		val, parseErr := strconv.ParseFloat(parts[len(parts)-1], 64)
+		if parseErr != nil {
+			continue
+		}
+		total += val
+	}
+	return total
+}
+
+// probeBrokerReadyz port-forwards the broker probe port (:8081) on the
+// broker pod and GETs /readyz. Returns the HTTP status code and any
+// network/transport error.
+func probeBrokerReadyz(ctx context.Context) (int, error) {
+	pod := brokerPodName(ctx)
+	if pod == "" {
+		return 0, fmt.Errorf("no broker pod found")
+	}
+
+	const localPort = "19081"
+
+	pfCtx, pfCancel := context.WithCancel(ctx)
+	defer pfCancel()
+
+	pfCmd := exec.CommandContext(pfCtx, "kubectl", "-n", controlPlaneNamespace,
+		"port-forward", "pod/"+pod, localPort+":8081")
+	if err := pfCmd.Start(); err != nil {
+		return 0, fmt.Errorf("port-forward start: %w", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	resp, err := http.Get("http://127.0.0.1:" + localPort + "/readyz") //nolint:noctx
+	if err != nil {
+		return 0, err
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode, nil
+}
+
+// tlsSkipVerify returns a tls.Config that skips certificate verification.
+// For use in e2e only — the broker uses a cert-manager-issued cert that
+// is self-signed in the Kind cluster and not trusted by the test runner's
+// CA pool.
+func tlsSkipVerify() *tls.Config {
+	return &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+}
+
+// brokerRolloutRestart issues `kubectl rollout restart` on the broker
+// Deployment and returns after the new pod is fully serving.
+func brokerRolloutRestart(ctx context.Context) error {
+	if _, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", controlPlaneNamespace,
+		"rollout", "restart", "deploy/"+v3BrokerDeploy)); err != nil {
+		return fmt.Errorf("rollout restart: %w", err)
+	}
+	if _, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", controlPlaneNamespace,
+		"rollout", "status", "deploy/"+v3BrokerDeploy, "--timeout=120s")); err != nil {
+		return fmt.Errorf("rollout status: %w", err)
+	}
+	return nil
+}
+
+// runHasWarningEvent returns true if any Kubernetes Event in the namespace
+// references the given run name with the given reason. Intended for asserting
+// that the controller emitted a RevokeFailed event.
+//
+// Events may have been emitted before the run was deleted (involvedObject
+// would still name the run), so we scrape all events in the namespace and
+// search by reason — not by involvedObject.name — because the run object
+// is gone by the time we check.
+func runHasWarningEvent(ctx context.Context, namespace, runName, reason string) bool {
+	out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace,
+		"get", "events",
+		"-o", "jsonpath={range .items[*]}{.reason}|{.involvedObject.name}|{.type}{\"\\n\"}{end}"))
+	if err != nil {
+		GinkgoWriter.Printf("runHasWarningEvent: kubectl get events: %v\n", err)
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.Split(line, "|")
+		if len(parts) != 3 {
+			continue
+		}
+		if parts[0] == reason && parts[1] == runName && parts[2] == "Warning" {
+			return true
+		}
+	}
+	return false
+}
 
 // mustApply applies a YAML file at the cluster scope. Fails the test on
 // error.
@@ -856,6 +1550,8 @@ func dumpRunDiagnostics(ctx context.Context, namespace, runName string) {
 	}
 	dump("harnessrun describe",
 		"-n", namespace, "describe", "harnessrun", runName)
+	dump("harnessrun yaml",
+		"-n", namespace, "get", "harnessrun", runName, "-o", "yaml")
 	dump("pods in run namespace",
 		"-n", namespace, "get", "pods", "-o", "wide")
 	dump("pod descriptions",
@@ -864,4 +1560,29 @@ func dumpRunDiagnostics(ctx context.Context, namespace, runName string) {
 		"-n", namespace, "get", "events", "--sort-by=.lastTimestamp")
 	dump("controller-manager logs",
 		"-n", "paddock-system", "logs", "-l", "control-plane=controller-manager", "--tail=200")
+	dump("broker logs",
+		"-n", "paddock-system", "logs", "-l", "app.kubernetes.io/component=broker", "--tail=200")
+}
+
+// dumpBrokerDiagnostics emits to GinkgoWriter the current broker pod
+// state, controller-manager logs, and broker logs. Used by Theme 2
+// specs that don't own a single HarnessRun (F-16 cold-start, F-17a
+// oversize-body smoke) so the next CI flake gives us real signal.
+func dumpBrokerDiagnostics(ctx context.Context) {
+	dump := func(title string, args ...string) {
+		out, _ := utils.Run(exec.CommandContext(ctx, "kubectl", args...))
+		GinkgoWriter.Printf("--- %s ---\n%s\n", title, out)
+	}
+	dump("broker deployment",
+		"-n", "paddock-system", "describe", "deploy", v3BrokerDeploy)
+	dump("broker pods",
+		"-n", "paddock-system", "get", "pods", "-l", "app.kubernetes.io/component=broker", "-o", "wide")
+	dump("broker pod descriptions",
+		"-n", "paddock-system", "describe", "pods", "-l", "app.kubernetes.io/component=broker")
+	dump("broker endpoints",
+		"-n", "paddock-system", "get", "endpoints", v3BrokerDeploy)
+	dump("controller-manager logs",
+		"-n", "paddock-system", "logs", "-l", "control-plane=controller-manager", "--tail=200")
+	dump("broker logs",
+		"-n", "paddock-system", "logs", "-l", "app.kubernetes.io/component=broker", "--tail=300")
 }

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -27,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
@@ -74,7 +76,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 	It("no-ops when the template has no requires.credentials", func() {
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		run := newRun("no-reqs")
-		ok, credStatus, reason, _, err := r.ensureBrokerCredentials(ctx, run, tpl())
+		ok, credStatus, _, reason, _, err := r.ensureBrokerCredentials(ctx, run, tpl())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 		Expect(reason).To(BeEmpty())
@@ -84,7 +86,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 	It("returns BrokerNotConfigured when BrokerClient is nil", func() {
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		run := newRun("no-broker")
-		ok, _, reason, _, err := r.ensureBrokerCredentials(ctx, run, tpl("TOKEN"))
+		ok, _, _, reason, _, err := r.ensureBrokerCredentials(ctx, run, tpl("TOKEN"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeFalse())
 		Expect(reason).To(Equal("BrokerNotConfigured"))
@@ -98,7 +100,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("happy")
 
-		ok, _, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("TOKEN_A", "TOKEN_B"))
+		ok, _, _, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("TOKEN_A", "TOKEN_B"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 		Expect(fb.Calls).To(Equal(2))
@@ -135,7 +137,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("cred-meta")
 
-		ok, credStatus, reason, _, err := r.ensureBrokerCredentials(
+		ok, credStatus, _, reason, _, err := r.ensureBrokerCredentials(
 			ctx, run, tpl("ANTHROPIC_API_KEY", "SLACK_SIGNING_SECRET"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
@@ -164,7 +166,7 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("denied")
 
-		ok, _, reason, msg, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		ok, _, _, reason, msg, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeFalse())
 		Expect(reason).To(Equal("BrokerDenied"))
@@ -181,10 +183,162 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		// with Reason=BrokerUnavailable + phase=Pending instead of
 		// entering an error-requeue loop that leaves the condition
 		// stale (spec §15.6).
-		ok, _, reason, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		ok, _, _, reason, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeFalse())
 		Expect(reason).To(BeEmpty())
+	})
+
+	It("populates issuedLeases with provider/leaseID/credName/expiresAt per credential", func() {
+		fb := &testutil.FakeBroker{
+			Values: map[string]string{"K": "v"},
+			Meta: map[string]brokerapi.IssueResponse{"K": {
+				Provider:      "PATPool",
+				LeaseID:       "pat-aaaa1111",
+				DeliveryMode:  "ProxyInjected",
+				Hosts:         []string{"github.com"},
+				PoolSecretRef: &brokerapi.PoolSecretRef{Name: "pool", Key: "pats"},
+				PoolSlotIndex: ptr.To(2),
+			}},
+		}
+		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
+		tplLeases := &resolvedTemplate{
+			SourceKind: "ClusterHarnessTemplate",
+			SourceName: "test",
+			Spec: paddockv1alpha1.HarnessTemplateSpec{
+				Requires: paddockv1alpha1.RequireSpec{
+					Credentials: []paddockv1alpha1.CredentialRequirement{{Name: "K"}},
+				},
+			},
+		}
+		run := newRun("run-leases-a")
+
+		ok, _, leases, _, _, err := r.ensureBrokerCredentials(ctx, run, tplLeases)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(leases).To(HaveLen(1))
+		Expect(leases[0].Provider).To(Equal("PATPool"))
+		Expect(leases[0].LeaseID).To(Equal("pat-aaaa1111"))
+		Expect(leases[0].CredentialName).To(Equal("K"))
+		Expect(leases[0].PoolRef).NotTo(BeNil())
+		Expect(leases[0].PoolRef.SecretRef.Name).To(Equal("pool"))
+		Expect(leases[0].PoolRef.SlotIndex).To(Equal(2))
+	})
+
+	It("skips broker Issue on a follow-up reconcile when leases + Secret are still fresh", func() {
+		// F-14 root-cause guard. Without idempotency, every reconcile
+		// (every 5s while a Pod is pending) re-Issues each credential —
+		// for PATPool that leaks slots and exhausts a small pool within
+		// two passes. This test pins the controller-side fast-path that
+		// short-circuits the broker round-trip when status.issuedLeases
+		// + status.credentials + the broker-creds Secret are all in
+		// shape.
+		fb := &testutil.FakeBroker{
+			Values: map[string]string{"K": "v"},
+			Meta: map[string]brokerapi.IssueResponse{"K": {
+				Provider:      "PATPool",
+				LeaseID:       "pat-aaaa1111",
+				DeliveryMode:  "ProxyInjected",
+				Hosts:         []string{"github.com"},
+				ExpiresAt:     time.Now().Add(time.Hour),
+				PoolSecretRef: &brokerapi.PoolSecretRef{Name: "pool", Key: "pats"},
+				PoolSlotIndex: ptr.To(0),
+			}},
+		}
+		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
+		run := newRun("idempotent")
+
+		// First pass: real Issue, leases populated.
+		ok, credStatus, leases, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(fb.Calls).To(Equal(1))
+
+		// Caller normally writes these to status; emulate that for the
+		// follow-up pass.
+		run.Status.IssuedLeases = leases
+		run.Status.Credentials = credStatus
+
+		// Second pass: cache is hot, no broker round-trip.
+		ok, credStatus2, leases2, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(fb.Calls).To(Equal(1), "broker Issue must not be called when leases + Secret are still fresh")
+		Expect(leases2).To(Equal(leases))
+		Expect(credStatus2).To(Equal(credStatus))
+	})
+
+	It("falls back to a broker Issue when the broker-creds Secret is missing keys", func() {
+		fb := &testutil.FakeBroker{
+			Values: map[string]string{"K": "v"},
+			Meta: map[string]brokerapi.IssueResponse{"K": {
+				Provider:      "PATPool",
+				LeaseID:       "pat-aaaa2222",
+				DeliveryMode:  "ProxyInjected",
+				Hosts:         []string{"github.com"},
+				ExpiresAt:     time.Now().Add(time.Hour),
+				PoolSecretRef: &brokerapi.PoolSecretRef{Name: "pool", Key: "pats"},
+				PoolSlotIndex: ptr.To(0),
+			}},
+		}
+		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
+		run := newRun("idempotent-secret-gone")
+
+		ok, credStatus, leases, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(fb.Calls).To(Equal(1))
+
+		// Simulate operator/test deleting the broker-creds Secret out
+		// from under us (or a partial-write race where the Secret never
+		// landed). Status carries leases but the Secret is gone — we
+		// must re-Issue so the follow-up materialises a fresh Secret.
+		var s corev1.Secret
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: brokerCredsSecretName(run.Name), Namespace: ns,
+		}, &s)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, &s)).To(Succeed())
+
+		run.Status.IssuedLeases = leases
+		run.Status.Credentials = credStatus
+
+		ok, _, _, _, _, err = r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(fb.Calls).To(Equal(2), "missing Secret must trigger a fresh Issue")
+	})
+
+	It("falls back to a broker Issue when an existing lease is past its expiresAt", func() {
+		fb := &testutil.FakeBroker{
+			Values: map[string]string{"K": "v"},
+			Meta: map[string]brokerapi.IssueResponse{"K": {
+				Provider:      "PATPool",
+				LeaseID:       "pat-aaaa3333",
+				DeliveryMode:  "ProxyInjected",
+				Hosts:         []string{"github.com"},
+				ExpiresAt:     time.Now().Add(time.Hour),
+				PoolSecretRef: &brokerapi.PoolSecretRef{Name: "pool", Key: "pats"},
+				PoolSlotIndex: ptr.To(0),
+			}},
+		}
+		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
+		run := newRun("idempotent-expired")
+
+		ok, credStatus, leases, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(fb.Calls).To(Equal(1))
+
+		// Force the lease into the past so the freshness check trips.
+		expired := metav1.NewTime(time.Now().Add(-time.Minute))
+		leases[0].ExpiresAt = &expired
+		run.Status.IssuedLeases = leases
+		run.Status.Credentials = credStatus
+
+		ok, _, _, _, _, err = r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(fb.Calls).To(Equal(2), "expired lease must trigger a fresh Issue")
 	})
 
 	It("deletes a stale broker-creds Secret when requires goes empty", func() {
@@ -192,12 +346,12 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
 		run := newRun("stale")
 
-		ok, _, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("OLD"))
+		ok, _, _, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("OLD"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 
 		// Now reconcile with no requires (e.g. template edited).
-		ok, _, _, _, err = r.ensureBrokerCredentials(ctx, run, tpl())
+		ok, _, _, _, _, err = r.ensureBrokerCredentials(ctx, run, tpl())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue())
 

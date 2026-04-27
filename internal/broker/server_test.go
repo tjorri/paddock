@@ -721,6 +721,8 @@ func (s *stubSubstituter) Issue(_ context.Context, _ providers.IssueRequest) (pr
 	return providers.IssueResult{}, errors.New("stub does not implement Issue")
 }
 
+func (s *stubSubstituter) Revoke(_ context.Context, _ string) error { return nil }
+
 func (s *stubSubstituter) SubstituteAuth(_ context.Context, _ providers.SubstituteRequest) (brokerapi.SubstituteResult, error) {
 	if !s.matched {
 		return brokerapi.SubstituteResult{Matched: false}, nil
@@ -1094,6 +1096,205 @@ func TestSubstituteAuth_EgressRevoked_DeniesAndAudits(t *testing.T) {
 	_ = c
 }
 
+// recordingProvider is a minimal Provider stub that records Revoke calls
+// so TestHandleRevoke_* tests can assert that the handler dispatched to
+// the correct provider.
+type recordingProvider struct {
+	name        string
+	revokeCalls int
+	lastLeaseID string
+	revokeErr   error
+}
+
+func (r *recordingProvider) Name() string { return r.name }
+
+func (r *recordingProvider) Issue(_ context.Context, _ providers.IssueRequest) (providers.IssueResult, error) {
+	return providers.IssueResult{}, fmt.Errorf("recordingProvider does not implement Issue")
+}
+
+func (r *recordingProvider) Revoke(_ context.Context, leaseID string) error {
+	r.revokeCalls++
+	r.lastLeaseID = leaseID
+	return r.revokeErr
+}
+
+// setupRevoke builds a minimal Server wired to the given recordingProvider.
+// The caller identity defaults to the controller-manager SA (IsController=true)
+// unless overridden by the test after this returns.
+func setupRevoke(t *testing.T, prov *recordingProvider) *broker.Server {
+	t.Helper()
+	registry, err := providers.NewRegistry(prov)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).Build()
+	return &broker.Server{
+		Client: c,
+		Auth: stubAuth{identity: broker.CallerIdentity{
+			Namespace:      broker.ControllerSystemNamespace,
+			ServiceAccount: broker.ControllerServiceAccount,
+			IsController:   true,
+		}},
+		Providers: registry,
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
+	}
+}
+
+// postRevoke sends a POST /v1/revoke request to the server and returns the recorder.
+func postRevoke(t *testing.T, srv *broker.Server, runName, runNS, bearer string, body brokerapi.RevokeRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, brokerapi.PathRevoke, bytes.NewReader(b))
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	req.Header.Set(brokerapi.HeaderRun, runName)
+	if runNS != "" {
+		req.Header.Set(brokerapi.HeaderNamespace, runNS)
+	}
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	return rr
+}
+
+func TestHandleRevoke_Success_EmitsCredentialRevoked(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{name: "stub-prov"}
+	srv := setupRevoke(t, prov)
+	rec := &recordingAuditSink{}
+	srv.Audit = broker.NewAuditWriter(rec)
+
+	rr := postRevoke(t, srv, "hr-1", "team-a", "ctrl-token", brokerapi.RevokeRequest{
+		Provider:       "stub-prov",
+		LeaseID:        "lease-x",
+		CredentialName: "CRED",
+	})
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rr.Code, rr.Body.String())
+	}
+	if prov.revokeCalls != 1 {
+		t.Errorf("Revoke called %d times, want 1", prov.revokeCalls)
+	}
+	if prov.lastLeaseID != "lease-x" {
+		t.Errorf("lastLeaseID = %q, want lease-x", prov.lastLeaseID)
+	}
+	wrote := rec.events()
+	if len(wrote) != 1 {
+		t.Fatalf("got %d audit events, want 1", len(wrote))
+	}
+	if wrote[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialRevoked {
+		t.Errorf("audit kind = %q, want credential-revoked", wrote[0].Spec.Kind)
+	}
+}
+
+func TestHandleRevoke_NonControllerCaller_Forbidden(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{name: "stub-prov"}
+	srv := setupRevoke(t, prov)
+	// Override auth to return a non-controller caller.
+	srv.Auth = stubAuth{identity: broker.CallerIdentity{
+		Namespace:      "team-a",
+		ServiceAccount: "default",
+		IsController:   false,
+	}}
+	rec := &recordingAuditSink{}
+	srv.Audit = broker.NewAuditWriter(rec)
+
+	rr := postRevoke(t, srv, "hr-1", "team-a", "run-token", brokerapi.RevokeRequest{
+		Provider:       "stub-prov",
+		LeaseID:        "lease-x",
+		CredentialName: "CRED",
+	})
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+	}
+	if prov.revokeCalls != 0 {
+		t.Errorf("Revoke called %d times, want 0", prov.revokeCalls)
+	}
+	if len(rec.events()) != 0 {
+		t.Errorf("got %d audit events, want 0", len(rec.events()))
+	}
+}
+
+// Covers the success-path 503 (revoke succeeded, audit failed).
+// The failure-path 503 is covered by TestHandleRevoke_RevokeFailsAndAuditFails_Returns503.
+func TestHandleRevoke_AuditWriteFailure_Returns503(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{name: "stub-prov"}
+	srv := setupRevoke(t, prov)
+	srv.Audit = broker.NewAuditWriter(errorSink{err: errors.New("etcd unavailable")})
+
+	rr := postRevoke(t, srv, "hr-1", "team-a", "ctrl-token", brokerapi.RevokeRequest{
+		Provider:       "stub-prov",
+		LeaseID:        "lease-x",
+		CredentialName: "CRED",
+	})
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rr.Code, rr.Body.String())
+	}
+	var errResp brokerapi.ErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if errResp.Code != brokerapi.CodeAuditUnavailable {
+		t.Errorf("code = %q, want AuditUnavailable", errResp.Code)
+	}
+}
+
+func TestHandleRevoke_RevokeFails_Returns500ProviderFailure(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{name: "stub-prov", revokeErr: errors.New("provider boom")}
+	srv := setupRevoke(t, prov)
+	rec := &recordingAuditSink{}
+	srv.Audit = broker.NewAuditWriter(rec)
+
+	rr := postRevoke(t, srv, "hr-1", "team-a", "ctrl-token", brokerapi.RevokeRequest{
+		Provider:       "stub-prov",
+		LeaseID:        "lease-x",
+		CredentialName: "cred",
+	})
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d body = %s; want 500", rr.Code, rr.Body.String())
+	}
+	if prov.revokeCalls != 1 {
+		t.Fatalf("provider Revoke calls = %d; want 1", prov.revokeCalls)
+	}
+	events := rec.events()
+	if len(events) != 1 {
+		t.Fatalf("expected exactly one audit event, got %d", len(events))
+	}
+	if events[0].Spec.Kind != paddockv1alpha1.AuditKindCredentialDenied {
+		t.Fatalf("audit kind = %s; want credential-denied (denial-shape on revoke failure)", events[0].Spec.Kind)
+	}
+}
+
+func TestHandleRevoke_RevokeFailsAndAuditFails_Returns503(t *testing.T) {
+	t.Parallel()
+	prov := &recordingProvider{name: "stub-prov", revokeErr: errors.New("provider boom")}
+	srv := setupRevoke(t, prov)
+	srv.Audit = broker.NewAuditWriter(errorSink{err: errors.New("audit boom")})
+
+	rr := postRevoke(t, srv, "hr-1", "team-a", "ctrl-token", brokerapi.RevokeRequest{
+		Provider:       "stub-prov",
+		LeaseID:        "lease-x",
+		CredentialName: "cred",
+	})
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d body = %s; want 503 (failure-path Phase 2c contract)", rr.Code, rr.Body.String())
+	}
+	// Body should carry CodeAuditUnavailable, not CodeProviderFailure.
+	if !strings.Contains(rr.Body.String(), brokerapi.CodeAuditUnavailable) {
+		t.Fatalf("body missing AuditUnavailable code: %s", rr.Body.String())
+	}
+}
+
 func TestAuditWriter_NewAuditWriter_PanicsOnNilSink(t *testing.T) {
 	defer func() {
 		r := recover()
@@ -1329,5 +1530,212 @@ func TestAuditWriter_NewAuditWriter_HappyPath(t *testing.T) {
 	}
 	if got := len(rec.events()); got != 1 {
 		t.Errorf("recorded %d events, want 1", got)
+	}
+}
+
+func TestHandleIssue_OversizeBody_BadRequest(t *testing.T) {
+	t.Parallel()
+	srv, _ := setup(t)
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	body := bytes.Repeat([]byte("x"), 100<<10) // 100 KiB > 64 KiB cap
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, brokerapi.PathIssue, bytes.NewReader(body))
+	r.Header.Set("Authorization", "Bearer t")
+	r.Header.Set(brokerapi.HeaderRun, "hello")
+	r.Header.Set(brokerapi.HeaderNamespace, "my-team")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+// TestHandleSubstituteAuth_RateLimited_AuditFirst verifies that when the
+// per-run substitute bucket is exhausted the handler emits a
+// credential-denied AuditEvent BEFORE returning 429 (Phase 2c
+// fail-closed-on-audit-failure contract). Also verifies 503 is returned
+// if the audit write itself fails.
+func TestHandleSubstituteAuth_RateLimited_AuditFirst(t *testing.T) {
+	t.Parallel()
+	sub := &stubSubstituter{
+		name:           "anthropic-stub",
+		matched:        true,
+		setHdrs:        map[string]string{"x-api-key": "real-key"},
+		credentialName: "STUB_CRED",
+	}
+	srv, _ := setupSubstituteAuth(t, sub)
+	rec := &recordingAuditSink{}
+	srv.Audit = broker.NewAuditWriter(rec)
+	srv.RunLimiter = broker.NewRunLimiterRegistry()
+
+	// Drain the substitute burst using direct Allow() calls so we don't
+	// need full broker semantics for each drain request.
+	for i := 0; i < broker.SubstituteBurstForTest; i++ {
+		srv.RunLimiter.Allow("team-a", "hr-1", "substitute")
+	}
+
+	body, _ := json.Marshal(brokerapi.SubstituteAuthRequest{
+		Host: "api.anthropic.com", Port: 443,
+		IncomingXAPIKey: "paddock-bearer-x",
+	})
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+		brokerapi.PathSubstituteAuth, bytes.NewReader(body))
+	r.Header.Set("Authorization", "Bearer valid-token")
+	r.Header.Set(brokerapi.HeaderRun, "hr-1")
+	w := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	mux.ServeHTTP(w, r)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+	events := rec.events()
+	if len(events) == 0 {
+		t.Fatalf("audit write did not happen before 429")
+	}
+	if events[len(events)-1].Spec.Kind != paddockv1alpha1.AuditKindCredentialDenied {
+		t.Fatalf("audit kind = %s; want credential-denied", events[len(events)-1].Spec.Kind)
+	}
+	var errResp brokerapi.ErrorResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &errResp)
+	if errResp.Code != brokerapi.CodeRateLimited {
+		t.Errorf("code = %q, want %q", errResp.Code, brokerapi.CodeRateLimited)
+	}
+}
+
+// TestHandleSubstituteAuth_RateLimited_AuditFail_Returns503 verifies that
+// when the rate-limit audit write fails the broker returns 503 (fail-closed
+// on audit write failure — Phase 2c) rather than 429.
+func TestHandleSubstituteAuth_RateLimited_AuditFail_Returns503(t *testing.T) {
+	t.Parallel()
+	sub := &stubSubstituter{
+		name:           "anthropic-stub",
+		matched:        true,
+		setHdrs:        map[string]string{"x-api-key": "real-key"},
+		credentialName: "STUB_CRED",
+	}
+	srv, _ := setupSubstituteAuth(t, sub)
+	srv.Audit = broker.NewAuditWriter(errorSink{err: errors.New("etcd partition")})
+	srv.RunLimiter = broker.NewRunLimiterRegistry()
+
+	for i := 0; i < broker.SubstituteBurstForTest; i++ {
+		srv.RunLimiter.Allow("team-a", "hr-1", "substitute")
+	}
+
+	body, _ := json.Marshal(brokerapi.SubstituteAuthRequest{
+		Host: "api.anthropic.com", Port: 443,
+		IncomingXAPIKey: "paddock-bearer-x",
+	})
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+		brokerapi.PathSubstituteAuth, bytes.NewReader(body))
+	r.Header.Set("Authorization", "Bearer valid-token")
+	r.Header.Set(brokerapi.HeaderRun, "hr-1")
+	w := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	mux.ServeHTTP(w, r)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d body = %s; want 503 when audit fails on rate-limited path", w.Code, w.Body.String())
+	}
+}
+
+// TestHandleIssue_PATPool_PopulatesPoolSecretRefAndSlotIndex is a regression
+// test for the F-14 end-to-end gap: populateDeliveryMetadata initially omitted
+// PoolSecretRef and PoolSlotIndex, so the wire response always carried nil pool
+// fields even though PATPoolProvider.Issue populated them on IssueResult. This
+// test drives the full HTTP handler path (no FakeBroker) and asserts the wire
+// response carries both pool fields.
+func TestHandleIssue_PATPool_PopulatesPoolSecretRefAndSlotIndex(t *testing.T) {
+	t.Parallel()
+	const ns = "my-team"
+
+	poolSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool", Namespace: ns},
+		Data:       map[string][]byte{"pats": []byte("ghp_alice\nghp_bob\n")},
+	}
+	tpl := &paddockv1alpha1.HarnessTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessTemplateSpec{
+			Harness: "echo",
+			Image:   "paddock-echo:v1",
+			Command: []string{"/bin/echo"},
+			Requires: paddockv1alpha1.RequireSpec{
+				Credentials: []paddockv1alpha1.CredentialRequirement{
+					{Name: "GITHUB_TOKEN"},
+				},
+			},
+		},
+	}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-pat", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Prompt:      "hi",
+		},
+	}
+	bp := &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "allow-pat", Namespace: ns},
+		Spec: paddockv1alpha1.BrokerPolicySpec{
+			AppliesToTemplates: []string{"echo"},
+			Grants: paddockv1alpha1.BrokerPolicyGrants{
+				Credentials: []paddockv1alpha1.CredentialGrant{{
+					Name: "GITHUB_TOKEN",
+					Provider: paddockv1alpha1.ProviderConfig{
+						Kind:      "PATPool",
+						SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "pool", Key: "pats"},
+						Hosts:     []string{"github.com"},
+					},
+				}},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(buildScheme(t)).
+		WithObjects(tpl, run, bp, poolSecret).
+		Build()
+
+	registry, err := providers.NewRegistry(
+		&providers.UserSuppliedSecretProvider{Client: c},
+		&providers.PATPoolProvider{Client: c},
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	srv := &broker.Server{
+		Client:    c,
+		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
+		Providers: registry,
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
+	}
+
+	body, _ := json.Marshal(brokerapi.IssueRequest{Name: "GITHUB_TOKEN"})
+	rr := post(t, srv, "hr-pat", ns, "token-abc", string(body))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got brokerapi.IssueResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.PoolSecretRef == nil {
+		t.Fatalf("PoolSecretRef = nil; populateDeliveryMetadata did not copy pool fields onto wire response")
+	}
+	if got.PoolSecretRef.Name != "pool" {
+		t.Errorf("PoolSecretRef.Name = %q, want %q", got.PoolSecretRef.Name, "pool")
+	}
+	if got.PoolSecretRef.Key != "pats" {
+		t.Errorf("PoolSecretRef.Key = %q, want %q", got.PoolSecretRef.Key, "pats")
+	}
+	if got.PoolSlotIndex == nil {
+		t.Fatalf("PoolSlotIndex = nil; populateDeliveryMetadata did not copy pool slot index onto wire response")
+	}
+	if *got.PoolSlotIndex < 0 {
+		t.Errorf("PoolSlotIndex = %d, want >= 0", *got.PoolSlotIndex)
 	}
 }
