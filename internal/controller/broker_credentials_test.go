@@ -17,7 +17,10 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
+	"strings"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -26,9 +29,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
@@ -480,3 +485,172 @@ var _ = Describe("reconcileCredentials", func() {
 		Expect(out.fatalReason).To(Equal("BrokerDenied"))
 	})
 })
+
+// TestCachedBrokerCredentials_StrictKeyPrune (F-41 residual) exercises
+// the three branches of the strict-key check on the cached fast-path.
+func TestCachedBrokerCredentials_StrictKeyPrune_NoExtras(t *testing.T) {
+	r, _, _ := runWithRecorderForCreds(t)
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+		Status: paddockv1alpha1.HarnessRunStatus{
+			IssuedLeases: []paddockv1alpha1.IssuedLease{
+				{CredentialName: "GITHUB_TOKEN", Provider: "PATPool", LeaseID: "L1",
+					ExpiresAt: &metav1.Time{Time: time.Now().Add(time.Hour)}},
+			},
+			Credentials: []paddockv1alpha1.CredentialStatus{
+				{Name: "GITHUB_TOKEN", Provider: "PATPool"},
+			},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: brokerCredsSecretName(run.Name), Namespace: run.Namespace},
+		Type:       corev1.SecretTypeOpaque,
+		Data:       map[string][]byte{"GITHUB_TOKEN": []byte("ghs_abc")},
+	}
+	if err := r.Create(context.Background(), run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	if err := r.Create(context.Background(), secret); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+
+	reqs := []paddockv1alpha1.CredentialRequirement{{Name: "GITHUB_TOKEN"}}
+	ok, _, _, found := r.cachedBrokerCredentials(context.Background(), run, reqs)
+	if !found || !ok {
+		t.Fatalf("cachedBrokerCredentials: ok=%v found=%v; want both true", ok, found)
+	}
+	// No tamper events should have been emitted.
+	if got := r.Audit.Sink.(*capturedSink).all; len(got) != 0 {
+		t.Errorf("audit emitted %d events; want 0 (no tampering)", len(got))
+	}
+}
+
+func TestCachedBrokerCredentials_StrictKeyPrune_PrunesExtras(t *testing.T) {
+	r, _, _ := runWithRecorderForCreds(t)
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+		Status: paddockv1alpha1.HarnessRunStatus{
+			IssuedLeases: []paddockv1alpha1.IssuedLease{
+				{CredentialName: "GITHUB_TOKEN", Provider: "PATPool", LeaseID: "L1",
+					ExpiresAt: &metav1.Time{Time: time.Now().Add(time.Hour)}},
+			},
+			Credentials: []paddockv1alpha1.CredentialStatus{
+				{Name: "GITHUB_TOKEN", Provider: "PATPool"},
+			},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: brokerCredsSecretName(run.Name), Namespace: run.Namespace},
+		Type:       corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"GITHUB_TOKEN": []byte("ghs_abc"),
+			"EXTRA_VAR":    []byte("malicious"),
+		},
+	}
+	if err := r.Create(context.Background(), run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	if err := r.Create(context.Background(), secret); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+
+	reqs := []paddockv1alpha1.CredentialRequirement{{Name: "GITHUB_TOKEN"}}
+	ok, _, _, found := r.cachedBrokerCredentials(context.Background(), run, reqs)
+	if !found || !ok {
+		t.Fatalf("cachedBrokerCredentials: ok=%v found=%v; want both true", ok, found)
+	}
+
+	// Re-Get the Secret and confirm extras are gone.
+	var got corev1.Secret
+	if err := r.Get(context.Background(),
+		types.NamespacedName{Name: secret.Name, Namespace: secret.Namespace}, &got); err != nil {
+		t.Fatalf("re-get secret: %v", err)
+	}
+	if _, present := got.Data["EXTRA_VAR"]; present {
+		t.Errorf("EXTRA_VAR still present after prune; want pruned")
+	}
+	if string(got.Data["GITHUB_TOKEN"]) != "ghs_abc" {
+		t.Errorf("GITHUB_TOKEN value changed: got %q; want unchanged", got.Data["GITHUB_TOKEN"])
+	}
+
+	// One tamper event should have been emitted with the pruned key.
+	events := r.Audit.Sink.(*capturedSink).all
+	if len(events) != 1 {
+		t.Fatalf("audit emitted %d events; want 1", len(events))
+	}
+	if events[0].Spec.Kind != paddockv1alpha1.AuditKindBrokerCredsTampered {
+		t.Errorf("event kind = %q; want %q",
+			events[0].Spec.Kind, paddockv1alpha1.AuditKindBrokerCredsTampered)
+	}
+	if !strings.Contains(events[0].Spec.Reason, "EXTRA_VAR") {
+		t.Errorf("event reason = %q; want substring %q", events[0].Spec.Reason, "EXTRA_VAR")
+	}
+}
+
+func TestCachedBrokerCredentials_StrictKeyPrune_FallsThroughOnBlanked(t *testing.T) {
+	r, _, _ := runWithRecorderForCreds(t)
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+		Status: paddockv1alpha1.HarnessRunStatus{
+			IssuedLeases: []paddockv1alpha1.IssuedLease{
+				{CredentialName: "GITHUB_TOKEN", Provider: "PATPool", LeaseID: "L1",
+					ExpiresAt: &metav1.Time{Time: time.Now().Add(time.Hour)}},
+			},
+			Credentials: []paddockv1alpha1.CredentialStatus{
+				{Name: "GITHUB_TOKEN", Provider: "PATPool"},
+			},
+		},
+	}
+	// GITHUB_TOKEN blanked AND EXTRA_VAR injected. Required-key check
+	// fires first; cached fast-path returns found=false; caller falls
+	// through to a full Issue cycle (existing behaviour).
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: brokerCredsSecretName(run.Name), Namespace: run.Namespace},
+		Type:       corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"GITHUB_TOKEN": {},
+			"EXTRA_VAR":    []byte("malicious"),
+		},
+	}
+	if err := r.Create(context.Background(), run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	if err := r.Create(context.Background(), secret); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+
+	reqs := []paddockv1alpha1.CredentialRequirement{{Name: "GITHUB_TOKEN"}}
+	_, _, _, found := r.cachedBrokerCredentials(context.Background(), run, reqs)
+	if found {
+		t.Errorf("cachedBrokerCredentials returned found=true; want false (required key blanked)")
+	}
+	// No tamper event — the prune branch is reached only after the
+	// required-key check passes, which it didn't here.
+	if got := r.Audit.Sink.(*capturedSink).all; len(got) != 0 {
+		t.Errorf("audit emitted %d events; want 0", len(got))
+	}
+}
+
+// runWithRecorderForCreds is a focused fixture for the cached-creds
+// tests: schemes registered for HarnessRun + Secret, audit captured,
+// no broker integration needed.
+func runWithRecorderForCreds(t *testing.T) (*HarnessRunReconciler, *capturedSink, *record.FakeRecorder) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := paddockv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("paddock scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("corev1 scheme: %v", err)
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).Build()
+	rec := &capturedSink{}
+	fakeRec := record.NewFakeRecorder(8)
+	r := &HarnessRunReconciler{
+		Client:   cli,
+		Scheme:   scheme,
+		Audit:    &ControllerAudit{Sink: rec},
+		Recorder: fakeRec,
+	}
+	return r, rec, fakeRec
+}

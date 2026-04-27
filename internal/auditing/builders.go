@@ -17,6 +17,7 @@ limitations under the License.
 package auditing
 
 import (
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -408,6 +409,46 @@ func NewNetworkPolicyEnforcementWithdrawn(in NetworkPolicyEnforcementWithdrawnIn
 			Kind:      paddockv1alpha1.AuditKindNetworkPolicyEnforcementWithdrawn,
 			Timestamp: metav1.NewTime(nowOr(in.When)),
 			Reason:    in.Reason,
+		},
+	}
+	if in.RunName != "" {
+		ae.Spec.RunRef = &paddockv1alpha1.LocalObjectReference{Name: in.RunName}
+	}
+	stampLabels(ae, in.RunName)
+	return ae
+}
+
+// BrokerCredsTamperedInput is the flat input shape for
+// NewBrokerCredsTampered. PrunedKeys is the sorted list of unexpected
+// keys the controller removed from the broker-creds Secret on
+// tamper-detect.
+type BrokerCredsTamperedInput struct {
+	RunName    string
+	Namespace  string
+	PrunedKeys []string
+	When       time.Time
+}
+
+// NewBrokerCredsTampered builds a broker-creds-tampered AuditEvent
+// (controller detected and pruned unexpected keys on the per-run
+// broker-creds Secret). Decision is Warned — nothing was blocked,
+// the system auto-recovered, but operators should know tampering
+// was attempted. F-41 residual.
+func NewBrokerCredsTampered(in BrokerCredsTamperedInput) *paddockv1alpha1.AuditEvent {
+	reason := "broker-creds Secret had unexpected keys; pruned"
+	if len(in.PrunedKeys) > 0 {
+		reason += ": " + strings.Join(in.PrunedKeys, ",")
+	}
+	ae := &paddockv1alpha1.AuditEvent{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:    in.Namespace,
+			GenerateName: "ae-creds-tampered-",
+		},
+		Spec: paddockv1alpha1.AuditEventSpec{
+			Decision:  paddockv1alpha1.AuditDecisionWarned,
+			Kind:      paddockv1alpha1.AuditKindBrokerCredsTampered,
+			Timestamp: metav1.NewTime(nowOr(in.When)),
+			Reason:    reason,
 		},
 	}
 	if in.RunName != "" {

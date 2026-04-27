@@ -139,3 +139,16 @@ func (c *ControllerAudit) EmitNetworkPolicyEnforcementWithdrawn(ctx context.Cont
 		Reason:    reason,
 	}), "network-policy-enforcement-withdrawn")
 }
+
+// EmitBrokerCredsTampered records that the controller detected
+// unexpected keys on a run's broker-creds Secret (e.g., a tenant
+// `kubectl edit secret <run>-broker-creds` injecting an extra envFrom
+// key) and pruned them via CreateOrUpdate. prunedKeys is the sorted
+// list of removed key names; values are never recorded. F-41 residual.
+func (c *ControllerAudit) EmitBrokerCredsTampered(ctx context.Context, runName, namespace string, prunedKeys []string) {
+	c.write(ctx, auditing.NewBrokerCredsTampered(auditing.BrokerCredsTamperedInput{
+		RunName:    runName,
+		Namespace:  namespace,
+		PrunedKeys: prunedKeys,
+	}), "broker-creds-tampered")
+}
