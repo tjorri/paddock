@@ -49,7 +49,7 @@ func anthropicSecret(value string) *corev1.Secret {
 func TestAnthropicAPIProvider_IssueThenSubstitute(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(anthropicSecret("sk-real")).Build()
 	now := time.Unix(1_700_000_000, 0)
-	p := &AnthropicAPIProvider{Client: c, Now: func() time.Time { return now }}
+	p := &AnthropicAPIProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return now }}}
 
 	res, err := p.Issue(context.Background(), IssueRequest{
 		RunName:        "demo",
@@ -149,7 +149,7 @@ func TestAnthropicAPIProvider_SubstituteUnknownBearer(t *testing.T) {
 func TestAnthropicAPIProvider_SubstituteExpiredBearer(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(anthropicSecret("sk")).Build()
 	clock := time.Unix(1_700_000_000, 0)
-	p := &AnthropicAPIProvider{Client: c, Now: func() time.Time { return clock }}
+	p := &AnthropicAPIProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return clock }}}
 	res, err := p.Issue(context.Background(), IssueRequest{
 		Namespace: "my-team", CredentialName: "K", Grant: anthropicGrant(),
 	})

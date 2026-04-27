@@ -152,7 +152,7 @@ func TestGitHubAppProvider_IssueThenSubstitute(t *testing.T) {
 		Client:      c,
 		HTTPClient:  fg.server.Client(),
 		APIEndpoint: fg.server.URL,
-		Now:         func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 
 	res, err := p.Issue(context.Background(), IssueRequest{
@@ -221,7 +221,7 @@ func TestGitHubAppProvider_TokenSharedAcrossBearers(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(githubSecret(key)).Build()
 	p := &GitHubAppProvider{
 		Client: c, HTTPClient: fg.server.Client(), APIEndpoint: fg.server.URL,
-		Now: func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 
 	first, err := p.Issue(context.Background(), IssueRequest{
@@ -270,7 +270,7 @@ func TestGitHubAppProvider_TokenDistinctAcrossRuns(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(githubSecret(key)).Build()
 	p := &GitHubAppProvider{
 		Client: c, HTTPClient: fg.server.Client(), APIEndpoint: fg.server.URL,
-		Now: func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 
 	for _, run := range []string{"cc-1", "cc-2"} {
@@ -335,7 +335,7 @@ func TestGitHubAppProvider_ExpiredBearer(t *testing.T) {
 		Client:      c,
 		HTTPClient:  fg.server.Client(),
 		APIEndpoint: fg.server.URL,
-		Now:         func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 	res, err := p.Issue(context.Background(), IssueRequest{
 		RunName: "cc-1", Namespace: "my-team",
@@ -578,7 +578,7 @@ func TestGitHubAppProvider_SubstituteHostNotAllowed_Default(t *testing.T) {
 		Client:      c,
 		HTTPClient:  fg.server.Client(),
 		APIEndpoint: fg.server.URL,
-		Now:         func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 
 	res, err := p.Issue(context.Background(), IssueRequest{
@@ -616,7 +616,7 @@ func TestGitHubAppProvider_SubstituteHostAllowed_Defaults(t *testing.T) {
 		Client:      c,
 		HTTPClient:  fg.server.Client(),
 		APIEndpoint: fg.server.URL,
-		Now:         func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 	res, err := p.Issue(context.Background(), IssueRequest{
 		RunName: "demo", Namespace: "my-team",
@@ -653,7 +653,7 @@ func TestGitHubAppProvider_SubstituteResultFieldsPopulated(t *testing.T) {
 		Client:      c,
 		HTTPClient:  fg.server.Client(),
 		APIEndpoint: fg.server.URL,
-		Now:         func() time.Time { return clock },
+		clockSource: clockSource{Now: func() time.Time { return clock }},
 	}
 	res, err := p.Issue(context.Background(), IssueRequest{
 		RunName: "demo", Namespace: "my-team",

@@ -64,9 +64,7 @@ type AnthropicAPIProvider struct {
 	// (so rotations land on the next request without bearer re-issue).
 	Client client.Client
 
-	// Now is the wall-clock source for TTL accounting. Zero defaults to
-	// time.Now — tests inject a fixed clock.
-	Now func() time.Time
+	clockSource
 
 	mu      sync.Mutex
 	bearers map[string]*anthropicLease
@@ -245,11 +243,4 @@ func (p *AnthropicAPIProvider) SubstituteAuth(ctx context.Context, req Substitut
 		// this name before returning the substituted credential.
 		CredentialName: lease.CredentialName,
 	}, nil
-}
-
-func (p *AnthropicAPIProvider) now() time.Time {
-	if p.Now != nil {
-		return p.Now()
-	}
-	return time.Now()
 }

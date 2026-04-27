@@ -85,9 +85,7 @@ type PATPoolProvider struct {
 	// bearer resolves to which PAT. Operators should append, not insert.
 	Client client.Client
 
-	// Now is the wall-clock source for TTL accounting. Zero defaults
-	// to time.Now — tests inject a fixed clock.
-	Now func() time.Time
+	clockSource
 
 	mu    sync.Mutex
 	pools map[patPoolKey]*patPool
@@ -405,13 +403,6 @@ func mintPATBearer() (string, error) {
 		return "", fmt.Errorf("generating bearer: %w", err)
 	}
 	return patPoolBearerPrefix + hex.EncodeToString(buf[:]), nil
-}
-
-func (p *PATPoolProvider) now() time.Time {
-	if p.Now != nil {
-		return p.Now()
-	}
-	return time.Now()
 }
 
 func firstFreeIndex(leased []bool) int {

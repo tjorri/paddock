@@ -129,7 +129,7 @@ func TestUserSuppliedSecret_ProxyInjectedReturnsOpaqueBearer(t *testing.T) {
 
 func TestUserSuppliedSecret_SubstituteAuth_HeaderPattern(t *testing.T) {
 	c := newFakeClientWithSecret(t, "ns", "s", "k", "real-api-key").Build()
-	p := &UserSuppliedSecretProvider{Client: c, Now: func() time.Time { return time.Unix(1000, 0) }}
+	p := &UserSuppliedSecretProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return time.Unix(1000, 0) }}}
 
 	issue, err := p.Issue(context.Background(), IssueRequest{
 		RunName: "run", Namespace: "ns", CredentialName: "PROXY",
@@ -155,7 +155,7 @@ func TestUserSuppliedSecret_SubstituteAuth_HeaderPattern(t *testing.T) {
 
 func TestUserSuppliedSecret_SubstituteAuth_QueryParamPattern(t *testing.T) {
 	c := newFakeClientWithSecret(t, "ns", "s", "k", "secret-token").Build()
-	p := &UserSuppliedSecretProvider{Client: c, Now: func() time.Time { return time.Unix(1000, 0) }}
+	p := &UserSuppliedSecretProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return time.Unix(1000, 0) }}}
 
 	grant := paddockv1alpha1.CredentialGrant{
 		Name: "Q",
@@ -187,7 +187,7 @@ func TestUserSuppliedSecret_SubstituteAuth_QueryParamPattern(t *testing.T) {
 
 func TestUserSuppliedSecret_SubstituteAuth_BasicAuthPattern(t *testing.T) {
 	c := newFakeClientWithSecret(t, "ns", "s", "k", "pat-value").Build()
-	p := &UserSuppliedSecretProvider{Client: c, Now: func() time.Time { return time.Unix(1000, 0) }}
+	p := &UserSuppliedSecretProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return time.Unix(1000, 0) }}}
 
 	grant := paddockv1alpha1.CredentialGrant{
 		Name: "B",
@@ -222,7 +222,7 @@ func TestUserSuppliedSecret_SubstituteAuth_BasicAuthPattern(t *testing.T) {
 
 func TestUserSuppliedSecret_SubstituteAuth_HostMismatchErrors(t *testing.T) {
 	c := newFakeClientWithSecret(t, "ns", "s", "k", "v").Build()
-	p := &UserSuppliedSecretProvider{Client: c, Now: func() time.Time { return time.Unix(1000, 0) }}
+	p := &UserSuppliedSecretProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return time.Unix(1000, 0) }}}
 
 	issue, _ := p.Issue(context.Background(), IssueRequest{
 		RunName: "run", Namespace: "ns", CredentialName: "PROXY",

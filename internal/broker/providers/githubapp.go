@@ -96,9 +96,7 @@ type GitHubAppProvider struct {
 	// future milestones can expose it on BrokerPolicy for GHE installs.
 	APIEndpoint string
 
-	// Now is the wall-clock source for TTL accounting. Zero defaults
-	// to time.Now — tests inject a fixed clock.
-	Now func() time.Time
+	clockSource
 
 	mu      sync.Mutex
 	bearers map[string]*githubLease
@@ -428,13 +426,6 @@ func (p *GitHubAppProvider) sweep(now time.Time) {
 			delete(p.tokens, key)
 		}
 	}
-}
-
-func (p *GitHubAppProvider) now() time.Time {
-	if p.Now != nil {
-		return p.Now()
-	}
-	return time.Now()
 }
 
 // parsePrivateKey accepts the two shapes GitHub ships App private keys

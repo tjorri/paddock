@@ -49,7 +49,7 @@ const defaultUserSuppliedTTL = 60 * time.Minute
 //     pattern (header / queryParam / basicAuth).
 type UserSuppliedSecretProvider struct {
 	Client client.Client
-	Now    func() time.Time
+	clockSource
 
 	mu      sync.Mutex
 	bearers map[string]*userSuppliedLease
@@ -234,13 +234,6 @@ func (p *UserSuppliedSecretProvider) SubstituteAuth(ctx context.Context, req Sub
 			fmt.Errorf("lease for %s has no substitution pattern set", bearer)
 	}
 	return res, nil
-}
-
-func (p *UserSuppliedSecretProvider) now() time.Time {
-	if p.Now != nil {
-		return p.Now()
-	}
-	return time.Now()
 }
 
 // hostMatchesGlobs does a limited glob match: either exact host equality

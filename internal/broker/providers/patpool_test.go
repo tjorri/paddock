@@ -60,7 +60,7 @@ func TestPATPool_IssueThenSubstitute(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_alice\nghp_bob\n")).Build()
 	clock := time.Unix(1_700_000_000, 0)
-	p := &PATPoolProvider{Client: c, Now: func() time.Time { return clock }}
+	p := &PATPoolProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return clock }}}
 
 	res, err := p.Issue(context.Background(), IssueRequest{
 		RunName:        "cc-1",
@@ -153,7 +153,7 @@ func TestPATPool_ExpiredLeaseReleasesSlot(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
 		WithObjects(patPoolSecret("ghp_only\n")).Build()
 	clock := time.Unix(1_700_000_000, 0)
-	p := &PATPoolProvider{Client: c, Now: func() time.Time { return clock }}
+	p := &PATPoolProvider{Client: c, clockSource: clockSource{Now: func() time.Time { return clock }}}
 
 	_, err := p.Issue(context.Background(), IssueRequest{
 		RunName: "cc-1", Namespace: "my-team",
