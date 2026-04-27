@@ -123,3 +123,58 @@ func TestValidateExternalHost_BareWildcards(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateExternalHost_PortInHostDenied(t *testing.T) {
+	denied := []string{
+		"api.example.com:443",
+		"api.example.com:8080",
+		"*.example.com:443",
+	}
+	for _, h := range denied {
+		t.Run(h, func(t *testing.T) {
+			errs := validateExternalHost(field.NewPath("host"), h)
+			if len(errs) == 0 {
+				t.Fatalf("validateExternalHost(%q): expected rejection, got none", h)
+			}
+			if !strings.Contains(errs.ToAggregate().Error(), "must not contain a port") {
+				t.Fatalf("validateExternalHost(%q): err=%q missing port-in-host hint", h, errs.ToAggregate().Error())
+			}
+		})
+	}
+}
+
+func TestValidateExternalHost_RFC1123Denied(t *testing.T) {
+	denied := []string{
+		"Api.Example.com", // mixed case
+		"-leading-hyphen.example.com",
+		"label..double-dot.example.com",
+	}
+	for _, h := range denied {
+		t.Run(h, func(t *testing.T) {
+			errs := validateExternalHost(field.NewPath("host"), h)
+			if len(errs) == 0 {
+				t.Fatalf("validateExternalHost(%q): expected rejection, got none", h)
+			}
+			if !strings.Contains(errs.ToAggregate().Error(), "RFC 1123") {
+				t.Fatalf("validateExternalHost(%q): err=%q missing RFC 1123 hint", h, errs.ToAggregate().Error())
+			}
+		})
+	}
+}
+
+func TestValidateExternalHost_PublicDNSAccepted(t *testing.T) {
+	accepted := []string{
+		"api.example.com",
+		"*.example.com",
+		"s3.amazonaws.com",
+		"api.openai.com",
+	}
+	for _, h := range accepted {
+		t.Run(h, func(t *testing.T) {
+			errs := validateExternalHost(field.NewPath("host"), h)
+			if len(errs) != 0 {
+				t.Fatalf("validateExternalHost(%q): unexpected errs=%v", h, errs)
+			}
+		})
+	}
+}

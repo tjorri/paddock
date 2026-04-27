@@ -601,5 +601,31 @@ var _ = Describe("BrokerPolicy Webhook", func() {
 			err := validate(spec)
 			Expect(err).To(HaveOccurred())
 		})
+
+		It("rejects a provider host with a port", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "api.example.com", Ports: []int32{443},
+			})
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+				Name: "ANTHROPIC",
+				Provider: paddockv1alpha1.ProviderConfig{
+					Kind:      "AnthropicAPI",
+					SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+					Hosts:     []string{"api.example.com:443"},
+				},
+			}}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must not contain a port"))
+		})
+
+		It("rejects a mixed-case egress host", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = []paddockv1alpha1.EgressGrant{{Host: "Api.Example.com", Ports: []int32{443}}}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("RFC 1123"))
+		})
 	})
 })

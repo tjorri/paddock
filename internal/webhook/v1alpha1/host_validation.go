@@ -20,6 +20,7 @@ import (
 	"net"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
@@ -114,8 +115,11 @@ func validateExternalHost(p *field.Path, raw string) field.ErrorList {
 	// the cluster-internal / RFC 1123 / IP-literal predicates.
 	effective := strings.TrimPrefix(host, "*.")
 
-	// Strip surrounding "[]" so a literal like "[::1]" still fails the
-	// IP-literal check below. ParseIP doesn't accept brackets.
+	// IP-literal checks — must run before the port-in-host colon check
+	// because bare IPv6 addresses (e.g. "::1", "2001:db8::1") contain
+	// colons and would otherwise trigger the port error first.
+	//
+	// 1. Bracketed form "[::1]": strip brackets then test with ParseIP.
 	if strings.HasPrefix(effective, "[") && strings.HasSuffix(effective, "]") {
 		stripped := effective[1 : len(effective)-1]
 		if net.ParseIP(stripped) != nil {
@@ -124,16 +128,33 @@ func validateExternalHost(p *field.Path, raw string) field.ErrorList {
 			return errs
 		}
 	}
-
+	// 2. Unbracketed form ("::1", "10.0.0.1", "2001:db8::1").
 	if net.ParseIP(effective) != nil {
 		errs = append(errs, field.Invalid(p, raw,
 			"IP literals are not permitted; use a DNS name so the proxy can match the SNI"))
 		return errs
 	}
 
+	// Port-in-host: a colon in the (unbracketed) effective host means
+	// the operator wrote "api.example.com:443" instead of putting the
+	// port in the egress grant's "ports" field.
+	// IP literals have already been rejected above, so any remaining
+	// colon is a port separator.
+	if !strings.HasPrefix(effective, "[") && strings.Contains(effective, ":") {
+		errs = append(errs, field.Invalid(p, raw,
+			`host must not contain a port; ports go in the egress grant's "ports" field`))
+		return errs
+	}
+
 	if isClusterInternal(effective) {
 		errs = append(errs, field.Invalid(p, raw,
 			"cluster-internal hosts are not permitted; use a public DNS name instead"))
+		return errs
+	}
+
+	if msgs := validation.IsDNS1123Subdomain(effective); len(msgs) > 0 {
+		errs = append(errs, field.Invalid(p, raw,
+			"host must be a lowercase RFC 1123 DNS name: "+strings.Join(msgs, "; ")))
 		return errs
 	}
 
