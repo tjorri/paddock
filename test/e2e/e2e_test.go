@@ -460,6 +460,31 @@ spec:
 			Expect(logs).To(ContainSubstring("README"))
 			Expect(logs).To(ContainSubstring("===SPOON==="))
 		})
+
+		It("rejects a Workspace with a git:// seed URL at admission (F-46)", func() {
+			By("attempting to create a Workspace whose seed repo URL uses git://")
+			yaml := fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: Workspace
+metadata:
+  name: ws-bad-scheme
+  namespace: %s
+spec:
+  storage:
+    size: 100Mi
+  seed:
+    repos:
+      - url: git://github.com/foo/bar.git
+        path: foo
+        depth: 1
+`, multiNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(yaml)
+			out, err := cmd.CombinedOutput()
+			Expect(err).To(HaveOccurred(), "expected admission to reject git:// URL")
+			Expect(string(out)).To(ContainSubstring("https:// or ssh://"),
+				"webhook error message should name the allowlist; got: %s", out)
+		})
 	})
 
 	// v0.3 M12 scenarios (spec 0002 §15.5-§15.7). Each scenario owns
