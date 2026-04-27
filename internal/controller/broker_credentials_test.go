@@ -18,6 +18,7 @@ package controller
 
 import (
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -222,6 +223,122 @@ var _ = Describe("ensureBrokerCredentials", func() {
 		Expect(leases[0].PoolRef).NotTo(BeNil())
 		Expect(leases[0].PoolRef.SecretRef.Name).To(Equal("pool"))
 		Expect(leases[0].PoolRef.SlotIndex).To(Equal(2))
+	})
+
+	It("skips broker Issue on a follow-up reconcile when leases + Secret are still fresh", func() {
+		// F-14 root-cause guard. Without idempotency, every reconcile
+		// (every 5s while a Pod is pending) re-Issues each credential —
+		// for PATPool that leaks slots and exhausts a small pool within
+		// two passes. This test pins the controller-side fast-path that
+		// short-circuits the broker round-trip when status.issuedLeases
+		// + status.credentials + the broker-creds Secret are all in
+		// shape.
+		fb := &testutil.FakeBroker{
+			Values: map[string]string{"K": "v"},
+			Meta: map[string]brokerapi.IssueResponse{"K": {
+				Provider:      "PATPool",
+				LeaseID:       "pat-aaaa1111",
+				DeliveryMode:  "ProxyInjected",
+				Hosts:         []string{"github.com"},
+				ExpiresAt:     time.Now().Add(time.Hour),
+				PoolSecretRef: &brokerapi.PoolSecretRef{Name: "pool", Key: "pats"},
+				PoolSlotIndex: ptr.To(0),
+			}},
+		}
+		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
+		run := newRun("idempotent")
+
+		// First pass: real Issue, leases populated.
+		ok, credStatus, leases, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(fb.Calls).To(Equal(1))
+
+		// Caller normally writes these to status; emulate that for the
+		// follow-up pass.
+		run.Status.IssuedLeases = leases
+		run.Status.Credentials = credStatus
+
+		// Second pass: cache is hot, no broker round-trip.
+		ok, credStatus2, leases2, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(fb.Calls).To(Equal(1), "broker Issue must not be called when leases + Secret are still fresh")
+		Expect(leases2).To(Equal(leases))
+		Expect(credStatus2).To(Equal(credStatus))
+	})
+
+	It("falls back to a broker Issue when the broker-creds Secret is missing keys", func() {
+		fb := &testutil.FakeBroker{
+			Values: map[string]string{"K": "v"},
+			Meta: map[string]brokerapi.IssueResponse{"K": {
+				Provider:      "PATPool",
+				LeaseID:       "pat-aaaa2222",
+				DeliveryMode:  "ProxyInjected",
+				Hosts:         []string{"github.com"},
+				ExpiresAt:     time.Now().Add(time.Hour),
+				PoolSecretRef: &brokerapi.PoolSecretRef{Name: "pool", Key: "pats"},
+				PoolSlotIndex: ptr.To(0),
+			}},
+		}
+		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
+		run := newRun("idempotent-secret-gone")
+
+		ok, credStatus, leases, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(fb.Calls).To(Equal(1))
+
+		// Simulate operator/test deleting the broker-creds Secret out
+		// from under us (or a partial-write race where the Secret never
+		// landed). Status carries leases but the Secret is gone — we
+		// must re-Issue so the follow-up materialises a fresh Secret.
+		var s corev1.Secret
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: brokerCredsSecretName(run.Name), Namespace: ns,
+		}, &s)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, &s)).To(Succeed())
+
+		run.Status.IssuedLeases = leases
+		run.Status.Credentials = credStatus
+
+		ok, _, _, _, _, err = r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(fb.Calls).To(Equal(2), "missing Secret must trigger a fresh Issue")
+	})
+
+	It("falls back to a broker Issue when an existing lease is past its expiresAt", func() {
+		fb := &testutil.FakeBroker{
+			Values: map[string]string{"K": "v"},
+			Meta: map[string]brokerapi.IssueResponse{"K": {
+				Provider:      "PATPool",
+				LeaseID:       "pat-aaaa3333",
+				DeliveryMode:  "ProxyInjected",
+				Hosts:         []string{"github.com"},
+				ExpiresAt:     time.Now().Add(time.Hour),
+				PoolSecretRef: &brokerapi.PoolSecretRef{Name: "pool", Key: "pats"},
+				PoolSlotIndex: ptr.To(0),
+			}},
+		}
+		r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), BrokerClient: fb}
+		run := newRun("idempotent-expired")
+
+		ok, credStatus, leases, _, _, err := r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(fb.Calls).To(Equal(1))
+
+		// Force the lease into the past so the freshness check trips.
+		expired := metav1.NewTime(time.Now().Add(-time.Minute))
+		leases[0].ExpiresAt = &expired
+		run.Status.IssuedLeases = leases
+		run.Status.Credentials = credStatus
+
+		ok, _, _, _, _, err = r.ensureBrokerCredentials(ctx, run, tpl("K"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(fb.Calls).To(Equal(2), "expired lease must trigger a fresh Issue")
 	})
 
 	It("deletes a stale broker-creds Secret when requires goes empty", func() {
