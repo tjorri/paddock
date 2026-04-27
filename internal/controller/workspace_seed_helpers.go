@@ -155,6 +155,21 @@ func isSSHURL(url string) bool {
 	return false
 }
 
+// seedRepoSchemeAllowed returns true when raw passes the same URL
+// scheme allowlist enforced at admission (F-46). Mirrors
+// validateRepoURL in the webhook package; kept here as a defence-in-depth
+// gate so the controller refuses to render a seed Job for a URL that
+// somehow bypassed admission (direct API write).
+func seedRepoSchemeAllowed(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	if isSSHURL(raw) {
+		return true
+	}
+	return strings.HasPrefix(raw, "https://")
+}
+
 // seedPodSecurityContext returns the pod-level SecurityContext the seed
 // Job runs with. Satisfies the PSS `restricted` profile: non-root uid,
 // seccomp=RuntimeDefault, and an fsGroup that makes the PVC writable

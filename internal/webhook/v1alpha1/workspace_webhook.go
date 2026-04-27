@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"path"
 	"reflect"
 	"strings"
@@ -110,6 +111,8 @@ func validateWorkspaceRepos(reposPath *field.Path, repos []paddockv1alpha1.Works
 		entryPath := reposPath.Index(i)
 		if repo.URL == "" {
 			errs = append(errs, field.Required(entryPath.Child("url"), ""))
+		} else if e := validateRepoURL(entryPath.Child("url"), repo.URL); e != nil {
+			errs = append(errs, e)
 		}
 
 		// Credentials come from either a static Secret (v0.2) or the
@@ -177,6 +180,32 @@ func isSSHURLLocal(url string) bool {
 		}
 	}
 	return false
+}
+
+// validateRepoURL checks that raw is one of:
+//   - "https://..." (no userinfo — see F-50, validated separately if applicable)
+//   - "ssh://user@host/..." or scp-style "user@host:path"
+//
+// Rejects file://, git://, http://, and any other scheme. The seed
+// proxy's substitute-auth path is HTTPS-only by design, so SSH lives
+// outside the MITM trust model; per-host SSH allowlisting is delegated
+// to the per-seed-Pod NetworkPolicy. F-46.
+func validateRepoURL(p *field.Path, raw string) *field.Error {
+	if raw == "" {
+		return nil // empty URL is caught by the Required check upstream.
+	}
+	if isSSHURLLocal(raw) {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return field.Invalid(p, raw, "must be a valid URL")
+	}
+	if u.Scheme != "https" {
+		return field.Invalid(p, raw,
+			fmt.Sprintf("scheme %q is not allowed; only https:// or ssh:// (or scp-style user@host:path) accepted", u.Scheme))
+	}
+	return nil
 }
 
 func validateRepoPath(p *field.Path, raw string) *field.Error {

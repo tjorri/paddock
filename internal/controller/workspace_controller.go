@@ -131,6 +131,29 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		})
 
 	default:
+		// Defence-in-depth (F-46): refuse to render a seed Job whose URL
+		// scheme is not in the admission allowlist. Webhook should have
+		// rejected this; this catches a direct API bypass.
+		for i, repo := range ws.Spec.Seed.Repos {
+			if !seedRepoSchemeAllowed(repo.URL) {
+				setCondition(&ws.Status.Conditions, metav1.Condition{
+					Type:               paddockv1alpha1.WorkspaceConditionSeeded,
+					Status:             metav1.ConditionFalse,
+					Reason:             "SeedRejected",
+					Message:            fmt.Sprintf("seed.repos[%d].url has a non-allowlisted scheme; only https:// and ssh:// are accepted", i),
+					ObservedGeneration: ws.Generation,
+				})
+				ws.Status.Phase = paddockv1alpha1.WorkspacePhaseFailed
+				recordPhaseTransition(string(origStatus.Phase), string(ws.Status.Phase))
+				if !reflect.DeepEqual(origStatus, &ws.Status) {
+					if err := r.Status().Update(ctx, &ws); err != nil && !apierrors.IsConflict(err) {
+						return ctrl.Result{}, err
+					}
+				}
+				return ctrl.Result{}, nil
+			}
+		}
+
 		// Broker-backed seeds require the per-run <run>-broker-creds
 		// Secret to exist before the clone runs. When missing, stall
 		// the seed with a clear condition and requeue — the

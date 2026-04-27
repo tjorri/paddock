@@ -113,6 +113,28 @@ func TestBuildSeedNetworkPolicy_APIServerEgressRule(t *testing.T) {
 	}
 }
 
+func TestSeedRepoSchemeAllowed(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"https://example.com/foo.git", true},
+		{"ssh://git@example.com/foo.git", true},
+		{"git@example.com:foo.git", true},
+		{"http://example.com/foo.git", false},
+		{"git://example.com/foo.git", false},
+		{"file:///etc/passwd", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.url, func(t *testing.T) {
+			if got := seedRepoSchemeAllowed(tc.url); got != tc.want {
+				t.Fatalf("seedRepoSchemeAllowed(%q) = %v, want %v", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsSSHURL(t *testing.T) {
 	cases := []struct {
 		name string
