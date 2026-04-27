@@ -170,11 +170,25 @@ func main() {
 	}
 
 	srv := &broker.Server{
-		Client:    cachedClient,
-		Auth:      &broker.Authenticator{Client: kclient},
-		Providers: registry,
-		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: cachedClient, Component: "broker"}),
+		Client:     cachedClient,
+		Auth:       &broker.Authenticator{Client: kclient},
+		Providers:  registry,
+		Audit:      broker.NewAuditWriter(&auditing.KubeSink{Client: cachedClient, Component: "broker"}),
+		RunLimiter: broker.NewRunLimiterRegistry(),
 	}
+
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-t.C:
+				srv.RunLimiter.Sweep(now)
+			}
+		}
+	}()
 
 	mux := http.NewServeMux()
 	srv.Register(mux)

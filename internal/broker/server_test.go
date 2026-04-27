@@ -1551,3 +1551,94 @@ func TestHandleIssue_OversizeBody_BadRequest(t *testing.T) {
 		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
 	}
 }
+
+// TestHandleSubstituteAuth_RateLimited_AuditFirst verifies that when the
+// per-run substitute bucket is exhausted the handler emits a
+// credential-denied AuditEvent BEFORE returning 429 (Phase 2c
+// fail-closed-on-audit-failure contract). Also verifies 503 is returned
+// if the audit write itself fails.
+func TestHandleSubstituteAuth_RateLimited_AuditFirst(t *testing.T) {
+	t.Parallel()
+	sub := &stubSubstituter{
+		name:           "anthropic-stub",
+		matched:        true,
+		setHdrs:        map[string]string{"x-api-key": "real-key"},
+		credentialName: "STUB_CRED",
+	}
+	srv, _ := setupSubstituteAuth(t, sub)
+	rec := &recordingAuditSink{}
+	srv.Audit = broker.NewAuditWriter(rec)
+	srv.RunLimiter = broker.NewRunLimiterRegistry()
+
+	// Drain the substitute burst using direct Allow() calls so we don't
+	// need full broker semantics for each drain request.
+	for i := 0; i < broker.SubstituteBurstForTest; i++ {
+		srv.RunLimiter.Allow("team-a", "hr-1", "substitute")
+	}
+
+	body, _ := json.Marshal(brokerapi.SubstituteAuthRequest{
+		Host: "api.anthropic.com", Port: 443,
+		IncomingXAPIKey: "paddock-bearer-x",
+	})
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+		brokerapi.PathSubstituteAuth, bytes.NewReader(body))
+	r.Header.Set("Authorization", "Bearer valid-token")
+	r.Header.Set(brokerapi.HeaderRun, "hr-1")
+	w := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	mux.ServeHTTP(w, r)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+	events := rec.events()
+	if len(events) == 0 {
+		t.Fatalf("audit write did not happen before 429")
+	}
+	if events[len(events)-1].Spec.Kind != paddockv1alpha1.AuditKindCredentialDenied {
+		t.Fatalf("audit kind = %s; want credential-denied", events[len(events)-1].Spec.Kind)
+	}
+	var errResp brokerapi.ErrorResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &errResp)
+	if errResp.Code != brokerapi.CodeRateLimited {
+		t.Errorf("code = %q, want %q", errResp.Code, brokerapi.CodeRateLimited)
+	}
+}
+
+// TestHandleSubstituteAuth_RateLimited_AuditFail_Returns503 verifies that
+// when the rate-limit audit write fails the broker returns 503 (fail-closed
+// on audit write failure — Phase 2c) rather than 429.
+func TestHandleSubstituteAuth_RateLimited_AuditFail_Returns503(t *testing.T) {
+	t.Parallel()
+	sub := &stubSubstituter{
+		name:           "anthropic-stub",
+		matched:        true,
+		setHdrs:        map[string]string{"x-api-key": "real-key"},
+		credentialName: "STUB_CRED",
+	}
+	srv, _ := setupSubstituteAuth(t, sub)
+	srv.Audit = broker.NewAuditWriter(errorSink{err: errors.New("etcd partition")})
+	srv.RunLimiter = broker.NewRunLimiterRegistry()
+
+	for i := 0; i < broker.SubstituteBurstForTest; i++ {
+		srv.RunLimiter.Allow("team-a", "hr-1", "substitute")
+	}
+
+	body, _ := json.Marshal(brokerapi.SubstituteAuthRequest{
+		Host: "api.anthropic.com", Port: 443,
+		IncomingXAPIKey: "paddock-bearer-x",
+	})
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+		brokerapi.PathSubstituteAuth, bytes.NewReader(body))
+	r.Header.Set("Authorization", "Bearer valid-token")
+	r.Header.Set(brokerapi.HeaderRun, "hr-1")
+	w := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	mux.ServeHTTP(w, r)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d body = %s; want 503 when audit fails on rate-limited path", w.Code, w.Body.String())
+	}
+}

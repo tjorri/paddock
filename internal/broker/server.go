@@ -65,6 +65,11 @@ type Server struct {
 
 	// Audit writes AuditEvents for every decision.
 	Audit *AuditWriter
+
+	// RunLimiter, when non-nil, gates /v1/issue and /v1/substitute-auth
+	// against per-(namespace, run) token buckets. Tests may leave this
+	// nil to bypass rate limiting; production wires it via cmd/broker.
+	RunLimiter *RunLimiterRegistry
 }
 
 // Register installs the broker's handlers on the given mux.
@@ -97,6 +102,25 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	runName, runNamespace, err := resolveRunIdentity(r, caller)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+
+	if s.RunLimiter != nil && !s.RunLimiter.Allow(runNamespace, runName, "issue") {
+		audit := &CredentialAudit{
+			RunName:        runName,
+			Namespace:      runNamespace,
+			CredentialName: "(rate-limit)",
+			Reason:         "per-run rate limit exceeded for /v1/issue",
+			When:           time.Now().UTC(),
+		}
+		if wErr := s.Audit.CredentialDenied(ctx, *audit); wErr != nil {
+			logger.Error(wErr, "writing rate-limit AuditEvent", "run", runName)
+			writeError(w, http.StatusServiceUnavailable, brokerapi.CodeAuditUnavailable,
+				"paddock-broker: audit unavailable, please retry")
+			return
+		}
+		writeError(w, http.StatusTooManyRequests, brokerapi.CodeRateLimited,
+			"per-run rate limit exceeded for /v1/issue")
 		return
 	}
 
@@ -410,6 +434,25 @@ func (s *Server) handleSubstituteAuth(w http.ResponseWriter, r *http.Request) {
 	runName, runNamespace, err := resolveRunIdentity(r, caller)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "BadRequest", err.Error())
+		return
+	}
+
+	if s.RunLimiter != nil && !s.RunLimiter.Allow(runNamespace, runName, "substitute") {
+		audit := &CredentialAudit{
+			RunName:        runName,
+			Namespace:      runNamespace,
+			CredentialName: "(rate-limit)",
+			Reason:         "per-run rate limit exceeded for /v1/substitute-auth",
+			When:           time.Now().UTC(),
+		}
+		if wErr := s.Audit.CredentialDenied(ctx, *audit); wErr != nil {
+			logger.Error(wErr, "writing rate-limit AuditEvent", "run", runName)
+			writeError(w, http.StatusServiceUnavailable, brokerapi.CodeAuditUnavailable,
+				"paddock-broker: audit unavailable, please retry")
+			return
+		}
+		writeError(w, http.StatusTooManyRequests, brokerapi.CodeRateLimited,
+			"per-run rate limit exceeded for /v1/substitute-auth")
 		return
 	}
 
