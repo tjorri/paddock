@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"time"
 
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 	"paddock.dev/paddock/internal/brokerclient"
 )
@@ -31,6 +32,7 @@ import (
 // tests can supply a fake.
 type BrokerIssuer interface {
 	Issue(ctx context.Context, runName, runNamespace, credentialName string) (*brokerapi.IssueResponse, error)
+	Revoke(ctx context.Context, runName, runNamespace string, lease paddockv1alpha1.IssuedLease) error
 }
 
 // BrokerHTTPClient talks to the broker over mTLS-secured HTTPS,
@@ -103,6 +105,11 @@ func (b *BrokerHTTPClient) Issue(ctx context.Context, runName, runNamespace, cre
 		return nil, fmt.Errorf("decoding broker response: %w", err)
 	}
 	return &out, nil
+}
+
+// Revoke is a stub; real implementation lands in Task 10.
+func (b *BrokerHTTPClient) Revoke(_ context.Context, _, _ string, _ paddockv1alpha1.IssuedLease) error {
+	return fmt.Errorf("BrokerHTTPClient.Revoke not yet implemented")
 }
 
 // IsBrokerCodeFatal reports whether a broker error is user-actionable
