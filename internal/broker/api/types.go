@@ -41,6 +41,7 @@ const (
 // Path constants for the broker's HTTP routes.
 const (
 	PathIssue          = "/v1/issue"
+	PathRevoke         = "/v1/revoke"
 	PathValidateEgress = "/v1/validate-egress"
 	PathSubstituteAuth = "/v1/substitute-auth"
 	PathHealthz        = "/healthz"
@@ -61,19 +62,21 @@ const (
 // literals; migrating the emitter side is a future cleanup outside
 // XC-02's scope.
 const (
+	CodeAuditUnavailable   = "AuditUnavailable"
 	CodeBadRequest         = "BadRequest"
-	CodeUnauthorized       = "Unauthorized"
-	CodeForbidden          = "Forbidden"
-	CodeRunNotFound        = "RunNotFound"
-	CodeRunTerminated      = "RunTerminated"
+	CodeBearerUnknown      = "BearerUnknown"
 	CodeCredentialNotFound = "CredentialNotFound"
+	CodeEgressRevoked      = "EgressRevoked"
+	CodeForbidden          = "Forbidden"
+	CodeHostNotAllowed     = "HostNotAllowed"
+	CodeLeaseNotFound      = "LeaseNotFound"
 	CodePolicyMissing      = "PolicyMissing"
 	CodePolicyRevoked      = "PolicyRevoked"
-	CodeEgressRevoked      = "EgressRevoked"
-	CodeHostNotAllowed     = "HostNotAllowed"
-	CodeBearerUnknown      = "BearerUnknown"
-	CodeAuditUnavailable   = "AuditUnavailable"
 	CodeProviderFailure    = "ProviderFailure"
+	CodeRateLimited        = "RateLimited"
+	CodeRunNotFound        = "RunNotFound"
+	CodeRunTerminated      = "RunTerminated"
+	CodeUnauthorized       = "Unauthorized"
 )
 
 // IssueRequest asks the broker to issue a value for one of the named
@@ -122,26 +125,61 @@ type IssueResponse struct {
 	// opting a UserSuppliedSecret into InContainer delivery. Empty for
 	// any other delivery mode.
 	InContainerReason string `json:"inContainerReason,omitempty"`
+
+	// PoolSecretRef and PoolSlotIndex are PATPool-specific lease metadata
+	// the controller persists to HarnessRun.status.issuedLeases[*].poolRef
+	// so the broker can reconstruct slot reservations after a restart
+	// (F-14). Populated only when Provider == "PATPool"; absent on the
+	// wire (omitempty) for other providers.
+	// +optional
+	PoolSecretRef *PoolSecretRef `json:"poolSecretRef,omitempty"`
+	// +optional
+	PoolSlotIndex *int `json:"poolSlotIndex,omitempty"`
 }
+
+// RevokeRequest asks the broker to release a single previously-issued
+// lease. The broker dispatches to the named provider's Revoke method
+// and emits a credential-revoked AuditEvent.
+type RevokeRequest struct {
+	// Provider is the provider kind that issued the lease (matches
+	// IssueResponse.Provider). Required.
+	Provider string `json:"provider"`
+
+	// LeaseID is the opaque identifier returned from IssueResponse.LeaseID.
+	// Required.
+	LeaseID string `json:"leaseId"`
+
+	// CredentialName is the requirement name from the template's
+	// spec.requires.credentials list. Used for audit correlation; the
+	// broker does not load-bear on this for revocation. Required.
+	CredentialName string `json:"credentialName"`
+}
+
+// RevokeResponse is the success envelope. Currently empty; the broker
+// returns 204 NoContent on success and a standard ErrorResponse on
+// failure.
+type RevokeResponse struct{}
 
 // ErrorResponse is the broker's error envelope. HTTP status code
 // encodes the category (400/401/403/404/500); Code/Message are the
 // machine- and human-readable specifics.
 type ErrorResponse struct {
 	// Code is a short symbolic code. Known values:
+	//   - "AuditUnavailable"     503 (audit write failed; see Phase 2c)
 	//   - "BadRequest"           400
-	//   - "Unauthorized"         401
-	//   - "Forbidden"            403
-	//   - "RunNotFound"          404
-	//   - "RunTerminated"        404 (run gone) / 403 (run in terminal phase)
+	//   - "BearerUnknown"        404 (SubstituteAuth could not match bearer)
 	//   - "CredentialNotFound"   404 (template does not declare it)
+	//   - "EgressRevoked"        403 (egress grant for host:port lost mid-run)
+	//   - "Forbidden"            403
+	//   - "HostNotAllowed"       403 (bearer presented for a host not in lease's AllowedHosts)
+	//   - "LeaseNotFound"        404 (revoke target unknown to this broker)
 	//   - "PolicyMissing"        403 (no BrokerPolicy grants the cred)
 	//   - "PolicyRevoked"        403 (BrokerPolicy match was lost mid-run)
-	//   - "EgressRevoked"        403 (egress grant for host:port lost mid-run)
-	//   - "HostNotAllowed"       403 (bearer presented for a host not in lease's AllowedHosts)
-	//   - "BearerUnknown"        404 (SubstituteAuth could not match bearer)
-	//   - "AuditUnavailable"     503 (audit write failed; see Phase 2c)
 	//   - "ProviderFailure"      500
+	//   - "RateLimited"          429 (per-run quota exceeded; F-17)
+	//   - "RunNotFound"          404
+	//   - "RunTerminated"        404 (run gone) / 403 (run in terminal phase)
+	//   - "Unauthorized"         401
 	Code string `json:"code"`
 
 	// Message is a human-readable explanation.
@@ -277,4 +315,13 @@ type SubstituteResult struct {
 type BasicAuth struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+// PoolSecretRef is the wire-side counterpart of api/v1alpha1.SecretKeyReference,
+// kept here so the broker's HTTP types depend only on stdlib + this
+// package. The controller copies its fields into a v1alpha1.SecretKeyReference
+// when constructing the IssuedLease entry.
+type PoolSecretRef struct {
+	Name string `json:"name"`
+	Key  string `json:"key"`
 }
