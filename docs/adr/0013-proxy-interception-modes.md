@@ -99,3 +99,32 @@ Controller flag changes: `--proxy-ca-secret-name` and
 added (default `paddock-proxy-ca-issuer`).
 
 See `docs/plans/2026-04-26-v0.4-security-review-phase-2f-design.md`.
+
+**Phase 2h Theme 4 update (2026-04-27).** Cooperative mode is retained
+for environmental compatibility (PSS-restricted-enforced namespaces,
+eBPF-only / non-iptables clusters) but reclassified as single-point-of-
+trust loud opt-in:
+
+- The proxy CLI (`cmd/proxy/main.go`) no longer defaults `--mode`;
+  refuses to start when empty. The controller passes `--mode` explicitly
+  in every Pod spec, so this footgun-removal affects only direct binary
+  invocations.
+- Cooperative startup logs at WARN with explicit residual callout: a
+  hostile agent that ignores HTTPS_PROXY can dial the public internet
+  directly. Transparent mode is the recommended posture for
+  hostile-agent threat models.
+- Cooperative startup emits one
+  `interception-mode-cooperative-accepted` AuditEvent (new
+  `AuditKind`) carrying the BrokerPolicy
+  `spec.interception.cooperativeAccepted.reason` for the audit trail.
+  The reason is required: refuse-to-start in cooperative mode without
+  `--interception-acceptance-reason`.
+- Transparent mode tightened (F-20): iptables-init drops the broad
+  RFC1918 RETURN in favor of UID-based RETURN for sidecars
+  (`--bypass-uids=1337,1338,1339`). Adapter (1338) and collector
+  (1339) join the proxy (1337) as RETURN'd UIDs. Loopback `127/8`
+  RETURN preserved.
+
+F-19 residual (agent-vs-proxy NetworkPolicy distinction in same-Pod
+cooperative mode) is structurally documented rather than fixed; the
+sibling-Pod refactor (audit option A) is deferred to v1.0.
