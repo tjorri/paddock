@@ -107,9 +107,41 @@ func (b *BrokerHTTPClient) Issue(ctx context.Context, runName, runNamespace, cre
 	return &out, nil
 }
 
-// Revoke is a stub; real implementation lands in Task 10.
-func (b *BrokerHTTPClient) Revoke(_ context.Context, _, _ string, _ paddockv1alpha1.IssuedLease) error {
-	return fmt.Errorf("BrokerHTTPClient.Revoke not yet implemented")
+// Revoke posts to /v1/revoke. Returns nil on 204 NoContent; a
+// *brokerclient.BrokerError on a 4xx/5xx response (caller can
+// errors.As into BrokerError to inspect the status code, e.g. to
+// treat 404 from an older broker as success-equivalent).
+//
+// Note: brokerclient.Client.Do treats only 200 as success and wraps
+// other 2xx codes (including 204) in *BrokerError, so Revoke unwraps
+// the 204 case explicitly.
+func (b *BrokerHTTPClient) Revoke(ctx context.Context, runName, runNamespace string, lease paddockv1alpha1.IssuedLease) error {
+	b.c.RunName = runName
+	b.c.RunNamespace = runNamespace
+	if b.TokenReader != nil {
+		b.c.TokenReader = b.TokenReader
+	}
+
+	payload, _ := json.Marshal(brokerapi.RevokeRequest{
+		Provider:       lease.Provider,
+		LeaseID:        lease.LeaseID,
+		CredentialName: lease.CredentialName,
+	})
+	resp, err := b.c.Do(ctx, brokerapi.PathRevoke, payload)
+	if err != nil {
+		// Do wraps 204 NoContent as *BrokerError because it only
+		// considers 200 a success status. Unwrap and treat 204 as
+		// success; propagate everything else.
+		var be *brokerclient.BrokerError
+		if errors.As(err, &be) && be.Status == 204 {
+			return nil
+		}
+		return err
+	}
+	// Unexpected 200 response (broker should return 204); drain and
+	// close the body to avoid leaking the connection.
+	defer func() { _ = resp.Body.Close() }()
+	return nil
 }
 
 // IsBrokerCodeFatal reports whether a broker error is user-actionable
