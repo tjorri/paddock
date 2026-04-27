@@ -120,7 +120,7 @@ func validateTerminationGracePeriodSeconds(v *int64, p *field.Path) field.ErrorL
 	}
 	if *v > MaxTerminationGracePeriodSeconds {
 		return field.ErrorList{field.Invalid(p, *v,
-			fmt.Sprintf("must be <= %d (5 minutes); see F-42",
+			fmt.Sprintf("must be <= %d (5 minutes); values above this bound would keep credential-bearing sidecar volumes mounted after run deletion",
 				MaxTerminationGracePeriodSeconds))}
 	}
 	return nil

@@ -80,6 +80,14 @@ var _ = Describe("ClusterHarnessTemplate Webhook", func() {
 		}
 		grace := func(v int64) *int64 { return &v }
 
+		It("admits when unset", func() {
+			_, err := validator.ValidateCreate(ctx, mkObj(nil))
+			Expect(err).NotTo(HaveOccurred())
+		})
+		It("admits 0", func() {
+			_, err := validator.ValidateCreate(ctx, mkObj(grace(0)))
+			Expect(err).NotTo(HaveOccurred())
+		})
 		It("admits the cap (300)", func() {
 			_, err := validator.ValidateCreate(ctx, mkObj(grace(300)))
 			Expect(err).NotTo(HaveOccurred())
