@@ -244,7 +244,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "paddock-proxy: dns resolution failed", http.StatusBadGateway)
 		return
 	}
-	allowed := resolved[:0]
+	allowed := make([]net.IP, 0, len(resolved))
 	for _, ip := range resolved {
 		if !s.DeniedCIDRs.Contains(ip) {
 			allowed = append(allowed, ip)

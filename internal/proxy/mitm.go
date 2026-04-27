@@ -67,6 +67,8 @@ func (s *Server) dialUpstreamTLS(ctx context.Context, dialIP net.IP, port int, s
 	defer cancel()
 	if err := tlsConn.HandshakeContext(hsCtx); err != nil {
 		_ = raw.Close()
+		HandshakeFailures.Inc()
+		ConnectionsRejected.WithLabelValues("handshake_failed").Inc()
 		return nil, fmt.Errorf("upstream TLS handshake: %w", err)
 	}
 	return tlsConn, nil
@@ -110,6 +112,8 @@ func (s *Server) doMITM(
 	hsCtx, cancel := context.WithTimeout(ctx, s.handshakeTimeout())
 	defer cancel()
 	if err := clientTLS.HandshakeContext(hsCtx); err != nil {
+		HandshakeFailures.Inc()
+		ConnectionsRejected.WithLabelValues("handshake_failed").Inc()
 		s.log().V(1).Info("client TLS handshake failed", "host", sni, "err", err)
 		return fmt.Errorf("client TLS handshake: %w", err)
 	}

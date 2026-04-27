@@ -664,3 +664,48 @@ func TestHandleConnect_AuditFailureOnDeny_Returns502(t *testing.T) {
 		t.Errorf("status = %d, want 502", resp.StatusCode)
 	}
 }
+
+// TestHandleConnect_ResolverCacheNotMutatedByDenyCIDRFilter verifies that the
+// resolve-then-filter path does not corrupt the resolver's cached slice via
+// in-place aliasing (resolved[:0]). The bug: if allowed := resolved[:0] were
+// used, append in the filter loop would overwrite the backing array that the
+// cache holds, so a second LookupHost call would see the mutated slice.
+func TestHandleConnect_ResolverCacheNotMutatedByDenyCIDRFilter(t *testing.T) {
+	denied, _ := ParseDeniedCIDRs("10.0.0.0/8")
+	// Resolver returns one denied + one allowed IP, denied IP first so
+	// the bug (in-place filter aliasing the cache) would overwrite the
+	// first slot before the second is read.
+	stubLk := func(_ context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("10.0.0.50"), net.ParseIP("203.0.113.10")}, nil
+	}
+	// Use a NON-test resolver that re-uses cached slices.
+	res := newCachingResolverWithLookup(stubLk, time.Minute, 16)
+	srv := &Server{
+		CA:          newTestCA(t, 16),
+		Validator:   allowAllValidator{},
+		Audit:       &recordingSink{},
+		DeniedCIDRs: denied,
+		Resolver:    res,
+		UpstreamDialer: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return nil, errors.New("test: upstream dial not exercised")
+		},
+	}
+	// First call exercises the filter; the cooperative path will fail
+	// at upstream-dial (we stub it) but resolver+filter ran first.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "http://example/", nil)
+	req.Host = "example.com:443"
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	// Second call: resolver cache should still report both IPs.
+	ips, err := res.LookupHost(context.Background(), "example.com")
+	if err != nil {
+		t.Fatalf("second lookup: %v", err)
+	}
+	if len(ips) != 2 {
+		t.Fatalf("after first call, cache lost entries: got %v, want 2 IPs", ips)
+	}
+	if !ips[0].Equal(net.ParseIP("10.0.0.50")) || !ips[1].Equal(net.ParseIP("203.0.113.10")) {
+		t.Errorf("cache corrupted: got %v, want [10.0.0.50, 203.0.113.10]", ips)
+	}
+}

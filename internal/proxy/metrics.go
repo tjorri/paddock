@@ -57,8 +57,10 @@ var ActiveConnections = prometheus.NewGauge(prometheus.GaugeOpts{
 
 // ConnectionsRejected counts connections rejected before reaching the
 // validator. Reasons: cap_exceeded, denied_destination_cidr,
-// dns_rebinding_mismatch, dns_resolution_failed, handshake_failed,
-// read_timeout. F-22, F-26.
+// dns_rebinding_mismatch, dns_resolution_failed, handshake_failed.
+// (read_timeout is governed by http.Server's ReadTimeout and is not
+// emitted on this counter; it would require an http.ServerHandler
+// wrapper to trap.) F-22, F-26.
 var ConnectionsRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "paddock_proxy_connections_rejected_total",
 	Help: "Connections rejected before reaching the validator, by reason.",
