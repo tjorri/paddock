@@ -9,6 +9,8 @@ package proxy
 import (
 	"net"
 	"sync"
+
+	"github.com/go-logr/logr"
 )
 
 // ConnLimiter is a non-blocking bounded counting semaphore. Acquire
@@ -54,15 +56,18 @@ type LimitedListener struct {
 	inner   net.Listener
 	limiter *ConnLimiter
 	mode    string
+	logger  logr.Logger
 }
 
-// NewLimitedListener wraps ln. mode is "cooperative" or "transparent";
-// recorded in log/metric labels for visibility.
-func NewLimitedListener(ln net.Listener, cap int, mode string) *LimitedListener {
+// NewLimitedListener wraps ln. mode ("cooperative" or "transparent") is
+// recorded in rejection log lines for operator visibility. logger may
+// be a zero logr.Logger (logging is suppressed when GetSink returns nil).
+func NewLimitedListener(ln net.Listener, cap int, mode string, logger logr.Logger) *LimitedListener {
 	return &LimitedListener{
 		inner:   ln,
 		limiter: NewConnLimiter(cap),
 		mode:    mode,
+		logger:  logger,
 	}
 }
 
@@ -77,6 +82,10 @@ func (l *LimitedListener) Accept() (net.Conn, error) {
 		release, ok := l.limiter.Acquire()
 		if !ok {
 			ConnectionsRejected.WithLabelValues("cap_exceeded").Inc()
+			if l.logger.GetSink() != nil {
+				l.logger.V(1).Info("connection rejected: cap_exceeded",
+					"mode", l.mode, "remote", c.RemoteAddr().String())
+			}
 			if lc, ok := c.(interface{ SetLinger(int) error }); ok {
 				_ = lc.SetLinger(0)
 			}

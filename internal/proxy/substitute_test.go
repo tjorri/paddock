@@ -438,11 +438,12 @@ func (nopSubstituter) SubstituteAuth(_ context.Context, _ string, _ int, headers
 func TestSubstitute_SlowLorisLoopDeadline(t *testing.T) {
 	// net.Pipe returns synchronous in-memory conns that honour SetDeadline.
 	clientSide, proxySide := net.Pipe()
-	upstreamSide, upstreamOther := net.Pipe()
+	upstreamSide, upstreamPeer := net.Pipe() // upstreamPeer kept alive so the pipe doesn't break
 
 	defer func() { _ = clientSide.Close() }()
+	defer func() { _ = proxySide.Close() }()
 	defer func() { _ = upstreamSide.Close() }()
-	defer func() { _ = upstreamOther.Close() }()
+	defer func() { _ = upstreamPeer.Close() }()
 
 	const idleTimeout = 50 * time.Millisecond
 	done := make(chan error, 1)

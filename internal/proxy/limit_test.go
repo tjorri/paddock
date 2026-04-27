@@ -8,8 +8,12 @@ package proxy
 
 import (
 	"net"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/go-logr/logr"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func TestConnLimiter_AcquireRelease(t *testing.T) {
@@ -50,21 +54,27 @@ func (f *fakeListener) Close() error   { close(f.conns); return nil }
 func (f *fakeListener) Addr() net.Addr { return &net.TCPAddr{} }
 
 func TestLimitedListener_RejectsOverCap(t *testing.T) {
+	// Snapshot the rejection counter before the test so we can assert
+	// exactly one increment regardless of test ordering.
+	before := testutil.ToFloat64(ConnectionsRejected.WithLabelValues("cap_exceeded"))
+
 	in := &fakeListener{conns: make(chan net.Conn, 8)}
 
 	a1, b1 := net.Pipe()
 	a2, b2 := net.Pipe()
 	a3, b3 := net.Pipe()
+	a4, b4 := net.Pipe()
 	defer func() {
-		for _, c := range []net.Conn{a1, b1, a2, b2, a3, b3} {
+		for _, c := range []net.Conn{a1, b1, a2, b2, a3, b3, a4, b4} {
 			_ = c.Close()
 		}
 	}()
 
 	in.conns <- b1
 	in.conns <- b2
+	in.conns <- b3 // third conn fills the queue but the limiter rejects it
 
-	ln := NewLimitedListener(in, 2, "cooperative")
+	ln := NewLimitedListener(in, 2, "cooperative", logr.Discard())
 
 	c1, err := ln.Accept()
 	if err != nil {
@@ -75,21 +85,29 @@ func TestLimitedListener_RejectsOverCap(t *testing.T) {
 		t.Fatalf("accept 2: %v", err)
 	}
 
-	// Release c1 after a brief delay, then feed b3 into the channel.
-	// Accept() is blocked on inner.Accept() (channel empty). Releasing c1
-	// frees a limiter slot. b3 arrives into the channel after the slot is
-	// free, so Accept can succeed.
+	// The third Accept must internally reject b3 and re-Accept. Push b4
+	// after a slot frees so the third Accept can return without
+	// waiting forever.
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		time.Sleep(20 * time.Millisecond)
-		_ = c1.Close()
-		time.Sleep(5 * time.Millisecond)
-		in.conns <- b3
+		_ = c1.Close() // releases a slot
+		in.conns <- b4 // a real fourth conn for Accept to return
 	}()
 
 	c3, err := ln.Accept()
 	if err != nil {
 		t.Fatalf("accept 3 (after release): %v", err)
 	}
+	wg.Wait()
+
+	after := testutil.ToFloat64(ConnectionsRejected.WithLabelValues("cap_exceeded"))
+	if got, want := after-before, 1.0; got != want {
+		t.Errorf("ConnectionsRejected{cap_exceeded} delta = %v, want %v", got, want)
+	}
+
 	_ = c2.Close()
 	_ = c3.Close()
 	_ = ln.Close()

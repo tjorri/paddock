@@ -275,7 +275,7 @@ func main() {
 			setupLog.Error(err, "cooperative listen")
 			os.Exit(1)
 		}
-		ln := proxy.NewLimitedListener(rawLn, maxConnections, "cooperative")
+		ln := proxy.NewLimitedListener(rawLn, maxConnections, "cooperative", logger)
 		go func() {
 			setupLog.Info("proxy listening", "addr", listenAddr, "max-connections", maxConnections)
 			errCh <- httpSrv.Serve(ln)
@@ -294,7 +294,7 @@ func main() {
 			setupLog.Error(err, "transparent listen")
 			os.Exit(1)
 		}
-		ln := proxy.NewLimitedListener(rawLn, maxConnections, "transparent")
+		ln := proxy.NewLimitedListener(rawLn, maxConnections, "transparent", logger)
 		go func() {
 			setupLog.Info("proxy listening", "addr", listenAddr, "max-connections", maxConnections)
 			errCh <- serveTransparent(ctx, ln, p)
