@@ -24,7 +24,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # and trivy reports "vulnerability detection may be insufficient" for
 # EOL distributions. 3.22 matches the version used by the other
 # alpine-based images in the repo (evil-echo, harness-e2e-egress,
-# harness-echo). Digest pinning matches the security-critical posture
+# harness-echo). Only iptables-init is digest-pinned among these
+# images: it is the only one that runs as root with CAP_NET_ADMIN,
+# making supply-chain integrity more critical. Digest pinning matches
+# the security-critical posture
 # set by defaultSeedImage in workspace_seed_helpers.go (the seed
 # init container's alpine/git base is also digest-pinned).
 # Captured 2026-04-27 from `docker buildx imagetools inspect alpine:3.22`.
