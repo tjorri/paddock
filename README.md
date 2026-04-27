@@ -9,28 +9,28 @@
 
 Paddock is an open-source, Kubernetes-native platform for running headless AI agent harnesses — Claude Code, Codex CLI, OpenCode, Pi, or anything else you can put in a container — as templated, sandboxed, observable batch workloads. v0.3 adds a capability-scoped **broker** for credential issuance and a per-run **egress proxy** that MITMs TLS so the agent never sees upstream API keys.
 
-- **Documentation:** [`docs/`](docs/) — start here for the audience-routed entry point (evaluator, operator, harness author, contributor, security reviewer).
-- **Why it exists and what it is:** [`VISION.md`](VISION.md).
-- **Core v0.1 spec:** [`docs/internal/specs/0001-core-v0.1.md`](docs/internal/specs/0001-core-v0.1.md).
-- **v0.3 broker/proxy spec:** [`docs/internal/specs/0002-broker-proxy-v0.3.md`](docs/internal/specs/0002-broker-proxy-v0.3.md).
-- **Architecture decisions:** [`docs/contributing/adr/`](docs/contributing/adr/).
+> **Status:** pre-1.0. Expect breaking changes between minor versions until v1.0; pin to a tagged release for stability.
+
+**Start at [`docs/`](docs/)** — audience-routed entry point for evaluators, operators, harness authors, security reviewers, and contributors.
+
+For deeper internal reading: [`VISION.md`](VISION.md) (product north star), [`docs/internal/specs/`](docs/internal/specs/) (implementation specs), [`docs/contributing/adr/`](docs/contributing/adr/) (architecture decisions).
 
 ## What's in the box
 
-| Component | Role | Milestone |
-|---|---|---|
-| `ClusterHarnessTemplate` / `HarnessTemplate` | Pod shape + `requires` capability declarations | v0.1, v0.2, v0.3 |
-| `HarnessRun` | One invocation of a template with a prompt | v0.1 |
-| `Workspace` | PVC with optional multi-repo git seeding | v0.1, v0.2 |
-| `BrokerPolicy` | Operator's consent surface: which credentials + egress + gitRepos the broker will back | v0.3 |
-| `AuditEvent` | Per-decision security trail with TTL-based retention | v0.3 |
-| Controller-manager + webhook | Reconcilers, admission (template + run + broker policy + audit event) | all |
-| Generic collector sidecar | Writes agent output into the owned `<run>-out` ConfigMap | v0.1 |
-| Per-harness adapters | Convert raw agent output to `PaddockEvent`s | v0.1 |
-| **Broker** | Issues short-lived credentials via pluggable Providers (`Static`, `AnthropicAPI`, `GitHubApp`, `PATPool`) | v0.3 |
-| **Per-run egress proxy** | L7 HTTPS MITM; calls broker `ValidateEgress` per connection and `SubstituteAuth` per request so the agent only sees Paddock-issued bearers | v0.3 |
-| **iptables-init** (transparent mode) | NET_ADMIN init container that installs REDIRECT rules so the agent can't bypass the proxy | v0.3 |
-| `kubectl-paddock` plugin | `submit`, `status`, `list`, `events`, `logs`, `cancel`, `policy`, `audit`, `describe` | v0.1 + v0.3 |
+| Component | Role |
+|---|---|
+| `ClusterHarnessTemplate` / `HarnessTemplate` | Pod shape + `requires` capability declarations |
+| `HarnessRun` | One invocation of a template with a prompt |
+| `Workspace` | PVC with optional multi-repo git seeding |
+| `BrokerPolicy` | Operator's consent surface: which credentials + egress + gitRepos the broker will back |
+| `AuditEvent` | Per-decision security trail with TTL-based retention |
+| Controller-manager + webhook | Reconcilers, admission (template + run + broker policy + audit event) |
+| Generic collector sidecar | Writes agent output into the owned `<run>-out` ConfigMap |
+| Per-harness adapters | Convert raw agent output to `PaddockEvent`s |
+| **Broker** | Issues short-lived credentials via pluggable Providers (`Static`, `AnthropicAPI`, `GitHubApp`, `PATPool`) |
+| **Per-run egress proxy** | L7 HTTPS MITM; calls broker `ValidateEgress` per connection and `SubstituteAuth` per request so the agent only sees Paddock-issued bearers |
+| **iptables-init** (transparent mode) | NET_ADMIN init container that installs REDIRECT rules so the agent can't bypass the proxy |
+| `kubectl-paddock` plugin | `submit`, `status`, `list`, `events`, `logs`, `cancel`, `policy`, `audit`, `describe` |
 
 Reference harnesses: `paddock-echo` (deterministic CI fixture) and Claude Code (real-agent demo).
 
