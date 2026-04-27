@@ -25,7 +25,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -179,11 +178,10 @@ func (p *GitHubAppProvider) Issue(ctx context.Context, req IssueRequest) (IssueR
 			req.Namespace, cfg.SecretRef.Name, err)
 	}
 
-	var buf [24]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return IssueResult{}, fmt.Errorf("generating bearer: %w", err)
+	bearer, err := mintBearer(githubAppBearerPrefix)
+	if err != nil {
+		return IssueResult{}, err
 	}
-	bearer := githubAppBearerPrefix + hex.EncodeToString(buf[:])
 
 	// Repositories list: the BrokerPolicy's gitRepos — bounded to
 	// this policy's owner-declared scope. The GitHub API intersects

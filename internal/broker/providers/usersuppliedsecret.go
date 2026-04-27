@@ -18,7 +18,6 @@ package providers
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -109,11 +108,10 @@ func (p *UserSuppliedSecretProvider) Issue(ctx context.Context, req IssueRequest
 	// ProxyInjected path: mint an opaque bearer and keep the real
 	// value only inside the broker. SubstituteAuth re-reads the Secret
 	// at request time so rotations land without reissue.
-	var buf [24]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return IssueResult{}, fmt.Errorf("generating bearer: %w", err)
+	bearer, err := mintBearer(userSuppliedBearerPrefix)
+	if err != nil {
+		return IssueResult{}, err
 	}
-	bearer := userSuppliedBearerPrefix + hex.EncodeToString(buf[:])
 
 	ttl := defaultUserSuppliedTTL
 	if cfg.RotationSeconds != nil && *cfg.RotationSeconds > 0 {

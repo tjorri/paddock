@@ -18,9 +18,7 @@ package providers
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -203,7 +201,7 @@ func (p *PATPoolProvider) Issue(ctx context.Context, req IssueRequest) (IssueRes
 			countLeased(pool.leased), len(pool.entries))
 	}
 
-	bearer, err := mintPATBearer()
+	bearer, err := mintBearer(patPoolBearerPrefix)
 	if err != nil {
 		return IssueResult{}, err
 	}
@@ -395,14 +393,6 @@ func parsePoolEntries(raw []byte) []string {
 		out = append(out, l)
 	}
 	return out
-}
-
-func mintPATBearer() (string, error) {
-	var buf [24]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", fmt.Errorf("generating bearer: %w", err)
-	}
-	return patPoolBearerPrefix + hex.EncodeToString(buf[:]), nil
 }
 
 func firstFreeIndex(leased []bool) int {

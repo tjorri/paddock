@@ -18,8 +18,6 @@ package providers
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
@@ -117,14 +115,10 @@ func (p *AnthropicAPIProvider) Issue(ctx context.Context, req IssueRequest) (Iss
 			cfg.SecretRef.Key, req.Namespace, cfg.SecretRef.Name)
 	}
 
-	// 24 random bytes → 48 hex chars. Paired with the 14-char prefix
-	// that's 62 chars of bearer — plenty of entropy, short enough for
-	// Authorization headers.
-	var buf [24]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return IssueResult{}, fmt.Errorf("generating bearer: %w", err)
+	bearer, err := mintBearer(anthropicBearerPrefix)
+	if err != nil {
+		return IssueResult{}, err
 	}
-	bearer := anthropicBearerPrefix + hex.EncodeToString(buf[:])
 
 	now := p.now()
 	ttl := defaultAnthropicTTL
