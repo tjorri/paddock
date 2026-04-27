@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -29,6 +30,12 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
+
+// errSourceCAMisconfigured is returned when the broker-CA source
+// Secret exists but has a missing or empty ca.crt key — operator
+// error, not transient. Reconciler maps to a terminal
+// BrokerCAMisconfigured condition (F-51).
+var errSourceCAMisconfigured = errors.New("source broker-CA Secret missing/empty key")
 
 // brokerSeedRepos returns the subset of the Workspace's seed repos
 // that opt into broker-backed credentials. Zero-length when the
@@ -102,8 +109,30 @@ func (r *WorkspaceReconciler) ensureSeedProxyTLS(ctx context.Context, ws *paddoc
 
 // ensureSeedBrokerCA copies ca.crt from the broker-serving-cert
 // Secret into a per-workspace broker-ca Secret. Mirrors ensureBrokerCA.
+//
+// Distinguishes transient from terminal failures (F-51):
+//   - source Secret IsNotFound: transient — returns (false, nil).
+//   - source Secret found but ca.crt missing/empty: terminal — returns
+//     (false, errSourceCAMisconfigured). Caller maps to a terminal
+//     BrokerCAMisconfigured condition with no requeue.
 func (r *WorkspaceReconciler) ensureSeedBrokerCA(ctx context.Context, ws *paddockv1alpha1.Workspace) (bool, error) {
 	dstName := workspaceBrokerCASecretName(ws.Name)
+
+	// Read the source first so we can distinguish "not found yet"
+	// (transient) from "found but malformed" (terminal — F-51).
+	src := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: r.BrokerCASource.Namespace, Name: r.BrokerCASource.Name}, src)
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("reading source broker-CA Secret %s/%s: %w",
+			r.BrokerCASource.Namespace, r.BrokerCASource.Name, err)
+	}
+	if len(src.Data[brokerCAKey]) == 0 {
+		return false, errSourceCAMisconfigured
+	}
+
 	created, err := copyCAToSecret(ctx, r.Client, r.Scheme, ws,
 		types.NamespacedName{Namespace: r.BrokerCASource.Namespace, Name: r.BrokerCASource.Name},
 		dstName, ws.Namespace,
@@ -118,12 +147,9 @@ func (r *WorkspaceReconciler) ensureSeedBrokerCA(ctx context.Context, ws *paddoc
 	if created {
 		return true, nil
 	}
-	// created=false, err=nil: either the source Secret is missing/empty
-	// (helper returned early) or this is a steady-state no-op update.
-	// Re-Get the destination to distinguish the two cases. This also
-	// closes a latent bug in the pre-refactor path: the original returned
-	// true on a no-op CreateOrUpdate even when the destination's ca.crt
-	// was stale/empty (e.g. blanked by an external actor).
+	// created=false, err=nil: steady-state no-op update. Re-Get the
+	// destination to verify ca.crt is populated (closes a latent bug
+	// where a blanked destination ca.crt would be silently accepted).
 	var dst corev1.Secret
 	if getErr := r.Get(ctx, types.NamespacedName{Namespace: ws.Namespace, Name: dstName}, &dst); getErr != nil {
 		if apierrors.IsNotFound(getErr) {

@@ -202,6 +202,23 @@ func TestNewCAProjected(t *testing.T) {
 	}
 }
 
+func TestNewCAMisconfigured(t *testing.T) {
+	ae := auditing.NewCAMisconfigured(auditing.CAMisconfiguredInput{
+		Name:      "seed-ws-1",
+		Namespace: "team-a",
+		Reason:    "source broker-CA Secret missing/empty key \"ca.crt\"",
+	})
+	if ae.Spec.Kind != paddockv1alpha1.AuditKindCAMisconfigured {
+		t.Errorf("Kind = %q, want %q", ae.Spec.Kind, paddockv1alpha1.AuditKindCAMisconfigured)
+	}
+	if ae.Spec.Decision != paddockv1alpha1.AuditDecisionDenied {
+		t.Errorf("Decision = %q, want denied", ae.Spec.Decision)
+	}
+	if ae.Spec.RunRef == nil || ae.Spec.RunRef.Name != "seed-ws-1" {
+		t.Errorf("RunRef = %+v, want seed-ws-1", ae.Spec.RunRef)
+	}
+}
+
 func TestNewNetworkPolicyEnforcementWithdrawn(t *testing.T) {
 	ae := auditing.NewNetworkPolicyEnforcementWithdrawn(auditing.NetworkPolicyEnforcementWithdrawnInput{
 		RunName:   "hr-1",

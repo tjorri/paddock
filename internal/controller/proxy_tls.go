@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -32,6 +33,21 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
+
+// errProxyCertPermanentFailure is returned when a cert-manager
+// Certificate has reported Ready=False with a permanent reason
+// (issuer not found, etc.). Reconciler maps to a terminal
+// ProxyCAMisconfigured condition (F-51).
+var errProxyCertPermanentFailure = errors.New("cert-manager Certificate permanently failed")
+
+// permanentCertReasons enumerates cert-manager Ready=False reasons
+// that indicate operator misconfiguration rather than transient
+// issuance state. Conservative list — extend if real users hit a
+// reason that should be terminal but isn't covered.
+var permanentCertReasons = map[string]struct{}{
+	"IssuerNotFound": {},
+	"Failed":         {},
+}
 
 // proxyTLSSecretName is the per-run Secret holding the per-run
 // intermediate CA keypair. cert-manager creates this Secret directly
@@ -165,9 +181,16 @@ func ensureProxyCACertificate(
 		return false, false, fmt.Errorf("re-reading Certificate %s/%s: %w", ns, secretName, err)
 	}
 	for _, c := range cert.Status.Conditions {
-		if c.Type == cmapi.CertificateConditionReady && c.Status == cmmeta.ConditionTrue {
-			ready = true
-			break
+		if c.Type == cmapi.CertificateConditionReady {
+			if c.Status == cmmeta.ConditionTrue {
+				ready = true
+				break
+			}
+			if c.Status == cmmeta.ConditionFalse {
+				if _, perm := permanentCertReasons[c.Reason]; perm {
+					return false, false, fmt.Errorf("%w: reason=%s message=%s", errProxyCertPermanentFailure, c.Reason, c.Message)
+				}
+			}
 		}
 	}
 	return op == controllerutil.OperationResultCreated, ready, nil

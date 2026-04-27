@@ -375,6 +375,9 @@ func main() {
 		Scheme:            mgr.GetScheme(),
 		SeedImage:         seedImage,
 		ProxyBrokerConfig: proxyBrokerCfg,
+		Audit: &controller.ControllerAudit{
+			Sink: &auditing.KubeSink{Client: mgr.GetClient(), Component: "workspace-controller"},
+		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Workspace")
 		os.Exit(1)

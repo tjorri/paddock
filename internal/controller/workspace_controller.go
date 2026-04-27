@@ -20,6 +20,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -54,6 +55,12 @@ type WorkspaceReconciler struct {
 	// SeedImage overrides the default alpine/git image. Primarily for
 	// tests; production uses defaultSeedImage.
 	SeedImage string
+
+	// Audit is the canonical sink for terminal-condition events emitted
+	// by the Workspace reconciler (F-51 ca-misconfigured). Optional;
+	// nil falls back to silent, with status conditions remaining the
+	// primary signal.
+	Audit *ControllerAudit
 
 	// ProxyBrokerConfig carries the shared cluster-and-manager config
 	// used to render seed-pod proxy sidecars and per-seed-Pod
@@ -215,6 +222,28 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			// rotation upstream flows through to the seed Pod on the
 			// next run.
 			if ok, err := r.ensureSeedProxyTLS(ctx, &ws); err != nil {
+				if errors.Is(err, errProxyCertPermanentFailure) {
+					msg := fmt.Sprintf("cert-manager Certificate for proxy-tls permanently failed: %s; operator must fix the ClusterIssuer config", err)
+					setCondition(&ws.Status.Conditions, metav1.Condition{
+						Type:               paddockv1alpha1.WorkspaceConditionSeeded,
+						Status:             metav1.ConditionFalse,
+						Reason:             "ProxyCAMisconfigured",
+						Message:            msg,
+						ObservedGeneration: ws.Generation,
+					})
+					ws.Status.Phase = paddockv1alpha1.WorkspacePhaseFailed
+					recordPhaseTransition(string(origStatus.Phase), string(ws.Status.Phase))
+					r.Recorder.Eventf(&ws, corev1.EventTypeWarning, "ProxyCAMisconfigured", "%s", msg)
+					if r.Audit != nil {
+						r.Audit.EmitCAMisconfigured(ctx, ws.Name, ws.Namespace, msg)
+					}
+					if !reflect.DeepEqual(origStatus, &ws.Status) {
+						if err := r.Status().Update(ctx, &ws); err != nil && !apierrors.IsConflict(err) {
+							return ctrl.Result{}, err
+						}
+					}
+					return ctrl.Result{}, nil
+				}
 				return ctrl.Result{}, err
 			} else if !ok {
 				setCondition(&ws.Status.Conditions, metav1.Condition{
@@ -233,6 +262,29 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 			}
 			if ok, err := r.ensureSeedBrokerCA(ctx, &ws); err != nil {
+				if errors.Is(err, errSourceCAMisconfigured) {
+					msg := fmt.Sprintf("source broker-CA Secret %s/%s exists but has missing/empty %q; operator must populate it",
+						r.BrokerCASource.Namespace, r.BrokerCASource.Name, brokerCAKey)
+					setCondition(&ws.Status.Conditions, metav1.Condition{
+						Type:               paddockv1alpha1.WorkspaceConditionSeeded,
+						Status:             metav1.ConditionFalse,
+						Reason:             "BrokerCAMisconfigured",
+						Message:            msg,
+						ObservedGeneration: ws.Generation,
+					})
+					ws.Status.Phase = paddockv1alpha1.WorkspacePhaseFailed
+					recordPhaseTransition(string(origStatus.Phase), string(ws.Status.Phase))
+					r.Recorder.Eventf(&ws, corev1.EventTypeWarning, "BrokerCAMisconfigured", "%s", msg)
+					if r.Audit != nil {
+						r.Audit.EmitCAMisconfigured(ctx, ws.Name, ws.Namespace, msg)
+					}
+					if !reflect.DeepEqual(origStatus, &ws.Status) {
+						if err := r.Status().Update(ctx, &ws); err != nil && !apierrors.IsConflict(err) {
+							return ctrl.Result{}, err
+						}
+					}
+					return ctrl.Result{}, nil
+				}
 				return ctrl.Result{}, err
 			} else if !ok {
 				setCondition(&ws.Status.Conditions, metav1.Condition{

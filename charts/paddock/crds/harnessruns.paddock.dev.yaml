@@ -29,6 +29,9 @@ spec:
         - jsonPath: .metadata.creationTimestamp
           name: Age
           type: date
+        - jsonPath: .status.conditions[?(@.type=="BrokerCredentialsReady")].message
+          name: Credentials
+          type: string
       name: v1alpha1
       schema:
         openAPIV3Schema:
@@ -452,9 +455,65 @@ spec:
                   x-kubernetes-list-map-keys:
                     - type
                   x-kubernetes-list-type: map
+                credentials:
+                  description: |-
+                    Credentials reports, per requires.credentials[*].name, which
+                    provider backed it and how the value was delivered. Populated by
+                    the controller after a successful Issue call to the broker. Lets
+                    the user verify at runtime that the actual delivery matches the
+                    policy's declaration.
+                  items:
+                    description: |-
+                      CredentialStatus describes one issued credential from the run's
+                      perspective.
+                    properties:
+                      deliveryMode:
+                        description: DeliveryMode is "ProxyInjected" or "InContainer".
+                        enum:
+                          - ProxyInjected
+                          - InContainer
+                        type: string
+                      hosts:
+                        description: |-
+                          Hosts lists the destination hostnames this credential substitutes
+                          on, for ProxyInjected delivery. Empty for InContainer.
+                        items:
+                          type: string
+                        type: array
+                      inContainerReason:
+                        description: |-
+                          InContainerReason mirrors the policy grant's
+                          deliveryMode.inContainer.reason when DeliveryMode is InContainer.
+                        type: string
+                      name:
+                        description: Name matches the template's requires.credentials[*].name.
+                        type: string
+                      provider:
+                        description: |-
+                          Provider is the backing provider kind (e.g. "UserSuppliedSecret",
+                          "AnthropicAPI"). Copied from the matched grant.
+                        type: string
+                    required:
+                      - deliveryMode
+                      - name
+                      - provider
+                    type: object
+                  type: array
+                  x-kubernetes-list-map-keys:
+                    - name
+                  x-kubernetes-list-type: map
                 jobName:
                   description: JobName is the name of the backing batch/v1 Job, once created.
                   type: string
+                networkPolicyEnforced:
+                  description: |-
+                    NetworkPolicyEnforced records whether per-run NetworkPolicy
+                    enforcement was active when this run was admitted. Immutable after
+                    admission. The reconciler honours this for the run's lifetime, so a
+                    flag flip on the controller-manager
+                    (--networkpolicy-enforce=on → off) does not weaken running pods.
+                    F-43 / Phase 2d.
+                  type: boolean
                 observedGeneration:
                   description: ObservedGeneration is the spec generation last reconciled.
                   format: int64
