@@ -166,15 +166,15 @@ func validateWorkspaceRepos(reposPath *field.Path, repos []paddockv1alpha1.Works
 // isSSHURLLocal mirrors controller.isSSHURL. Kept in the webhook
 // package so admission can reject broker-backed creds on ssh URLs
 // without importing the controller package (cycle).
-func isSSHURLLocal(url string) bool {
-	if strings.HasPrefix(url, "ssh://") {
+func isSSHURLLocal(raw string) bool {
+	if strings.HasPrefix(raw, "ssh://") {
 		return true
 	}
-	if strings.Contains(url, "://") {
+	if strings.Contains(raw, "://") {
 		return false
 	}
-	if at := strings.Index(url, "@"); at > 0 {
-		rest := url[at+1:]
+	if at := strings.Index(raw, "@"); at > 0 {
+		rest := raw[at+1:]
 		if colon := strings.Index(rest, ":"); colon > 0 && !strings.Contains(rest[:colon], "/") {
 			return true
 		}
