@@ -140,9 +140,17 @@ func (r *WorkspaceReconciler) ensureSeedBrokerCA(ctx context.Context, ws *paddoc
 
 // ensureSeedRBAC provisions a per-Workspace ServiceAccount + Role +
 // RoleBinding granting the seed proxy sidecar create access to
-// AuditEvents in the Workspace's namespace. Mirrors the run-Pod's
-// ensureCollectorRBAC pattern (harnessrun_controller.go). All three
-// objects are owner-ref'd to the Workspace for cascade cleanup.
+// AuditEvents in the Workspace's namespace. Follows the same shape as
+// ensureCollectorRBAC in harnessrun_controller.go (per-CR SA bundle,
+// owner-ref'd to the parent), differing in that all three objects use
+// CreateOrUpdate so label drift is reconciled on subsequent passes.
+// All three objects are owner-ref'd to the Workspace for cascade cleanup.
+//
+// Provisioned unconditionally for any seeded Workspace; the proxy
+// sidecar is the only intended consumer, but the bundle is created
+// even for non-broker seeds for simplicity. A namespace tenant with
+// pods/create could exercise the auditevents:create grant by mounting
+// the SA themselves — equivalent to the existing tenant trust model.
 //
 // F-48 (dedicated SA so default-SA automount can be disabled) +
 // F-52 (audit RBAC for the seed proxy's AuditEvent writes).

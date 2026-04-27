@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -55,8 +56,17 @@ func TestEnsureSeedRBAC_CreatesSARoleAndBinding(t *testing.T) {
 	if err := cli.Get(context.Background(), types.NamespacedName{Name: seedSAName(ws), Namespace: ws.Namespace}, &role); err != nil {
 		t.Fatalf("Role not created: %v", err)
 	}
-	if len(role.Rules) == 0 || role.Rules[0].Resources[0] != "auditevents" {
-		t.Fatalf("Role does not grant auditevents: %+v", role.Rules)
+	// Pin the Role's exact rule shape so a future widening (extra verbs,
+	// extra resources, wildcards) is caught.
+	wantRules := []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{"paddock.dev"},
+			Resources: []string{"auditevents"},
+			Verbs:     []string{"create"},
+		},
+	}
+	if !reflect.DeepEqual(role.Rules, wantRules) {
+		t.Fatalf("Role.Rules = %+v, want %+v", role.Rules, wantRules)
 	}
 	var rb rbacv1.RoleBinding
 	if err := cli.Get(context.Background(), types.NamespacedName{Name: seedSAName(ws), Namespace: ws.Namespace}, &rb); err != nil {
