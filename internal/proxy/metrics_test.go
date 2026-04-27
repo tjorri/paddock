@@ -35,7 +35,7 @@ func TestAuditSinkGauge_RecordsType(t *testing.T) {
 
 	// Mirror SetAuditSinkType behaviour using the local gauge.
 	setType := func(active string) {
-		for _, label := range []string{"client", "noop"} {
+		for _, label := range []string{AuditSinkTypeClient, AuditSinkTypeNoop} {
 			v := 0.0
 			if label == active {
 				v = 1.0
@@ -44,7 +44,7 @@ func TestAuditSinkGauge_RecordsType(t *testing.T) {
 		}
 	}
 
-	setType("client")
+	setType(AuditSinkTypeClient)
 
 	want := strings.TrimSpace(`
 # HELP paddock_proxy_audit_sink Audit sink type currently in use (1=active type, 0=other). Alert when type="noop" is set in production.
@@ -58,7 +58,7 @@ paddock_proxy_audit_sink{type="noop"} 0
 	}
 
 	// Flip to noop to verify the gauge transitions correctly.
-	setType("noop")
+	setType(AuditSinkTypeNoop)
 
 	want2 := strings.TrimSpace(`
 # HELP paddock_proxy_audit_sink Audit sink type currently in use (1=active type, 0=other). Alert when type="noop" is set in production.

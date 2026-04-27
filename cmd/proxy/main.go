@@ -47,11 +47,6 @@ import (
 	"paddock.dev/paddock/internal/proxy"
 )
 
-// auditSinkTypeNoop is the type string returned by buildAuditSink when
-// audit is disabled or unavailable. Named constant avoids goconst lint
-// noise across the five return sites.
-const auditSinkTypeNoop = "noop"
-
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("proxy-setup")
@@ -132,7 +127,9 @@ func main() {
 
 	// F-27 refuse-to-start gates. Each gate exits 1 with a specific error
 	// so an operator who deployed a silently-broken config gets a loud
-	// failure rather than a silently-degraded proxy.
+	// failure rather than a silently-degraded proxy. All four gates fire
+	// before any I/O (CA load, broker client, listener bind) so a
+	// misconfiguration never half-starts the proxy.
 	if mode == "" {
 		setupLog.Error(nil, "--mode is required (no default): set 'transparent' or 'cooperative'")
 		os.Exit(1)
@@ -145,6 +142,14 @@ func main() {
 		setupLog.Error(nil, "default-deny + no audit is never intentional; set --allow / --broker-endpoint, or pass --disable-audit explicitly to acknowledge")
 		os.Exit(1)
 	}
+
+	audit, auditSinkType := buildAuditSink(disableAudit, runName, runNamespace)
+	if auditSinkType == proxy.AuditSinkTypeNoop && !disableAudit {
+		setupLog.Error(nil, "audit sink resolved to noop without --disable-audit; refusing to start (F-27)",
+			"runName", runName, "runNamespace", runNamespace)
+		os.Exit(1)
+	}
+	proxy.SetAuditSinkType(auditSinkType)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -178,14 +183,6 @@ func main() {
 		validator = sv
 		setupLog.Info("broker integration disabled; using static --allow list")
 	}
-
-	audit, auditSinkType := buildAuditSink(disableAudit, runName, runNamespace)
-	if auditSinkType == auditSinkTypeNoop && !disableAudit {
-		setupLog.Error(nil, "audit sink resolved to noop without --disable-audit; refusing to start (F-27)",
-			"runName", runName, "runNamespace", runNamespace)
-		os.Exit(1)
-	}
-	proxy.SetAuditSinkType(auditSinkType)
 
 	upstreamCfg, err := buildUpstreamTLSConfig(upstreamCABundle)
 	if err != nil {
@@ -301,33 +298,34 @@ func waitForShutdown(ctx context.Context, errCh <-chan error, grace time.Duratio
 // when audit is disabled / a run name is missing. The fallback path now
 // logs a warning so silently-disabled audit is visible in proxy startup
 // logs (F-24).
-// Returns the sink and a type string ("client" or "noop") for use with
-// proxy.SetAuditSinkType and the F-27 refuse-to-start gate.
+// Returns the sink and a type string (proxy.AuditSinkTypeClient or
+// proxy.AuditSinkTypeNoop) for use with proxy.SetAuditSinkType and the
+// F-27 refuse-to-start gate.
 func buildAuditSink(disabled bool, runName, runNamespace string) (proxy.AuditSink, string) {
 	if disabled {
 		setupLog.Info("audit disabled by flag; proxy egress events will not be persisted")
-		return proxy.NoopAuditSink{}, auditSinkTypeNoop
+		return proxy.NoopAuditSink{}, proxy.AuditSinkTypeNoop
 	}
 	if runName == "" || runNamespace == "" {
 		setupLog.Info("audit disabled: run name or namespace missing; proxy egress events will not be persisted",
 			"runName", runName, "runNamespace", runNamespace)
-		return proxy.NoopAuditSink{}, auditSinkTypeNoop
+		return proxy.NoopAuditSink{}, proxy.AuditSinkTypeNoop
 	}
 	cfg, err := ctrl.GetConfig()
 	if err != nil {
 		setupLog.Error(err, "unable to load kubeconfig; audit disabled")
-		return proxy.NoopAuditSink{}, auditSinkTypeNoop
+		return proxy.NoopAuditSink{}, proxy.AuditSinkTypeNoop
 	}
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		setupLog.Error(err, "unable to build audit client; audit disabled")
-		return proxy.NoopAuditSink{}, auditSinkTypeNoop
+		return proxy.NoopAuditSink{}, proxy.AuditSinkTypeNoop
 	}
 	return &proxy.ClientAuditSink{
 		Sink:      &auditing.KubeSink{Client: c, Component: "proxy"},
 		Namespace: runNamespace,
 		RunName:   runName,
-	}, "client"
+	}, proxy.AuditSinkTypeClient
 }
 
 // buildUpstreamTLSConfig loads the system roots (or an empty pool on

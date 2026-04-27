@@ -18,6 +18,13 @@ package proxy
 
 import "github.com/prometheus/client_golang/prometheus"
 
+// AuditSinkType labels. Used by SetAuditSinkType and as the
+// expected return values from cmd/proxy/main.go::buildAuditSink.
+const (
+	AuditSinkTypeClient = "client"
+	AuditSinkTypeNoop   = "noop"
+)
+
 // AuditSinkGauge tracks which audit sink type is currently in use.
 // Exactly one label value is 1 at any time; the others are 0.
 // Alert when type="noop" is set in production — it means audit
@@ -30,9 +37,9 @@ var AuditSinkGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 // SetAuditSinkType sets AuditSinkGauge so that the named active type
 // is 1 and all other known types are 0. Call this once after the
 // refuse-to-start gates pass, using the type string returned by
-// buildAuditSink. Known types: "client", "noop".
+// buildAuditSink. Known types: AuditSinkTypeClient, AuditSinkTypeNoop.
 func SetAuditSinkType(active string) {
-	for _, label := range []string{"client", "noop"} {
+	for _, label := range []string{AuditSinkTypeClient, AuditSinkTypeNoop} {
 		v := 0.0
 		if label == active {
 			v = 1.0
