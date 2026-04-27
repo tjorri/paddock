@@ -1000,6 +1000,38 @@ func TestBuildEnv_ExtraEnvLastWinsOnControllerSide(t *testing.T) {
 	}
 }
 
+// TestBuildPodSpec_PassesDenyCIDR verifies that proxyDenyCIDR is forwarded
+// to the proxy container as --deny-cidr. F-22 controller→proxy wiring.
+func TestBuildPodSpec_PassesDenyCIDR(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+	in.proxyDenyCIDR = "10.0.0.0/8,169.254.0.0/16,10.244.0.0/16,10.96.0.0/12"
+
+	ps := buildPodSpec(run, tpl, in)
+
+	// Locate the proxy init container.
+	var p corev1.Container
+	found := false
+	for _, c := range ps.InitContainers {
+		if c.Name == proxyContainerName {
+			p = c
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("proxy container %q not found in initContainers", proxyContainerName)
+	}
+
+	want := "--deny-cidr=10.0.0.0/8,169.254.0.0/16,10.244.0.0/16,10.96.0.0/12"
+	if !slices.Contains(p.Args, want) {
+		t.Errorf("proxy args missing %q; got %v", want, p.Args)
+	}
+}
+
 func TestBuildPodSpec_PassesInterceptionAcceptanceArgs(t *testing.T) {
 	run := echoRunFixture()
 	tpl := echoTemplateFixture()

@@ -197,6 +197,11 @@ type podSpecInputs struct {
 	// F-19 residual.
 	interceptionAcceptanceReason        string
 	interceptionAcceptanceMatchedPolicy string
+
+	// proxyDenyCIDR is the comma-separated CIDR list passed to the proxy
+	// sidecar as --deny-cidr. Built by proxyDeniedCIDRs (RFC1918 +
+	// link-local + cluster pod+service CIDRs). F-22.
+	proxyDenyCIDR string
 }
 
 // buildJob renders the batchv1.Job for a HarnessRun. Assumes the caller
@@ -605,6 +610,7 @@ func buildProxyContainer(run *paddockv1alpha1.HarnessRun, in podSpecInputs) core
 		"--mode=" + string(mode),
 		fmt.Sprintf("--interception-acceptance-reason=%s", in.interceptionAcceptanceReason),
 		fmt.Sprintf("--interception-acceptance-matched-policy=%s", in.interceptionAcceptanceMatchedPolicy),
+		fmt.Sprintf("--deny-cidr=%s", in.proxyDenyCIDR),
 	}
 	if in.brokerEndpoint != "" {
 		args = append(args,

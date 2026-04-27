@@ -124,6 +124,17 @@ type Server struct {
 	// originalDestination from transparent_linux.go (or the no-op stub
 	// in transparent_other.go) is used.
 	OriginalDestination func(net.Conn) (net.IP, int, error)
+
+	// Resolver is the proxy's own DNS resolver, used for the F-22 dial-time
+	// re-resolve in transparent mode and the post-allowlist denied-CIDR
+	// filter in cooperative mode. nil defaults to NewCachingResolver(30s, 256).
+	Resolver Resolver
+
+	// DeniedCIDRs is the closed set of destination networks the proxy
+	// refuses to dial regardless of validator outcome. Populated from
+	// cmd/proxy/main.go --deny-cidr (controller passes RFC1918 + link-local
+	// + cluster pod+service CIDRs). nil means no denied-CIDR check.
+	DeniedCIDRs *DeniedCIDRSet
 }
 
 // ServeHTTP dispatches CONNECT (MITM path) from plain HTTP requests
@@ -160,6 +171,24 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// F-22 layer 2 cooperative: IP-literal CONNECT pre-validator check.
+	// If the agent is dialling a literal IP that falls in the denied-CIDR
+	// set, reject before we even ask the validator. This handles the case
+	// where a rebinding attack delivers an IP-literal CONNECT target.
+	if ip := net.ParseIP(host); ip != nil && s.DeniedCIDRs.Contains(ip) {
+		if aErr := s.recordEgress(ctx, EgressEvent{
+			Host: host, Port: port,
+			Decision: paddockv1alpha1.AuditDecisionDenied,
+			Reason:   "denied-destination-cidr: " + host,
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on deny path", "host", host, "port", port)
+		}
+		ConnectionsRejected.WithLabelValues("denied_destination_cidr").Inc()
+		http.Error(w, "paddock-proxy: denied destination CIDR", http.StatusForbidden)
+		return
+	}
+
 	decision, vErr := s.Validator.ValidateEgress(ctx, host, port)
 	if vErr != nil {
 		// Validator errors (e.g. broker unreachable) fail closed by
@@ -192,6 +221,42 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// F-22 layer 2 cooperative: resolve via the proxy's own resolver (not
+	// the agent's), filter out denied CIDRs, dial the first surviving IP.
+	// This block runs BEFORE hijack so a deny path can still write an
+	// HTTP response via w.
+	resolved, rerr := s.resolver().LookupHost(ctx, host)
+	if rerr != nil {
+		if aErr := s.recordEgress(ctx, EgressEvent{
+			Host: host, Port: port,
+			Decision: paddockv1alpha1.AuditDecisionDenied,
+			Reason:   "dns-resolution-failed: " + rerr.Error(),
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on deny path")
+		}
+		ConnectionsRejected.WithLabelValues("dns_resolution_failed").Inc()
+		http.Error(w, "paddock-proxy: dns resolution failed", http.StatusBadGateway)
+		return
+	}
+	allowed := resolved[:0]
+	for _, ip := range resolved {
+		if !s.DeniedCIDRs.Contains(ip) {
+			allowed = append(allowed, ip)
+		}
+	}
+	if len(allowed) == 0 {
+		if aErr := s.recordEgress(ctx, EgressEvent{
+			Host: host, Port: port,
+			Decision: paddockv1alpha1.AuditDecisionDenied,
+			Reason:   "denied-destination-cidr: all resolved IPs in denied set",
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on deny path")
+		}
+		ConnectionsRejected.WithLabelValues("denied_destination_cidr").Inc()
+		http.Error(w, "paddock-proxy: all resolved IPs denied by CIDR set", http.StatusForbidden)
+		return
+	}
+
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "paddock-proxy: hijack not supported", http.StatusInternalServerError)
@@ -218,15 +283,15 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		clientConn = &prefixConn{Conn: clientConn, prefix: leftover}
 	}
 
-	s.mitm(ctx, clientConn, host, port, decision)
+	s.mitm(ctx, clientConn, host, port, decision, allowed[0])
 }
 
 // mitm is the cooperative-mode MITM entry. The CONNECT 200 write and
 // hijack already happened in handleConnect; mitm forges a leaf for
-// host, terminates TLS, and delegates to doMITM. In cooperative mode
-// the dial host (= upstream IP/hostname) and the SNI coincide.
-func (s *Server) mitm(ctx context.Context, clientConn net.Conn, host string, port int, decision Decision) {
-	if err := s.doMITM(ctx, clientConn, host, host, port, decision); err != nil {
+// host, terminates TLS, and delegates to doMITM. dialIP is the first
+// allowed resolved IP (post-denied-CIDR filter) chosen by handleConnect.
+func (s *Server) mitm(ctx context.Context, clientConn net.Conn, host string, port int, decision Decision, dialIP net.IP) {
+	if err := s.doMITM(ctx, clientConn, host, dialIP, port, decision); err != nil {
 		s.log().V(1).Info("cooperative MITM ended", "host", host, "err", err)
 	}
 }
@@ -271,6 +336,13 @@ func (s *Server) log() logr.Logger {
 		return logr.Discard()
 	}
 	return s.Logger
+}
+
+func (s *Server) resolver() Resolver {
+	if s.Resolver != nil {
+		return s.Resolver
+	}
+	return NewCachingResolver(30*time.Second, 256)
 }
 
 // splitConnectTarget parses the host:port from a CONNECT request line.

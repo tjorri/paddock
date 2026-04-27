@@ -555,6 +555,68 @@ func TestProxy_BytesShuttleIdleTimeout(t *testing.T) {
 	_ = resp2.Body.Close()
 }
 
+// allowAllValidator always returns Allowed=true, used by F-22 tests to
+// ensure the denied-CIDR checks run independently of the validator outcome.
+type allowAllValidator struct{}
+
+func (allowAllValidator) ValidateEgress(_ context.Context, _ string, _ int) (Decision, error) {
+	return Decision{Allowed: true, Reason: "allow"}, nil
+}
+
+// TestHandleConnect_DeniedCIDR_IPLiteral verifies F-22 layer 2 cooperative:
+// an IP-literal CONNECT target in the denied-CIDR set is rejected before
+// the validator is called, with a deny AuditEvent and reason
+// "denied-destination-cidr".
+func TestHandleConnect_DeniedCIDR_IPLiteral(t *testing.T) {
+	denied, _ := ParseDeniedCIDRs("169.254.0.0/16")
+	sink := &recordingSink{}
+	srv := &Server{
+		CA:          newTestCA(t, 16),
+		Validator:   allowAllValidator{},
+		Audit:       sink,
+		DeniedCIDRs: denied,
+		Resolver:    NewCachingResolver(time.Minute, 16),
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "http://example/", nil)
+	req.Host = "169.254.169.254:80"
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", w.Code)
+	}
+	got := sink.snapshot()
+	if len(got) != 1 || got[0].Decision != paddockv1alpha1.AuditDecisionDenied {
+		t.Errorf("expected one denied audit; got %+v", got)
+	}
+	if !strings.Contains(got[0].Reason, "denied-destination-cidr") {
+		t.Errorf("reason = %q, want it to mention denied-destination-cidr", got[0].Reason)
+	}
+}
+
+// TestHandleConnect_DeniedCIDR_PostResolution verifies F-22 layer 2 cooperative:
+// when the validator allows but the resolved IPs are all in the denied-CIDR
+// set, the connection is rejected with 403.
+func TestHandleConnect_DeniedCIDR_PostResolution(t *testing.T) {
+	denied, _ := ParseDeniedCIDRs("10.0.0.0/8")
+	stubLk := func(_ context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("10.0.0.50")}, nil
+	}
+	srv := &Server{
+		CA:          newTestCA(t, 16),
+		Validator:   allowAllValidator{},
+		Audit:       &recordingSink{},
+		DeniedCIDRs: denied,
+		Resolver:    newCachingResolverWithLookup(stubLk, time.Minute, 16),
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "http://example/", nil)
+	req.Host = "evil.example.com:443"
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", w.Code)
+	}
+}
+
 // TestHandleConnect_AuditFailureOnDeny_Returns502 verifies the fail-closed
 // behaviour on the policy-deny path (F-24): if the AuditSink returns an
 // error, the proxy must reply 502 "audit unavailable" so the agent sees

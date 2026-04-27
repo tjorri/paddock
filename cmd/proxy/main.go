@@ -76,6 +76,7 @@ func main() {
 		brokerCAPath                        string
 		interceptionAcceptanceReason        string
 		interceptionAcceptanceMatchedPolicy string
+		denyCIDR                            string
 	)
 	flag.StringVar(&listenAddr, "listen-address", ":15001",
 		"Listen address. Cooperative mode: HTTP CONNECT proxy (agent sends HTTPS_PROXY requests here). "+
@@ -127,6 +128,9 @@ func main() {
 			"Read fresh on every broker call so token rotation takes effect mid-run.")
 	flag.StringVar(&brokerCAPath, "broker-ca-path", "/etc/paddock-broker/ca/ca.crt",
 		"CA bundle verifying the broker's serving cert. Written by cert-manager alongside broker-serving-cert.")
+	flag.StringVar(&denyCIDR, "deny-cidr", "",
+		"Comma-separated CIDRs the proxy refuses to dial regardless of validator outcome. "+
+			"Controller passes RFC1918 + link-local + cluster pod+service CIDRs. F-22.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -217,6 +221,14 @@ func main() {
 		IdleTimeout:       idleTimeout,
 		Logger:            logger,
 	}
+
+	denied, err := proxy.ParseDeniedCIDRs(denyCIDR)
+	if err != nil {
+		setupLog.Error(err, "parse --deny-cidr")
+		os.Exit(1)
+	}
+	p.DeniedCIDRs = denied
+	p.Resolver = proxy.NewCachingResolver(30*time.Second, 256)
 
 	prometheus.MustRegister(
 		proxy.AuditSinkGauge,

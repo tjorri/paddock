@@ -35,25 +35,25 @@ import (
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
 
-// dialUpstreamTLS opens a TLS connection to tcpAddr, presenting and
-// verifying the peer certificate against serverName. Owns the dialer
-// fallback, TLS-config clone with ServerName injection, and the
+// dialUpstreamTLS opens a TLS connection to dialIP:port, verifying the
+// peer certificate against serverName. Owns the dialer fallback,
+// TLS-config clone with ServerName injection, and the
 // HandshakeContext-with-timeout shared by both upstream legs.
 //
 // Called by doMITM with:
-//   - cooperative mode: tcpAddr = net.JoinHostPort(host, port);
-//     serverName = host. The dial address and the cert hostname coincide.
-//   - transparent mode: tcpAddr = net.JoinHostPort(origIP, origPort);
-//     serverName = sni. The dial address is the SO_ORIGINAL_DST IP, but
-//     the cert is verified against the agent-requested SNI so the agent's
+//   - cooperative mode: dialIP = the first allowed post-resolution IP
+//     chosen by handleConnect; serverName = host (SNI).
+//   - transparent mode: dialIP = SO_ORIGINAL_DST origIP; serverName = sni.
+//     The cert is verified against the agent-requested SNI so the agent's
 //     intent (connect to hostname X) is preserved.
-func (s *Server) dialUpstreamTLS(ctx context.Context, tcpAddr, serverName string) (net.Conn, error) {
+func (s *Server) dialUpstreamTLS(ctx context.Context, dialIP net.IP, port int, serverName string) (net.Conn, error) {
 	dialer := s.UpstreamDialer
 	if dialer == nil {
 		d := &net.Dialer{Timeout: 10 * time.Second}
 		dialer = d.DialContext
 	}
-	raw, err := dialer(ctx, "tcp", tcpAddr)
+	addr := net.JoinHostPort(dialIP.String(), strconv.Itoa(port))
+	raw, err := dialer(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -70,12 +70,6 @@ func (s *Server) dialUpstreamTLS(ctx context.Context, tcpAddr, serverName string
 		return nil, fmt.Errorf("upstream TLS handshake: %w", err)
 	}
 	return tlsConn, nil
-}
-
-// joinHostPortInt is net.JoinHostPort + strconv.Itoa. Used inside this
-// file to keep dialUpstreamTLS callers a single line.
-func joinHostPortInt(host string, port int) string {
-	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 // doMITM is the shared MITM core called by both cooperative-mode
@@ -100,7 +94,7 @@ func (s *Server) doMITM(
 	ctx context.Context,
 	clientConn net.Conn,
 	sni string,
-	dialHost string,
+	dialIP net.IP,
 	port int,
 	decision Decision,
 ) error {
@@ -121,7 +115,7 @@ func (s *Server) doMITM(
 	}
 	defer func() { _ = clientTLS.Close() }()
 
-	upstreamConn, err := s.dialUpstreamTLS(ctx, joinHostPortInt(dialHost, port), sni)
+	upstreamConn, err := s.dialUpstreamTLS(ctx, dialIP, port, sni)
 	if err != nil {
 		s.log().V(1).Info("upstream dial failed", "host", sni, "err", err)
 		return fmt.Errorf("upstream dial: %w", err)

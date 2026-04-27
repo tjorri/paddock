@@ -49,6 +49,24 @@ func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	// F-22 layer 2 transparent: reject early when SO_ORIGINAL_DST resolves
+	// to a denied CIDR (private/cluster-internal network). This fires before
+	// the SNI peek so even connections to cluster-internal IPs that carry
+	// a valid SNI are rejected.
+	if s.DeniedCIDRs.Contains(origIP) {
+		if aErr := s.recordEgress(ctx, EgressEvent{
+			Host:     origIP.String(),
+			Port:     origPort,
+			Decision: paddockv1alpha1.AuditDecisionDenied,
+			Reason:   "denied-destination-cidr: " + origIP.String(),
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on transparent deny", "host", origIP.String(), "port", origPort)
+		}
+		ConnectionsRejected.WithLabelValues("denied_destination_cidr").Inc()
+		abruptClose(conn)
+		return
+	}
+
 	// Peek the ClientHello to extract SNI without consuming bytes.
 	peek := &peekConn{Conn: conn}
 	hello, err := peekClientHello(ctx, peek)
@@ -105,6 +123,43 @@ func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	// F-22 layer 1 transparent: re-resolve SNI via the proxy's own
+	// resolver and compare to the agent-chosen origIP. Mismatch -> deny.
+	// This catches /etc/hosts-style agent-side overrides and
+	// cluster-DNS-as-attacker-vector rebinding attacks.
+	resolved, rerr := s.resolver().LookupHost(ctx, sni)
+	if rerr != nil {
+		if aErr := s.recordEgress(ctx, EgressEvent{
+			Host: sni, Port: origPort,
+			Decision: paddockv1alpha1.AuditDecisionDenied,
+			Reason:   "dns-resolution-failed: " + rerr.Error(),
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on transparent deny")
+		}
+		ConnectionsRejected.WithLabelValues("dns_resolution_failed").Inc()
+		abruptClose(conn)
+		return
+	}
+	matched := false
+	for _, ip := range resolved {
+		if ip.Equal(origIP) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		if aErr := s.recordEgress(ctx, EgressEvent{
+			Host: sni, Port: origPort,
+			Decision: paddockv1alpha1.AuditDecisionDenied,
+			Reason:   "dns-rebinding-mismatch: agent IP " + origIP.String() + " not in proxy-resolved set",
+		}); aErr != nil {
+			s.log().Error(aErr, "audit write failed on transparent deny")
+		}
+		ConnectionsRejected.WithLabelValues("dns_rebinding_mismatch").Inc()
+		abruptClose(conn)
+		return
+	}
+
 	s.mitmTransparent(ctx, peek, sni, origIP, origPort, decision)
 }
 
@@ -120,7 +175,7 @@ func (s *Server) mitmTransparent(
 	origPort int,
 	decision Decision,
 ) {
-	if err := s.doMITM(ctx, clientConn, sni, origIP.String(), origPort, decision); err != nil {
+	if err := s.doMITM(ctx, clientConn, sni, origIP, origPort, decision); err != nil {
 		s.log().V(1).Info("transparent MITM ended", "host", sni, "err", err)
 	}
 }

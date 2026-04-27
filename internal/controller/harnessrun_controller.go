@@ -1202,6 +1202,10 @@ func (r *HarnessRunReconciler) ensureJob(
 			in.brokerEndpoint = r.BrokerEndpoint
 			in.brokerCASecret = brokerCASecretName(run.Name)
 		}
+		in.proxyDenyCIDR = proxyDeniedCIDRs(networkPolicyConfig{
+			ClusterPodCIDR:     r.ClusterPodCIDR,
+			ClusterServiceCIDR: r.ClusterServiceCIDR,
+		})
 	}
 	desired := buildJob(run, tpl, run.Status.WorkspaceRef, in)
 	if err := controllerutil.SetControllerReference(run, desired, r.Scheme); err != nil {
