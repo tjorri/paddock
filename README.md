@@ -82,12 +82,6 @@ test/e2e/                    # Kind-based end-to-end suite (go test -tags=e2e)
 Tiltfile                     # inner-loop build + live-update
 ```
 
-## Tests
-
-- `make test` — unit + envtest suites. Podspec goldens, reconciler behaviour, webhook admission, CLI plumbing, event/ring/tailer logic, provider + proxy correctness. Fast.
-- `make test-e2e` — Kind cluster + echo pipeline end-to-end. Slow; the load-bearing smoke test.
-- `make lint` — golangci-lint; config at `.golangci.yml` is deliberately loose on canonical Go idioms.
-
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup, commit conventions, and the ADR process.
