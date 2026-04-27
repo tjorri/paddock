@@ -96,22 +96,9 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runName := r.Header.Get(brokerapi.HeaderRun)
-	if runName == "" {
-		writeError(w, http.StatusBadRequest, "BadRequest",
-			fmt.Sprintf("header %s is required", brokerapi.HeaderRun))
-		return
-	}
-	runNamespace := r.Header.Get(brokerapi.HeaderNamespace)
-	if runNamespace == "" {
-		runNamespace = caller.Namespace
-	}
-
-	// Non-controller callers may only ask about runs in their own namespace.
-	if !caller.IsController && runNamespace != caller.Namespace {
-		writeError(w, http.StatusForbidden, "Forbidden",
-			fmt.Sprintf("caller in namespace %q cannot ask about runs in namespace %q",
-				caller.Namespace, runNamespace))
+	runName, runNamespace, err := resolveRunIdentity(r, caller)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
 

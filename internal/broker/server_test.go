@@ -472,9 +472,13 @@ func TestIssue_CrossNamespaceDenied(t *testing.T) {
 	// Override auth to a caller in a different namespace, non-controller.
 	srv.Auth = stubAuth{identity: broker.CallerIdentity{Namespace: "other", ServiceAccount: "default"}}
 
+	// handleIssue now shares resolveRunIdentity with the other two
+	// handlers; a non-controller caller asking about another namespace's
+	// run gets 400 BadRequest (the consistent shape), not the older 403
+	// Forbidden the inlined code returned. B-04.
 	body, _ := json.Marshal(brokerapi.IssueRequest{Name: "DEMO_TOKEN"})
 	rr := post(t, srv, "hello", "my-team", "token", string(body))
-	if rr.Code != http.StatusForbidden {
+	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
 	}
 }
