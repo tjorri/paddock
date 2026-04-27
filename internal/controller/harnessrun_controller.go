@@ -1280,6 +1280,9 @@ func (r *HarnessRunReconciler) reconcileDelete(ctx context.Context, run *paddock
 // retried up to 2 times with exponential backoff. 404 NotFound is
 // treated as success-equivalent (older broker without the endpoint).
 func (r *HarnessRunReconciler) revokeIssuedLeases(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
+	if len(run.Status.IssuedLeases) == 0 {
+		return nil
+	}
 	if r.BrokerClient == nil {
 		// No broker configured: leases are unrevocable but the run
 		// must still teardown. The force-clear branch in reconcileDelete
@@ -1301,10 +1304,13 @@ func (r *HarnessRunReconciler) revokeIssuedLeases(ctx context.Context, run *padd
 
 func (r *HarnessRunReconciler) revokeOneLeaseWithRetry(ctx context.Context, runName, runNamespace string, lease paddockv1alpha1.IssuedLease) error {
 	const maxAttempts = 3
+	const perCallTimeout = 5 * time.Second
 	var lastErr error
 	backoff := 250 * time.Millisecond
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		err := r.BrokerClient.Revoke(ctx, runName, runNamespace, lease)
+		callCtx, cancel := context.WithTimeout(ctx, perCallTimeout)
+		err := r.BrokerClient.Revoke(callCtx, runName, runNamespace, lease)
+		cancel()
 		if err == nil {
 			return nil
 		}
