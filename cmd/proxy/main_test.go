@@ -71,3 +71,13 @@ func TestRefuseToStart_DefaultDenyNoAudit(t *testing.T) {
 		"default-deny + no audit is never intentional",
 	)
 }
+
+func TestRefuseToStart_CooperativeWithoutReason(t *testing.T) {
+	bin := buildProxyBinary(t)
+	runProxyExpectFailure(t, bin, []string{
+		"--mode=cooperative",
+		"--ca-dir=/dev/null",
+		"--allow=foo:443",
+		"--disable-audit=true",
+	}, "--interception-acceptance-reason is required when --mode=cooperative")
+}

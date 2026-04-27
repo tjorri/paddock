@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -996,5 +997,42 @@ func TestBuildEnv_ExtraEnvLastWinsOnControllerSide(t *testing.T) {
 	if got := em["SSL_CERT_FILE"]; got != agentCABundleMountPath {
 		t.Errorf("SSL_CERT_FILE (last-wins) = %q, want %q (controller value)",
 			got, agentCABundleMountPath)
+	}
+}
+
+func TestBuildPodSpec_PassesInterceptionAcceptanceArgs(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+	in.proxyAllowList = testProxyAllowList
+	in.interceptionMode = paddockv1alpha1.InterceptionModeCooperative
+	in.interceptionAcceptanceReason = "PSS-restricted enforced"
+	in.interceptionAcceptanceMatchedPolicy = "team-default"
+
+	ps := buildPodSpec(run, tpl, in)
+
+	// Locate the proxy init container.
+	var p corev1.Container
+	found := false
+	for _, c := range ps.InitContainers {
+		if c.Name == proxyContainerName {
+			p = c
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("proxy container %q not found in initContainers", proxyContainerName)
+	}
+
+	wantReasonArg := "--interception-acceptance-reason=PSS-restricted enforced"
+	wantPolicyArg := "--interception-acceptance-matched-policy=team-default"
+	if !slices.Contains(p.Args, wantReasonArg) {
+		t.Errorf("proxy args missing %q; got %v", wantReasonArg, p.Args)
+	}
+	if !slices.Contains(p.Args, wantPolicyArg) {
+		t.Errorf("proxy args missing %q; got %v", wantPolicyArg, p.Args)
 	}
 }

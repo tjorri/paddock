@@ -59,20 +59,22 @@ func init() {
 
 func main() {
 	var (
-		listenAddr       string
-		probeAddr        string
-		caDir            string
-		runName          string
-		runNamespace     string
-		allowList        string
-		mode             string
-		shutdownGrace    time.Duration
-		idleTimeout      time.Duration
-		disableAudit     bool
-		upstreamCABundle string
-		brokerEndpoint   string
-		brokerTokenPath  string
-		brokerCAPath     string
+		listenAddr                          string
+		probeAddr                           string
+		caDir                               string
+		runName                             string
+		runNamespace                        string
+		allowList                           string
+		mode                                string
+		shutdownGrace                       time.Duration
+		idleTimeout                         time.Duration
+		disableAudit                        bool
+		upstreamCABundle                    string
+		brokerEndpoint                      string
+		brokerTokenPath                     string
+		brokerCAPath                        string
+		interceptionAcceptanceReason        string
+		interceptionAcceptanceMatchedPolicy string
 	)
 	flag.StringVar(&listenAddr, "listen-address", ":15001",
 		"Listen address. Cooperative mode: HTTP CONNECT proxy (agent sends HTTPS_PROXY requests here). "+
@@ -94,6 +96,14 @@ func main() {
 			"redirected by iptables and recovers the destination via SO_ORIGINAL_DST (Linux only). "+
 			"Selected at Pod-build time by the reconciler; the binary is otherwise identical. "+
 			"F-27: explicit choice required to prevent silent fallback to cooperative.")
+	flag.StringVar(&interceptionAcceptanceReason, "interception-acceptance-reason", "",
+		"Required when --mode=cooperative. Carries the BrokerPolicy "+
+			"spec.interception.cooperativeAccepted.reason for the audit trail "+
+			"(F-19 residual). The controller passes this verbatim from the "+
+			"resolved BrokerPolicy.")
+	flag.StringVar(&interceptionAcceptanceMatchedPolicy, "interception-acceptance-matched-policy", "",
+		"Optional. Name of the BrokerPolicy whose spec.interception.cooperativeAccepted "+
+			"granted the cooperative interception. Embedded in the startup AuditEvent.")
 	flag.DurationVar(&shutdownGrace, "shutdown-grace", 10*time.Second,
 		"Time to wait for in-flight connections to drain on SIGTERM.")
 	flag.DurationVar(&idleTimeout, "idle-timeout", 60*time.Second,
@@ -136,6 +146,10 @@ func main() {
 	}
 	if mode != "transparent" && mode != "cooperative" {
 		setupLog.Error(nil, "--mode must be 'transparent' or 'cooperative'", "got", mode)
+		os.Exit(1)
+	}
+	if mode == "cooperative" && interceptionAcceptanceReason == "" {
+		setupLog.Error(nil, "--interception-acceptance-reason is required when --mode=cooperative; the controller passes it from BrokerPolicy.spec.interception.cooperativeAccepted.reason")
 		os.Exit(1)
 	}
 	if allowList == "" && brokerEndpoint == "" && !disableAudit {
@@ -219,7 +233,32 @@ func main() {
 
 	switch mode {
 	case "cooperative":
-		setupLog.Info("interception mode", "mode", mode, "listener", "HTTP CONNECT")
+		// F-19 residual: cooperative is single-point-of-trust. Emit a loud
+		// startup line so operators see the trade-off in proxy logs.
+		setupLog.Info("WARN: cooperative interception is single-point-of-trust — F-19 residual: a hostile agent that ignores HTTPS_PROXY can dial the public internet directly. Transparent mode is the recommended posture; cooperative is appropriate only with a trusted agent image.",
+			"mode", mode,
+			"listener", "HTTP CONNECT",
+			"accepted-by", interceptionAcceptanceReason)
+
+		// Emit one AuditEvent immediately. Use the audit sink directly rather
+		// than RecordEgress (which is for per-connection egress events). 5s
+		// timeout so a slow audit write can't pin proxy startup.
+		{
+			emitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			ae := auditing.NewInterceptionModeCooperativeAccepted(auditing.InterceptionInput{
+				RunName:       runName,
+				Namespace:     runNamespace,
+				MatchedPolicy: interceptionAcceptanceMatchedPolicy,
+				Reason:        interceptionAcceptanceReason,
+			})
+			if cs, ok := audit.(*proxy.ClientAuditSink); ok && cs.Sink != nil {
+				if err := cs.Sink.Write(emitCtx, ae); err != nil {
+					setupLog.Error(err, "failed to emit interception-mode-cooperative-accepted AuditEvent; continuing")
+				}
+			}
+			cancel()
+		}
+
 		httpSrv := &http.Server{
 			Addr:              listenAddr,
 			Handler:           p,

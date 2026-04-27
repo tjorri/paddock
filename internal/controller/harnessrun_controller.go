@@ -1191,6 +1191,10 @@ func (r *HarnessRunReconciler) ensureJob(
 			return nil, fmt.Errorf("interception unavailable: %s", decision.Reason)
 		}
 		in.interceptionMode = decision.Mode
+		if decision.Mode == paddockv1alpha1.InterceptionModeCooperative {
+			in.interceptionAcceptanceReason = decision.AcceptanceReason
+			in.interceptionAcceptanceMatchedPolicy = decision.MatchedPolicy
+		}
 		if decision.Mode == paddockv1alpha1.InterceptionModeTransparent {
 			in.iptablesInitImage = r.IPTablesInitImage
 		}

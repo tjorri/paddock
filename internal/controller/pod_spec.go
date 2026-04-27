@@ -190,6 +190,13 @@ type podSpecInputs struct {
 	// broker's serving cert. Populated by ensureBrokerCA when broker
 	// integration is enabled; empty otherwise.
 	brokerCASecret string
+
+	// interceptionAcceptanceReason carries the BrokerPolicy
+	// spec.interception.cooperativeAccepted.reason; passed to the proxy
+	// sidecar as --interception-acceptance-reason. Empty in transparent mode.
+	// F-19 residual.
+	interceptionAcceptanceReason        string
+	interceptionAcceptanceMatchedPolicy string
 }
 
 // buildJob renders the batchv1.Job for a HarnessRun. Assumes the caller
@@ -596,6 +603,8 @@ func buildProxyContainer(run *paddockv1alpha1.HarnessRun, in podSpecInputs) core
 		"--run-name=" + run.Name,
 		"--run-namespace=" + run.Namespace,
 		"--mode=" + string(mode),
+		fmt.Sprintf("--interception-acceptance-reason=%s", in.interceptionAcceptanceReason),
+		fmt.Sprintf("--interception-acceptance-matched-policy=%s", in.interceptionAcceptanceMatchedPolicy),
 	}
 	if in.brokerEndpoint != "" {
 		args = append(args,

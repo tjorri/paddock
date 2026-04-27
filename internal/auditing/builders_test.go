@@ -294,3 +294,45 @@ func TestNewBrokerCredsTampered(t *testing.T) {
 		t.Errorf("Reason unexpectedly contains a value-shaped string: %q", ae.Spec.Reason)
 	}
 }
+
+func TestNewInterceptionModeCooperativeAccepted(t *testing.T) {
+	when := time.Date(2026, 4, 27, 9, 0, 0, 0, time.UTC)
+	ae := auditing.NewInterceptionModeCooperativeAccepted(auditing.InterceptionInput{
+		RunName:       "hr-coop-1",
+		Namespace:     "team-b",
+		MatchedPolicy: "team-default",
+		Reason:        "PSS-restricted enforced",
+		When:          when,
+	})
+
+	if ae.Namespace != "team-b" {
+		t.Errorf("namespace = %q, want team-b", ae.Namespace)
+	}
+	if !strings.HasPrefix(ae.GenerateName, "ae-interception-") {
+		t.Errorf("GenerateName = %q, want ae-interception- prefix", ae.GenerateName)
+	}
+	if ae.Spec.Kind != paddockv1alpha1.AuditKindInterceptionModeCooperativeAccepted {
+		t.Errorf("kind = %q, want interception-mode-cooperative-accepted", ae.Spec.Kind)
+	}
+	if ae.Spec.Decision != paddockv1alpha1.AuditDecisionGranted {
+		t.Errorf("decision = %q, want granted", ae.Spec.Decision)
+	}
+	if ae.Spec.RunRef == nil || ae.Spec.RunRef.Name != "hr-coop-1" {
+		t.Errorf("run ref = %+v, want hr-coop-1", ae.Spec.RunRef)
+	}
+	if ae.Spec.MatchedPolicy == nil || ae.Spec.MatchedPolicy.Name != "team-default" {
+		t.Errorf("matched policy = %+v, want team-default", ae.Spec.MatchedPolicy)
+	}
+	if ae.Spec.Reason != "PSS-restricted enforced" {
+		t.Errorf("reason = %q, want PSS-restricted enforced", ae.Spec.Reason)
+	}
+	if ae.Spec.Timestamp != metav1.NewTime(when) {
+		t.Errorf("timestamp = %v, want %v", ae.Spec.Timestamp, when)
+	}
+	if ae.Labels[paddockv1alpha1.AuditEventLabelKind] != string(paddockv1alpha1.AuditKindInterceptionModeCooperativeAccepted) {
+		t.Errorf("kind label = %q", ae.Labels[paddockv1alpha1.AuditEventLabelKind])
+	}
+	if ae.Labels[paddockv1alpha1.AuditEventLabelDecision] != string(paddockv1alpha1.AuditDecisionGranted) {
+		t.Errorf("decision label = %q", ae.Labels[paddockv1alpha1.AuditEventLabelDecision])
+	}
+}
