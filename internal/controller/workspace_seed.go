@@ -388,7 +388,14 @@ func seedInitContainer(idx int, repo paddockv1alpha1.WorkspaceGitSource, image s
 	// helper first; otherwise we can exec git directly with args.
 	switch {
 	case repo.BrokerCredentialRef != nil:
-		c.Command = []string{"sh", "-c", brokerAskpassSetupScript() + " && exec git " + strings.Join(quoteArgs(args), " ")}
+		scrubbed := scrubURLUserinfo(repo.URL)
+		clone := "git " + strings.Join(quoteArgs(args), " ")
+		// Defence-in-depth (F-50): even if a URL with userinfo bypassed
+		// admission, the on-PVC .git/config never persists it. Wrapped
+		// inside the same sh -c so a clone failure short-circuits before
+		// the remote rewrite (the && chain).
+		rewrite := fmt.Sprintf("git -C %s remote set-url origin %s", shellQuote(target), shellQuote(scrubbed))
+		c.Command = []string{"sh", "-c", brokerAskpassSetupScript() + " && " + clone + " && " + rewrite}
 	case repo.CredentialsSecretRef != nil && !isSSHURL(repo.URL):
 		c.Command = []string{"sh", "-c", askpassSetupScript() + " && exec git " + strings.Join(quoteArgs(args), " ")}
 	default:

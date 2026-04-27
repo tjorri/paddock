@@ -210,6 +210,16 @@ func validateRepoURL(p *field.Path, raw string) *field.Error {
 				fmt.Sprintf("scheme %q is not allowed; only https:// or ssh:// (or scp-style user@host:path) accepted", u.Scheme))
 		}
 	}
+	// F-50: reject userinfo on https URLs. Credentials must flow via
+	// credentialsSecretRef or brokerCredentialRef, never embedded in URL.
+	u, err := url.Parse(raw)
+	if err != nil {
+		return field.Invalid(p, raw, "must be a valid URL")
+	}
+	if u.User != nil {
+		return field.Invalid(p, raw,
+			"https URL must not contain userinfo; use credentialsSecretRef or brokerCredentialRef for credentials")
+	}
 	return nil
 }
 

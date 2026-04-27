@@ -19,6 +19,7 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -124,7 +125,7 @@ func repoManifestJSON(repos []paddockv1alpha1.WorkspaceGitSource) string {
 	}
 	out := make([]entry, len(repos))
 	for i, r := range repos {
-		out[i] = entry{URL: r.URL, Path: strings.TrimSpace(r.Path), Branch: r.Branch}
+		out[i] = entry{URL: scrubURLUserinfo(r.URL), Path: strings.TrimSpace(r.Path), Branch: r.Branch}
 	}
 	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -168,6 +169,26 @@ func seedRepoSchemeAllowed(raw string) bool {
 		return true
 	}
 	return strings.HasPrefix(raw, "https://")
+}
+
+// scrubURLUserinfo returns raw with any userinfo segment stripped.
+// Defence-in-depth for F-50: the webhook should already have rejected
+// userinfo, but if a URL slips through (direct API write), this helper
+// keeps the credential off the PVC manifest and post-clone remote.
+//
+// Only operates on https:// URLs — SSH and scp-style URLs carry "git@"
+// as the canonical username (not credentials), and the broker-backed
+// substitute-auth path is HTTPS-only.
+func scrubURLUserinfo(raw string) string {
+	if !strings.HasPrefix(raw, "https://") {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
 }
 
 // seedPodSecurityContext returns the pod-level SecurityContext the seed

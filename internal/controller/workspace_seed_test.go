@@ -18,6 +18,7 @@ package controller
 
 import (
 	"net"
+	"strings"
 	"testing"
 
 	networkingv1 "k8s.io/api/networking/v1"
@@ -157,5 +158,55 @@ func TestIsSSHURL(t *testing.T) {
 				t.Fatalf("isSSHURL(%q) = %v, want %v", tc.url, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRepoManifestJSON_ScrubsUserinfo(t *testing.T) {
+	repos := []paddockv1alpha1.WorkspaceGitSource{
+		{URL: "https://x:secret@example.com/foo.git", Path: "foo"},
+	}
+	out := repoManifestJSON(repos)
+	if strings.Contains(out, "secret") || strings.Contains(out, "x:") {
+		t.Fatalf("manifest contains userinfo: %s", out)
+	}
+	if !strings.Contains(out, "https://example.com/foo.git") {
+		t.Fatalf("manifest missing scrubbed URL: %s", out)
+	}
+}
+
+func TestSeedInitContainer_BrokerBackedAppendsPostCloneRewrite(t *testing.T) {
+	repo := paddockv1alpha1.WorkspaceGitSource{
+		URL:  "https://github.com/org/repo.git",
+		Path: "repo",
+		BrokerCredentialRef: &paddockv1alpha1.BrokerCredentialReference{
+			Name: "hr-1-broker-creds", Key: "GITHUB_TOKEN",
+		},
+	}
+	c, _ := seedInitContainer(0, repo, "alpine/git@sha256:0000000000000000000000000000000000000000000000000000000000000000")
+	if len(c.Command) != 3 || c.Command[0] != "sh" || c.Command[1] != "-c" {
+		t.Fatalf("unexpected command shape: %v", c.Command)
+	}
+	if !strings.Contains(c.Command[2], "remote set-url origin") {
+		t.Fatalf("post-clone rewrite missing: %s", c.Command[2])
+	}
+	if !strings.Contains(c.Command[2], "https://github.com/org/repo.git") {
+		t.Fatalf("rewrite target missing scrubbed URL: %s", c.Command[2])
+	}
+}
+
+func TestScrubURLUserinfo(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"https://example.com/foo.git", "https://example.com/foo.git"},
+		{"https://user:secret@example.com/foo.git", "https://example.com/foo.git"},
+		{"https://user@example.com/foo.git", "https://example.com/foo.git"},
+		{"ssh://git@example.com/foo.git", "ssh://git@example.com/foo.git"}, // not https:// — returned unchanged
+		{"git@example.com:foo.git", "git@example.com:foo.git"},
+	}
+	for _, tc := range cases {
+		if got := scrubURLUserinfo(tc.in); got != tc.want {
+			t.Errorf("scrubURLUserinfo(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
