@@ -31,6 +31,22 @@ import (
 	"time"
 )
 
+// cacheLen returns the current cache size. Test-only helper, lives in
+// the test file so it isn't shipped in the production binary.
+func (ca *MITMCertificateAuthority) cacheLen() int {
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+	return ca.order.Len()
+}
+
+// cacheHas returns true when host is in the cache. Test-only helper.
+func (ca *MITMCertificateAuthority) cacheHas(host string) bool {
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
+	_, ok := ca.cache[host]
+	return ok
+}
+
 // newTestCA builds a fresh self-signed CA and wraps it in a
 // MITMCertificateAuthority. If cap > 0, SetCacheCapacity is called so the
 // eviction tests can use a small bound.

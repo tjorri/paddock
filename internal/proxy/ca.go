@@ -165,19 +165,6 @@ func (ca *MITMCertificateAuthority) SetCacheCapacity(n int) {
 	}
 }
 
-func (ca *MITMCertificateAuthority) cacheLen() int {
-	ca.mu.Lock()
-	defer ca.mu.Unlock()
-	return ca.order.Len()
-}
-
-func (ca *MITMCertificateAuthority) cacheHas(host string) bool {
-	ca.mu.Lock()
-	defer ca.mu.Unlock()
-	_, ok := ca.cache[host]
-	return ok
-}
-
 func (ca *MITMCertificateAuthority) evictOldestLocked() {
 	oldest := ca.order.Back()
 	if oldest == nil {
