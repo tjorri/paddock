@@ -156,9 +156,7 @@ func main() {
 		Client:    cachedClient,
 		Auth:      &broker.Authenticator{Client: kclient},
 		Providers: registry,
-		Audit: &broker.AuditWriter{
-			Sink: &auditing.KubeSink{Client: cachedClient, Component: "broker"},
-		},
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: cachedClient, Component: "broker"}),
 	}
 
 	mux := http.NewServeMux()

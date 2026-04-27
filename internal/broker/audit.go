@@ -50,9 +50,32 @@ type CredentialAudit struct {
 	When           time.Time
 }
 
+// NewAuditWriter is the documented constructor. Use it instead of
+// AuditWriter{...} literals so misconfiguration (no Sink, no Client)
+// surfaces at construction time rather than as a write-time NPE.
+//
+// The AuditWriter shim is intended for removal once all broker call
+// sites consume auditing.Sink directly via Server.Sink. Adding the
+// constructor here is the first step in that migration; the actual
+// removal is a follow-up tracked in the engineering review's B-11
+// mini-card.
+func NewAuditWriter(sink auditing.Sink) *AuditWriter {
+	if sink == nil {
+		panic("broker.NewAuditWriter: sink must not be nil; use auditing.NoopSink{} for tests that don't care about audit emission")
+	}
+	return &AuditWriter{Sink: sink}
+}
+
 func (w *AuditWriter) sink() auditing.Sink {
 	if w.Sink != nil {
 		return w.Sink
+	}
+	if w.Client == nil {
+		// Zero-value AuditWriter{} would otherwise return a
+		// nil-Client KubeSink that panics at the first Write call.
+		// Surface the misconfiguration here, where the stack trace
+		// points at the actual site.
+		panic("broker.AuditWriter: neither Sink nor Client is set; construct via broker.NewAuditWriter(sink)")
 	}
 	return &auditing.KubeSink{Client: w.Client, Component: "broker"}
 }

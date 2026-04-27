@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/auditing"
 	"paddock.dev/paddock/internal/broker"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 	"paddock.dev/paddock/internal/broker/providers"
@@ -99,7 +100,7 @@ func setupAnthropic(t *testing.T) (*broker.Server, *providers.AnthropicAPIProvid
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Client: c},
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
 	}, ap
 }
 

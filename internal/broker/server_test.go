@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/auditing"
 	"paddock.dev/paddock/internal/broker"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 	"paddock.dev/paddock/internal/broker/providers"
@@ -142,7 +143,7 @@ func setup(t *testing.T) (*broker.Server, client.Client) {
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Client: c},
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
 	}, c
 }
 
@@ -240,7 +241,7 @@ func (r *recordingAuditSink) events() []*paddockv1alpha1.AuditEvent {
 func TestIssue_AuditFailure_Returns503AndNoCredential(t *testing.T) {
 	t.Parallel()
 	srv, _ := setup(t)
-	srv.Audit = &broker.AuditWriter{Sink: errorSink{err: errors.New("etcd partition")}}
+	srv.Audit = broker.NewAuditWriter(errorSink{err: errors.New("etcd partition")})
 
 	rr := post(t, srv, "hello", "my-team", "valid-token", `{"name":"DEMO_TOKEN"}`)
 	if rr.Code != http.StatusServiceUnavailable {
@@ -254,7 +255,7 @@ func TestIssue_AuditFailure_Returns503AndNoCredential(t *testing.T) {
 func TestIssue_DenyAuditFailure_Returns503(t *testing.T) {
 	t.Parallel()
 	srv, _ := setup(t)
-	srv.Audit = &broker.AuditWriter{Sink: errorSink{err: errors.New("etcd partition")}}
+	srv.Audit = broker.NewAuditWriter(errorSink{err: errors.New("etcd partition")})
 
 	// Ask for a credential the template does not declare → CredentialNotFound.
 	rr := post(t, srv, "hello", "my-team", "valid-token", `{"name":"NO_SUCH_CRED"}`)
@@ -364,7 +365,7 @@ func TestIssue_Success_AnthropicAPI(t *testing.T) {
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Client: c},
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
 	}
 
 	body, _ := json.Marshal(brokerapi.IssueRequest{Name: "ANTHROPIC"})
@@ -583,7 +584,7 @@ func TestValidateEgress_DiscoveryAllow(t *testing.T) {
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Client: c},
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
 	}
 
 	body, _ := json.Marshal(brokerapi.ValidateEgressRequest{Host: "example.com", Port: 443})
@@ -629,7 +630,7 @@ func TestIssue_GetRunInfraError_EmitsAudit(t *testing.T) {
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: "team-a", ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Sink: rec},
+		Audit:     broker.NewAuditWriter(rec),
 	}
 	rr := post(t, srv, "hr-1", "team-a", "valid-token", `{"name":"DEMO_TOKEN"}`)
 	if rr.Code != http.StatusInternalServerError && rr.Code != http.StatusServiceUnavailable {
@@ -685,7 +686,7 @@ func TestIssue_ResolveTemplateInfraError_EmitsAudit(t *testing.T) {
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: "team-a", ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Sink: rec},
+		Audit:     broker.NewAuditWriter(rec),
 	}
 	rr := post(t, srv, "hr-1", "team-a", "valid-token", `{"name":"DEMO_TOKEN"}`)
 	if rr.Code != http.StatusInternalServerError && rr.Code != http.StatusServiceUnavailable {
@@ -780,7 +781,7 @@ func setupSubstituteAuth(t *testing.T, sub *stubSubstituter) (*broker.Server, cl
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Client: c},
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
 	}, c
 }
 
@@ -794,7 +795,7 @@ func TestSubstituteAuth_GrantedEmitsCredentialIssuedAudit(t *testing.T) {
 	}
 	srv, _ := setupSubstituteAuth(t, sub)
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -827,7 +828,7 @@ func TestSubstituteAuth_SubstituteFailedEmitsCredentialDeniedAudit(t *testing.T)
 	}
 	srv, _ := setupSubstituteAuth(t, sub)
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -858,7 +859,7 @@ func TestSubstituteAuth_BearerUnknownEmitsCredentialDeniedAudit(t *testing.T) {
 	sub := &stubSubstituter{name: "anthropic-stub", matched: false}
 	srv, _ := setupSubstituteAuth(t, sub)
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -887,7 +888,7 @@ func TestSubstituteAuth_RunNotFound_DeniesAndAudits(t *testing.T) {
 		setHdrs: map[string]string{"x-api-key": "real-key"}}
 	srv, _ := setupSubstituteAuth(t, sub)
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -928,7 +929,7 @@ func TestSubstituteAuth_RunCancelled_DeniesAndAudits(t *testing.T) {
 		t.Fatalf("update run status: %v", err)
 	}
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -997,7 +998,7 @@ func TestIssue_ListBrokerPoliciesInfraError_EmitsAudit(t *testing.T) {
 		Client:    c,
 		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: "team-a", ServiceAccount: "default"}},
 		Providers: registry,
-		Audit:     &broker.AuditWriter{Sink: rec},
+		Audit:     broker.NewAuditWriter(rec),
 	}
 	rr := post(t, srv, "hr-1", "team-a", "valid-token", `{"name":"DEMO_TOKEN"}`)
 	if rr.Code != http.StatusInternalServerError && rr.Code != http.StatusServiceUnavailable {
@@ -1028,7 +1029,7 @@ func TestSubstituteAuth_PolicyRevoked_DeniesAndAudits(t *testing.T) {
 	// the test stub's credentialName to ANTHROPIC_API_KEY (no matching grant
 	// in the fixture) so the re-check fails with PolicyRevoked.
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -1065,7 +1066,7 @@ func TestSubstituteAuth_EgressRevoked_DeniesAndAudits(t *testing.T) {
 	}
 	srv, c := setupSubstituteAuth(t, sub)
 	rec := &recordingAuditSink{}
-	srv.Audit = &broker.AuditWriter{Sink: rec}
+	srv.Audit = broker.NewAuditWriter(rec)
 
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -1091,4 +1092,52 @@ func TestSubstituteAuth_EgressRevoked_DeniesAndAudits(t *testing.T) {
 		t.Errorf("kind = %q, want credential-denied", wrote[0].Spec.Kind)
 	}
 	_ = c
+}
+
+func TestAuditWriter_NewAuditWriter_PanicsOnNilSink(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("NewAuditWriter(nil) did not panic")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("panic value = %T, want string", r)
+		}
+		if !strings.Contains(msg, "sink must not be nil") {
+			t.Errorf("panic msg = %q, want contains 'sink must not be nil'", msg)
+		}
+	}()
+	_ = broker.NewAuditWriter(nil)
+}
+
+func TestAuditWriter_ZeroValue_PanicsOnFirstSink(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("(&AuditWriter{}).sink() via Write did not panic")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("panic value = %T, want string", r)
+		}
+		if !strings.Contains(msg, "NewAuditWriter") {
+			t.Errorf("panic msg = %q, want contains 'NewAuditWriter'", msg)
+		}
+	}()
+	w := &broker.AuditWriter{}
+	_ = w.CredentialIssued(context.Background(), broker.CredentialAudit{})
+}
+
+func TestAuditWriter_NewAuditWriter_HappyPath(t *testing.T) {
+	rec := &recordingAuditSink{}
+	w := broker.NewAuditWriter(rec)
+	if err := w.CredentialIssued(context.Background(), broker.CredentialAudit{
+		RunName: "hr-1", Namespace: "team-a", CredentialName: "DEMO",
+	}); err != nil {
+		t.Fatalf("CredentialIssued: %v", err)
+	}
+	if got := len(rec.events()); got != 1 {
+		t.Errorf("recorded %d events, want 1", got)
+	}
 }
