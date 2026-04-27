@@ -18,6 +18,9 @@ concurrency:
   group: test-e2e-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   test-e2e:
     name: Run on Ubuntu
