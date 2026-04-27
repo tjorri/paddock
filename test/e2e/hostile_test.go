@@ -769,6 +769,15 @@ spec:
 
 			By("submitting a HarnessRun that acquires a PATPool lease")
 			runName := "revoke-test"
+			// Dump describe + events + controller + broker logs on any
+			// spec failure (lease-acquisition timeout, finalizer stuck,
+			// metric never decrements) so the next CI flake gives us
+			// real signal instead of a bare Eventually-timed-out line.
+			DeferCleanup(func() {
+				if CurrentSpecReport().Failed() {
+					dumpRunDiagnostics(ctx, t2Namespace, runName)
+				}
+			})
 			mustApplyManifest(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
@@ -841,6 +850,21 @@ spec:
 			By("creating pool Secret, HarnessTemplate, and BrokerPolicy (2-slot pool)")
 			mustApplyManifest(patPoolFixtureManifest(t2Namespace, "t2-restart", 2))
 
+			runA := "restart-a"
+			runB := "restart-b"
+			// Catch-all: dump diagnostics on any spec failure (collision
+			// after restart, distinct-slot Eventually flake, etc.). The
+			// per-Eventually runAOK/runBOK guards below cover the
+			// lease-acquisition phase; this guard covers the post-
+			// restart assertions where both flags are true but the spec
+			// can still fail.
+			DeferCleanup(func() {
+				if CurrentSpecReport().Failed() {
+					dumpRunDiagnostics(ctx, t2Namespace, runA)
+					dumpRunDiagnostics(ctx, t2Namespace, runB)
+				}
+			})
+
 			// Apply runs SEQUENTIALLY (not in a tight loop): in CI the
 			// reconcile rate per (namespace, run) is bounded, and a tight
 			// loop can leave the second run stuck behind the first run's
@@ -848,8 +872,6 @@ spec:
 			// "post-restart slots stay distinct" — that's verified the
 			// same way whether runs leased concurrently or one-after-the-
 			// other, so prefer the more robust sequential setup.
-			runA := "restart-a"
-			runB := "restart-b"
 
 			By("starting run-a and waiting for it to acquire a lease")
 			mustApplyManifest(fmt.Sprintf(`
@@ -947,6 +969,17 @@ spec:
 
 			By("submitting a HarnessRun and waiting for it to acquire a lease")
 			runName := "force-clear"
+			// On any spec failure dump describe + events + controller +
+			// broker logs. The lease-acquisition Eventually below has
+			// flaked in CI without any signal — see CI run 24999903077;
+			// without this dump we cannot tell whether the controller
+			// never called Issue, the broker rejected, or the pool was
+			// already exhausted from prior-spec leftover state.
+			DeferCleanup(func() {
+				if CurrentSpecReport().Failed() {
+					dumpRunDiagnostics(ctx, t2Namespace, runName)
+				}
+			})
 			mustApplyManifest(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
@@ -999,6 +1032,15 @@ spec:
 		It("smoke-checks that /v1/issue rejects unauthenticated requests (F-17 a e2e smoke)", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
+
+			// On spec failure, dump broker pod state + controller +
+			// broker logs so a port-forward / TLS-handshake / 401-route
+			// regression surfaces with diagnostic context.
+			DeferCleanup(func() {
+				if CurrentSpecReport().Failed() {
+					dumpBrokerDiagnostics(ctx)
+				}
+			})
 
 			// The load-bearing F-17(a) oversize-body assertion lives in
 			// TestHandleIssue_OversizeBody_BadRequest (internal/broker/server_test.go).
@@ -1070,6 +1112,15 @@ spec:
 
 			// Always restore broker so subsequent specs are not broken.
 			DeferCleanup(restoreBroker)
+
+			// On spec failure, dump broker pod state + logs so a
+			// readiness-probe regression (broker stuck in cold-start,
+			// never returns 200) surfaces with diagnostic context.
+			DeferCleanup(func() {
+				if CurrentSpecReport().Failed() {
+					dumpBrokerDiagnostics(ctx)
+				}
+			})
 
 			By("restarting the broker pod")
 			Expect(brokerRolloutRestart(ctx)).To(Succeed())
@@ -1511,4 +1562,27 @@ func dumpRunDiagnostics(ctx context.Context, namespace, runName string) {
 		"-n", "paddock-system", "logs", "-l", "control-plane=controller-manager", "--tail=200")
 	dump("broker logs",
 		"-n", "paddock-system", "logs", "-l", "app.kubernetes.io/component=broker", "--tail=200")
+}
+
+// dumpBrokerDiagnostics emits to GinkgoWriter the current broker pod
+// state, controller-manager logs, and broker logs. Used by Theme 2
+// specs that don't own a single HarnessRun (F-16 cold-start, F-17a
+// oversize-body smoke) so the next CI flake gives us real signal.
+func dumpBrokerDiagnostics(ctx context.Context) {
+	dump := func(title string, args ...string) {
+		out, _ := utils.Run(exec.CommandContext(ctx, "kubectl", args...))
+		GinkgoWriter.Printf("--- %s ---\n%s\n", title, out)
+	}
+	dump("broker deployment",
+		"-n", "paddock-system", "describe", "deploy", v3BrokerDeploy)
+	dump("broker pods",
+		"-n", "paddock-system", "get", "pods", "-l", "app.kubernetes.io/component=broker", "-o", "wide")
+	dump("broker pod descriptions",
+		"-n", "paddock-system", "describe", "pods", "-l", "app.kubernetes.io/component=broker")
+	dump("broker endpoints",
+		"-n", "paddock-system", "get", "endpoints", v3BrokerDeploy)
+	dump("controller-manager logs",
+		"-n", "paddock-system", "logs", "-l", "control-plane=controller-manager", "--tail=200")
+	dump("broker logs",
+		"-n", "paddock-system", "logs", "-l", "app.kubernetes.io/component=broker", "--tail=300")
 }
