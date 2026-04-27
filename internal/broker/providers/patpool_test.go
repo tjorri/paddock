@@ -20,7 +20,9 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -412,5 +414,83 @@ func TestPATPoolProvider_SubstituteResultFieldsPopulated(t *testing.T) {
 	}
 	if len(sub.AllowedHeaders) == 0 {
 		t.Errorf("AllowedHeaders empty; want non-empty allowlist")
+	}
+}
+
+func TestPATPool_ConcurrentIssueNoDuplicates(t *testing.T) {
+	t.Parallel()
+
+	const (
+		poolSize = 5
+		attempts = 50
+	)
+	entries := make([]string, poolSize)
+	for i := range entries {
+		entries[i] = fmt.Sprintf("ghp_pat_%d", i)
+	}
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).
+		WithObjects(patPoolSecret(strings.Join(entries, "\n") + "\n")).Build()
+	p := &PATPoolProvider{Client: c}
+
+	type result struct {
+		bearer string
+		err    error
+	}
+	resultsCh := make(chan result, attempts)
+
+	var wg sync.WaitGroup
+	wg.Add(attempts)
+	for i := 0; i < attempts; i++ {
+		go func(i int) {
+			defer wg.Done()
+			res, err := p.Issue(context.Background(), IssueRequest{
+				RunName:        fmt.Sprintf("cc-%d", i),
+				Namespace:      "my-team",
+				CredentialName: "GITHUB_TOKEN",
+				Grant:          patPoolGrant(),
+			})
+			resultsCh <- result{bearer: res.Value, err: err}
+		}(i)
+	}
+	wg.Wait()
+	close(resultsCh)
+
+	var (
+		successes []string
+		exhausted int
+	)
+	for r := range resultsCh {
+		switch {
+		case r.err == nil:
+			successes = append(successes, r.bearer)
+		case errors.Is(r.err, ErrPoolExhausted):
+			exhausted++
+		default:
+			t.Errorf("unexpected error: %v", r.err)
+		}
+	}
+
+	if len(successes) != poolSize {
+		t.Fatalf("got %d successes, want %d (pool size)", len(successes), poolSize)
+	}
+	if exhausted != attempts-poolSize {
+		t.Fatalf("got %d exhausted errors, want %d", exhausted, attempts-poolSize)
+	}
+
+	// Each successful bearer must resolve to a distinct PAT.
+	seen := make(map[string]string, len(successes))
+	for _, bearer := range successes {
+		sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+			Namespace: "my-team", Host: "github.com",
+			IncomingBearer: bearer,
+		})
+		if err != nil {
+			t.Fatalf("SubstituteAuth(%s): %v", bearer, err)
+		}
+		auth := sub.SetHeaders["Authorization"]
+		if prev, ok := seen[auth]; ok {
+			t.Fatalf("two bearers resolved to the same PAT: %s and %s (auth=%q)", prev, bearer, auth)
+		}
+		seen[auth] = bearer
 	}
 }
