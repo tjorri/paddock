@@ -49,3 +49,77 @@ func TestValidateExternalHost_BaselineRules(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateExternalHost_ClusterInternalDenied(t *testing.T) {
+	denied := []string{
+		"localhost",
+		"kubernetes",
+		"kubernetes.default",
+		"kubernetes.default.svc",
+		"kubernetes.default.svc.cluster.local",
+		"svc",
+		"cluster.local",
+		"svc.cluster.local",
+		"paddock-broker.paddock-system.svc",
+		"paddock-broker.paddock-system.svc.cluster.local",
+		"foo.bar.cluster.local",
+		"*.svc",
+		"*.svc.cluster.local",
+		"*.cluster.local",
+	}
+	for _, h := range denied {
+		t.Run(h, func(t *testing.T) {
+			errs := validateExternalHost(field.NewPath("host"), h)
+			if len(errs) == 0 {
+				t.Fatalf("validateExternalHost(%q): expected rejection, got none", h)
+			}
+			if !strings.Contains(errs.ToAggregate().Error(), "cluster-internal") {
+				t.Fatalf("validateExternalHost(%q): err=%q missing cluster-internal hint", h, errs.ToAggregate().Error())
+			}
+		})
+	}
+}
+
+func TestValidateExternalHost_IPLiteralsDenied(t *testing.T) {
+	denied := []string{
+		"127.0.0.1",
+		"10.0.0.1",
+		"169.254.169.254",
+		"192.0.2.1",
+		"::1",
+		"[::1]",
+		"2001:db8::1",
+	}
+	for _, h := range denied {
+		t.Run(h, func(t *testing.T) {
+			errs := validateExternalHost(field.NewPath("host"), h)
+			if len(errs) == 0 {
+				t.Fatalf("validateExternalHost(%q): expected rejection, got none", h)
+			}
+			if !strings.Contains(errs.ToAggregate().Error(), "IP literal") {
+				t.Fatalf("validateExternalHost(%q): err=%q missing IP-literal hint", h, errs.ToAggregate().Error())
+			}
+		})
+	}
+}
+
+func TestValidateExternalHost_BareWildcards(t *testing.T) {
+	cases := []struct {
+		host string
+		hint string
+	}{
+		{"*", "catch-all"},
+		{"*.", "wildcard"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.host, func(t *testing.T) {
+			errs := validateExternalHost(field.NewPath("host"), tc.host)
+			if len(errs) == 0 {
+				t.Fatalf("validateExternalHost(%q): expected rejection, got none", tc.host)
+			}
+			if !strings.Contains(errs.ToAggregate().Error(), tc.hint) {
+				t.Fatalf("validateExternalHost(%q): err=%q missing %q", tc.host, errs.ToAggregate().Error(), tc.hint)
+			}
+		})
+	}
+}

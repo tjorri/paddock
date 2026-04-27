@@ -559,4 +559,47 @@ var _ = Describe("BrokerPolicy Webhook", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("PATPool requires hosts"))
 	})
+
+	Context("F-34 cluster-internal and IP-literal host rejection", func() {
+		denied := []string{
+			"*",
+			"localhost",
+			"kubernetes.default.svc",
+			"*.svc.cluster.local",
+			"127.0.0.1",
+			"10.0.0.1",
+			"169.254.169.254",
+			"::1",
+		}
+		for _, h := range denied {
+			It("rejects egress host "+h, func() {
+				spec := minimalSpec()
+				spec.Grants.Egress = []paddockv1alpha1.EgressGrant{{Host: h, Ports: []int32{443}}}
+				err := validate(spec)
+				Expect(err).To(HaveOccurred())
+			})
+		}
+
+		It("rejects a proxyInjected host that is cluster-internal", func() {
+			spec := minimalSpec()
+			spec.Grants.Egress = append(spec.Grants.Egress, paddockv1alpha1.EgressGrant{
+				Host: "*.svc.cluster.local", Ports: []int32{443},
+			})
+			spec.Grants.Credentials = []paddockv1alpha1.CredentialGrant{{
+				Name: "INTERNAL",
+				Provider: paddockv1alpha1.ProviderConfig{
+					Kind:      "UserSuppliedSecret",
+					SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+					DeliveryMode: &paddockv1alpha1.DeliveryMode{
+						ProxyInjected: &paddockv1alpha1.ProxyInjectedDelivery{
+							Hosts:  []string{"foo.svc.cluster.local"},
+							Header: &paddockv1alpha1.HeaderSubstitution{Name: "X-Custom"},
+						},
+					},
+				},
+			}}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+		})
+	})
 })
