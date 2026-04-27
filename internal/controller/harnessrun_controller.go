@@ -390,6 +390,7 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					ObservedGeneration: run.Generation,
 				})
 				run.Status.Phase = paddockv1alpha1.HarnessRunPhaseFailed
+				recordHarnessRunPhaseTransition(string(origStatus.Phase), string(run.Status.Phase))
 				r.Recorder.Eventf(&run, corev1.EventTypeWarning, "ProxyCAMisconfigured", "%s", msg)
 				if r.Audit != nil {
 					r.Audit.EmitRunCAMisconfigured(ctx, run.Name, run.Namespace, msg)
@@ -433,6 +434,7 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					ObservedGeneration: run.Generation,
 				})
 				run.Status.Phase = paddockv1alpha1.HarnessRunPhaseFailed
+				recordHarnessRunPhaseTransition(string(origStatus.Phase), string(run.Status.Phase))
 				r.Recorder.Eventf(&run, corev1.EventTypeWarning, "BrokerCAMisconfigured", "%s", msg)
 				if r.Audit != nil {
 					r.Audit.EmitRunCAMisconfigured(ctx, run.Name, run.Namespace, msg)
