@@ -2825,3 +2825,462 @@ review:
 - [ ] Quickstart Step 4 walked end-to-end on a fresh `make kind-up`
   cluster with a real Anthropic API key (per the v0.4 quickstart
   contract).
+
+---
+
+## Phase 1 update — design pivot (2026-04-28)
+
+Phase 1 ran. Findings doc:
+`docs/superpowers/plans/2026-04-28-cilium-compat-findings.md`. The
+real Issue B mechanism is the per-run NetworkPolicy missing a
+loopback allow rule, NOT iptables-init being silently bypassed. See
+spec §11 ("Phase 1 update — design pivot") for the full narrative.
+
+**Tasks 14–20 (cilium-KPR detection, cooperative downgrade, AuditKind,
+MinInterceptionMode, etc.) are obsolete and dropped from this branch.**
+The remaining task list is the much-smaller substitute below. Tasks
+keep their original numbers where the work is unchanged; new tasks
+prefix `2P1-` ("Phase 2 post-Phase-1").
+
+### Task 8 (revised): detect Cilium CNP CRDs at startup
+
+Same as the original Task 8 above. No revision.
+
+### Task 9 (revised): wire CNP detection into startup
+
+Same as original Task 9 above. No revision.
+
+### Task 10 (revised): build CNP variant with toEntities + LOOPBACK ALLOW
+
+Same as original Task 10 except the rule list adds **one extra
+entry** for loopback. Update the test expectations to assert
+the new rule is present.
+
+In the rule list inside `buildCiliumEgressPolicy`, AFTER the
+broker rule and BEFORE `ciliumEgressRulesAdditional()`, add:
+
+```go
+// Loopback allow — required so iptables nat OUTPUT REDIRECT from
+// agent traffic on TCP 80/443 to the proxy at 127.0.0.1:15001 is
+// not dropped by Cilium-with-KPR's NP enforcement (Issue #79). On
+// kindnet/Calico this is a no-op (loopback isn't policed).
+rules = append(rules, map[string]interface{}{
+    "toCIDRSet": []interface{}{
+        map[string]interface{}{"cidr": "127.0.0.0/8"},
+    },
+    "toPorts": []interface{}{
+        map[string]interface{}{
+            "ports": []interface{}{
+                map[string]interface{}{"protocol": "TCP"},
+            },
+        },
+    },
+})
+```
+
+Update `TestBuildCiliumEgressPolicy_HasKubeApiserverAndRemoteNodeEntities`
+(or split into a dedicated `TestBuildCiliumEgressPolicy_HasLoopbackAllow`)
+to assert the loopback rule is present.
+
+### Task 11 (revised): branch ensureRunNetworkPolicy on CNP availability
+
+Same as original Task 11. No revision specific to the pivot — the
+branching logic stands.
+
+### Task 2P1-1 (NEW): add loopback allow to STANDARD NetworkPolicy builder
+
+**Files:**
+- Modify: `internal/controller/network_policy.go` (add loopback rule
+  to the `rules := []networkingv1.NetworkPolicyEgressRule{...}`
+  literal in `buildEgressNetworkPolicy`)
+- Modify: `internal/controller/network_policy_test.go` (add test
+  asserting the rule is present in standard-NP output)
+
+The same loopback gap exists on the standard-NP path (it just
+doesn't break kindnet/Calico because they don't police loopback).
+Add the rule for parity and defence-in-depth.
+
+- [ ] **Step 1: Write the failing test**
+
+In `network_policy_test.go`, append:
+
+```go
+func TestBuildEgressNetworkPolicy_HasLoopbackAllow(t *testing.T) {
+    cfg := networkPolicyConfig{
+        ClusterPodCIDR:     "10.244.0.0/16",
+        ClusterServiceCIDR: "10.96.0.0/12",
+        BrokerNamespace:    "paddock-system",
+        BrokerPort:         8443,
+    }
+    np := buildEgressNetworkPolicy(
+        metav1.LabelSelector{MatchLabels: map[string]string{"x": "y"}},
+        "x", "y", nil, cfg,
+    )
+    found := false
+    for _, rule := range np.Spec.Egress {
+        for _, peer := range rule.To {
+            if peer.IPBlock != nil && peer.IPBlock.CIDR == "127.0.0.0/8" {
+                found = true
+            }
+        }
+    }
+    if !found {
+        t.Errorf("expected egress rule with ipBlock 127.0.0.0/8")
+    }
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/controller/ -run TestBuildEgressNetworkPolicy_HasLoopbackAllow -v`
+Expected: FAIL — no loopback rule yet.
+
+- [ ] **Step 3: Add the loopback rule**
+
+In `internal/controller/network_policy.go::buildEgressNetworkPolicy`,
+inside the `rules := []networkingv1.NetworkPolicyEgressRule{...}`
+literal, after the public-internet TCP/443 + TCP/80 rules and the
+optional broker rule, before the optional apiserver rule, add:
+
+```go
+{
+    To: []networkingv1.NetworkPolicyPeer{
+        {IPBlock: &networkingv1.IPBlock{CIDR: "127.0.0.0/8"}},
+    },
+    Ports: []networkingv1.NetworkPolicyPort{
+        {Protocol: &tcp},
+    },
+},
+```
+
+The empty-`Port` field means "any TCP port to loopback." See
+the godoc for `NetworkPolicyPort.Port`: nil/zero matches all ports.
+
+(If the existing rules construction structure isn't a single
+literal, add the loopback rule in the same place via `append`.)
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `go test ./internal/controller/ -run TestBuildEgressNetworkPolicy_HasLoopbackAllow -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/controller/network_policy.go internal/controller/network_policy_test.go
+git commit -m "fix(controller): allow loopback egress in per-run NetworkPolicy (#79)
+
+Cilium-with-KPR enforces NP on iptables-redirected loopback flows.
+Without the rule, the agent's TCP/443 → 127.0.0.1:15001 redirect is
+dropped before reaching the proxy."
+```
+
+### Task 12 (revised): extend Owns() watch to CNP
+
+Same as original Task 12. No revision.
+
+### Task 13 (revised): SKIP — no longer applies
+
+Original Task 13 dropped the apiserver-IP rule from the CNP path.
+Keeping it now is fine (defence-in-depth) and the CNP builder may
+or may not consume `cfg.APIServerIPs` — if it does, the redundancy
+is harmless. Skip Task 13.
+
+### Tasks 14–20: SKIPPED
+
+Cilium-KPR detection (14), AuditKind constants (15),
+MinInterceptionMode field (16), CNI-incompat downgrade in
+resolveInterceptionMode (17), audit emit + WARN log (18), startup
+detection wiring (19) — all dropped per the pivot. The much-simpler
+loopback rule (Task 2P1-1 above) supersedes the entire
+B-FIX-cooperative-downgrade work.
+
+### Task 2P1-2 (NEW): build manager image, kind load, helm upgrade, end-to-end retest
+
+**Files:** none (this is operational validation, no code changes)
+
+This is the load-bearing manual validation per the user's
+end-to-end requirement: build the patched manager, get it into the
+local `paddock-dev` cluster, retry the failing claude-code
+HarnessRun, and confirm the agent reaches the proxy under Cilium-
+with-KPR.
+
+- [ ] **Step 1: Rebuild the manager image with the new code**
+
+```bash
+make docker-build IMG=paddock-manager:dev
+```
+
+Expected: clean build; image present in local docker registry.
+
+- [ ] **Step 2: Load into the kind cluster**
+
+```bash
+kind load docker-image paddock-manager:dev --name paddock-dev
+```
+
+Expected: image loaded onto both the `paddock-dev-control-plane` and
+`paddock-dev-worker` nodes.
+
+- [ ] **Step 3: Restart the controller-manager to pick up the new image**
+
+```bash
+kubectl -n paddock-system rollout restart deploy paddock-controller-manager
+kubectl -n paddock-system rollout status deploy paddock-controller-manager --timeout=2m
+```
+
+- [ ] **Step 4: Confirm clean state in `claude-demo` namespace**
+
+```bash
+kubectl -n claude-demo delete harnessrun --all --wait=true
+kubectl -n claude-demo delete networkpolicy --all
+kubectl -n claude-demo delete ciliumnetworkpolicy --all 2>/dev/null || true
+```
+
+- [ ] **Step 5: Submit a fresh HarnessRun**
+
+```bash
+cat <<'EOF' | kubectl apply -f -
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessRun
+metadata:
+  name: e2e-validate
+  namespace: claude-demo
+spec:
+  templateRef:
+    name: claude-code
+  prompt: "hello"
+EOF
+```
+
+- [ ] **Step 6: Wait for terminal phase + collect diagnostics**
+
+```bash
+SECONDS_WAITED=0
+until [ "$(kubectl -n claude-demo get harnessrun e2e-validate -o jsonpath='{.status.phase}' 2>/dev/null)" = "Failed" ] || \
+      [ "$(kubectl -n claude-demo get harnessrun e2e-validate -o jsonpath='{.status.phase}' 2>/dev/null)" = "Succeeded" ] || \
+      [ $SECONDS_WAITED -gt 120 ]; do
+  echo "T=${SECONDS_WAITED}s phase=$(kubectl -n claude-demo get harnessrun e2e-validate -o jsonpath='{.status.phase}' 2>/dev/null)"
+  sleep 5
+  SECONDS_WAITED=$((SECONDS_WAITED+5))
+done
+
+POD=$(kubectl -n claude-demo get pod -l paddock.dev/run=e2e-validate -o name)
+echo "===== proxy logs ====="
+kubectl -n claude-demo logs "$POD" -c proxy --tail=40
+echo "===== agent logs ====="
+kubectl -n claude-demo logs "$POD" -c agent --tail=20
+echo "===== per-run policy ====="
+kubectl -n claude-demo get networkpolicy,ciliumnetworkpolicy
+```
+
+- [ ] **Step 7: Pass criteria**
+
+The proxy logs MUST show at least one connection-accept event for
+`downloads.claude.ai:443`. The agent's curl-style timeout MUST NOT
+appear in the agent logs. The per-run policy MUST be a CNP (since
+CNP CRDs are present in this cluster).
+
+The run may still fail at the TLS-trust step (the unrelated
+out-of-scope bug). That's acceptable for this validation — the bug
+we're fixing is the connection-level failure, not the trust issue.
+
+If the proxy still shows zero connection-accepts: the loopback rule
+isn't taking effect; investigate.
+
+- [ ] **Step 8: No commit needed** (this task is operational
+  validation only). If diagnostics surface a problem, fix it as a
+  new commit and re-run.
+
+### Task 20 (revised): ADR-0013 update
+
+Use the revised content reflecting Phase 1 findings. The original
+Task 20's content described "CNI-compatibility-detection algorithm"
+which is now obsolete. Replace with content explaining the per-run NP
+loopback fix.
+
+Append to `docs/contributing/adr/0013-proxy-interception-modes.md`:
+
+```markdown
+## Issue #79 update (2026-04-28)
+
+Cilium-with-KPR (the modern Cilium default and what `make kind-up`
+ships) breaks Phase 2d's per-run NetworkPolicy enforcement model in
+two places. Both have controller-side fixes that preserve transparent
+mode under hostile-tenant posture.
+
+**Issue A — kube-apiserver classification.** Standard NetworkPolicy
+`ipBlock` rules don't enforce against host-network destinations like
+the kube-apiserver static pod on Cilium. The fix: when the cluster
+has the `cilium.io/v2/CiliumNetworkPolicy` CRD registered, the
+controller emits a CNP variant with
+`egress: [toEntities: [kube-apiserver, remote-node]]` instead of the
+standard NP. The `remote-node` entity covers the host-network
+apiserver static pod where `kube-apiserver` alone may not. Standard
+NetworkPolicy (with the Phase 2d apiserver-IP `ipBlock` rule)
+remains the path for non-Cilium clusters.
+
+**Issue B — per-run NP missing a loopback allow.** iptables-init
+installs `nat OUTPUT -j REDIRECT --to-ports 15001` for TCP/443 and
+TCP/80; the agent's traffic to `downloads.claude.ai:443` (etc.)
+gets rewritten to `127.0.0.1:15001` and lands on the proxy. On
+kindnet/Calico this loopback flow isn't policed. **On Cilium-with-KPR
+it is**, and the per-run NP's egress rules don't allow loopback —
+the redirected packet is dropped before reaching the proxy. The
+fix: add `egress: [{to: [{ipBlock: {cidr: 127.0.0.0/8}}], ports:
+[{protocol: TCP}]}]` to both standard NP and CNP variants. One
+rule, defence-in-depth on non-Cilium clusters, mandatory on
+Cilium-with-KPR.
+
+CNI mode (the third interception mode listed as deferred in this
+ADR's original Decision) remains the long-term answer for
+environments where iptables interception is structurally unviable.
+Issue #79 does not trigger that case — the v0.5 fix preserves
+transparent mode under all tested CNIs.
+```
+
+Commit:
+
+```bash
+git add docs/contributing/adr/0013-proxy-interception-modes.md
+git commit -m "docs(adr-0013): issue #79 update — per-run NP loopback allow + CNP variant (#79)"
+```
+
+### Task 21 (revised): quickstart cleanup
+
+Same intent as original Task 21, simplified copy.
+
+`docs/getting-started/quickstart.md`: remove the `KIND_NO_CNI=1`
+workaround note. Replace with one line indicating the quickstart
+now works on the default `make kind-up` cluster:
+
+```markdown
+> **Cilium support.** Paddock's per-run NetworkPolicy + transparent
+> proxy interception now works on Cilium-with-kube-proxy-replacement
+> (the default for `make kind-up`). See ADR-0013 §"Issue #79 update"
+> for the per-run NP shape.
+```
+
+Commit:
+
+```bash
+git add docs/getting-started/quickstart.md
+git commit -m "docs(quickstart): drop KIND_NO_CNI workaround; cilium-KPR now supported (#79)"
+```
+
+### Task 22 (revised): e2e regression test
+
+Largely same intent as original Task 22, with revised assertions.
+The interception mode is `transparent` (not cooperative), and the
+positive spec asserts the run reaches at least the proxy-connection
+stage successfully. The negative spec for `MinInterceptionMode` is
+SKIPPED (we're not adding that field).
+
+Substitute the original Task 22's spec body for:
+
+```go
+It("HarnessRun against a non-trivial template reaches the proxy on Cilium-with-KPR", func() {
+    // ... apply template, BrokerPolicy, HarnessRun ...
+    // Wait for terminal phase OR for first proxy connection-accept event,
+    // whichever comes first.
+
+    // Assertions:
+    // - run reached at least the BrokerReady=True / EgressConfigured=True
+    //   conditions (i.e., admission resolved interception mode and the
+    //   sidecars came up).
+    // - per-run policy resource exists (CNP if CNP CRDs present, NP otherwise).
+    //   The policy includes the loopback allow rule (cidr 127.0.0.0/8 TCP).
+    // - HarnessRun.status.interceptionMode == "transparent" (regardless of CNI).
+    // - Proxy emitted >= 1 connection-accept event.
+    // - No "context deadline exceeded" / "BackOff" in pod events.
+})
+```
+
+Drop the original "Negative assertion (separate spec in the same file)"
+block — it relied on `MinInterceptionMode` which we've dropped.
+
+Skip-on-non-Cilium logic stands.
+
+Commit + run:
+
+```bash
+git add test/e2e/cilium_compat_test.go
+git commit -m "test(e2e): cilium compat regression for #79 — transparent mode + loopback allow"
+make test-e2e 2>&1 | tee /tmp/e2e.log
+```
+
+### Task 23 (unchanged): full e2e suite passes
+
+Same as original.
+
+### Task 24 (revised): open the PR
+
+Same as original Task 24, with revised PR body reflecting actual
+fix shape:
+
+```bash
+git push -u origin fix/cilium-compat
+gh pr create --title "fix: cilium per-run NP loopback allow + CNP variant for kube-apiserver (#79)" \
+  --body "$(cat <<'BODY'
+## Summary
+
+Fixes #79: HarnessRun with non-empty `requires` failed on Cilium-with-KPR (the `make kind-up` default). The original walkthrough's "iptables silently bypassed" hypothesis was empirically refuted (see `docs/superpowers/plans/2026-04-28-cilium-compat-findings.md`); the actual root causes are two per-run NetworkPolicy gaps:
+
+- **Issue A** — kube-apiserver classification. Cilium-with-KPR doesn't enforce standard NP `ipBlock` rules against host-network destinations; switched to CiliumNetworkPolicy with `toEntities: [kube-apiserver, remote-node]` when CNP CRDs are present.
+
+- **Issue B** — per-run NP missing a loopback allow. iptables nat OUTPUT REDIRECT rewrites the agent's TCP/443 destination to `127.0.0.1:15001`. Cilium-with-KPR enforces NP on this redirected loopback flow (kindnet/Calico don't), and no rule allowed it. Added `egress: [{to: [{ipBlock: {cidr: 127.0.0.0/8}}], ports: [{protocol: TCP}]}]` to both standard NP and CNP variants.
+
+Validated end-to-end on a fresh `make kind-up` cluster: agent reaches the proxy under transparent mode. ADR-0013 has an "Issue #79 update" section; quickstart's `KIND_NO_CNI=1` workaround is removed.
+
+## Test plan
+
+- [ ] `go test ./...` passes.
+- [ ] `make test-e2e` passes including the new `cilium_compat_test.go` specs.
+- [ ] On a fresh `make kind-up` cluster, manually submitting a claude-code HarnessRun results in the proxy logging at least one connection-accept event for the agent (transparent mode resolution, per-run CNP emitted).
+BODY
+)"
+```
+
+### Task 2P1-3 (NEW): add header note to probe script
+
+**Files:**
+- Modify: `hack/cilium-probe-iptables-redirect.sh`
+
+The script's `RESULT (variant): FAIL` outputs in Phase 1 were
+sink-side artifacts (busybox `nc -e cat` exits after one
+connection). The iptables interception under Cilium-with-KPR
+actually works fine; the bug was in the per-run NP not allowing
+loopback. Add a header note explaining this so the script doesn't
+mislead future debugging.
+
+- [ ] **Step 1: Append to the docstring at the top of the script**
+
+After the existing variants list (line ~22 area), insert:
+
+```bash
+#
+# NOTE (2026-04-28): Phase 1 of Issue #79 ran this script across all
+# variants and got FAIL on every one. That outcome is a SINK-SIDE
+# ARTIFACT, not a real iptables-bypass result. Busybox netcat's
+# `nc -lk -p 15001 -e cat` exits after one connection, so subsequent
+# curls land on a closed port. With a robust sink (Python http.server
+# on :15001, no NetworkPolicy applied), iptables nat OUTPUT REDIRECT
+# under Cilium-with-KPR works end-to-end. Issue #79's real root cause
+# was the per-run NetworkPolicy missing a loopback allow rule. See
+# `docs/superpowers/plans/2026-04-28-cilium-compat-findings.md`.
+#
+# This script is kept in-tree as scaffolding for future Cilium-config-
+# variant probing; replace the busybox sink with a python http.server
+# or ncat-based listener if you re-use it.
+```
+
+- [ ] **Step 2: Lint-pass**
+
+`bash -n hack/cilium-probe-iptables-redirect.sh` — must produce no output.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add hack/cilium-probe-iptables-redirect.sh
+git commit -m "docs(hack): note that probe-script FAILs were busybox-nc artifacts (#79)"
+```

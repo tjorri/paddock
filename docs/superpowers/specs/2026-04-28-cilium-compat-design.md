@@ -483,3 +483,97 @@ Mirror Issue #79's criteria:
 - `internal/proxy/mode.go` — current transparent/cooperative entry points.
 - `hack/kind-with-cilium.yaml`, `hack/install-cilium.sh` — existing
   Cilium e2e infrastructure (Phase 2b).
+
+## 11. Phase 1 update — design pivot (2026-04-28)
+
+Phase 1 ran against `make kind-up` (Cilium 1.16.5, KPR=true). Findings
+in `docs/superpowers/plans/2026-04-28-cilium-compat-findings.md`. Two
+hypothesis-level surprises rewrote substantial parts of the original
+design:
+
+**Issue A: A-FIX-toEntities confirmed.** A CNP with
+`toEntities: [kube-apiserver, remote-node]` enforces the apiserver
+allow correctly (HTTP 403 within sub-millisecond TCP connect). The
+identity table on this config carries both
+`reserved:host + reserved:kube-apiserver` (identity 1, the local
+control-plane node) and `reserved:kube-apiserver + reserved:remote-node`
+(identity 7, multi-node case). The walkthrough's earlier
+"`toEntities: [kube-apiserver]` failed" was likely a CNP-application
+artifact, not a Cilium identity-classification gap. The
+`[kube-apiserver, remote-node]` form is defensive belt-and-braces and
+remains the recommended shape for multi-node clusters.
+
+**Issue B: original hypothesis refuted.** The original Issue #79
+walkthrough described the failure as "iptables-init's REDIRECT chain
+silently bypassed by Cilium's BPF datapath when KPR=true." Phase 1
+empirical testing showed this is **wrong**:
+
+- iptables `nat OUTPUT PADDOCK_OUTPUT` packet counters increment when
+  curl traffic to dport 80/443 flows. The REDIRECT rule fires.
+- With a robust local listener (Python `http.server` on `:15001` in
+  the same pod, no NetworkPolicy applied), `curl http://1.1.1.1/`
+  succeeds end-to-end on Cilium-with-KPR — the kernel rewrites
+  the destination, the listener receives the request, the response
+  flows back to curl.
+- Reproducing the FULL paddock quickstart end-to-end (claude-code
+  template + BrokerPolicy + HarnessRun) failed with the same shape
+  Issue #79 describes (proxy listening, zero connection accepts,
+  agent timeout). With NP enforcement disabled at the manager level
+  (`--networkpolicy-enforce=off`) and the same workload, the agent
+  got past the connection step.
+
+**Real Issue B mechanism: per-run NetworkPolicy doesn't allow
+loopback.** The Phase 2d per-run NP allows DNS, broker, apiserver,
+and `0.0.0.0/0 except cluster CIDRs` on 80/443. After iptables
+REDIRECT rewrites the agent's TCP/443 destination from
+`downloads.claude.ai:443` to `127.0.0.1:15001`, Cilium-with-KPR
+enforces the per-run NP on the redirected flow (kindnet/Calico
+typically don't police pod-local loopback; Cilium-with-KPR does).
+Neither port 15001 nor loopback CIDR is in the egress allow list,
+so the redirected packet is dropped before reaching the proxy.
+
+**Revised fix branches.**
+
+- **Issue A — A-FIX-toEntities** (unchanged from original spec).
+- **Issue B — B-FIX-loopback-allow** (replaces B-FIX-cilium-knob and
+  B-FIX-cooperative-downgrade). The per-run NP egress rule list gains
+  one entry: allow TCP to `127.0.0.0/8` (loopback) on any port. The
+  CNP variant gains the analogous `toCIDR: 127.0.0.0/8` entry.
+  Symmetric change in the workspace-seed NP/CNP path.
+
+**Scope dropped from this work** (per pivot):
+
+- Cilium-KPR detection at admission. Not needed — transparent mode
+  works correctly under Cilium-with-KPR with the loopback rule.
+- Cooperative auto-downgrade. Not needed.
+- New `AuditKind` for incompatibility downgrade. Not needed.
+- `BrokerPolicy.spec.interception.minInterceptionMode` field. ADR-0013
+  promised this field but Issue #79 no longer requires it. Deferred
+  to a separate piece of work if/when there's a use case.
+
+**Out-of-scope side finding.** With NP-off, the agent's
+claude-code installer fails at TLS trust verification (`unable to get
+issuer certificate`) — the installer doesn't honour the per-run
+intermediate CA via `NODE_EXTRA_CA_CERTS` or the standard SSL env
+vars. This is a separate v0.4 bug in the harness image, not part of
+Issue #79. Logged here for traceability; out of scope for this branch.
+
+**Revised acceptance criteria (replace §9):**
+
+1. HarnessRun against a template with non-empty `requires` reaches
+   the agent successfully on `make kind-up` (Cilium 1.16.5, KPR=true).
+   The proxy logs at least one connection-accept event for the run.
+2. Per-run NetworkPolicy includes a TCP allow rule for
+   `127.0.0.0/8` (any port). CNP variant includes `toCIDR: 127.0.0.0/8`
+   with TCP `:any` ports.
+3. Per-run policy emits a `CiliumNetworkPolicy` (with
+   `toEntities: [kube-apiserver, remote-node]`) when CNP CRDs are
+   detected on cluster; standard NP for non-Cilium clusters.
+4. Manager image rebuilt with the fix and validated end-to-end on
+   the local `paddock-dev` cluster: agent reaches the proxy,
+   transparent mode is the resolved interception mode, run goes past
+   the connection-error point. (The TLS-trust side bug above will
+   prevent `Succeeded` until a separate fix lands.)
+5. ADR-0013 has an "Issue #79 update" section reflecting the actual
+   findings (per-run NP loopback gap; CNP variant).
+6. Quickstart's `KIND_NO_CNI=1` workaround note removed.
