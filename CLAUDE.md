@@ -41,6 +41,47 @@ The user can override this default at any time — phrasings like
 "commit to the current branch", "land directly on main", or "skip the
 branch" — typically when bundling into an existing in-flight branch.
 
+## Gotchas an agent tends to hit
+
+A few project conventions that an AI without context tends to violate.
+When you're about to do one of these, look here first.
+
+- **`release-please` owns `CHANGELOG.md`.** Don't edit it manually —
+  the changelog auto-generates from Conventional Commit messages in CI.
+  A commit that touches `CHANGELOG.md` will conflict with the next
+  release-please run.
+- **Pre-1.0 evolves in place.** No CRD API versioning, no conversion
+  webhooks, no flag aliasing — edit `v1alpha1` directly. Don't
+  introduce a `v1alpha2` to "preserve" an old shape; just break it in
+  place. Migration is on the operator.
+- **Pre-commit hook + `git commit --amend`.** The hook (`go vet
+  -tags=e2e ./...` + `golangci-lint run`) fails *before* the commit
+  lands. Amending after a hook failure modifies the *previous*
+  commit, not the failing one. Stage the fix and create a new commit.
+- **`<<'EOF'` heredocs make backticks literal already.** Don't add
+  backslash escapes — they survive into the rendered Markdown and
+  break PR-body and commit-message formatting.
+
+## E2E iteration
+
+The full Kind-based suite is the load-bearing smoke test. Iterate
+locally — the laptop is faster than the CI runners and `tee`'ing the
+output gives the same diagnostic surface (the suite already dumps
+`kubectl logs` / `describe` on failure). Reserve CI for the final
+pre-merge run.
+
+```bash
+make test-e2e 2>&1 | tee /tmp/e2e.log              # full suite
+FAIL_FAST=1 make test-e2e 2>&1 | tee /tmp/e2e.log  # stop at first failing spec
+KEEP_E2E_RUN=1 make test-e2e 2>&1 | tee /tmp/e2e.log  # leave tenant state for kubectl post-mortem
+CERT_MANAGER_INSTALL_SKIP=true make test-e2e       # skip cert-manager install (already present)
+```
+
+`paddock-test-e2e` is the cluster `make test-e2e` creates and tears
+down (`make cleanup-test-e2e` deletes it). `paddock-dev` (or whatever
+`KIND_CLUSTER` resolves to in `hack/kind-up.sh`) is the long-lived
+dev cluster `make kind-up` spins up; pair with `tilt up`.
+
 ## Repository layout
 
 Top-level dirs and the `internal/` + `config/` subtrees in alphabetical
