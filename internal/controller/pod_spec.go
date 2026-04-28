@@ -420,6 +420,13 @@ func buildAdapterContainer(template *resolvedTemplate) corev1.Container {
 	always := corev1.ContainerRestartPolicyAlways
 	sc := runContainerSecurityContextBaseline()
 	sc.RunAsUser = ptr.To(int64(adapterRunAsUID))
+	// RunAsGroup pinned to the shared workspace GID so files the
+	// adapter creates on the workspace PVC end up group-readable by
+	// the agent (which runs at the image-default UID, typically 65532
+	// for distroless:nonroot). Without this, the runtime falls back to
+	// GID 0 when RunAsUser overrides the image's USER and no entry for
+	// 1338 exists in /etc/passwd. F-20 follow-up.
+	sc.RunAsGroup = ptr.To(int64(65532))
 	c := corev1.Container{
 		Name:            adapterContainerName,
 		Image:           template.Spec.EventAdapter.Image,
@@ -453,6 +460,14 @@ func buildCollectorContainer(
 	mountPath := effectiveWorkspaceMount(template)
 	sc := runContainerSecurityContextRestricted()
 	sc.RunAsUser = ptr.To(int64(collectorRunAsUID))
+	// RunAsGroup pinned to the shared workspace GID. See the comment on
+	// the adapter for the rationale. The collector pre-creates the run
+	// output directory at /workspace/.paddock/runs/<run>/ which the
+	// agent later writes result.json into; without an explicit
+	// RunAsGroup, the directory ends up owned by 1339:0 instead of
+	// 1339:65532 and the agent (UID 65532) can't write into it via the
+	// group bits. F-20 follow-up.
+	sc.RunAsGroup = ptr.To(int64(65532))
 	return corev1.Container{
 		Name:            collectorContainerName,
 		Image:           image,
