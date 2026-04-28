@@ -25,6 +25,10 @@ spec:
     egress:
       - host: api.anthropic.com
         ports: [443]
+      # The harness installs the Claude Code CLI from Anthropic's
+      # downloads CDN at startup, so it needs reach to that host.
+      - host: downloads.claude.ai
+        ports: [443]
   defaults:
     model: claude-sonnet-4-6
     timeout: 30m
