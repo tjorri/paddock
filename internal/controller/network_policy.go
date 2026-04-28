@@ -218,6 +218,20 @@ func buildEgressNetworkPolicy(
 				{Protocol: &tcp, Port: &httpPort},
 			},
 		},
+		// Loopback allow — required so iptables nat OUTPUT REDIRECT from
+		// agent traffic on TCP 80/443 to the proxy at 127.0.0.1:15001 is
+		// not dropped by Cilium-with-KPR's NetworkPolicy enforcement
+		// (Issue #79). On kindnet/Calico this is a no-op (loopback isn't
+		// policed); on Cilium-with-KPR it's mandatory for transparent
+		// mode to work.
+		{
+			To: []networkingv1.NetworkPolicyPeer{
+				{IPBlock: &networkingv1.IPBlock{CIDR: "127.0.0.0/8"}},
+			},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &tcp},
+			},
+		},
 	}
 	if brokerRule := buildBrokerEgressRule(cfg); brokerRule != nil {
 		rules = append(rules, *brokerRule)

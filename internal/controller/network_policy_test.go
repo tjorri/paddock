@@ -55,10 +55,11 @@ func TestBuildRunNetworkPolicy_Shape(t *testing.T) {
 		t.Errorf("policyTypes = %v, want [Egress]", np.Spec.PolicyTypes)
 	}
 
-	// Three rules: kube-dns, TCP 443 (with except list), TCP 80 (same).
-	// (Broker rule is conditional — not added when BrokerNamespace is unset.)
-	if len(np.Spec.Egress) != 3 {
-		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80)", len(np.Spec.Egress))
+	// Four rules: kube-dns, TCP 443 (with except list), TCP 80 (same),
+	// loopback. (Broker rule is conditional — not added when
+	// BrokerNamespace is unset.)
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + loopback)", len(np.Spec.Egress))
 	}
 
 	// First rule: DNS to kube-dns with both UDP and TCP 53.
@@ -116,9 +117,9 @@ func TestBuildRunNetworkPolicy_ExcludesPrivateAndClusterCIDRs(t *testing.T) {
 	}
 	np := buildRunNetworkPolicy(run, cfg)
 
-	// Three rules: kube-dns, TCP 443, TCP 80.
-	if len(np.Spec.Egress) != 3 {
-		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80)", len(np.Spec.Egress))
+	// Four rules: kube-dns, TCP 443, TCP 80, loopback.
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + loopback)", len(np.Spec.Egress))
 	}
 
 	// Rules 2 and 3 are the public-internet rules; both should now have
@@ -177,9 +178,9 @@ func TestBuildRunNetworkPolicy_BrokerEgressRule(t *testing.T) {
 	}
 	np := buildRunNetworkPolicy(run, cfg)
 
-	// Now expect 4 rules: DNS + 443 + 80 + broker.
-	if len(np.Spec.Egress) != 4 {
-		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + broker)", len(np.Spec.Egress))
+	// Now expect 5 rules: DNS + 443 + 80 + loopback + broker.
+	if len(np.Spec.Egress) != 5 {
+		t.Fatalf("egress rules = %d, want 5 (DNS + 443 + 80 + loopback + broker)", len(np.Spec.Egress))
 	}
 
 	// Find the broker rule (it's the one with paddock-system namespace selector
@@ -219,9 +220,9 @@ func TestBuildRunNetworkPolicy_NoBrokerRuleWhenNamespaceUnset(t *testing.T) {
 	}
 	np := buildRunNetworkPolicy(run, cfg)
 
-	// Expect 3 rules: DNS + 443 + 80 (no broker rule when namespace is empty).
-	if len(np.Spec.Egress) != 3 {
-		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80; no broker rule)", len(np.Spec.Egress))
+	// Expect 4 rules: DNS + 443 + 80 + loopback (no broker rule when namespace is empty).
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + loopback; no broker rule)", len(np.Spec.Egress))
 	}
 }
 
@@ -236,13 +237,13 @@ func TestBuildRunNetworkPolicy_APIServerEgressRule(t *testing.T) {
 	}
 	np := buildRunNetworkPolicy(run, cfg)
 
-	// Expect 4 rules: DNS + 443 + 80 + apiserver. (No broker rule —
+	// Expect 5 rules: DNS + 443 + 80 + loopback + apiserver. (No broker rule —
 	// BrokerNamespace empty.) The apiserver rule is the new one and is
 	// last; assert the shape.
-	if len(np.Spec.Egress) != 4 {
-		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + apiserver)", len(np.Spec.Egress))
+	if len(np.Spec.Egress) != 5 {
+		t.Fatalf("egress rules = %d, want 5 (DNS + 443 + 80 + loopback + apiserver)", len(np.Spec.Egress))
 	}
-	apiRule := np.Spec.Egress[3]
+	apiRule := np.Spec.Egress[4]
 	if len(apiRule.To) != 2 {
 		t.Fatalf("apiserver rule To = %d peers, want 2", len(apiRule.To))
 	}
@@ -273,8 +274,8 @@ func TestBuildRunNetworkPolicy_NoAPIServerRuleWhenIPsEmpty(t *testing.T) {
 		// APIServerIPs deliberately empty.
 	}
 	np := buildRunNetworkPolicy(run, cfg)
-	if len(np.Spec.Egress) != 3 {
-		t.Fatalf("egress rules = %d, want 3 (DNS + 443 + 80; no apiserver rule)", len(np.Spec.Egress))
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("egress rules = %d, want 4 (DNS + 443 + 80 + loopback; no apiserver rule)", len(np.Spec.Egress))
 	}
 }
 
@@ -326,6 +327,36 @@ func TestEnsureRunNetworkPolicy_EmitsWithdrawnOnRecreate(t *testing.T) {
 	}
 	if got := rec.events(); len(got) != 0 {
 		t.Errorf("got %d events on no-op reconcile; want 0", len(got))
+	}
+}
+
+func TestBuildEgressNetworkPolicy_HasLoopbackAllow(t *testing.T) {
+	cfg := networkPolicyConfig{
+		ClusterPodCIDR:     "10.244.0.0/16",
+		ClusterServiceCIDR: "10.96.0.0/12",
+		BrokerNamespace:    "paddock-system",
+		BrokerPort:         8443,
+	}
+	np := buildEgressNetworkPolicy(
+		metav1.LabelSelector{MatchLabels: map[string]string{"x": "y"}},
+		"x", "y", nil, cfg,
+	)
+	found := false
+	for _, rule := range np.Spec.Egress {
+		for _, peer := range rule.To {
+			if peer.IPBlock != nil && peer.IPBlock.CIDR == "127.0.0.0/8" {
+				// Verify the rule is TCP and has no port narrowing
+				// (any TCP port to loopback).
+				for _, port := range rule.Ports {
+					if port.Protocol != nil && *port.Protocol == corev1.ProtocolTCP {
+						found = true
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected egress rule with ipBlock 127.0.0.0/8 and protocol TCP")
 	}
 }
 
