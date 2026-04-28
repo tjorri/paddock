@@ -14,13 +14,23 @@ spec:
   harness: evil-echo
   image: paddock-evil-echo:dev
   command: ["/usr/local/bin/evil-echo"]
-  # TG-2: bypass proxy env vars then attempt a raw TCP connection to the
-  # Kubernetes service IP (10.96.0.1:443). The per-run NetworkPolicy
-  # (F-19) is expected to block this even when HTTPS_PROXY is unset.
+  # TG-2: bypass proxy env vars then attempt a raw TCP connection to a
+  # non-allowed cluster Service IP. The per-run NetworkPolicy (F-19)
+  # is expected to block this even when HTTPS_PROXY is unset.
+  #
+  # Target: 10.96.0.10:443 — the kube-dns Service ClusterIP on
+  # TCP/443 (the per-run NP DNS rule allows port 53 to kube-dns only,
+  # so port 443 to 10.96.0.10 is not in any allow-rule and must be
+  # dropped at the NP layer). We deliberately do NOT target the
+  # kube-apiserver Service IP (10.96.0.1) since the per-run policy
+  # intentionally allows it (Phase 2d / Issue #79 update — sidecars
+  # need apiserver access; the agent's apiserver mitigation is
+  # F-38's `automountServiceAccountToken: false`, separately tested
+  # under TG-7).
   args:
     - "--bypass-proxy-env"
     - "--connect-raw-tcp"
-    - "10.96.0.1:443"
+    - "10.96.0.10:443"
   eventAdapter:
     image: paddock-adapter-echo:dev
     imagePullPolicy: IfNotPresent
