@@ -17,10 +17,15 @@ limitations under the License.
 package cli
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
 
 func TestBuildRunFromOptions(t *testing.T) {
@@ -110,5 +115,82 @@ func TestBuildRunFromOptions(t *testing.T) {
 				t.Errorf("namespace = %q, want default", run.Namespace)
 			}
 		})
+	}
+}
+
+func TestReadPromptCapped(t *testing.T) {
+	cap := paddockv1alpha1.MaxInlinePromptBytes
+
+	cases := []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{"empty", 0, false},
+		{"under cap", cap - 1, false},
+		{"at cap", cap, false},
+		{"one over cap", cap + 1, true},
+		{"way over cap", cap * 2, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := bytes.NewReader(bytes.Repeat([]byte("a"), tc.size))
+			got, err := readPromptCapped(r)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for size=%d, got nil", tc.size)
+				}
+				if !strings.Contains(err.Error(), "exceeds") {
+					t.Errorf("error %q should mention the cap (containing %q)", err.Error(), "exceeds")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for size=%d: %v", tc.size, err)
+			}
+			if len(got) != tc.size {
+				t.Errorf("len(got) = %d, want %d", len(got), tc.size)
+			}
+		})
+	}
+}
+
+func TestReadPromptCappedHostileReader(t *testing.T) {
+	// A reader that returns far more bytes than the cap — verifies
+	// io.LimitReader is the boundary, not the source's good behaviour.
+	r := io.MultiReader(
+		bytes.NewReader(bytes.Repeat([]byte("a"), paddockv1alpha1.MaxInlinePromptBytes)),
+		bytes.NewReader([]byte("b")),
+	)
+	_, err := readPromptCapped(r)
+	if err == nil {
+		t.Fatalf("expected error from over-cap reader, got nil")
+	}
+}
+
+func TestReadPromptFileOverCap(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "big.md")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("a"), paddockv1alpha1.MaxInlinePromptBytes+1), 0o600); err != nil {
+		t.Fatalf("writing tmp file: %v", err)
+	}
+	if _, err := readPromptFile(path); err == nil {
+		t.Fatalf("readPromptFile should reject a file one byte over the cap")
+	}
+}
+
+func TestReadPromptFileAtCap(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "exact.md")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("a"), paddockv1alpha1.MaxInlinePromptBytes), 0o600); err != nil {
+		t.Fatalf("writing tmp file: %v", err)
+	}
+	got, err := readPromptFile(path)
+	if err != nil {
+		t.Fatalf("readPromptFile at exact cap: %v", err)
+	}
+	if len(got) != paddockv1alpha1.MaxInlinePromptBytes {
+		t.Errorf("len(got) = %d, want %d", len(got), paddockv1alpha1.MaxInlinePromptBytes)
 	}
 }

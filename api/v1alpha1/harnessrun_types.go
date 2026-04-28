@@ -148,6 +148,18 @@ const (
 	HarnessRunConditionInterceptionUnavailable = "InterceptionUnavailable"
 )
 
+// MaxInlinePromptBytes caps spec.prompt at 256 KiB, well under the
+// 1 MiB ConfigMap/Secret ceiling and leaving headroom for the
+// materialisation wrapper. promptFrom sources are not size-checked at
+// admission time — doing so would require cluster reads and make
+// validation non-static; oversized Secret/ConfigMap-sourced prompts
+// fail later at the reconciler's materialise step.
+//
+// The CLI reuses this value to cap --prompt-file/stdin reads
+// client-side (see internal/cli/submit.go) so an oversized file
+// errors before being POSTed.
+const MaxInlinePromptBytes = 256 * 1024
+
 // HarnessRunStatus reports the observed state of a HarnessRun.
 type HarnessRunStatus struct {
 	// ObservedGeneration is the spec generation last reconciled.

@@ -17,7 +17,6 @@ limitations under the License.
 package cli
 
 import (
-	"io"
 	"strconv"
 	"time"
 
@@ -28,15 +27,6 @@ import (
 // Centralised so the lint goconst check stays happy and downstream
 // grep/awk stays one-string-simple.
 const noneSentinel = "<none>"
-
-// readAll slurps a reader into a string.
-func readAll(r io.Reader) (string, error) {
-	b, err := io.ReadAll(r)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
-}
 
 // findCondition returns a pointer to the condition of the given type,
 // or nil when absent. Matches the helper used by the controller tests.

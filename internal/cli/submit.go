@@ -19,6 +19,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -148,15 +149,32 @@ func buildRunFromOptions(opts *submitOptions, namespace string) (*paddockv1alpha
 
 func readPromptFile(path string) (string, error) {
 	if path == "-" {
-		data, err := readAll(os.Stdin)
-		if err != nil {
-			return "", fmt.Errorf("reading prompt from stdin: %w", err)
-		}
-		return data, nil
+		return readPromptCapped(os.Stdin)
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
-		return "", fmt.Errorf("reading --prompt-file %s: %w", path, err)
+		return "", fmt.Errorf("opening --prompt-file %s: %w", path, err)
+	}
+	defer f.Close()
+	return readPromptCapped(f)
+}
+
+// readPromptCapped reads up to MaxInlinePromptBytes from r and rejects
+// inputs that exceed the cap. The +1 trick lets us distinguish a
+// just-at-cap input (cap bytes read, EOF) from an over-cap input
+// (cap+1 bytes read, more available). Takes an io.Reader (rather than
+// reading os.Stdin directly) so unit tests can drive the cap-detection
+// branch without a child-process harness.
+func readPromptCapped(r io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(r, paddockv1alpha1.MaxInlinePromptBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("reading prompt: %w", err)
+	}
+	if len(data) > paddockv1alpha1.MaxInlinePromptBytes {
+		return "", fmt.Errorf(
+			"prompt exceeds %d-byte limit (set by the admission webhook); "+
+				"use a smaller --prompt-file or split the prompt",
+			paddockv1alpha1.MaxInlinePromptBytes)
 	}
 	return string(data), nil
 }
