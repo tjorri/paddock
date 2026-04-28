@@ -106,14 +106,17 @@ func parseFlags() config {
 // test can inject a WriteFunc without spinning up Kubernetes.
 func run(ctx context.Context, cfg config, write WriteFunc) error {
 	destDir := filepath.Join(cfg.workspace, ".paddock", "runs", cfg.runName)
-	// 0o775 (group-writable) is load-bearing: the agent runs as a
-	// different UID than the collector (post-Theme-4: collector=1339,
-	// agent=image-default ~65532). The pod's fsGroup pins GID=65532 on
-	// the workspace volume; group-write here lets the agent write its
-	// result.json into a directory the collector pre-created. F-20
-	// follow-up.
 	if err := os.MkdirAll(destDir, 0o775); err != nil {
 		return fmt.Errorf("mkdir dest: %w", err)
+	}
+	// MkdirAll's mode arg is subject to the process umask (typically 022
+	// → 0775 ends up as 0755, no group-write). Chmod is not. Force the
+	// group-writable bit explicitly so the agent (different UID than the
+	// collector post-Theme-4: collector=1339, agent=image-default ~65532;
+	// pod fsGroup pins shared GID=65532) can write its result.json into
+	// this directory. F-20 follow-up.
+	if err := os.Chmod(destDir, 0o775); err != nil {
+		return fmt.Errorf("chmod dest: %w", err)
 	}
 	rawDst, err := openAppend(filepath.Join(destDir, "raw.jsonl"))
 	if err != nil {
