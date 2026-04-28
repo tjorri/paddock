@@ -71,7 +71,6 @@ docs(adr): ADR-0010 — Pod Security Standards posture
 ```
 
 - Subject ≤ 72 chars. The body can be long; use it to explain *why*, not *what*.
-- Don't mention Claude/AI tools in commit messages — even if you used one.
 - Don't amend or force-push once a PR has review comments. Add new commits; squash on merge.
 
 ## Images, binaries, and sidecars
