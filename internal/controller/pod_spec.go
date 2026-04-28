@@ -109,19 +109,32 @@ const (
 	adapterRunAsUID   = 1338
 	collectorRunAsUID = 1339
 	// agentCABundleMountPath is where the agent sees the MITM CA
-	// bundle. Points at a single file (tls.crt key of the per-run
-	// Secret — the per-run intermediate cert; see agentCABundleSubPath
+	// bundle. Points at a single file (ca.crt key of the per-run
+	// Secret — the cluster root, self-signed; see agentCABundleSubPath
 	// below), which is what SSL_CERT_FILE and friends want.
 	agentCABundleMountPath = "/etc/ssl/certs/paddock-proxy-ca.crt"
-	// agentCABundleSubPath is the per-run intermediate cert — the
-	// agent's TLS trust anchor. Despite the conventional "tls.crt =
-	// serving cert" naming in cert-manager-issued Secrets, here that
-	// file IS the trust anchor (we issue an intermediate isCA
-	// Certificate; the proxy serves [leaf, intermediate] chains; the
-	// agent's ca-bundle = the intermediate). The cluster root cert is
-	// deliberately NOT mounted into the agent — it would re-introduce
-	// the F-18 cross-tenant trust regression. F-18 / Phase 2f.
-	agentCABundleSubPath = "tls.crt"
+	// agentCABundleSubPath is the cluster root cert (paddock-proxy-ca)
+	// — the agent's TLS trust anchor. The proxy serves
+	// [leaf, per-run-intermediate] in its TLS handshake; the
+	// per-run intermediate is signed by this root. Most TLS clients
+	// (OpenSSL, Python ssl, Java JSSE, Bun's underlying TLS) reject a
+	// non-self-signed cert as a trust anchor — they require the
+	// trust store to contain a self-signed root for path validation
+	// to terminate. Issue #79 follow-up empirically validated that
+	// curl is the lenient outlier; everything else needs the root.
+	//
+	// Phase 2f originally mounted only the intermediate ("tls.crt")
+	// to avoid F-18's cross-tenant trust regression. That regression
+	// doesn't manifest in practice: iptables-init redirects all of
+	// the agent's TCP/443 traffic to the LOCAL proxy in the same
+	// pod netns, and the per-run NetworkPolicy / CiliumNetworkPolicy
+	// blocks the agent from reaching any other pod's proxy. The
+	// agent can only ever talk to its own local proxy, regardless
+	// of what its trust store contains. Mounting the cluster root
+	// here therefore restores broad TLS-client compatibility without
+	// weakening the per-run isolation that iptables + NP already
+	// enforce. Issue #79 update.
+	agentCABundleSubPath = "ca.crt"
 
 	// paddockSAVolumeName is the explicit projected SA-token mount
 	// added to sidecars only. Pod-level AutomountServiceAccountToken
@@ -795,6 +808,7 @@ func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in po
 		// agent's traffic reaches the proxy.
 		env = append(env,
 			corev1.EnvVar{Name: "SSL_CERT_FILE", Value: agentCABundleMountPath},
+			corev1.EnvVar{Name: "CURL_CA_BUNDLE", Value: agentCABundleMountPath},
 			corev1.EnvVar{Name: "NODE_EXTRA_CA_CERTS", Value: agentCABundleMountPath},
 			corev1.EnvVar{Name: "REQUESTS_CA_BUNDLE", Value: agentCABundleMountPath},
 			corev1.EnvVar{Name: "GIT_SSL_CAINFO", Value: agentCABundleMountPath},
