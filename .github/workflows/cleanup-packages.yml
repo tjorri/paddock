@@ -1,0 +1,171 @@
+name: cleanup-packages
+
+# Periodic cleanup for ghcr.io packages. Sweeps three classes of cruft
+# without ever touching properly-tagged release artifacts:
+#
+#   1. Untagged versions (orphaned manifests).
+#   2. Old `:main-<sha>` tagged versions, keeping the most recent 20 per
+#      image (image packages only — the chart is release-only and never
+#      sees `:main-*` tags).
+#   3. Orphaned Cosign signature artifacts (`sha256-<digest>.sig`) whose
+#      target manifest is no longer in the registry.
+#
+# Implementation is plain `gh api` + `jq` — no third-party actions, so
+# nothing extra to pin. GITHUB_TOKEN with `packages: write` is enough.
+
+on:
+  schedule:
+    # Daily at 03:00 UTC — quiet window between weekday merges and
+    # release activity.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log intended deletions without executing them"
+        type: boolean
+        default: false
+
+# If a previous run is still going when the next cron fires, let it
+# finish — cleanup is incremental and aborting mid-flight risks
+# leaving orphan signatures around the partially-deleted manifests.
+concurrency:
+  group: cleanup-packages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup:
+    name: Cleanup ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: paddock-manager,             prune_main: true,  prune_sigs: true }
+          - { name: paddock-echo,                prune_main: true,  prune_sigs: true }
+          - { name: paddock-collector,           prune_main: true,  prune_sigs: true }
+          - { name: paddock-claude-code,         prune_main: true,  prune_sigs: true }
+          - { name: paddock-adapter-echo,        prune_main: true,  prune_sigs: true }
+          - { name: paddock-adapter-claude-code, prune_main: true,  prune_sigs: true }
+          - { name: charts/paddock,              prune_main: false, prune_sigs: true }
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      OWNER: ${{ github.repository_owner }}
+      PACKAGE_NAME: ${{ matrix.name }}
+      PRUNE_MAIN: ${{ matrix.prune_main }}
+      PRUNE_SIGS: ${{ matrix.prune_sigs }}
+      DRY_RUN: ${{ inputs.dry_run || 'false' }}
+      KEEP_MAIN: "20"
+    steps:
+      - name: Cleanup ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+
+          # URL-encode `/` so `charts/paddock` becomes `charts%2Fpaddock`.
+          ENC="${PACKAGE_NAME//\//%2F}"
+          PKG_PATH="/users/${OWNER}/packages/container/${ENC}"
+
+          fetch_versions() {
+            # `gh api --paginate` concatenates page arrays; slurp + flatten
+            # merges them into one array we can pipe through jq.
+            gh api --paginate "${PKG_PATH}/versions" | jq -s 'flatten'
+          }
+
+          # Try a DELETE; soften 404 (already gone) into a warning.
+          del() {
+            local id="$1" reason="$2"
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "[dry-run] would delete ${PACKAGE_NAME} version ${id} (${reason})"
+              return 0
+            fi
+            local err
+            if err=$(gh api --silent -X DELETE "${PKG_PATH}/versions/${id}" 2>&1); then
+              echo "deleted ${PACKAGE_NAME} version ${id} (${reason})"
+              return 0
+            fi
+            if [[ "$err" == *"HTTP 404"* ]]; then
+              echo "WARN: ${PACKAGE_NAME} version ${id} already gone (${reason})"
+              return 0
+            fi
+            echo "ERROR deleting ${PACKAGE_NAME} version ${id}: ${err}" >&2
+            return 1
+          }
+
+          echo "::group::Fetching versions for ${PACKAGE_NAME}"
+          VERSIONS=$(fetch_versions)
+          TOTAL=$(jq 'length' <<<"$VERSIONS")
+          echo "found ${TOTAL} versions"
+          echo "::endgroup::"
+
+          # Phase 1 — untagged manifests.
+          echo "::group::Phase 1 — untagged"
+          COUNT_UNTAG=0
+          while read -r ID; do
+            [[ -z "$ID" ]] && continue
+            if del "$ID" "untagged"; then
+              COUNT_UNTAG=$((COUNT_UNTAG + 1))
+            fi
+          done < <(jq -r '.[] | select(.metadata.container.tags | length == 0) | .id' <<<"$VERSIONS")
+          echo "phase 1: ${COUNT_UNTAG} deleted"
+          echo "::endgroup::"
+
+          # Phase 2 — old `:main-<sha>` past the keep-N cap. The moving
+          # `:main` tag rides on the most-recent digest (which is in the
+          # kept-N), so it's never affected.
+          COUNT_MAIN=0
+          if [[ "$PRUNE_MAIN" == "true" ]]; then
+            echo "::group::Phase 2 — old main-* (keep ${KEEP_MAIN})"
+            while read -r ID; do
+              [[ -z "$ID" ]] && continue
+              if del "$ID" "old main-* beyond keep=${KEEP_MAIN}"; then
+                COUNT_MAIN=$((COUNT_MAIN + 1))
+              fi
+            done < <(jq -r --argjson keep "$KEEP_MAIN" '
+              [.[] | select(.metadata.container.tags | any(test("^main-")))]
+                | sort_by(.created_at) | reverse | .[$keep:] | .[] | .id
+            ' <<<"$VERSIONS")
+            echo "phase 2: ${COUNT_MAIN} deleted"
+            echo "::endgroup::"
+          fi
+
+          # Phase 3 — orphan Cosign signatures. A signature is a sibling
+          # OCI artifact tagged `sha256-<hex>.sig`; if its referenced
+          # manifest digest is no longer in the registry, the sig is
+          # dead weight. Re-fetch first since phases 1+2 mutated state.
+          COUNT_SIG=0
+          if [[ "$PRUNE_SIGS" == "true" ]]; then
+            echo "::group::Phase 3 — orphan signatures"
+            VERSIONS=$(fetch_versions)
+            # Live digest set: every non-`.sig` version's manifest digest.
+            LIVE=$(jq -r '
+              .[] | select(.metadata.container.tags | any(test("\\.sig$")) | not) | .name
+            ' <<<"$VERSIONS" | sort -u)
+            while IFS=$'\t' read -r ID TAG; do
+              [[ -z "$ID" ]] && continue
+              # `sha256-<hex>.sig` -> `sha256:<hex>`
+              referenced="${TAG#sha256-}"
+              referenced="sha256:${referenced%.sig}"
+              if ! grep -qx "$referenced" <<<"$LIVE"; then
+                if del "$ID" "orphan sig for ${referenced}"; then
+                  COUNT_SIG=$((COUNT_SIG + 1))
+                fi
+              fi
+            done < <(jq -r '
+              .[]
+                | . as $v
+                | (.metadata.container.tags // [])
+                | map(select(test("^sha256-[0-9a-f]+\\.sig$")))
+                | select(length > 0)
+                | "\($v.id)\t\(.[0])"
+            ' <<<"$VERSIONS")
+            echo "phase 3: ${COUNT_SIG} deleted"
+            echo "::endgroup::"
+          fi
+
+          DRY_LABEL="no"
+          [[ "$DRY_RUN" == "true" ]] && DRY_LABEL="yes"
+          echo ""
+          echo "Summary for ${PACKAGE_NAME}: ${COUNT_UNTAG} untagged, ${COUNT_MAIN} old main-*, ${COUNT_SIG} orphan sigs (dry-run: ${DRY_LABEL})"
