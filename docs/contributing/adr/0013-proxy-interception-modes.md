@@ -128,3 +128,51 @@ trust loud opt-in:
 F-19 residual (agent-vs-proxy NetworkPolicy distinction in same-Pod
 cooperative mode) is structurally documented rather than fixed; the
 sibling-Pod refactor (audit option A) is deferred to v1.0.
+
+## Issue #79 update (2026-04-28)
+
+Cilium-with-KPR (the modern Cilium default and what `make kind-up`
+ships) breaks Phase 2d's per-run NetworkPolicy enforcement model in
+two places. Both have controller-side fixes that preserve transparent
+mode under hostile-tenant posture.
+
+**Issue A — kube-apiserver classification.** Standard NetworkPolicy
+`ipBlock` rules don't enforce against host-network destinations like
+the kube-apiserver static pod on Cilium. The fix: when the cluster
+has the `cilium.io/v2/CiliumNetworkPolicy` CRD registered, the
+controller emits a CNP variant with
+`egress: [toEntities: [kube-apiserver, remote-node]]` instead of the
+standard NP. The `remote-node` entity covers the host-network
+apiserver static pod where `kube-apiserver` alone may not. Standard
+NetworkPolicy (with the Phase 2d apiserver-IP `ipBlock` rule)
+remains the path for non-Cilium clusters. Detection runs once at
+controller-manager startup via discovery API.
+
+**Issue B — per-run NP missing a loopback allow.** iptables-init
+installs `nat OUTPUT -j REDIRECT --to-ports 15001` for TCP/443 and
+TCP/80; the agent's traffic to `downloads.claude.ai:443` (etc.)
+gets rewritten to `127.0.0.1:15001` and lands on the proxy. On
+kindnet/Calico this loopback flow isn't policed. **On Cilium-with-KPR
+it is**, and the per-run NP's egress rules don't allow loopback —
+the redirected packet is dropped before reaching the proxy. The
+fix: standard NP gains
+`egress: [{to: [{ipBlock: {cidr: 127.0.0.0/8}}], ports: [{protocol: TCP}]}]`;
+CNP gains `egress: [{toCIDR: [127.0.0.0/8]}]` (no `toPorts` —
+Cilium CRD validation rejects empty `port` strings, and an omitted
+`toPorts` block matches "any L4 to loopback", which is the intent).
+Defence-in-depth on non-Cilium clusters; mandatory on Cilium-with-KPR.
+
+The original Issue #79 walkthrough hypothesised that Cilium's BPF
+datapath silently bypassed the iptables REDIRECT chain; Phase 1
+empirical probing refuted that — iptables PADDOCK_OUTPUT counters
+increment, REDIRECT lands on the local listener, and a robust sink
+(Python http.server) receives the bytes end-to-end. The actual cause
+was the per-run NP loopback gap above. See
+`docs/superpowers/plans/2026-04-28-cilium-compat-findings.md` for
+the diagnostic narrative.
+
+CNI mode (the third interception mode listed as deferred in this
+ADR's original Decision) remains the long-term answer for
+environments where iptables interception is structurally unviable.
+Issue #79 does not trigger that case — the v0.5 fix preserves
+transparent mode under all tested CNIs.
