@@ -145,6 +145,10 @@ hooks-uninstall: ## Remove the git pre-commit hook.
 pre-commit: ## Run the pre-commit checks manually (same as the hook).
 	hack/pre-commit.sh
 
+.PHONY: update-reader-image-digest
+update-reader-image-digest: ## Refresh the busybox digest pinned in internal/cli/logs.go (manual).
+	@./hack/update-reader-image-digest.sh
+
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	"$(GOLANGCI_LINT)" run --fix

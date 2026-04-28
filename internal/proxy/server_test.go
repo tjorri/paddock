@@ -555,6 +555,68 @@ func TestProxy_BytesShuttleIdleTimeout(t *testing.T) {
 	_ = resp2.Body.Close()
 }
 
+// allowAllValidator always returns Allowed=true, used by F-22 tests to
+// ensure the denied-CIDR checks run independently of the validator outcome.
+type allowAllValidator struct{}
+
+func (allowAllValidator) ValidateEgress(_ context.Context, _ string, _ int) (Decision, error) {
+	return Decision{Allowed: true, Reason: "allow"}, nil
+}
+
+// TestHandleConnect_DeniedCIDR_IPLiteral verifies F-22 layer 2 cooperative:
+// an IP-literal CONNECT target in the denied-CIDR set is rejected before
+// the validator is called, with a deny AuditEvent and reason
+// "denied-destination-cidr".
+func TestHandleConnect_DeniedCIDR_IPLiteral(t *testing.T) {
+	denied, _ := ParseDeniedCIDRs("169.254.0.0/16")
+	sink := &recordingSink{}
+	srv := &Server{
+		CA:          newTestCA(t, 16),
+		Validator:   allowAllValidator{},
+		Audit:       sink,
+		DeniedCIDRs: denied,
+		Resolver:    NewCachingResolver(time.Minute, 16),
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "http://example/", nil)
+	req.Host = "169.254.169.254:80"
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", w.Code)
+	}
+	got := sink.snapshot()
+	if len(got) != 1 || got[0].Decision != paddockv1alpha1.AuditDecisionDenied {
+		t.Errorf("expected one denied audit; got %+v", got)
+	}
+	if !strings.Contains(got[0].Reason, "denied-destination-cidr") {
+		t.Errorf("reason = %q, want it to mention denied-destination-cidr", got[0].Reason)
+	}
+}
+
+// TestHandleConnect_DeniedCIDR_PostResolution verifies F-22 layer 2 cooperative:
+// when the validator allows but the resolved IPs are all in the denied-CIDR
+// set, the connection is rejected with 403.
+func TestHandleConnect_DeniedCIDR_PostResolution(t *testing.T) {
+	denied, _ := ParseDeniedCIDRs("10.0.0.0/8")
+	stubLk := func(_ context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("10.0.0.50")}, nil
+	}
+	srv := &Server{
+		CA:          newTestCA(t, 16),
+		Validator:   allowAllValidator{},
+		Audit:       &recordingSink{},
+		DeniedCIDRs: denied,
+		Resolver:    newCachingResolverWithLookup(stubLk, time.Minute, 16),
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "http://example/", nil)
+	req.Host = "evil.example.com:443"
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", w.Code)
+	}
+}
+
 // TestHandleConnect_AuditFailureOnDeny_Returns502 verifies the fail-closed
 // behaviour on the policy-deny path (F-24): if the AuditSink returns an
 // error, the proxy must reply 502 "audit unavailable" so the agent sees
@@ -600,5 +662,50 @@ func TestHandleConnect_AuditFailureOnDeny_Returns502(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", resp.StatusCode)
+	}
+}
+
+// TestHandleConnect_ResolverCacheNotMutatedByDenyCIDRFilter verifies that the
+// resolve-then-filter path does not corrupt the resolver's cached slice via
+// in-place aliasing (resolved[:0]). The bug: if allowed := resolved[:0] were
+// used, append in the filter loop would overwrite the backing array that the
+// cache holds, so a second LookupHost call would see the mutated slice.
+func TestHandleConnect_ResolverCacheNotMutatedByDenyCIDRFilter(t *testing.T) {
+	denied, _ := ParseDeniedCIDRs("10.0.0.0/8")
+	// Resolver returns one denied + one allowed IP, denied IP first so
+	// the bug (in-place filter aliasing the cache) would overwrite the
+	// first slot before the second is read.
+	stubLk := func(_ context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("10.0.0.50"), net.ParseIP("203.0.113.10")}, nil
+	}
+	// Use a NON-test resolver that re-uses cached slices.
+	res := newCachingResolverWithLookup(stubLk, time.Minute, 16)
+	srv := &Server{
+		CA:          newTestCA(t, 16),
+		Validator:   allowAllValidator{},
+		Audit:       &recordingSink{},
+		DeniedCIDRs: denied,
+		Resolver:    res,
+		UpstreamDialer: func(_ context.Context, _, _ string) (net.Conn, error) {
+			return nil, errors.New("test: upstream dial not exercised")
+		},
+	}
+	// First call exercises the filter; the cooperative path will fail
+	// at upstream-dial (we stub it) but resolver+filter ran first.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodConnect, "http://example/", nil)
+	req.Host = "example.com:443"
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	// Second call: resolver cache should still report both IPs.
+	ips, err := res.LookupHost(context.Background(), "example.com")
+	if err != nil {
+		t.Fatalf("second lookup: %v", err)
+	}
+	if len(ips) != 2 {
+		t.Fatalf("after first call, cache lost entries: got %v, want 2 IPs", ips)
+	}
+	if !ips[0].Equal(net.ParseIP("10.0.0.50")) || !ips[1].Equal(net.ParseIP("203.0.113.10")) {
+		t.Errorf("cache corrupted: got %v, want [10.0.0.50, 203.0.113.10]", ips)
 	}
 }

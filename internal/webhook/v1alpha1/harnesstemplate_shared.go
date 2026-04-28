@@ -87,12 +87,43 @@ func validateHarnessTemplateSpec(spec *paddockv1alpha1.HarnessTemplateSpec, isCl
 			"eventAdapter.image is required when eventAdapter is set"))
 	}
 
+	errs = append(errs, validateTerminationGracePeriodSeconds(
+		spec.Defaults.TerminationGracePeriodSeconds,
+		specPath.Child("defaults").Child("terminationGracePeriodSeconds"))...)
+
 	errs = append(errs, validateRequireSpec(specPath.Child("requires"), &spec.Requires)...)
 
 	if len(errs) == 0 {
 		return nil
 	}
 	return fmt.Errorf("%s", errs.ToAggregate().Error())
+}
+
+// MaxTerminationGracePeriodSeconds caps the per-template grace period
+// at admission. F-42: a template with an unbounded grace period can
+// keep an agent Pod (and its broker SA token + MITM CA bundle) alive
+// for hours after `kubectl delete harnessrun`. 300s is generous for
+// realistic harness shutdown and tight enough to bound credential
+// exposure. Pre-1.0 hard break per CLAUDE.md.
+const MaxTerminationGracePeriodSeconds = 300
+
+// validateTerminationGracePeriodSeconds enforces the per-template cap
+// declared by MaxTerminationGracePeriodSeconds. A nil pointer means the
+// template did not set the field; the controller falls back to its
+// default (defaultGracePeriodSecs in pod_spec.go).
+func validateTerminationGracePeriodSeconds(v *int64, p *field.Path) field.ErrorList {
+	if v == nil {
+		return nil
+	}
+	if *v < 0 {
+		return field.ErrorList{field.Invalid(p, *v, "must be non-negative")}
+	}
+	if *v > MaxTerminationGracePeriodSeconds {
+		return field.ErrorList{field.Invalid(p, *v,
+			fmt.Sprintf("must be <= %d (5 minutes); values above this bound would keep credential-bearing sidecar volumes mounted after run deletion",
+				MaxTerminationGracePeriodSeconds))}
+	}
+	return nil
 }
 
 // validateRequireSpec checks a template's Requires block. Names must be

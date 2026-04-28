@@ -100,6 +100,7 @@ paddock-system namespace                  per-run namespace (e.g. my-team)
 Key invariants:
 
 - **No agent path to the internet except through the proxy sidecar.** Enforced by iptables (transparent mode) or by `HTTPS_PROXY` env + broker-refused direct-cred issuance (cooperative mode). NetworkPolicy layered on top when the CNI supports it.
+  - **Caveat (Phase 2h Theme 4, 2026-04-27).** In cooperative mode this invariant is enforced by the agent's honour of `HTTPS_PROXY` and is bypassable by a hostile agent. Transparent mode enforces it via iptables REDIRECT plus UID-based RETURN for sidecars (`--bypass-uids=1337,1338,1339`). See ADR-0013 "Phase 2h Theme 4 update" and `docs/security/threat-model.md` B-4 / B-5.
 - **No credential reaches a run Pod except through the broker.** The reconciler never mounts a user-referenced `Secret` directly into an agent container. `StaticProvider` takes a `secretRef` and the broker reads the value server-side, then issues it to the run through the broker API — so the audit log records the issuance even for static creds.
 - **Admission intersects `template.requires` with `BrokerPolicy.grants`.** A `HarnessRun` whose template requires capabilities that no in-namespace `BrokerPolicy` grants is rejected at admission.
 - **The broker is a separate Deployment with its own RBAC.** A compromise of the controller-manager does not automatically yield the broker's upstream credentials, and vice versa.

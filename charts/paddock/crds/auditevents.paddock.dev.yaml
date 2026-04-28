@@ -135,6 +135,8 @@ spec:
                     - ca-projected
                     - network-policy-enforcement-withdrawn
                     - ca-misconfigured
+                    - broker-creds-tampered
+                    - interception-mode-cooperative-accepted
                   type: string
                 matchedPolicy:
                   description: |-

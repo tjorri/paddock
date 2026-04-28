@@ -31,17 +31,26 @@ import (
 // include/uapi/linux/netfilter_ipv4.h.
 const soOriginalDst = 80
 
+// syscallConn is the minimal interface originalDestination needs. Both
+// *net.TCPConn and our *limitedConn (F-26) satisfy it; matching on the
+// interface rather than the concrete type lets the listener wrapping
+// added by F-26 stay transparent to the SO_ORIGINAL_DST path.
+type syscallConn interface {
+	SyscallConn() (syscall.RawConn, error)
+}
+
 // originalDestination recovers (IP, port) from an iptables-redirected
-// inbound connection. Linux-only. Caller passes a *net.TCPConn whose
-// remote end terminated inside the proxy listener; the returned tuple
-// is the upstream the kernel would have routed to had REDIRECT not
-// intervened.
+// inbound connection. Linux-only. Caller passes any net.Conn whose
+// underlying socket is a TCP connection that terminated inside the
+// proxy listener; the returned tuple is the upstream the kernel would
+// have routed to had REDIRECT not intervened. The conn must expose
+// SyscallConn (every TCP conn does, and *limitedConn delegates).
 func originalDestination(conn net.Conn) (net.IP, int, error) {
-	tc, ok := conn.(*net.TCPConn)
+	sc, ok := conn.(syscallConn)
 	if !ok {
-		return nil, 0, fmt.Errorf("SO_ORIGINAL_DST requires *net.TCPConn, got %T", conn)
+		return nil, 0, fmt.Errorf("SO_ORIGINAL_DST requires a SyscallConn-bearing conn, got %T", conn)
 	}
-	raw, err := tc.SyscallConn()
+	raw, err := sc.SyscallConn()
 	if err != nil {
 		return nil, 0, fmt.Errorf("SyscallConn: %w", err)
 	}

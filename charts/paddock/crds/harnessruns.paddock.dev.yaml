@@ -502,6 +502,77 @@ spec:
                   x-kubernetes-list-map-keys:
                     - name
                   x-kubernetes-list-type: map
+                issuedLeases:
+                  description: |-
+                    IssuedLeases records every credential lease the broker has minted
+                    for this run. Populated by the controller after each successful
+                    Issue call; consumed by the controller's broker-leases finalizer
+                    to revoke leases at run-delete time, and by the broker on startup
+                    to reconstruct PATPool slot reservations across restarts. F-11, F-14.
+                  items:
+                    description: |-
+                      IssuedLease records one credential lease the broker minted for this
+                      run. The controller appends one entry per successful broker.Issue call;
+                      reconcileDelete walks the slice and posts /v1/revoke for each entry
+                      before removing the broker-leases finalizer. Pre-1.0 evolves in place.
+                    properties:
+                      credentialName:
+                        description: |-
+                          CredentialName is the requirement name from the template's
+                          spec.requires.credentials list. Used for audit correlation only —
+                          never load-bearing for revocation.
+                        type: string
+                      expiresAt:
+                        description: |-
+                          ExpiresAt mirrors IssueResult.ExpiresAt. Reconstruction skips
+                          entries with ExpiresAt < now (no point rebuilding state for an
+                          already-dead lease). Optional: nil means "no expiry".
+                        format: date-time
+                        type: string
+                      leaseID:
+                        description: |-
+                          LeaseID is the provider-supplied identifier returned from
+                          IssueResult.LeaseID. Opaque to the controller; passed back unchanged.
+                        type: string
+                      poolRef:
+                        description: |-
+                          PoolRef carries PATPool-specific reconstruction metadata.
+                          Populated only when Provider == "PATPool"; nil otherwise.
+                          Anonymous tagged-union pattern; future providers add their own
+                          optional ref alongside without breaking pre-1.0 in-place evolution.
+                        properties:
+                          secretRef:
+                            description: SecretKeyReference is a pair (Secret name, key). Namespace is implicit.
+                            properties:
+                              key:
+                                type: string
+                              name:
+                                type: string
+                            required:
+                              - key
+                              - name
+                            type: object
+                          slotIndex:
+                            type: integer
+                        required:
+                          - secretRef
+                          - slotIndex
+                        type: object
+                      provider:
+                        description: |-
+                          Provider is the provider kind (matches BrokerPolicy
+                          grant.provider.kind). The broker dispatches /v1/revoke to the
+                          named provider's Revoke method.
+                        type: string
+                    required:
+                      - credentialName
+                      - leaseID
+                      - provider
+                    type: object
+                  type: array
+                  x-kubernetes-list-map-keys:
+                    - leaseID
+                  x-kubernetes-list-type: map
                 jobName:
                   description: JobName is the name of the backing batch/v1 Job, once created.
                   type: string

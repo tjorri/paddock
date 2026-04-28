@@ -17,6 +17,7 @@ limitations under the License.
 package auditing
 
 import (
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -382,6 +383,44 @@ func NewCAMisconfigured(in CAMisconfiguredInput) *paddockv1alpha1.AuditEvent {
 	return ae
 }
 
+// InterceptionInput is the flat input shape for
+// NewInterceptionModeCooperativeAccepted. Populated at proxy startup
+// from the controller-passed --interception-acceptance-reason flag.
+type InterceptionInput struct {
+	RunName       string
+	Namespace     string
+	MatchedPolicy string
+	Reason        string
+	When          time.Time
+}
+
+// NewInterceptionModeCooperativeAccepted builds an
+// interception-mode-cooperative-accepted AuditEvent. Emitted once at
+// proxy startup when --mode=cooperative; carries the BrokerPolicy
+// cooperativeAccepted.reason for the audit trail (F-19 residual).
+func NewInterceptionModeCooperativeAccepted(in InterceptionInput) *paddockv1alpha1.AuditEvent {
+	ae := &paddockv1alpha1.AuditEvent{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:    in.Namespace,
+			GenerateName: "ae-interception-",
+		},
+		Spec: paddockv1alpha1.AuditEventSpec{
+			Decision:  paddockv1alpha1.AuditDecisionGranted,
+			Kind:      paddockv1alpha1.AuditKindInterceptionModeCooperativeAccepted,
+			Timestamp: metav1.NewTime(nowOr(in.When)),
+			Reason:    in.Reason,
+		},
+	}
+	if in.RunName != "" {
+		ae.Spec.RunRef = &paddockv1alpha1.LocalObjectReference{Name: in.RunName}
+	}
+	if in.MatchedPolicy != "" {
+		ae.Spec.MatchedPolicy = &paddockv1alpha1.LocalObjectReference{Name: in.MatchedPolicy}
+	}
+	stampLabels(ae, in.RunName)
+	return ae
+}
+
 // NetworkPolicyEnforcementWithdrawnInput is the flat input shape for
 // NewNetworkPolicyEnforcementWithdrawn.
 type NetworkPolicyEnforcementWithdrawnInput struct {
@@ -408,6 +447,46 @@ func NewNetworkPolicyEnforcementWithdrawn(in NetworkPolicyEnforcementWithdrawnIn
 			Kind:      paddockv1alpha1.AuditKindNetworkPolicyEnforcementWithdrawn,
 			Timestamp: metav1.NewTime(nowOr(in.When)),
 			Reason:    in.Reason,
+		},
+	}
+	if in.RunName != "" {
+		ae.Spec.RunRef = &paddockv1alpha1.LocalObjectReference{Name: in.RunName}
+	}
+	stampLabels(ae, in.RunName)
+	return ae
+}
+
+// BrokerCredsTamperedInput is the flat input shape for
+// NewBrokerCredsTampered. PrunedKeys is the sorted list of unexpected
+// keys the controller removed from the broker-creds Secret on
+// tamper-detect.
+type BrokerCredsTamperedInput struct {
+	RunName    string
+	Namespace  string
+	PrunedKeys []string
+	When       time.Time
+}
+
+// NewBrokerCredsTampered builds a broker-creds-tampered AuditEvent
+// (controller detected and pruned unexpected keys on the per-run
+// broker-creds Secret). Decision is Warned — nothing was blocked,
+// the system auto-recovered, but operators should know tampering
+// was attempted. F-41 residual.
+func NewBrokerCredsTampered(in BrokerCredsTamperedInput) *paddockv1alpha1.AuditEvent {
+	reason := "broker-creds Secret had unexpected keys; pruned"
+	if len(in.PrunedKeys) > 0 {
+		reason += ": " + strings.Join(in.PrunedKeys, ",")
+	}
+	ae := &paddockv1alpha1.AuditEvent{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:    in.Namespace,
+			GenerateName: "ae-creds-tampered-",
+		},
+		Spec: paddockv1alpha1.AuditEventSpec{
+			Decision:  paddockv1alpha1.AuditDecisionWarned,
+			Kind:      paddockv1alpha1.AuditKindBrokerCredsTampered,
+			Timestamp: metav1.NewTime(nowOr(in.When)),
+			Reason:    reason,
 		},
 	}
 	if in.RunName != "" {

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -30,6 +31,15 @@ import (
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
+
+// errSourceCAMisconfigured is returned when a broker-CA source Secret
+// (paddock-broker-serving-cert in paddock-system) exists but has a
+// missing or empty ca.crt key — operator error, not transient.
+// Reconcilers map this to a terminal BrokerCAMisconfigured condition.
+// Shared between the run path (ensureBrokerCA in this file) and the
+// seed path (ensureSeedBrokerCA in workspace_broker.go).
+// F-44 (HarnessRun) / F-51 (Workspace).
+var errSourceCAMisconfigured = errors.New("source broker-CA Secret missing/empty key")
 
 // brokerCASecretName is the per-run Secret holding the CA bundle the
 // proxy sidecar uses to verify the broker's serving cert. Mirrors
@@ -102,20 +112,41 @@ func copyCAToSecret(
 // without needing to reach across namespaces at runtime.
 //
 // Returns (ok, err):
-//   - ok=false, err=nil when the source Secret isn't present yet or has
-//     no ca.crt — caller flips EgressConfigured=False and requeues.
-//   - ok=false, err!=nil on transient API errors.
+//   - ok=false, err=nil when the source Secret isn't present yet —
+//     transient; caller flips EgressConfigured=False and requeues.
+//   - ok=false, err=errSourceCAMisconfigured when source Secret exists
+//     but its ca.crt key is missing/empty — terminal operator error;
+//     caller maps to a BrokerCAMisconfigured condition, no requeue.
+//   - ok=false, err!=nil on other transient API errors.
 //   - ok=true when the per-run Secret has the bundle.
 //
 // No-op (returns ok=true, nil) when broker integration is disabled at
 // manager startup (BrokerCASource.Name empty or BrokerEndpoint empty) —
 // the proxy then falls back to the static --allow list, which doesn't
 // need broker connectivity at all.
+// F-44.
 func (r *HarnessRunReconciler) ensureBrokerCA(ctx context.Context, run *paddockv1alpha1.HarnessRun) (bool, error) {
 	if !r.brokerProxyConfigured() {
 		return true, nil
 	}
 	dstName := brokerCASecretName(run.Name)
+
+	// Read the source first so we can distinguish "not found yet"
+	// (transient — cert-manager hasn't completed issuance) from
+	// "found but malformed" (terminal — operator error). F-44.
+	src := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: r.BrokerCASource.Namespace, Name: r.BrokerCASource.Name}, src)
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("reading source broker-CA Secret %s/%s: %w",
+			r.BrokerCASource.Namespace, r.BrokerCASource.Name, err)
+	}
+	if len(src.Data[brokerCAKey]) == 0 {
+		return false, errSourceCAMisconfigured
+	}
+
 	created, err := copyCAToSecret(ctx, r.Client, r.Scheme, run,
 		types.NamespacedName{Namespace: r.BrokerCASource.Namespace, Name: r.BrokerCASource.Name},
 		dstName, run.Namespace,
@@ -131,9 +162,9 @@ func (r *HarnessRunReconciler) ensureBrokerCA(ctx context.Context, run *paddockv
 		r.Audit.EmitCAProjected(ctx, run.Name, run.Namespace, dstName)
 		return true, nil
 	}
-	// created=false, err=nil: either the source Secret is missing/empty
-	// (helper returned early) or this is a steady-state no-op update.
-	// Re-Get the destination to distinguish the two cases.
+	// created=false, err=nil: steady-state no-op update. Re-Get the
+	// destination to verify ca.crt is populated (closes a latent bug
+	// where a blanked destination ca.crt would be silently accepted).
 	var dst corev1.Secret
 	if getErr := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: dstName}, &dst); getErr != nil {
 		if apierrors.IsNotFound(getErr) {

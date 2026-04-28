@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -914,6 +915,54 @@ func TestBuildPodSpec_ProxySeccompParity(t *testing.T) {
 	}
 }
 
+// TestBuildPodSpec_ClampsGracePeriod is the controller-side belt-and-
+// braces for F-42's admission cap. Even if a template predates the
+// MaxTerminationGracePeriodSeconds webhook (or admission is bypassed
+// in some way), the kubelet never sees a grace period above the cap.
+func TestBuildPodSpec_ClampsGracePeriod(t *testing.T) {
+	grace := func(v int64) *int64 { return &v }
+	cases := []struct {
+		name    string
+		input   *int64
+		wantSec int64
+	}{
+		{"unset → default", nil, defaultGracePeriodSecs},
+		{"30 → 30 (below default)", grace(30), 30},
+		{"60 → 60 (default)", grace(60), 60},
+		{"299 → 299", grace(299), 299},
+		{"300 → 300 (cap)", grace(300), 300},
+		{"301 → 300 (clamped)", grace(301), maxPodGracePeriodSecs},
+		{"86400 → 300 (clamped)", grace(86400), maxPodGracePeriodSecs},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run := &paddockv1alpha1.HarnessRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "hr-1", Namespace: "team-a"},
+			}
+			tpl := &resolvedTemplate{
+				SourceName: "echo",
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Image:   "ghcr.io/paddock/harness-echo:v1",
+					Command: []string{"/bin/echo"},
+					Defaults: paddockv1alpha1.HarnessTemplateDefaults{
+						TerminationGracePeriodSeconds: tc.input,
+					},
+				},
+			}
+			spec := buildPodSpec(run, tpl, podSpecInputs{
+				outputConfigMap: "out",
+				serviceAccount:  "default",
+			})
+			if spec.TerminationGracePeriodSeconds == nil {
+				t.Fatal("TerminationGracePeriodSeconds is nil; want pointer set")
+			}
+			if got := *spec.TerminationGracePeriodSeconds; got != tc.wantSec {
+				t.Errorf("got %d; want %d", got, tc.wantSec)
+			}
+		})
+	}
+}
+
 // TestBuildEnv_ExtraEnvLastWinsOnControllerSide asserts F-39 defense in
 // depth: even if a tenant submits an extraEnv entry whose name collides
 // with a Paddock-reserved key (bypassing the webhook), the controller
@@ -948,5 +997,164 @@ func TestBuildEnv_ExtraEnvLastWinsOnControllerSide(t *testing.T) {
 	if got := em["SSL_CERT_FILE"]; got != agentCABundleMountPath {
 		t.Errorf("SSL_CERT_FILE (last-wins) = %q, want %q (controller value)",
 			got, agentCABundleMountPath)
+	}
+}
+
+// TestBuildPodSpec_PassesDenyCIDR verifies that proxyDenyCIDR is forwarded
+// to the proxy container as --deny-cidr. F-22 controller→proxy wiring.
+func TestBuildPodSpec_PassesDenyCIDR(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+	in.proxyDenyCIDR = "10.0.0.0/8,169.254.0.0/16,10.244.0.0/16,10.96.0.0/12"
+
+	ps := buildPodSpec(run, tpl, in)
+
+	// Locate the proxy init container.
+	var p corev1.Container
+	found := false
+	for _, c := range ps.InitContainers {
+		if c.Name == proxyContainerName {
+			p = c
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("proxy container %q not found in initContainers", proxyContainerName)
+	}
+
+	want := "--deny-cidr=10.0.0.0/8,169.254.0.0/16,10.244.0.0/16,10.96.0.0/12"
+	if !slices.Contains(p.Args, want) {
+		t.Errorf("proxy args missing %q; got %v", want, p.Args)
+	}
+}
+
+// TestSidecarUIDsArePinned verifies that the adapter and collector
+// sidecars have RunAsUser pinned to adapterRunAsUID (1338) and
+// collectorRunAsUID (1339) respectively. F-20 / Phase 2h Theme 4:
+// pinned UIDs allow iptables-init to RETURN sidecar egress by
+// owner-UID match without routing it through the proxy.
+func TestSidecarUIDsArePinned(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+	ps := buildPodSpec(run, tpl, defaultInputs())
+
+	uids := map[string]int64{}
+	for _, c := range ps.InitContainers {
+		if c.SecurityContext != nil && c.SecurityContext.RunAsUser != nil {
+			uids[c.Name] = *c.SecurityContext.RunAsUser
+		}
+	}
+	for _, c := range ps.Containers {
+		if c.SecurityContext != nil && c.SecurityContext.RunAsUser != nil {
+			uids[c.Name] = *c.SecurityContext.RunAsUser
+		}
+	}
+	want := map[string]int64{
+		adapterContainerName:   1338,
+		collectorContainerName: 1339,
+	}
+	for name, wantUID := range want {
+		if got, ok := uids[name]; !ok || got != wantUID {
+			t.Errorf("%s UID = %d (present=%v), want %d", name, got, ok, wantUID)
+		}
+	}
+}
+
+// TestPodFSGroupIsSet verifies that the pod-level SecurityContext sets
+// FSGroup so the workspace PVC remains writable across the pinned
+// sidecar UIDs (adapter=1338, collector=1339) AND the agent's
+// image-default UID (typically 65532). Without fsGroup, the collector
+// (which starts before the agent) creates `/workspace/.paddock/runs/...`
+// at uid:gid 1339:1339 mode 0755, and the agent at UID 65532 fails to
+// write its result.json there. Regression test for the F-20 sidecar UID
+// pinning. F-20 follow-up.
+func TestPodFSGroupIsSet(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+	ps := buildPodSpec(run, tpl, defaultInputs())
+
+	if ps.SecurityContext == nil {
+		t.Fatal("pod SecurityContext is nil")
+	}
+	if ps.SecurityContext.FSGroup == nil {
+		t.Fatal("pod SecurityContext.FSGroup is nil; PVC writes will fail across pinned sidecar UIDs")
+	}
+	if got := *ps.SecurityContext.FSGroup; got != 65532 {
+		t.Errorf("FSGroup = %d, want 65532 (matches the agent's distroless:nonroot default GID)", got)
+	}
+}
+
+// TestIPTablesInitArgs_BypassUIDs verifies that buildIPTablesInitContainer
+// emits --bypass-uids=1337,1338,1339 and does NOT emit the legacy
+// --proxy-uid flag. F-20 / Phase 2h Theme 4.
+func TestIPTablesInitArgs_BypassUIDs(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.iptablesInitImage = "paddock-iptables-init:test"
+	in.interceptionMode = paddockv1alpha1.InterceptionModeTransparent
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+
+	ps := buildPodSpec(run, tpl, in)
+
+	var ipt corev1.Container
+	for _, c := range ps.InitContainers {
+		if c.Name == iptablesInitContainerName {
+			ipt = c
+		}
+	}
+	if ipt.Name == "" {
+		t.Fatalf("iptables-init container not found in InitContainers")
+	}
+	if !slices.Contains(ipt.Args, "--bypass-uids=1337,1338,1339") {
+		t.Errorf("missing --bypass-uids=1337,1338,1339; got %v", ipt.Args)
+	}
+	for _, bad := range ipt.Args {
+		if strings.HasPrefix(bad, "--proxy-uid=") {
+			t.Errorf("legacy --proxy-uid flag still emitted: %s", bad)
+		}
+	}
+}
+
+func TestBuildPodSpec_PassesInterceptionAcceptanceArgs(t *testing.T) {
+	run := echoRunFixture()
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	in.proxyImage = testProxyImage
+	in.proxyTLSSecret = testProxyTLSSecret
+	in.proxyAllowList = testProxyAllowList
+	in.interceptionMode = paddockv1alpha1.InterceptionModeCooperative
+	in.interceptionAcceptanceReason = "PSS-restricted enforced"
+	in.interceptionAcceptanceMatchedPolicy = "team-default"
+
+	ps := buildPodSpec(run, tpl, in)
+
+	// Locate the proxy init container.
+	var p corev1.Container
+	found := false
+	for _, c := range ps.InitContainers {
+		if c.Name == proxyContainerName {
+			p = c
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("proxy container %q not found in initContainers", proxyContainerName)
+	}
+
+	wantReasonArg := "--interception-acceptance-reason=PSS-restricted enforced"
+	wantPolicyArg := "--interception-acceptance-matched-policy=team-default"
+	if !slices.Contains(p.Args, wantReasonArg) {
+		t.Errorf("proxy args missing %q; got %v", wantReasonArg, p.Args)
+	}
+	if !slices.Contains(p.Args, wantPolicyArg) {
+		t.Errorf("proxy args missing %q; got %v", wantPolicyArg, p.Args)
 	}
 }

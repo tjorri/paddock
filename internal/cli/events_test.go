@@ -153,7 +153,11 @@ func TestLogsOptions_ResolvedPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.opts.resolvedPath(hr); got != tc.want {
+			got, err := tc.opts.resolvedPath(hr)
+			if err != nil {
+				t.Fatalf("resolvedPath: unexpected error: %v", err)
+			}
+			if got != tc.want {
 				t.Errorf("resolvedPath = %q, want %q", got, tc.want)
 			}
 		})

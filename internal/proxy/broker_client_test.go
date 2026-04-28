@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -276,5 +277,61 @@ func TestBrokerClient_SubstituteAuth_TokenReaderError(t *testing.T) {
 	client.TokenReader = func() ([]byte, error) { return nil, errors.New("token unreadable") }
 	if _, err := client.SubstituteAuth(testContext(t), "h", 1, http.Header{}); err == nil {
 		t.Fatalf("expected token-reader error")
+	}
+}
+
+// TestNewBrokerClient_RejectsHostileEndpoints is a regression guard
+// asserting that NewBrokerClient routes through brokerclient.New's
+// validateBrokerEndpoint, closing F-01 (proxy → broker SSRF). The
+// validator itself is exercised by brokerclient unit tests; this test
+// proves the proxy's construction path is wired to it.
+func TestNewBrokerClient_RejectsHostileEndpoints(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint string
+		wantErr  string
+	}{
+		{
+			name:     "wrong scheme",
+			endpoint: "http://broker.paddock-system.svc:8443",
+			wantErr:  "scheme must be https",
+		},
+		{
+			name:     "userinfo present",
+			endpoint: "https://user:pw@broker.paddock-system.svc.cluster.local:8443",
+			wantErr:  "must not contain userinfo",
+		},
+		{
+			name:     "off-port",
+			endpoint: "https://broker.paddock-system.svc.cluster.local:9443",
+			wantErr:  "port must be 8443",
+		},
+		{
+			name:     "off-suffix",
+			endpoint: "https://evil.example.com:8443",
+			wantErr:  "must end in .svc or .svc.cluster.local",
+		},
+		{
+			name:     "path component",
+			endpoint: "https://broker.paddock-system.svc.cluster.local:8443/redirect",
+			wantErr:  "no path component",
+		},
+		{
+			name:     "single-label host",
+			endpoint: "https://broker.svc.cluster.local:8443",
+			wantErr:  "service.namespace before .svc.cluster.local",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewBrokerClient(tc.endpoint, "/tmp/token", "", "run-1", "ns-1")
+			if err == nil {
+				t.Fatalf("NewBrokerClient(%q) returned nil err; want %q", tc.endpoint, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("NewBrokerClient(%q) err = %q; want substring %q",
+					tc.endpoint, err.Error(), tc.wantErr)
+			}
+		})
 	}
 }

@@ -61,6 +61,11 @@ const (
 	proxyContainerName        = "proxy"
 	iptablesInitContainerName = "iptables-init"
 	defaultGracePeriodSecs    = 60
+	// maxPodGracePeriodSecs is the controller-side belt-and-braces clamp
+	// matching the admission cap (MaxTerminationGracePeriodSeconds in the
+	// webhook package). F-42: even if a template predates the admission
+	// webhook, the kubelet never sees a grace period above this cap.
+	maxPodGracePeriodSecs = 300
 
 	// Proxy sidecar (ADR-0013 §7). Two modes:
 	//   - cooperative: agent sets HTTPS_PROXY=http://localhost:15001 and
@@ -98,6 +103,11 @@ const (
 	// defaultProxyUID. 1337 is the Istio convention — low enough
 	// conflict risk against typical agent container UIDs.
 	proxyRunAsUID = 1337
+	// adapterRunAsUID and collectorRunAsUID pin the sidecar UIDs so the
+	// iptables-init --bypass-uids list can RETURN their egress without
+	// looping it through the proxy. F-20 / Phase 2h Theme 4.
+	adapterRunAsUID   = 1338
+	collectorRunAsUID = 1339
 	// agentCABundleMountPath is where the agent sees the MITM CA
 	// bundle. Points at a single file (tls.crt key of the per-run
 	// Secret — the per-run intermediate cert; see agentCABundleSubPath
@@ -185,6 +195,18 @@ type podSpecInputs struct {
 	// broker's serving cert. Populated by ensureBrokerCA when broker
 	// integration is enabled; empty otherwise.
 	brokerCASecret string
+
+	// interceptionAcceptanceReason carries the BrokerPolicy
+	// spec.interception.cooperativeAccepted.reason; passed to the proxy
+	// sidecar as --interception-acceptance-reason. Empty in transparent mode.
+	// F-19 residual.
+	interceptionAcceptanceReason        string
+	interceptionAcceptanceMatchedPolicy string
+
+	// proxyDenyCIDR is the comma-separated CIDR list passed to the proxy
+	// sidecar as --deny-cidr. Built by proxyDeniedCIDRs (RFC1918 +
+	// link-local + cluster pod+service CIDRs). F-22.
+	proxyDenyCIDR string
 }
 
 // buildJob renders the batchv1.Job for a HarnessRun. Assumes the caller
@@ -242,6 +264,9 @@ func buildPodSpec(
 	if template.Spec.Defaults.TerminationGracePeriodSeconds != nil {
 		grace = *template.Spec.Defaults.TerminationGracePeriodSeconds
 	}
+	if grace > maxPodGracePeriodSecs {
+		grace = maxPodGracePeriodSecs
+	}
 
 	collectorImage := in.collectorImage
 	if collectorImage == "" {
@@ -283,7 +308,19 @@ func buildPodSpec(
 		// deliberately unset — the agent is tenant-supplied and may run
 		// as root; per-container SecurityContext on first-party
 		// sidecars enforces non-root individually. See F-37 / Phase 2e.
+		//
+		// FSGroup makes the workspace PVC writable across pinned sidecar
+		// UIDs (collector=1339, adapter=1338) AND the agent's
+		// image-default UID (typically 65532 for distroless:nonroot).
+		// Without it, the collector creates `/workspace/.paddock/runs/...`
+		// owned by 1339:1339 mode 0755 and the agent (UID 65532) can't
+		// write its result.json there. Setting fsGroup=65532 makes K8s
+		// chown the PVC to GID 65532 and OR g+rwx onto contents, and adds
+		// 65532 as a supplementary group on every container — so all the
+		// pinned-UID sidecars (and the tenant agent) can collaborate on
+		// the workspace. F-20 follow-up.
 		SecurityContext: &corev1.PodSecurityContext{
+			FSGroup: ptr.To(int64(65532)),
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
 			},
@@ -381,11 +418,20 @@ func buildAgentContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemp
 // workspace PVC is the collector's concern.
 func buildAdapterContainer(template *resolvedTemplate) corev1.Container {
 	always := corev1.ContainerRestartPolicyAlways
+	sc := runContainerSecurityContextBaseline()
+	sc.RunAsUser = ptr.To(int64(adapterRunAsUID))
+	// RunAsGroup pinned to the shared workspace GID so files the
+	// adapter creates on the workspace PVC end up group-readable by
+	// the agent (which runs at the image-default UID, typically 65532
+	// for distroless:nonroot). Without this, the runtime falls back to
+	// GID 0 when RunAsUser overrides the image's USER and no entry for
+	// 1338 exists in /etc/passwd. F-20 follow-up.
+	sc.RunAsGroup = ptr.To(int64(65532))
 	c := corev1.Container{
 		Name:            adapterContainerName,
 		Image:           template.Spec.EventAdapter.Image,
 		RestartPolicy:   &always,
-		SecurityContext: runContainerSecurityContextBaseline(),
+		SecurityContext: sc,
 		Env: []corev1.EnvVar{
 			{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
 			{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
@@ -412,11 +458,21 @@ func buildCollectorContainer(
 ) corev1.Container {
 	always := corev1.ContainerRestartPolicyAlways
 	mountPath := effectiveWorkspaceMount(template)
+	sc := runContainerSecurityContextRestricted()
+	sc.RunAsUser = ptr.To(int64(collectorRunAsUID))
+	// RunAsGroup pinned to the shared workspace GID. See the comment on
+	// the adapter for the rationale. The collector pre-creates the run
+	// output directory at /workspace/.paddock/runs/<run>/ which the
+	// agent later writes result.json into; without an explicit
+	// RunAsGroup, the directory ends up owned by 1339:0 instead of
+	// 1339:65532 and the agent (UID 65532) can't write into it via the
+	// group bits. F-20 follow-up.
+	sc.RunAsGroup = ptr.To(int64(65532))
 	return corev1.Container{
 		Name:            collectorContainerName,
 		Image:           image,
 		RestartPolicy:   &always,
-		SecurityContext: runContainerSecurityContextRestricted(),
+		SecurityContext: sc,
 		Env: []corev1.EnvVar{
 			{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
 			{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
@@ -588,6 +644,9 @@ func buildProxyContainer(run *paddockv1alpha1.HarnessRun, in podSpecInputs) core
 		"--run-name=" + run.Name,
 		"--run-namespace=" + run.Namespace,
 		"--mode=" + string(mode),
+		fmt.Sprintf("--interception-acceptance-reason=%s", in.interceptionAcceptanceReason),
+		fmt.Sprintf("--interception-acceptance-matched-policy=%s", in.interceptionAcceptanceMatchedPolicy),
+		fmt.Sprintf("--deny-cidr=%s", in.proxyDenyCIDR),
 	}
 	if in.brokerEndpoint != "" {
 		args = append(args,
@@ -669,7 +728,7 @@ func buildIPTablesInitContainer(in podSpecInputs) corev1.Container {
 		Name:  iptablesInitContainerName,
 		Image: img,
 		Args: []string{
-			fmt.Sprintf("--proxy-uid=%d", proxyRunAsUID),
+			fmt.Sprintf("--bypass-uids=%d,%d,%d", proxyRunAsUID, adapterRunAsUID, collectorRunAsUID),
 			fmt.Sprintf("--proxy-port=%d", proxyListenPort),
 			"--ports=80,443",
 		},
