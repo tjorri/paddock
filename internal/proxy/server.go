@@ -177,6 +177,15 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	// INFO-level per-connection visibility: every cooperative CONNECT
+	// gets one line so operators can correlate "agent dialed X" with
+	// proxy behaviour without enabling V(1) globally. Pairs with the
+	// egress-decision logs below.
+	s.log().Info("cooperative CONNECT accepted",
+		"remote_addr", r.RemoteAddr,
+		"host", host,
+		"port", port,
+	)
 
 	// F-22 layer 2 cooperative: IP-literal CONNECT pre-validator check.
 	// If the agent is dialling a literal IP that falls in the denied-CIDR
@@ -213,7 +222,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !decision.Allowed {
-		s.log().V(1).Info("denied", "host", host, "port", port, "reason", decision.Reason)
+		s.log().Info("egress denied (cooperative)",
+			"host", host, "port", port, "reason", decision.Reason)
 		if aErr := s.recordEgress(ctx, EgressEvent{
 			Host: host, Port: port,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
@@ -226,6 +236,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("paddock-proxy: %s", decision.Reason), http.StatusForbidden)
 		return
 	}
+	s.log().Info("egress allowed (cooperative)",
+		"host", host, "port", port,
+		"policy", decision.MatchedPolicy,
+		"discovery", decision.DiscoveryAllow,
+	)
 
 	// F-22 layer 2 cooperative: resolve via the proxy's own resolver (not
 	// the agent's), filter out denied CIDRs, dial the first surviving IP.
