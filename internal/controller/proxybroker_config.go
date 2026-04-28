@@ -82,4 +82,11 @@ type ProxyBrokerConfig struct {
 	// resolves the kube-apiserver to (F-41). Each becomes a /32
 	// allow rule in the per-pod NP.
 	APIServerIPs []net.IP
+
+	// CiliumCNPAvailable reports whether the cluster has the
+	// CiliumNetworkPolicy CRD registered. Set at controller-manager
+	// startup via DetectCiliumCNP. When true, ensureRunNetworkPolicy
+	// emits a CiliumNetworkPolicy variant; when false, it emits a
+	// standard NetworkPolicy. Issue #79.
+	CiliumCNPAvailable bool
 }
