@@ -175,3 +175,40 @@ HarnessRun:
 CNI mode remains the long-term answer for environments where iptables
 interception isn't viable for unrelated reasons. Issue #79 does not
 trigger it. Out of scope here; v1.0 roadmap entry stands.
+
+## Phase 2 end-to-end validation (2026-04-28)
+
+After implementing A-FIX-toEntities + B-FIX-loopback-allow (commits
+80fee46 / 8bb73e7 / bd9640b / aed6d0b / 24afe87 / 53c63ac), built
+the manager image, loaded it into `paddock-dev`, helm-upgraded the
+release, and resubmitted a `claude-code` HarnessRun in the
+`claude-demo` namespace. Outcome:
+
+- **CNP emitted correctly:** `toEntities: [kube-apiserver, remote-node]`,
+  `toCIDR: 127.0.0.0/8` (loopback), broker rule on TCP/8443,
+  `0.0.0.0/0` except cluster CIDRs on TCP/443 + TCP/80, DNS to
+  kube-dns. Single CNP, zero standard NetworkPolicies (CNP CRDs
+  detected; CNP path taken).
+- **Status conditions:** `EgressConfigured=True` with reason
+  `Transparent: MITM CA mounted; iptables REDIRECT installed
+  (transparent mode)`. Run resolved to transparent mode under
+  Cilium-with-KPR.
+- **Proxy received traffic:** many `egress-allow` AuditEvents for
+  `{host: downloads.claude.ai, port: 443}` and
+  `{host: api.anthropic.com, port: 443}`. The proxy is actively
+  intercepting and authorizing the agent's outbound HTTPS connections.
+- **Compared to pre-fix repro:** the original `curl: (28) Operation
+  timed out after 10003 milliseconds with 0 bytes received` failure
+  on `downloads.claude.ai:443` is gone. The connection-level bug is
+  resolved.
+
+The run still ends in `Failed` because the agent's claude-code
+installer hits a TLS-trust verification error against the per-run
+intermediate CA — `Failed to fetch version from
+https://downloads.claude.ai/...: unable to get issuer certificate`.
+This is the unrelated v0.4 bug noted in spec §11 ("Out-of-scope
+side finding"): the harness image's installer doesn't honour
+`SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS`. Not part of Issue #79;
+tracked for separate work.
+
+**Issue #79 acceptance criteria 1–3 confirmed met by this validation.**
