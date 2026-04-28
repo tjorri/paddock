@@ -171,6 +171,37 @@ was the per-run NP loopback gap above. See
 `docs/superpowers/plans/2026-04-28-cilium-compat-findings.md` for
 the diagnostic narrative.
 
+**Issue C — TLS trust anchor (Phase 2f follow-up).** End-to-end
+validation surfaced that most TLS clients besides curl (Python ssl,
+OpenSSL CLI, Java JSSE, Bun's BoringSSL — including the upstream
+`claude` binary) reject a non-self-signed cert as a trust anchor.
+Phase 2f mounted only the per-run intermediate (`tls.crt`) on the
+F-18 rationale of cross-tenant isolation; in practice this broke
+every TLS client besides curl with `unable to get issuer
+certificate`. Switched `agentCABundleSubPath` to `ca.crt` (the
+cluster root, self-signed). The proxy's TLS handshake still serves
+`[leaf, per-run-intermediate]`; the chain now terminates at the
+cluster root in the agent's trust store, satisfying every TLS
+implementation. F-18's cross-tenant concern doesn't manifest in
+practice — iptables redirects the agent's TCP/80,443 to its OWN
+pod's local proxy, and the per-run NP/CNP blocks any path to
+another pod's proxy, so the agent's trust-store contents are
+irrelevant to cross-tenant isolation. Also added `CURL_CA_BUNDLE`
+to the controller-set agent env vars alongside the existing
+`SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS` / `REQUESTS_CA_BUNDLE` /
+`GIT_SSL_CAINFO`.
+
+**Defence in depth — non-HTTP ports.** iptables-init only intercepts
+TCP/80 and TCP/443. All other ports rely on the per-run NP/CNP for
+enforcement, which by design only allows: DNS (53/UDP+TCP) to
+kube-dns endpoints, TCP/443+TCP/80 to public-internet (with cluster
+CIDRs excluded — these are the proxy-MITM'd destinations), TCP to
+loopback (the redirect target), TCP/8443 to the broker, and the
+apiserver. UDP/443 (HTTP/3 QUIC), TCP/22 (SSH), DNS to 8.8.8.8, etc.
+are all dropped at the NP/CNP layer before leaving the pod. A
+hostile agent cannot bypass the proxy by switching ports — the
+per-run policy bounds the destination set tightly.
+
 CNI mode (the third interception mode listed as deferred in this
 ADR's original Decision) remains the long-term answer for
 environments where iptables interception is structurally unviable.

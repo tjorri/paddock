@@ -212,3 +212,99 @@ side finding"): the harness image's installer doesn't honour
 tracked for separate work.
 
 **Issue #79 acceptance criteria 1–3 confirmed met by this validation.**
+
+## Phase 2 follow-up — TLS trust-anchor finding (2026-04-28)
+
+The end-to-end validation surfaced a **second** out-of-scope issue
+beyond the connection-level fix: the agent's `claude` binary failed
+TLS chain validation against the proxy's MITM cert with the standard
+`unable to get issuer certificate` error. Initial diagnosis blamed
+upstream Bun's TLS stack for not honouring `NODE_EXTRA_CA_CERTS`,
+and the harness shipped `NODE_TLS_REJECT_UNAUTHORIZED=0` as a
+workaround.
+
+Cross-tool validation showed the diagnosis was wrong. With the
+per-run intermediate cert mounted as the trust anchor:
+
+| TLS client | Result |
+| --- | --- |
+| curl (libcurl/OpenSSL, `--cacert`) | code=200 (PASS) |
+| wget (BusyBox/OpenSSL) | option-parsing failed (test artifact) |
+| openssl `s_client` | `Verify return code: 2 (unable to get issuer certificate)` |
+| Python `ssl` (`cafile`) | `URLError: certificate verify failed: unable to get issuer certificate` |
+| Bun (upstream `claude` binary) | `Failed to fetch ...: unable to get issuer certificate` |
+
+With the per-run intermediate **plus** the cluster root concatenated
+into the trust bundle:
+
+| TLS client | Result |
+| --- | --- |
+| curl | code=200 (PASS) |
+| openssl `s_client` | `Verify return code: 0 (ok)` (PASS) |
+| Python `ssl` | code=200 (PASS) |
+| Bun (upstream `claude`) | install completes, hits `Invalid API key` (PASS — TLS chain valid, only auth fails) |
+
+**Root cause.** The per-run intermediate (`CN=paddock-proxy-tlscheck`,
+issued by `CN=paddock-proxy-ca`) is **not self-signed**. Most TLS
+implementations (OpenSSL, Python ssl, Java JSSE, Bun's BoringSSL)
+require the trust store to terminate at a self-signed root for path
+validation to complete. curl is the lenient outlier. Phase 2f's
+"intermediate-only mount" choice (F-18) was empirically incompatible
+with most TLS clients.
+
+**Fix.** Switch `agentCABundleSubPath` from `tls.crt` (the per-run
+intermediate) to `ca.crt` (the cluster root, self-signed). The proxy
+continues to send `[leaf, per-run-intermediate]` in its TLS handshake;
+the chain now terminates at the cluster root in the agent's trust
+store, satisfying every TLS implementation.
+
+**Why this doesn't widen the cross-tenant attack surface.** Phase 2f's
+F-18 mitigation goal was: tenant A's agent should not be able to
+verify TLS leaves signed by tenant B's intermediate. In practice,
+tenant A's agent **only ever connects to its own pod's local proxy**:
+iptables-init redirects all TCP/80,443 to `127.0.0.1:15001`, and the
+per-run NetworkPolicy / CiliumNetworkPolicy blocks any path to other
+pods' proxies. The agent's trust-store contents are therefore
+irrelevant to cross-tenant isolation — the network namespace
+boundary already enforces it.
+
+**Belt-and-braces.** Added `CURL_CA_BUNDLE` to the controller-set
+env vars alongside the existing `SSL_CERT_FILE` /
+`NODE_EXTRA_CA_CERTS` / `REQUESTS_CA_BUNDLE` / `GIT_SSL_CAINFO`
+(curl on some platforms prefers it).
+
+## Phase 2 follow-up — non-HTTP egress confirmation (2026-04-28)
+
+User asked what happens to non-HTTP egress (e.g., DNS to 8.8.8.8).
+Empirically verified the layered defence in the agent pod:
+
+- **iptables-init** REDIRECTs only TCP **80** and **443** (the
+  `--ports` arg). Other ports are not intercepted at netfilter.
+- **Per-run NP / CNP** is the gate for everything else. Egress
+  allow list:
+  - DNS (TCP+UDP **53**) restricted to **kube-dns endpoints only**
+  - TCP **80/443** to `0.0.0.0/0` except cluster CIDRs (the redirect
+    target — proxy MITMs)
+  - TCP to **127.0.0.0/8** (loopback — for the proxy receiving
+    iptables-redirected traffic; new in this fix)
+  - TCP **8443** to broker pod selector (paddock-system/broker)
+  - `toEntities: [kube-apiserver, remote-node]` (TCP/443 to apiserver)
+- **Anything else is dropped** by the per-run NP/CNP before it
+  leaves the pod.
+
+Empirical test results from the agent (UID 65532, not in
+iptables `--bypass-uids`):
+
+| Probe | Outcome | Mechanism |
+| --- | --- | --- |
+| TCP/80 → 1.1.1.1 | `code=000` (denied) | iptables REDIRECT → proxy → BrokerPolicy doesn't allow 1.1.1.1, proxy abrupt-close |
+| TCP/443 → api.anthropic.com | `code=404` (proxied, upstream 404 expected) | iptables REDIRECT → proxy → MITM → upstream |
+| UDP/53 → 8.8.8.8 | timeout | NP DNS rule allows kube-dns peer only; 8.8.8.8 not in allowed set |
+| TCP/22 → github.com | NP blocks | No rule allows port 22 |
+| TCP/8443 → 1.1.1.1 | NP blocks | NP's 8443 rule scoped to broker pod selector |
+| UDP/443 → 8.8.8.8 | NP blocks | NP allows TCP/443; UDP/443 (QUIC) not permitted |
+
+A hostile agent cannot bypass the proxy by switching ports — the
+per-run policy bounds the destination set tightly, and only the
+two HTTP ports are MITMable. Non-HTTP egress requires explicit
+allow rules, which v0.5 does not synthesise.
