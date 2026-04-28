@@ -46,6 +46,16 @@ type InterceptionDecision struct {
 	Mode        paddockv1alpha1.InterceptionMode
 	Unavailable bool
 	Reason      string
+
+	// AcceptanceReason carries the BrokerPolicy
+	// spec.interception.cooperativeAccepted.reason when Mode is
+	// cooperative; empty otherwise. Plumbed to the proxy sidecar for
+	// the F-19 residual startup AuditEvent.
+	AcceptanceReason string
+	// MatchedPolicy is the name of the FIRST BrokerPolicy whose
+	// spec.interception.cooperativeAccepted produced the cooperative
+	// decision. Used for the cooperative-acceptance audit trail.
+	MatchedPolicy string
 }
 
 // ResolveInterceptionMode merges the interception specs on the supplied
@@ -70,10 +80,14 @@ func ResolveInterceptionMode(
 	ns string,
 	matches []*paddockv1alpha1.BrokerPolicy,
 ) (InterceptionDecision, error) {
-	requested := mergePolicyInterception(matches)
+	merged := mergePolicyInterception(matches)
 
-	if requested == paddockv1alpha1.InterceptionModeCooperative {
-		return InterceptionDecision{Mode: requested}, nil
+	if merged.Mode == paddockv1alpha1.InterceptionModeCooperative {
+		return InterceptionDecision{
+			Mode:             merged.Mode,
+			AcceptanceReason: merged.AcceptanceReason,
+			MatchedPolicy:    merged.MatchedPolicy,
+		}, nil
 	}
 
 	// Requested transparent: check PSA.
@@ -102,26 +116,44 @@ func ResolveInterceptionMode(
 	return InterceptionDecision{Mode: paddockv1alpha1.InterceptionModeTransparent}, nil
 }
 
+// mergedInterception captures the merge output. AcceptanceReason and
+// MatchedPolicy are only set when Mode == cooperative; they come from
+// the FIRST cooperative policy in the matches list (deterministic).
+type mergedInterception struct {
+	Mode             paddockv1alpha1.InterceptionMode
+	AcceptanceReason string
+	MatchedPolicy    string
+}
+
 // mergePolicyInterception picks the mode requested by the matching
 // policy set. The weakening (cooperative) requires unanimous explicit
 // opt-in; any other shape (including "no matching policies") keeps
 // the default transparent posture.
-func mergePolicyInterception(matches []*paddockv1alpha1.BrokerPolicy) paddockv1alpha1.InterceptionMode {
+func mergePolicyInterception(matches []*paddockv1alpha1.BrokerPolicy) mergedInterception {
 	if len(matches) == 0 {
-		return paddockv1alpha1.InterceptionModeTransparent
+		return mergedInterception{Mode: paddockv1alpha1.InterceptionModeTransparent}
 	}
 	allCooperative := true
+	var firstReason, firstName string
 	for _, bp := range matches {
 		i := bp.Spec.Interception
 		if i == nil || i.CooperativeAccepted == nil || !i.CooperativeAccepted.Accepted {
 			allCooperative = false
 			break
 		}
+		if firstReason == "" {
+			firstReason = i.CooperativeAccepted.Reason
+			firstName = bp.Name
+		}
 	}
 	if allCooperative {
-		return paddockv1alpha1.InterceptionModeCooperative
+		return mergedInterception{
+			Mode:             paddockv1alpha1.InterceptionModeCooperative,
+			AcceptanceReason: firstReason,
+			MatchedPolicy:    firstName,
+		}
 	}
-	return paddockv1alpha1.InterceptionModeTransparent
+	return mergedInterception{Mode: paddockv1alpha1.InterceptionModeTransparent}
 }
 
 // psaBlocksNetAdmin reports whether the given PSA enforce level rejects

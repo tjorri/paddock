@@ -383,6 +383,44 @@ func NewCAMisconfigured(in CAMisconfiguredInput) *paddockv1alpha1.AuditEvent {
 	return ae
 }
 
+// InterceptionInput is the flat input shape for
+// NewInterceptionModeCooperativeAccepted. Populated at proxy startup
+// from the controller-passed --interception-acceptance-reason flag.
+type InterceptionInput struct {
+	RunName       string
+	Namespace     string
+	MatchedPolicy string
+	Reason        string
+	When          time.Time
+}
+
+// NewInterceptionModeCooperativeAccepted builds an
+// interception-mode-cooperative-accepted AuditEvent. Emitted once at
+// proxy startup when --mode=cooperative; carries the BrokerPolicy
+// cooperativeAccepted.reason for the audit trail (F-19 residual).
+func NewInterceptionModeCooperativeAccepted(in InterceptionInput) *paddockv1alpha1.AuditEvent {
+	ae := &paddockv1alpha1.AuditEvent{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:    in.Namespace,
+			GenerateName: "ae-interception-",
+		},
+		Spec: paddockv1alpha1.AuditEventSpec{
+			Decision:  paddockv1alpha1.AuditDecisionGranted,
+			Kind:      paddockv1alpha1.AuditKindInterceptionModeCooperativeAccepted,
+			Timestamp: metav1.NewTime(nowOr(in.When)),
+			Reason:    in.Reason,
+		},
+	}
+	if in.RunName != "" {
+		ae.Spec.RunRef = &paddockv1alpha1.LocalObjectReference{Name: in.RunName}
+	}
+	if in.MatchedPolicy != "" {
+		ae.Spec.MatchedPolicy = &paddockv1alpha1.LocalObjectReference{Name: in.MatchedPolicy}
+	}
+	stampLabels(ae, in.RunName)
+	return ae
+}
+
 // NetworkPolicyEnforcementWithdrawnInput is the flat input shape for
 // NewNetworkPolicyEnforcementWithdrawn.
 type NetworkPolicyEnforcementWithdrawnInput struct {

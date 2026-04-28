@@ -1191,6 +1191,10 @@ func (r *HarnessRunReconciler) ensureJob(
 			return nil, fmt.Errorf("interception unavailable: %s", decision.Reason)
 		}
 		in.interceptionMode = decision.Mode
+		if decision.Mode == paddockv1alpha1.InterceptionModeCooperative {
+			in.interceptionAcceptanceReason = decision.AcceptanceReason
+			in.interceptionAcceptanceMatchedPolicy = decision.MatchedPolicy
+		}
 		if decision.Mode == paddockv1alpha1.InterceptionModeTransparent {
 			in.iptablesInitImage = r.IPTablesInitImage
 		}
@@ -1198,6 +1202,10 @@ func (r *HarnessRunReconciler) ensureJob(
 			in.brokerEndpoint = r.BrokerEndpoint
 			in.brokerCASecret = brokerCASecretName(run.Name)
 		}
+		in.proxyDenyCIDR = proxyDeniedCIDRs(networkPolicyConfig{
+			ClusterPodCIDR:     r.ClusterPodCIDR,
+			ClusterServiceCIDR: r.ClusterServiceCIDR,
+		})
 	}
 	desired := buildJob(run, tpl, run.Status.WorkspaceRef, in)
 	if err := controllerutil.SetControllerReference(run, desired, r.Scheme); err != nil {

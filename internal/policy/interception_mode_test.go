@@ -78,23 +78,48 @@ func unsetPolicy(name string) *paddockv1alpha1.BrokerPolicy {
 
 // Each row: the policy list + the namespace PSA label → expected decision.
 func TestResolveInterceptionMode_Decision(t *testing.T) {
+	cooperativeReason := "Cluster PSA=restricted; node-level proxy not available yet"
+
 	cases := []struct {
-		name        string
-		psaLabel    string
-		policies    []*paddockv1alpha1.BrokerPolicy
-		wantMode    paddockv1alpha1.InterceptionMode
-		wantUnavail bool
+		name                 string
+		psaLabel             string
+		policies             []*paddockv1alpha1.BrokerPolicy
+		wantMode             paddockv1alpha1.InterceptionMode
+		wantUnavail          bool
+		wantAcceptanceReason string
+		wantMatchedPolicy    string
 	}{
 		{name: "no policy, PSA permits → transparent", psaLabel: "", policies: nil, wantMode: paddockv1alpha1.InterceptionModeTransparent},
 		{name: "policy transparent, PSA permits → transparent", psaLabel: PSALevelPrivileged, policies: []*paddockv1alpha1.BrokerPolicy{transparentPolicy("t")}, wantMode: paddockv1alpha1.InterceptionModeTransparent},
-		{name: "policy cooperativeAccepted, PSA permits → cooperative", psaLabel: PSALevelPrivileged, policies: []*paddockv1alpha1.BrokerPolicy{cooperativePolicy("c")}, wantMode: paddockv1alpha1.InterceptionModeCooperative},
+		{
+			name:                 "policy cooperativeAccepted, PSA permits → cooperative",
+			psaLabel:             PSALevelPrivileged,
+			policies:             []*paddockv1alpha1.BrokerPolicy{cooperativePolicy("c")},
+			wantMode:             paddockv1alpha1.InterceptionModeCooperative,
+			wantAcceptanceReason: cooperativeReason,
+			wantMatchedPolicy:    "c",
+		},
 		{name: "policy unset (default=transparent), PSA permits → transparent", psaLabel: "", policies: []*paddockv1alpha1.BrokerPolicy{unsetPolicy("u")}, wantMode: paddockv1alpha1.InterceptionModeTransparent},
 
 		{name: "no policy, PSA blocks → unavailable (default transparent)", psaLabel: PSALevelRestricted, policies: nil, wantUnavail: true},
 		{name: "policy transparent, PSA blocks → unavailable", psaLabel: PSALevelBaseline, policies: []*paddockv1alpha1.BrokerPolicy{transparentPolicy("t")}, wantUnavail: true},
-		{name: "policy cooperativeAccepted, PSA blocks → cooperative", psaLabel: PSALevelRestricted, policies: []*paddockv1alpha1.BrokerPolicy{cooperativePolicy("c")}, wantMode: paddockv1alpha1.InterceptionModeCooperative},
+		{
+			name:                 "policy cooperativeAccepted, PSA blocks → cooperative",
+			psaLabel:             PSALevelRestricted,
+			policies:             []*paddockv1alpha1.BrokerPolicy{cooperativePolicy("c")},
+			wantMode:             paddockv1alpha1.InterceptionModeCooperative,
+			wantAcceptanceReason: cooperativeReason,
+			wantMatchedPolicy:    "c",
+		},
 
-		{name: "two cooperativeAccepted policies, PSA blocks → cooperative", psaLabel: PSALevelRestricted, policies: []*paddockv1alpha1.BrokerPolicy{cooperativePolicy("c1"), cooperativePolicy("c2")}, wantMode: paddockv1alpha1.InterceptionModeCooperative},
+		{
+			name:                 "two cooperativeAccepted policies, PSA blocks → cooperative (first policy wins)",
+			psaLabel:             PSALevelRestricted,
+			policies:             []*paddockv1alpha1.BrokerPolicy{cooperativePolicy("c1"), cooperativePolicy("c2")},
+			wantMode:             paddockv1alpha1.InterceptionModeCooperative,
+			wantAcceptanceReason: cooperativeReason,
+			wantMatchedPolicy:    "c1",
+		},
 		{name: "mixed: one transparent, one cooperativeAccepted, PSA permits → transparent", psaLabel: PSALevelPrivileged, policies: []*paddockv1alpha1.BrokerPolicy{transparentPolicy("t"), cooperativePolicy("c")}, wantMode: paddockv1alpha1.InterceptionModeTransparent},
 		{name: "mixed: one unset, one cooperativeAccepted, PSA blocks → unavailable", psaLabel: PSALevelRestricted, policies: []*paddockv1alpha1.BrokerPolicy{unsetPolicy("u"), cooperativePolicy("c")}, wantUnavail: true},
 		{
@@ -141,6 +166,21 @@ func TestResolveInterceptionMode_Decision(t *testing.T) {
 			}
 			if got.Mode != c.wantMode {
 				t.Errorf("Mode = %q, want %q", got.Mode, c.wantMode)
+			}
+			if c.wantAcceptanceReason != "" && got.AcceptanceReason != c.wantAcceptanceReason {
+				t.Errorf("AcceptanceReason = %q, want %q", got.AcceptanceReason, c.wantAcceptanceReason)
+			}
+			if c.wantMatchedPolicy != "" && got.MatchedPolicy != c.wantMatchedPolicy {
+				t.Errorf("MatchedPolicy = %q, want %q", got.MatchedPolicy, c.wantMatchedPolicy)
+			}
+			if c.wantMode != paddockv1alpha1.InterceptionModeCooperative {
+				// Non-cooperative decisions should not carry acceptance fields.
+				if got.AcceptanceReason != "" {
+					t.Errorf("AcceptanceReason = %q on non-cooperative decision; want empty", got.AcceptanceReason)
+				}
+				if got.MatchedPolicy != "" {
+					t.Errorf("MatchedPolicy = %q on non-cooperative decision; want empty", got.MatchedPolicy)
+				}
 			}
 		})
 	}

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -104,6 +105,20 @@ func buildExceptCIDRs(cfg networkPolicyConfig) []string {
 		exc = append(exc, cfg.ClusterServiceCIDR)
 	}
 	return exc
+}
+
+// proxyDeniedCIDRs returns the comma-separated CIDR list passed to the
+// proxy as --deny-cidr. F-22 layer 2 (post-resolution + transparent
+// origIP filter).
+func proxyDeniedCIDRs(cfg networkPolicyConfig) string {
+	parts := append([]string{}, rfc1918AndLinkLocalCIDRs...)
+	if cfg.ClusterPodCIDR != "" {
+		parts = append(parts, cfg.ClusterPodCIDR)
+	}
+	if cfg.ClusterServiceCIDR != "" {
+		parts = append(parts, cfg.ClusterServiceCIDR)
+	}
+	return strings.Join(parts, ",")
 }
 
 // buildBrokerEgressRule returns the egress rule that allows traffic

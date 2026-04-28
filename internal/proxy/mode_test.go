@@ -101,13 +101,21 @@ func TestHandleTransparentConn_AllowsAndMITMs(t *testing.T) {
 		t.Fatalf("lookup %q: %v", host, err)
 	}
 
+	// Wire a stub resolver that returns the upstream IP for the test SNI so
+	// the F-22 Layer 1 re-resolve check passes (origIP == resolved IP).
+	resolvedIP := ips[0].IP
+	stubLookup := func(_ context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{resolvedIP}, nil
+	}
+
 	srv := &Server{
 		CA:                  ca,
 		Validator:           validator,
 		Audit:               sink,
 		UpstreamTLSConfig:   &tls.Config{RootCAs: upstreamPool, MinVersion: tls.VersionTLS12},
-		OriginalDestination: fixedOrigDest(ips[0].IP, port),
+		OriginalDestination: fixedOrigDest(resolvedIP, port),
 		IdleTimeout:         150 * time.Millisecond,
+		Resolver:            newCachingResolverWithLookup(stubLookup, time.Minute, 16),
 	}
 
 	clientPool := x509.NewCertPool()
@@ -263,6 +271,104 @@ func TestHandleTransparentConn_NoSNI_Denies(t *testing.T) {
 	}
 }
 
+// TestHandleTransparent_DeniedCIDR_OrigIP verifies F-22 layer 2 transparent:
+// when SO_ORIGINAL_DST resolves to an IP in the denied-CIDR set, the
+// connection is abruptly closed and a deny AuditEvent is emitted.
+func TestHandleTransparent_DeniedCIDR_OrigIP(t *testing.T) {
+	denied, _ := ParseDeniedCIDRs("10.0.0.0/8")
+	sink := &recordingSink{}
+	srv := &Server{
+		CA:          newTestCA(t, 16),
+		Validator:   allowAllValidator{},
+		Audit:       sink,
+		DeniedCIDRs: denied,
+		Resolver:    NewCachingResolver(time.Minute, 16),
+		OriginalDestination: func(_ net.Conn) (net.IP, int, error) {
+			return net.ParseIP("10.0.0.50"), 443, nil
+		},
+	}
+	a, b := net.Pipe()
+	t.Cleanup(func() { _ = b.Close() })
+	go srv.HandleTransparentConn(context.Background(), a)
+	for i := 0; i < 50; i++ {
+		if len(sink.snapshot()) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := sink.snapshot()
+	if len(got) == 0 {
+		t.Fatal("no audit recorded")
+	}
+	if got[0].Decision != paddockv1alpha1.AuditDecisionDenied {
+		t.Errorf("decision = %q, want denied", got[0].Decision)
+	}
+	if !strings.Contains(got[0].Reason, "denied-destination-cidr") {
+		t.Errorf("reason = %q, want denied-destination-cidr", got[0].Reason)
+	}
+}
+
+// TestHandleTransparent_DNSRebindingMismatch verifies F-22 layer 1 transparent:
+// when the proxy re-resolves the SNI and the result doesn't include
+// the agent's origIP, the connection is abruptly closed and a deny
+// AuditEvent with reason "dns-rebinding-mismatch" is emitted.
+func TestHandleTransparent_DNSRebindingMismatch(t *testing.T) {
+	// Proxy resolves evil-rebound.com → 203.0.113.10, but the agent
+	// connected to 8.8.8.8 (via SO_ORIGINAL_DST). Mismatch → deny.
+	stubLk := func(_ context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("203.0.113.10")}, nil
+	}
+	denied, _ := ParseDeniedCIDRs("169.254.0.0/16") // 8.8.8.8 not in denied set
+	sink := &recordingSink{}
+	srv := &Server{
+		CA:          newTestCA(t, 16),
+		Validator:   allowAllValidator{},
+		Audit:       sink,
+		DeniedCIDRs: denied,
+		Resolver:    newCachingResolverWithLookup(stubLk, time.Minute, 16),
+		OriginalDestination: func(_ net.Conn) (net.IP, int, error) {
+			return net.ParseIP("8.8.8.8"), 443, nil
+		},
+	}
+
+	serverConn, clientConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = serverConn.Close()
+		_ = clientConn.Close()
+	})
+
+	go srv.HandleTransparentConn(context.Background(), serverConn)
+
+	// Drive a TLS ClientHello with SNI=evil-rebound.com from the agent side.
+	go func() {
+		defer func() { _ = clientConn.Close() }()
+		tlsClient := tls.Client(clientConn, &tls.Config{
+			ServerName:         "evil-rebound.com",
+			InsecureSkipVerify: true, //nolint:gosec // test-only; the proxy will reject at rebinding check
+			MinVersion:         tls.VersionTLS12,
+		})
+		if err := tlsClient.HandshakeContext(context.Background()); err != nil {
+			// Expected — the proxy rejects at the rebinding check; we just
+			// need the ClientHello bytes to reach the proxy.
+			_ = err
+		}
+	}()
+
+	for i := 0; i < 100; i++ {
+		if len(sink.snapshot()) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := sink.snapshot()
+	if len(got) == 0 {
+		t.Fatal("no audit recorded")
+	}
+	if !strings.Contains(got[0].Reason, "dns-rebinding-mismatch") {
+		t.Errorf("reason = %q, want dns-rebinding-mismatch; got events %+v", got[0].Reason, got)
+	}
+}
+
 func TestHandleTransparentConn_OrigDestFailure_DropsConnSilently(t *testing.T) {
 	certPEM, keyPEM := generateTestCA(t)
 	ca, err := NewMITMCertificateAuthority(certPEM, keyPEM)
@@ -314,13 +420,21 @@ func TestHandleTransparentConn_EmitsDiscoveryAllowKind(t *testing.T) {
 		t.Fatalf("lookup %q: %v", host, err)
 	}
 
+	// Wire a stub resolver that returns the upstream IP for the test SNI so
+	// the F-22 Layer 1 re-resolve check passes (origIP == resolved IP).
+	resolvedIP := ips[0].IP
+	stubLookup := func(_ context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{resolvedIP}, nil
+	}
+
 	srv := &Server{
 		CA:                  ca,
 		Validator:           discoveryValidator{},
 		Audit:               sink,
 		UpstreamTLSConfig:   &tls.Config{RootCAs: upstreamPool, MinVersion: tls.VersionTLS12},
-		OriginalDestination: fixedOrigDest(ips[0].IP, port),
+		OriginalDestination: fixedOrigDest(resolvedIP, port),
 		IdleTimeout:         150 * time.Millisecond,
+		Resolver:            newCachingResolverWithLookup(stubLookup, time.Minute, 16),
 	}
 
 	clientPool := x509.NewCertPool()
