@@ -34,6 +34,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -1564,7 +1565,7 @@ func (r *HarnessRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// call-sites rather than bundle it here.
 		r.Recorder = mgr.GetEventRecorderFor("harnessrun-controller") //nolint:staticcheck
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	bldr := ctrl.NewControllerManagedBy(mgr).
 		For(&paddockv1alpha1.HarnessRun{}).
 		Owns(&batchv1.Job{}).
 		Owns(&corev1.ConfigMap{}).
@@ -1576,6 +1577,13 @@ func (r *HarnessRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&rbacv1.Role{}).
 		Owns(&rbacv1.RoleBinding{}).
-		Named("harnessrun").
-		Complete(r)
+		Named("harnessrun")
+	// CNP watch is conditional on CRD presence — registering Owns() on a
+	// missing GVK would break controller-runtime startup. Issue #79.
+	if r.CiliumCNPAvailable {
+		cnp := &unstructured.Unstructured{}
+		cnp.SetGroupVersionKind(CiliumNetworkPolicyGVK)
+		bldr = bldr.Owns(cnp)
+	}
+	return bldr.Complete(r)
 }

@@ -581,7 +581,7 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// in harnessrun_controller.go.
 		r.Recorder = mgr.GetEventRecorderFor("workspace-controller") //nolint:staticcheck
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	bldr := ctrl.NewControllerManagedBy(mgr).
 		For(&paddockv1alpha1.Workspace{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&batchv1.Job{}).
@@ -589,6 +589,13 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&rbacv1.Role{}).
 		Owns(&rbacv1.RoleBinding{}).
-		Named("workspace").
-		Complete(r)
+		Named("workspace")
+	// CNP watch is conditional on CRD presence — registering Owns() on a
+	// missing GVK would break controller-runtime startup. Issue #79.
+	if r.CiliumCNPAvailable {
+		cnp := &unstructured.Unstructured{}
+		cnp.SetGroupVersionKind(CiliumNetworkPolicyGVK)
+		bldr = bldr.Owns(cnp)
+	}
+	return bldr.Complete(r)
 }
