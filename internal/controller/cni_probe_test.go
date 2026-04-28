@@ -18,10 +18,12 @@ package controller
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -117,4 +119,72 @@ func TestDetectNetworkPolicyCNI(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDetectCiliumCNP(t *testing.T) {
+	cases := []struct {
+		name      string
+		resources []*metav1.APIResourceList
+		want      bool
+	}{
+		{
+			name: "cnp present",
+			resources: []*metav1.APIResourceList{
+				{
+					GroupVersion: "cilium.io/v2",
+					APIResources: []metav1.APIResource{
+						{Name: "ciliumnetworkpolicies", Kind: "CiliumNetworkPolicy"},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name:      "no cilium group",
+			resources: nil,
+			want:      false,
+		},
+		{
+			name: "cilium group present but no CNP kind",
+			resources: []*metav1.APIResourceList{
+				{
+					GroupVersion: "cilium.io/v2",
+					APIResources: []metav1.APIResource{
+						{Name: "ciliumendpoints", Kind: "CiliumEndpoint"},
+					},
+				},
+			},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeDiscovery{resources: tc.resources}
+			got, err := DetectCiliumCNP(fake)
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// fakeDiscovery implements only ServerResourcesForGroupVersion from
+// discovery.DiscoveryInterface; that's all DetectCiliumCNP touches.
+type fakeDiscovery struct {
+	resources []*metav1.APIResourceList
+}
+
+func (f *fakeDiscovery) ServerResourcesForGroupVersion(gv string) (*metav1.APIResourceList, error) {
+	for _, r := range f.resources {
+		if r.GroupVersion == gv {
+			return r, nil
+		}
+	}
+	return nil, &apierrors.StatusError{ErrStatus: metav1.Status{
+		Code:   http.StatusNotFound,
+		Reason: metav1.StatusReasonNotFound,
+	}}
 }
