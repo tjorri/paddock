@@ -19,6 +19,20 @@
 #   socketLB-hostns-only   — --set socketLB.hostNamespaceOnly=true
 #   bpf-tproxy             — --set bpf.tproxy=true
 #   kpr-off                — --set kubeProxyReplacement=false (sanity)
+#
+# NOTE (2026-04-28): Phase 1 of Issue #79 ran this script across all
+# variants and got FAIL on every one. That outcome is a SINK-SIDE
+# ARTIFACT, not a real iptables-bypass result. Busybox netcat's
+# `nc -lk -p 15001 -e cat` exits after one connection, so subsequent
+# curls land on a closed port. With a robust sink (Python http.server
+# on :15001, no NetworkPolicy applied), iptables nat OUTPUT REDIRECT
+# under Cilium-with-KPR works end-to-end. Issue #79's real root cause
+# was the per-run NetworkPolicy missing a loopback allow rule. See
+# docs/superpowers/plans/2026-04-28-cilium-compat-findings.md.
+#
+# This script is kept in-tree as scaffolding for future Cilium-config-
+# variant probing; replace the busybox sink with a python http.server
+# or ncat-based listener if you re-use it.
 
 set -euo pipefail
 
