@@ -9,6 +9,38 @@ contributor onboarding (dev setup, commit conventions, ADR process),
 see [`CONTRIBUTING.md`](CONTRIBUTING.md). For load-bearing design
 rationale, see [`docs/contributing/adr/`](docs/contributing/adr/).
 
+## Superpowers workflow artifacts
+
+The superpowers plugin's `brainstorming` and `writing-plans` skills
+produce two kinds of in-repo artifact:
+
+- [`docs/superpowers/specs/`](docs/superpowers/specs/) — design specs
+  from the `brainstorming` skill. Filename pattern
+  `YYYY-MM-DD-<topic>-design.md`.
+- [`docs/superpowers/plans/`](docs/superpowers/plans/) — implementation
+  plans from the `writing-plans` skill (filename pattern
+  `YYYY-MM-DD-<feature-name>.md`), plus related working docs that
+  aren't strict skill outputs (roadmaps, findings, post-mortems —
+  date-prefixed and named for the topic).
+
+Plan-mode plans under `~/.claude/plans/` are session-local and do not
+land here.
+
+## Branching default
+
+When starting a brainstorming or planning session — or any work that
+will produce a `docs/superpowers/` artifact — create a feature branch
+first, before committing any spec or plan. This keeps `main` free of
+WIP design churn.
+
+Branch names should reflect the topic, matching the spec/plan filename
+slug when one exists (e.g., `docs/restructure-ia`,
+`feat/secret-broker-claude-code`, `security/v0.5-phase-3`).
+
+The user can override this default at any time — phrasings like
+"commit to the current branch", "land directly on main", or "skip the
+branch" — typically when bundling into an existing in-flight branch.
+
 ## Repository layout
 
 Top-level dirs and the `internal/` + `config/` subtrees in alphabetical
