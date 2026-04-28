@@ -95,16 +95,14 @@ func buildCiliumEgressPolicy(
 		// Loopback allow — required so iptables nat OUTPUT REDIRECT
 		// from agent traffic on TCP 80/443 to the proxy at
 		// 127.0.0.1:15001 is not dropped by Cilium-with-KPR's
-		// CiliumNetworkPolicy enforcement (Issue #79).
+		// CiliumNetworkPolicy enforcement (Issue #79). No `toPorts`
+		// block: Cilium CNP requires a non-empty `port` value when
+		// `toPorts` is set, so we omit it and accept the slightly
+		// broader "any L4 to loopback" semantics. Pod-local loopback
+		// is reachable only from within the same netns, so the wider
+		// match has no security cost.
 		map[string]interface{}{
 			"toCIDR": []interface{}{"127.0.0.0/8"},
-			"toPorts": []interface{}{
-				map[string]interface{}{
-					"ports": []interface{}{
-						map[string]interface{}{"protocol": "TCP"},
-					},
-				},
-			},
 		},
 	}
 	if cfg.BrokerNamespace != "" {
