@@ -25,6 +25,15 @@ for img in paddock-manager:dev paddock-broker:dev paddock-proxy:dev paddock-ipta
 done
 ```
 
+> **Cilium support.** Paddock's per-run NetworkPolicy + transparent
+> proxy interception works on Cilium-with-kube-proxy-replacement
+> (the default `make kind-up` ships). On Cilium clusters the per-run
+> policy is emitted as a `CiliumNetworkPolicy` (with
+> `toEntities: [kube-apiserver, remote-node]`); on non-Cilium clusters
+> the standard `NetworkPolicy` path is used. See
+> [ADR-0013 §"Issue #79 update"](../contributing/adr/0013-proxy-interception-modes.md#issue-79-update-2026-04-28)
+> for details.
+
 ## 2. Install the controller + broker
 
 ```sh
