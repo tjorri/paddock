@@ -35,7 +35,7 @@ WIP design churn.
 
 Branch names should reflect the topic, matching the spec/plan filename
 slug when one exists (e.g., `docs/restructure-ia`,
-`feat/secret-broker-claude-code`, `security/v0.5-phase-3`).
+`feature/secret-broker-claude-code`, `security/v0.5-phase-3`).
 
 The user can override this default at any time — phrasings like
 "commit to the current branch", "land directly on main", or "skip the
