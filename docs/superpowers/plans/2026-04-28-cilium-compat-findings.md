@@ -76,27 +76,102 @@
 - **Hypothesis:** some Cilium config variant lets pod-netns iptables
   `nat OUTPUT` REDIRECT fire while keeping KPR=true.
 - **Procedure:** `hack/cilium-probe-iptables-redirect.sh PROBE_VARIANT=<...>`
-- **Result:** TBD per variant
-- **Decides:** B-FIX-cilium-knob (any variant passes) vs.
-  B-FIX-cooperative-downgrade (all KPR variants fail; baseline `kpr-off` passes).
+  for `baseline-kpr-on`, `socketLB-disabled`, `socketLB-hostns-only`,
+  `bpf-tproxy`, `kpr-off`.
+- **Result table:**
+
+  | Variant | Result | Notes |
+  | --- | --- | --- |
+  | `baseline-kpr-on` | FAIL | sink received nothing |
+  | `socketLB-disabled` | FAIL | sink received nothing |
+  | `socketLB-hostns-only` | FAIL | sink received nothing |
+  | `bpf-tproxy` | FAIL | sink received nothing |
+  | `kpr-off` | FAIL | DNS broken (Cilium-without-KPR + no kube-proxy = no service LB; CoreDNS unreachable from probe pod) |
+
+- **CRITICAL FOLLOW-UP — hypothesis refuted by deeper probing.** The
+  apparent "iptables bypassed" result was a sink-side artifact: the
+  busybox `nc -e cat` exits after one connection, so subsequent
+  curls land on a closed port. With a robust sink (Python
+  `http.server` on `:15001` in the same pod, no NetworkPolicy applied),
+  `curl http://1.1.1.1/` from a labeled pod **succeeds end-to-end**:
+  iptables `PADDOCK_OUTPUT` counters increment for `dport 80`, the
+  REDIRECT lands on the local listener, the listener returns 200 OK,
+  and the response flows back to curl. Conclusion: **iptables-init's
+  REDIRECT chain is NOT silently bypassed by Cilium-with-KPR**. The
+  original Issue #79 walkthrough's "proxy logs zero connection
+  accepts" has a different root cause.
+- **Decides:** B-1 is REFUTED as written. The actual Issue B mechanism
+  is investigated under §B-1-followup below.
+
+## B-1-followup — the per-run NetworkPolicy is the real Issue B blocker
+
+After the deeper probing (above) revealed iptables interception works
+under Cilium-with-KPR, the next test reproduced the FULL paddock
+quickstart end-to-end on this cluster. With a real `claude-code`
+HarnessRun:
+
+- **Pod composition:** `iptables-init` init + `agent` + `proxy` (UID
+  1337) + `collector` (UID 1339) + `adapter` (UID 1338).
+- **Per-run NP emitted** (per Phase 2d): egress allows DNS to
+  kube-dns, public 0.0.0.0/0 except cluster CIDRs on 80/443, broker
+  on 8443, kube-apiserver on 10.96.0.1/32. **Nothing allows
+  loopback (127.0.0.0/8) or proxy port 15001.**
+- **Result:** agent times out reaching `downloads.claude.ai:443`;
+  proxy logs zero connection accepts. Identical shape to Issue #79.
+- **Mechanism:** iptables nat OUTPUT REDIRECT rewrites the agent's
+  TCP/443 destination from `downloads.claude.ai:443` to
+  `127.0.0.1:15001`. Cilium-with-KPR enforces the per-run
+  NetworkPolicy on this redirected flow (unlike kindnet/Calico,
+  which typically don't police pod-local loopback). Since neither
+  port 15001 nor loopback is in the egress allow list, Cilium drops
+  the packet.
+- **Confirmation test:** helm-upgraded paddock with
+  `--set proxy.networkPolicy.enforce=off` and resubmitted the same
+  HarnessRun. With no per-run NP, the agent's curl gets through to
+  the proxy (separately fails on a TLS-trust issue — the
+  claude-code installer doesn't honour the proxy's per-run
+  intermediate CA, an unrelated v0.4 bug). The transition from
+  "agent times out" to "agent gets past connection" with the only
+  change being NP-off is decisive.
+- **Decides:** **B-FIX-loopback-allow** (new branch, supersedes
+  B-FIX-cilium-knob and B-FIX-cooperative-downgrade): per-run NP
+  builder adds an egress allow rule for `127.0.0.0/8` (loopback) on
+  any TCP port. One-line controller change. Preserves transparent
+  mode under Cilium-with-KPR. No mode auto-downgrade. No
+  `MinInterceptionMode` plumbing required.
 
 ## B-2 — Cooperative HTTPS_PROXY sanity under Cilium-with-KPR
 
 - **Hypothesis:** cooperative-mode env-var path works on Cilium-with-KPR
   (cooperative is supposed to be CNI-agnostic).
-- **Procedure:** TBD
-- **Result:** TBD
-- **Decides:** confirmation that B-FIX-cooperative-downgrade is viable
-  if B-1 fails.
+- **Procedure:** SKIPPED. The B-1-followup result eliminates the need
+  for cooperative auto-downgrade. Cooperative mode remains supported
+  (loud opt-in per Phase 2h Theme 4); we just don't need to force runs
+  onto it on Cilium-with-KPR.
+- **Result:** N/A
+- **Decides:** N/A
 
 ## Selected fix branches
 
-- **Issue A:** TBD (one of A-FIX-toEntities, A-FIX-toCIDR, A-FIX-cluster-config)
-- **Issue B:** TBD (one of B-FIX-cilium-knob, B-FIX-cooperative-downgrade)
-- **Rationale:** TBD
+- **Issue A:** **A-FIX-toEntities.** Per-run policy emission learns to
+  emit a `CiliumNetworkPolicy` variant when CNP CRDs are detected on
+  the cluster, with `egress: [toEntities: [kube-apiserver, remote-node]]`.
+  Standard NetworkPolicy stays the path for non-Cilium clusters.
+- **Issue B:** **B-FIX-loopback-allow** (new branch — supersedes the
+  spec's branches). Per-run NP builder adds an egress allow rule for
+  `127.0.0.0/8` on any TCP port. Symmetric change in the CNP variant
+  (egress `toCIDR: 127.0.0.0/8`). Preserves transparent mode under
+  Cilium-with-KPR; no mode resolver / `MinInterceptionMode` work
+  needed.
+- **Rationale:** the empirical evidence rewrites the design. iptables
+  interception under Cilium-with-KPR works fine; the failure was a
+  Phase 2d residual (the per-run NP didn't include a loopback
+  allowance for the proxy redirect path). Fixing the NP is a much
+  smaller change than mode auto-downgrade and preserves the north
+  star (hostile-binary lockdown via transparent mode).
 
-## Decision: CNI mode (B4) deferred to v1.0
+## Decision: CNI mode (B4) deferred to v1.0 (unchanged)
 
-Captured here for the audit trail: even if B-FIX-cooperative-downgrade
-ships, CNI mode remains the structural answer for hostile-tenant
-posture under Cilium-with-KPR. Reasoning: TBD per probe results.
+CNI mode remains the long-term answer for environments where iptables
+interception isn't viable for unrelated reasons. Issue #79 does not
+trigger it. Out of scope here; v1.0 roadmap entry stands.
