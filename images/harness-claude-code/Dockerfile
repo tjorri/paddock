@@ -3,27 +3,43 @@
 # verbatim; the matching adapter (paddock-adapter-claude-code) turns
 # that stream into PaddockEvents.
 #
-# Pins the Claude CLI version because the stream-json schema is not
-# stable across majors (see ADR-0001). Bump CLAUDE_VERSION + rerun
-# the adapter's fixture tests whenever this pin changes.
+# The Claude Code CLI is installed at run time from Anthropic's
+# downloads CDN (downloads.claude.ai), not at image build time.
+# Operators pick the version via PADDOCK_CLAUDE_CODE_VERSION (accepts
+# `latest` (default), `stable`, or an explicit X.Y.Z), so the same
+# image works against any upstream release without a rebuild. The
+# matching adapter has fixture tests pinned to a specific stream-json
+# shape, though, so a major upstream bump may break parsing — pin
+# PADDOCK_CLAUDE_CODE_VERSION to a known-good version in production.
 
-ARG NODE_VERSION=24-alpine
-ARG CLAUDE_VERSION=2.1.117
+ARG ALPINE_VERSION=3.22
 
-FROM node:${NODE_VERSION}
+FROM alpine:${ALPINE_VERSION}
 
 # Baseline tooling:
-#   bash — the run.sh wrapper uses bashisms ([[ ]], arrays, pipefail)
-#   git  — agents routinely inspect / commit inside the workspace
-#   jq   — extract final result.json from the stream-json tail
-RUN apk add --no-cache bash git jq
-
-ARG CLAUDE_VERSION
-RUN npm install -g --omit=dev @anthropic-ai/claude-code@${CLAUDE_VERSION} \
- && npm cache clean --force
+#   bash              — run.sh uses bashisms ([[ ]], arrays, pipefail)
+#   git               — agents routinely inspect / commit inside the workspace
+#   jq                — extract final result.json from the stream-json tail;
+#                       also lets the upstream bootstrap parse the manifest
+#                       without falling back to a bash regex
+#   curl              — fetch the Claude Code installer at run time
+#   ca-certificates   — TLS roots for curl
+#   libgcc, libstdc++ — runtime deps for the Claude Code binary on
+#                       musl-based distros (per Anthropic's setup docs)
+#   ripgrep           — Claude Code's bundled ripgrep is glibc-linked, so
+#                       Alpine needs the system package + USE_BUILTIN_RIPGREP=0
+RUN apk add --no-cache \
+        bash git jq curl ca-certificates \
+        libgcc libstdc++ ripgrep
 
 RUN adduser -D -u 65532 paddock
 ENV HOME=/home/paddock
+ENV PATH=/home/paddock/.local/bin:$PATH
+# Required by Claude Code on musl/Alpine; the bundled ripgrep is glibc-linked.
+ENV USE_BUILTIN_RIPGREP=0
+# Harness pods are ephemeral and we install fresh on every start —
+# the in-process auto-updater would just be wasted work.
+ENV DISABLE_AUTOUPDATER=1
 
 COPY run.sh /usr/local/bin/paddock-claude-code
 RUN chmod +x /usr/local/bin/paddock-claude-code

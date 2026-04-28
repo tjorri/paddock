@@ -20,4 +20,8 @@ spec:
     egress:
       - host: api.anthropic.com
         ports: [443]
+      # Required so the harness can fetch the Claude Code CLI from
+      # Anthropic's downloads CDN at startup.
+      - host: downloads.claude.ai
+        ports: [443]
     gitRepos: []

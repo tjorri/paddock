@@ -16,8 +16,59 @@ set -euo pipefail
 : "${PADDOCK_PROMPT_PATH:?PADDOCK_PROMPT_PATH is required}"
 : "${PADDOCK_RAW_PATH:=/paddock/raw/out}"
 : "${PADDOCK_RUN_NAME:=claude-code}"
+: "${PADDOCK_CLAUDE_CODE_VERSION:=latest}"
 
 mkdir -p "$(dirname "$PADDOCK_RAW_PATH")"
+
+# Install the Claude Code CLI at run time so operators can pick the
+# version via PADDOCK_CLAUDE_CODE_VERSION without rebuilding the image.
+# The harness pod's egress is locked down by iptables-init before this
+# script runs, so probe Anthropic's downloads CDN first — otherwise an
+# opaque connect timeout is the only signal when the host is missing
+# from the egress allowlist.
+if ! curl -fsS --connect-timeout 5 --max-time 10 -o /dev/null \
+     https://downloads.claude.ai/claude-code-releases/latest; then
+  cat >&2 <<'ERR'
+paddock-claude-code: cannot reach https://downloads.claude.ai/
+
+The Claude Code CLI is installed at run time, so the harness pod must
+be allowed to reach Anthropic's downloads host.
+
+Most likely cause: downloads.claude.ai:443 is missing from the harness
+template's requires.egress allowlist (and/or the BrokerPolicy's
+grants.egress). Add it in both places and re-apply, e.g.:
+
+  # ClusterHarnessTemplate
+  spec:
+    requires:
+      egress:
+        - host: api.anthropic.com
+          ports: [443]
+        - host: downloads.claude.ai
+          ports: [443]
+
+  # BrokerPolicy
+  spec:
+    grants:
+      egress:
+        - host: api.anthropic.com
+          ports: [443]
+        - host: downloads.claude.ai
+          ports: [443]
+
+See config/samples/paddock_v1alpha1_clusterharnesstemplate_claude_code.yaml
+and config/samples/paddock_v1alpha1_brokerpolicy.yaml.
+ERR
+  exit 1
+fi
+
+echo "paddock-claude-code: installing Claude Code @ ${PADDOCK_CLAUDE_CODE_VERSION}" >&2
+# bootstrap.sh sha256-verifies the downloaded binary against the manifest
+# fetched from the same CDN, so we get integrity-against-corruption for
+# free. End-to-end attestation against Anthropic's GPG-signed
+# manifest.json.sig would be a defense-in-depth follow-up.
+curl -fsSL https://downloads.claude.ai/claude-code-releases/bootstrap.sh \
+  | bash -s "${PADDOCK_CLAUDE_CODE_VERSION}"
 
 prompt=$(cat "$PADDOCK_PROMPT_PATH")
 
