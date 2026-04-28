@@ -270,7 +270,7 @@ func validateHarnessRunSpec(spec *paddockv1alpha1.HarnessRunSpec) error {
 			errs = append(errs, field.Forbidden(
 				specPath.Child("extraEnv").Index(i).Child("name"),
 				"env name is reserved by the controller; "+
-					"see docs/specs/0002-broker-proxy-v0.3.md §5.4"))
+					"see docs/internal/specs/0002-broker-proxy-v0.3.md §5.4"))
 		}
 		if e.ValueFrom != nil {
 			// F-31 closes valueFrom to any non-nil shape (was: secretKeyRef

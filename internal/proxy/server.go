@@ -22,7 +22,7 @@ limitations under the License.
 // reuses the same MITM engine but fronts it with an iptables-init
 // redirect and SO_ORIGINAL_DST lookup.
 //
-// See docs/specs/0002-broker-proxy-v0.3.md §7 and ADR-0013.
+// See docs/internal/specs/0002-broker-proxy-v0.3.md §7 and ADR-0013.
 package proxy
 
 import (

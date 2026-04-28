@@ -115,4 +115,4 @@ auditRetentionDays: 30
 # during webhook outages; operators detect this via:
 #   - paddock_audit_write_failures_total counter (rate > 0 alerts)
 #   - controller-pod webhook readiness probes
-# See docs/observability/audit-monitoring.md for an alert example.
+# See docs/internal/observability/audit-monitoring.md for an alert example.

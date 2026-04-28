@@ -17,8 +17,8 @@ You may obtain a copy of the License at
 // adversarial actions and assert that Paddock's defences deny them.
 // Validates Phase 2a's three P0 fixes (F-19, F-38, F-45). See:
 //
-//   - docs/security/2026-04-25-v0.4-test-gaps.md §3 (TG-NN entries)
-//   - docs/plans/2026-04-25-v0.4-security-review-phase-2b-design.md §3.3
+//   - docs/internal/security-audits/2026-04-25-v0.4-test-gaps.md §3 (TG-NN entries)
+//   - docs/superpowers/specs/2026-04-25-v0.4-security-review-phase-2b-design.md §3.3
 package e2e
 
 import (

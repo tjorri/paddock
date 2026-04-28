@@ -9,7 +9,7 @@ metadata:
 spec:
   # Inherit pod shape (image, command, eventAdapter) from the cluster template.
   # Only defaults, credentials, and podTemplateOverlay may be overridden;
-  # see docs/adr/0003-template-override-semantics.md.
+  # see docs/contributing/adr/0003-template-override-semantics.md.
   baseTemplateRef:
     name: echo-default
   defaults:

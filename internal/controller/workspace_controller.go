@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Package controller implements the Paddock reconcilers. See
-// docs/specs/0001-core-v0.1.md §3 for the design.
+// docs/internal/specs/0001-core-v0.1.md §3 for the design.
 package controller
 
 import (
@@ -80,7 +80,7 @@ type WorkspaceReconciler struct {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile brings a Workspace to its desired state. See package doc and
-// docs/specs/0001-core-v0.1.md §3.2 for the state machine.
+// docs/internal/specs/0001-core-v0.1.md §3.2 for the state machine.
 func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 

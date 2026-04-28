@@ -2,7 +2,7 @@
 
 - Status: Living document — edit in place when the architecture or threat landscape changes.
 - First written: 2026-04-25 (Phase 1 audit).
-- Audit anchor: see `docs/security/2026-04-25-v0.4-audit-findings.md` for the v0.4 audit that this document anchors.
+- Audit anchor: see `docs/internal/security-audits/2026-04-25-v0.4-audit-findings.md` for the v0.4 audit that this document anchors.
 
 ## 1. Scope and assumptions
 
@@ -111,7 +111,7 @@ Actors are numbered `T-1` through `T-8`. Findings cite these IDs (`Threats: T-1,
 
 **Update 2026-04-27 (Phase 2h, F-49).** The seed Job uses the third-party
 `alpine/git` image. Trust is established via the third-party-image
-policy in `docs/adr/0018-third-party-image-policy.md`: digest-pinned in
+policy in `docs/contributing/adr/0018-third-party-image-policy.md`: digest-pinned in
 source, operator-overrideable via `--seed-image` / Helm `seedImage`,
 audit-cadence reviewed quarterly. A first-party Paddock seed image
 remains a possible follow-up.
@@ -293,7 +293,7 @@ The cells are short — they say what the threat is and what defence exists. Eac
 
 **Phase 2 update (2026-04-26).** Phase 2a introduced a per-seed NetworkPolicy that mirrors the per-run shape, narrowing the seed Job's inbound and outbound network surface. The Tampering and Spoofing cells benefit modestly from the RFC1918/link-local/cluster-CIDR exclusion now applied to the seed NP's public-internet allow rule. Residuals are significant: F-46 (arbitrary URL schemes in `gitRepos`), F-47 (no `activeDeadlineSeconds`), F-48 (default service-account token mounted), F-49 (harness image not verified), F-50 (cleartext credentials in env), and F-52 (audit disabled during seeding) remain Open.
 
-**Phase 2h update (2026-04-27, F-49).** F-49 closed. The seed Job's `alpine/git` image is now digest-pinned (`alpine/git@sha256:d453f54c...`), eliminating the tag-mutation vector. Operator override via `--seed-image` / Helm `seedImage` with documented policy (`docs/adr/0018-third-party-image-policy.md`). Tag-only overrides force `ImagePullPolicy: Always` and emit a startup warning. F-46, F-47, F-48, F-50, and F-52 are resolved in Theme 1 Tasks 2–5/8.
+**Phase 2h update (2026-04-27, F-49).** F-49 closed. The seed Job's `alpine/git` image is now digest-pinned (`alpine/git@sha256:d453f54c...`), eliminating the tag-mutation vector. Operator override via `--seed-image` / Helm `seedImage` with documented policy (`docs/contributing/adr/0018-third-party-image-policy.md`). Tag-only overrides force `ImagePullPolicy: Always` and emit a startup warning. F-46, F-47, F-48, F-50, and F-52 are resolved in Theme 1 Tasks 2–5/8.
 
 [^per-run-ca]: Phase 2f (2026-04-26) makes this property factually accurate. Prior to Phase 2f, this row was a documentation/code mismatch — the per-run Secret content was a byte-for-byte copy of the cluster root keypair (F-18). After Phase 2f, each run has its own intermediate CA issued by cert-manager via a `ClusterIssuer` of `kind: CA`; the cluster root never leaves cert-manager's signing path; tenant A's agent does not trust leaves signed by tenant B's intermediate.
 
@@ -301,6 +301,6 @@ The cells are short — they say what the threat is and what defence exists. Eac
 
 ## Revision history
 
-- 2026-04-27 — Phase 2h Theme 4. Updated B-4 and B-5 defences (cooperative single-point-of-trust, F-19 residual documented; F-20 UID-based RETURN; F-22 layers 1+2; F-26 connection cap + slow-loris; F-27 refuse-to-start). See `docs/plans/2026-04-27-v0.4-theme-4-runtime-egress-residuals-design.md`.
-- 2026-04-26 — Phase 2 recheck. Updated defence claims affected by Phase 2a/2c/2e/2f/2g (per-run intermediate CA, audit fail-closed, NetworkPolicy hardening, substitute-auth host scoping, run-pod hardening, seed-pod NP). See `docs/plans/2026-04-26-v0.4-security-recheck-design.md` for the recheck spec and `docs/security/2026-04-25-v0.4-audit-findings.md` Recheck history for per-finding state.
+- 2026-04-27 — Phase 2h Theme 4. Updated B-4 and B-5 defences (cooperative single-point-of-trust, F-19 residual documented; F-20 UID-based RETURN; F-22 layers 1+2; F-26 connection cap + slow-loris; F-27 refuse-to-start). See `docs/superpowers/specs/2026-04-27-v0.4-theme-4-runtime-egress-residuals-design.md`.
+- 2026-04-26 — Phase 2 recheck. Updated defence claims affected by Phase 2a/2c/2e/2f/2g (per-run intermediate CA, audit fail-closed, NetworkPolicy hardening, substitute-auth host scoping, run-pod hardening, seed-pod NP). See `docs/superpowers/specs/2026-04-26-v0.4-security-recheck-design.md` for the recheck spec and `docs/internal/security-audits/2026-04-25-v0.4-audit-findings.md` Recheck history for per-finding state.
 - 2026-04-25 — Initial threat model produced as part of Phase 1 audit (PR #21).

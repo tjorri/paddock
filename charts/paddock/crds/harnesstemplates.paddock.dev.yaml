@@ -60,7 +60,7 @@ spec:
                 namespaced HarnessTemplate. A namespaced HarnessTemplate may reference a
                 ClusterHarnessTemplate via BaseTemplateRef to inherit its pod shape; in
                 that case only Defaults, Requires, and PodTemplateOverlay may be set.
-                See docs/adr/0003-template-override-semantics.md.
+                See docs/contributing/adr/0003-template-override-semantics.md.
               properties:
                 args:
                   description: Args are merged after Command. Locked when inheriting.

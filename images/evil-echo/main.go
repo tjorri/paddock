@@ -3,7 +3,7 @@
 // DO NOT use as a real harness. This image deliberately attempts security-
 // relevant operations (raw TCP egress, secret-file reads, broker probes,
 // MITM attempts, etc.) to validate that Paddock's defences hold. See the
-// test-gap inventory at docs/security/2026-04-25-v0.4-test-gaps.md §4 for
+// test-gap inventory at docs/internal/security-audits/2026-04-25-v0.4-test-gaps.md §4 for
 // the full flag catalogue.
 //
 // Each invocation can run multiple flags in sequence. Output is one JSON

@@ -5,8 +5,8 @@ Thanks for being here. Paddock is early. v0.1 shipped the core CRDs, controller,
 ## Before you open a PR
 
 - **Issue or discussion first** for anything larger than a focused fix or doc tweak. Paddock has strong opinions about its pod shape and surface area; a 5-minute chat saves a rewrite.
-- **Check the specs and ADRs** for existing decisions. v0.1 architecture lives in [`docs/specs/0001-core-v0.1.md`](docs/specs/0001-core-v0.1.md); v0.3's broker + proxy work in [`docs/specs/0002-broker-proxy-v0.3.md`](docs/specs/0002-broker-proxy-v0.3.md). Every architectural choice has an ADR under [`docs/adr/`](docs/adr/). If your change contradicts one, update the ADR (or add a new one) as part of the same PR.
-- **Reconciler conflict handling.** Every `r.Update`, `r.Status().Update`, and `controllerutil.CreateOrUpdate` in `internal/controller/` must treat `apierrors.IsConflict` as benign — see [ADR-0017](docs/adr/0017-controller-conflict-handling.md) for the three call-site shapes.
+- **Check the specs and ADRs** for existing decisions. v0.1 architecture lives in [`docs/internal/specs/0001-core-v0.1.md`](docs/internal/specs/0001-core-v0.1.md); v0.3's broker + proxy work in [`docs/internal/specs/0002-broker-proxy-v0.3.md`](docs/internal/specs/0002-broker-proxy-v0.3.md). Every architectural choice has an ADR under [`docs/contributing/adr/`](docs/contributing/adr/). If your change contradicts one, update the ADR (or add a new one) as part of the same PR.
+- **Reconciler conflict handling.** Every `r.Update`, `r.Status().Update`, and `controllerutil.CreateOrUpdate` in `internal/controller/` must treat `apierrors.IsConflict` as benign — see [ADR-0017](docs/contributing/adr/0017-controller-conflict-handling.md) for the three call-site shapes.
 - **Small, topical commits.** One concern per PR. Split refactors from behaviour changes.
 
 ## Dev setup
@@ -79,7 +79,7 @@ docs(adr): ADR-0010 — Pod Security Standards posture
 The hard rule: **anything running inside a user's Pod is a separate binary and image**. The controller-manager and its webhook are one process; everything else isn't.
 
 - **Adding a third-party container image** — follow ADR-0018
-  (`docs/adr/0018-third-party-image-policy.md`): digest-pin in source,
+  (`docs/contributing/adr/0018-third-party-image-policy.md`): digest-pin in source,
   surface an operator override, add an entry to the ADR's image table.
 
 | Component | `cmd/` | `images/` | Ships as |
@@ -110,7 +110,7 @@ Checklist:
 5. Add a sample `BrokerPolicy` under `config/samples/paddock_v1alpha1_brokerpolicy_<kind>.yaml` and list it in `config/samples/kustomization.yaml`.
 6. If the provider hands out long-lived credentials, mark it `riskLevel: high` in the package doc-comment (see `patpool.go` for the precedent) and note the "homelab and migration paths only" guidance.
 
-The admission webhook validates `grant.provider.kind` against the provider's `Purposes()` list — purpose-aware routing is free for new providers that declare their purposes correctly. See [ADR-0015](docs/adr/0015-provider-interface.md).
+The admission webhook validates `grant.provider.kind` against the provider's `Purposes()` list — purpose-aware routing is free for new providers that declare their purposes correctly. See [ADR-0015](docs/contributing/adr/0015-provider-interface.md).
 
 ## ADRs
 
@@ -120,7 +120,7 @@ Write an ADR when:
 - the choice rules out alternatives that may later seem attractive;
 - the reasoning lives outside the code.
 
-Don't write one for routine implementation decisions that read clearly from the code. Keep ADRs short — ~300 words. Format: lead with Context → Decision → Consequences → Alternatives considered. See `docs/adr/0001-paddockevent-schema-version.md` for the shape; `docs/adr/README.md` is the index + conventions.
+Don't write one for routine implementation decisions that read clearly from the code. Keep ADRs short — ~300 words. Format: lead with Context → Decision → Consequences → Alternatives considered. See `docs/contributing/adr/0001-paddockevent-schema-version.md` for the shape; `docs/contributing/adr/README.md` is the index + conventions.
 
 ## Keeping the Helm chart in sync
 
