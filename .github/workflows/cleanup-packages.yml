@@ -4,11 +4,15 @@ name: cleanup-packages
 # without ever touching properly-tagged release artifacts:
 #
 #   1. Untagged versions (orphaned manifests).
-#   2. Old `:main-<sha>` tagged versions, keeping the most recent 20 per
-#      image (image packages only — the chart is release-only and never
-#      sees `:main-*` tags).
-#   3. Orphaned Cosign signature artifacts (`sha256-<digest>.sig`) whose
-#      target manifest is no longer in the registry.
+#   2. Old `:main-<sha>` tagged versions, keeping the most recent N per
+#      image (default N=20, override via the `keep_main` workflow_dispatch
+#      input). Image packages only — the chart is release-only and never
+#      sees `:main-*` tags.
+#   3. Orphaned Cosign sidecar artifacts whose target manifest is gone.
+#      Two tag shapes share the same orphan condition: `sha256-<hex>.sig`
+#      (Cosign signatures) and `sha256-<hex>` with no suffix (the OCI
+#      referrers tag-schema fallback index that Cosign pushes alongside
+#      the API-based referrers, for client compatibility).
 #
 # Implementation is plain `gh api` + `jq` — no third-party actions, so
 # nothing extra to pin. GITHUB_TOKEN with `packages: write` is enough.
@@ -24,6 +28,10 @@ on:
         description: "Log intended deletions without executing them"
         type: boolean
         default: false
+      keep_main:
+        description: "Number of most recent :main-<sha> versions to keep per image (must be >= 1)"
+        type: number
+        default: 20
 
 # If a previous run is still going when the next cron fires, let it
 # finish — cleanup is incremental and aborting mid-flight risks
@@ -58,7 +66,10 @@ jobs:
       PRUNE_MAIN: ${{ matrix.prune_main }}
       PRUNE_SIGS: ${{ matrix.prune_sigs }}
       DRY_RUN: ${{ inputs.dry_run || 'false' }}
-      KEEP_MAIN: "20"
+      # `inputs.keep_main` is null on schedule triggers (no inputs are
+      # supplied), so fall back to '20' there. The `default: 20` above
+      # only applies to manual workflow_dispatch runs.
+      KEEP_MAIN: ${{ inputs.keep_main || '20' }}
     steps:
       - name: Cleanup ${{ matrix.name }}
         run: |
@@ -131,25 +142,41 @@ jobs:
             echo "::endgroup::"
           fi
 
-          # Phase 3 — orphan Cosign signatures. A signature is a sibling
-          # OCI artifact tagged `sha256-<hex>.sig`; if its referenced
-          # manifest digest is no longer in the registry, the sig is
-          # dead weight. Re-fetch first since phases 1+2 mutated state.
+          # Phase 3 — orphan Cosign sidecars. Two tag shapes share the
+          # same orphan condition (target manifest gone):
+          #   - `sha256-<hex>.sig`  Cosign signature artifact
+          #   - `sha256-<hex>`      OCI referrers tag-schema fallback index
+          # Both encode the target digest as `sha256:<hex>`. Re-fetch
+          # first since phases 1+2 mutated state.
           COUNT_SIG=0
           if [[ "$PRUNE_SIGS" == "true" ]]; then
-            echo "::group::Phase 3 — orphan signatures"
+            echo "::group::Phase 3 — orphan signatures and referrers"
             VERSIONS=$(fetch_versions)
-            # Live digest set: every non-`.sig` version's manifest digest.
+            # Live digest set: every "real" manifest version's digest —
+            # i.e. versions whose tag set contains anything that isn't
+            # one of our sidecar shapes. A version with only sidecar tags
+            # is itself a sidecar, not a target, and must NOT be in the
+            # live set.
             LIVE=$(jq -r '
-              .[] | select(.metadata.container.tags | any(test("\\.sig$")) | not) | .name
+              .[]
+                | select(
+                    (.metadata.container.tags // [])
+                      | map(select(test("^sha256-[0-9a-f]+(\\.sig)?$") | not))
+                      | length > 0
+                  )
+                | .name
             ' <<<"$VERSIONS" | sort -u)
             while IFS=$'\t' read -r ID TAG; do
               [[ -z "$ID" ]] && continue
-              # `sha256-<hex>.sig` -> `sha256:<hex>`
-              referenced="${TAG#sha256-}"
-              referenced="sha256:${referenced%.sig}"
+              # Strip optional `.sig` suffix, then convert `sha256-<hex>`
+              # to `sha256:<hex>`. Both tag shapes resolve to the same
+              # referenced digest.
+              referenced="${TAG%.sig}"
+              referenced="sha256:${referenced#sha256-}"
               if ! grep -qx "$referenced" <<<"$LIVE"; then
-                if del "$ID" "orphan sig for ${referenced}"; then
+                kind="sig"
+                [[ "$TAG" != *.sig ]] && kind="referrers index"
+                if del "$ID" "orphan ${kind} for ${referenced}"; then
                   COUNT_SIG=$((COUNT_SIG + 1))
                 fi
               fi
@@ -157,7 +184,7 @@ jobs:
               .[]
                 | . as $v
                 | (.metadata.container.tags // [])
-                | map(select(test("^sha256-[0-9a-f]+\\.sig$")))
+                | map(select(test("^sha256-[0-9a-f]+(\\.sig)?$")))
                 | select(length > 0)
                 | "\($v.id)\t\(.[0])"
             ' <<<"$VERSIONS")
