@@ -20,6 +20,30 @@ set -euo pipefail
 
 mkdir -p "$(dirname "$PADDOCK_RAW_PATH")"
 
+# Combine the Alpine system CA bundle with the per-run proxy
+# intermediate CA into a single file, then point all standard
+# trust-store env vars at it. The controller already mounts the
+# per-run intermediate at $SSL_CERT_FILE and exports SSL_CERT_FILE +
+# NODE_EXTRA_CA_CERTS + REQUESTS_CA_BUNDLE + GIT_SSL_CAINFO. Some
+# tools (Bun-compiled binaries like the upstream `claude` CLI, Node.js
+# undici fetch, certain Go programs that explicitly read SystemRoots)
+# read a SINGLE bundle file rather than the cert directory and need
+# both the public roots AND the per-run intermediate in one file. The
+# concat below produces /tmp/paddock-trust.pem and re-exports the
+# variables; downstream tools that already honoured SSL_CERT_FILE
+# pick up the combined bundle without changes. Issue #79 follow-up.
+if [[ -n "${SSL_CERT_FILE:-}" \
+   && "${SSL_CERT_FILE}" != "/etc/ssl/certs/ca-certificates.crt" \
+   && -r "${SSL_CERT_FILE}" \
+   && -r /etc/ssl/certs/ca-certificates.crt ]]; then
+  cat /etc/ssl/certs/ca-certificates.crt "${SSL_CERT_FILE}" > /tmp/paddock-trust.pem
+  export SSL_CERT_FILE=/tmp/paddock-trust.pem
+  export NODE_EXTRA_CA_CERTS=/tmp/paddock-trust.pem
+  export REQUESTS_CA_BUNDLE=/tmp/paddock-trust.pem
+  export CURL_CA_BUNDLE=/tmp/paddock-trust.pem
+  export GIT_SSL_CAINFO=/tmp/paddock-trust.pem
+fi
+
 # Install the Claude Code CLI at run time so operators can pick the
 # version via PADDOCK_CLAUDE_CODE_VERSION without rebuilding the image.
 # The harness pod's egress is locked down by iptables-init before this
@@ -63,6 +87,43 @@ ERR
 fi
 
 echo "paddock-claude-code: installing Claude Code @ ${PADDOCK_CLAUDE_CODE_VERSION}" >&2
+
+# Trust the proxy's MITM CA without explicit chain verification.
+#
+# The upstream `claude` CLI is a Bun-compiled binary that does not
+# honour SSL_CERT_FILE / NODE_EXTRA_CA_CERTS / REQUESTS_CA_BUNDLE for
+# its own outbound HTTPS calls (verified empirically: curl in this
+# image succeeds against the same per-run intermediate; `claude`
+# fails with "unable to get issuer certificate" using the same env
+# vars and bundle). Adding the per-run CA to /etc/ssl/certs/ via
+# update-ca-certificates would require root at runtime, which the
+# harness intentionally lacks (USER 65532 in the Dockerfile).
+#
+# Why this is acceptable in paddock's threat model:
+#
+# - In transparent mode (the recommended posture), iptables nat OUTPUT
+#   REDIRECT in pod netns rewrites every TCP/80,443 destination to
+#   127.0.0.1:15001 BEFORE TLS handshake. The agent's TLS peer is
+#   always the local paddock-proxy, regardless of the SNI / hostname
+#   it asked for. The proxy then validates the upstream certificate
+#   against the public CA bundle. End-to-end trust is enforced by the
+#   network namespace boundary, not by the agent's TLS verification.
+# - The per-run NetworkPolicy / CiliumNetworkPolicy restricts egress
+#   to TCP/80,443 to public-internet (with cluster CIDRs excluded),
+#   plus the broker, plus loopback. A hostile binary that disables
+#   TLS verification can only reach destinations the per-run policy
+#   already permits — and in transparent mode, all of those land on
+#   the proxy first.
+# - In cooperative mode, the agent is documented as trusted by the
+#   operator. NODE_TLS_REJECT_UNAUTHORIZED=0 marginally weakens that
+#   posture but does not change the trust model: cooperative mode is
+#   already "trust the agent binary."
+#
+# When upstream `claude` learns to honour NODE_EXTRA_CA_CERTS (or Bun
+# adds a respected CA-trust env var), this line should be removed and
+# the agent should validate against the per-run intermediate CA mounted
+# by the controller at $SSL_CERT_FILE.
+export NODE_TLS_REJECT_UNAUTHORIZED=0
 # bootstrap.sh sha256-verifies the downloaded binary against the manifest
 # fetched from the same CDN, so we get integrity-against-corruption for
 # free. End-to-end attestation against Anthropic's GPG-signed
