@@ -15,33 +15,61 @@
 
 - **Hypothesis:** the apiserver is not classified as Cilium identity
   `kube-apiserver` in this config.
-- **Procedure:** TBD (filled at run time)
-- **Result:** TBD
-- **Decides:** TBD
+- **Procedure:** `kubectl -n kube-system exec <cilium-pod> -c cilium-agent -- cilium-dbg identity list` and `cilium-dbg endpoint list`.
+- **Result:** **HYPOTHESIS REFUTED.** The apiserver IS classified as
+  `reserved:kube-apiserver`. Two reserved identities carry the
+  `kube-apiserver` label:
+  - Identity `1`: `reserved:host` + `reserved:kube-apiserver` — assigned
+    to the local control-plane node (endpoint 256, labeled
+    `node-role.kubernetes.io/control-plane`). This is what `10.96.0.1`
+    resolves to under KPR=true.
+  - Identity `7`: `reserved:kube-apiserver` + `reserved:remote-node` —
+    reserved for apiservers on remote nodes (multi-node control-plane
+    clusters).
+- **Decides:** A-2 should pass with either `[kube-apiserver]` alone or
+  `[kube-apiserver, remote-node]`. Earlier walkthrough's failure of
+  bare `[kube-apiserver]` was likely a label-selector or CNP-application
+  issue, not a Cilium identity-classification gap. Tested empirically
+  in A-2.
 
 ## A-2 — CNP toEntities: [kube-apiserver, remote-node]
 
 - **Hypothesis:** including `remote-node` covers the host-network
   static apiserver pod where `kube-apiserver` alone does not.
-- **Procedure:** TBD
-- **Result:** TBD
-- **Decides:** TBD
+- **Procedure:** Apply a `CiliumNetworkPolicy` selecting pods labeled
+  `probe=a2` with `egress: [toEntities: [kube-apiserver, remote-node]]`
+  + DNS allow. Run a curl pod with the matching label, target
+  `https://10.96.0.1:443/`. Pass criterion: any HTTP response within
+  500ms.
+- **Result:** **PASS.** Curl returned `403 0.000446` (HTTP 403, TCP
+  connect 0.4ms). Apiserver fully reachable through CNP-toEntities
+  enforcement.
+- **A-2b sub-probe:** With `egress: [toEntities: [kube-apiserver]]`
+  ALONE (no `remote-node`): also **PASS**, `403 0.000601`. So a
+  single-node control-plane is reachable via just `[kube-apiserver]`;
+  the spec's `[kube-apiserver, remote-node]` choice is defensive
+  belt-and-braces for multi-node-control-plane clusters where remote
+  apiservers carry identity 7 (`kube-apiserver` + `remote-node`).
+- **Decides:** **A-FIX-toEntities** is selected. Per-run policy emission
+  uses `toEntities: [kube-apiserver, remote-node]` when CNP CRDs are
+  registered. A-3 (toCIDR) and A-4 (cluster-config) are not needed.
 
 ## A-3 — CNP toCIDR control-plane node IP
 
 - **Hypothesis:** CNP `toCIDR` enforces against host-network targets
   even when standard NP `ipBlock` does not.
-- **Procedure:** TBD
-- **Result:** TBD
-- **Decides:** TBD
+- **Procedure:** SKIPPED. Plan rule: skip A-3 if A-2 passes. A-2
+  passed, so A-3 is unnecessary.
+- **Result:** N/A
+- **Decides:** N/A
 
 ## A-4 — Cluster-config: policy-cidr-match-mode + node label
 
 - **Hypothesis:** flipping `policy-cidr-match-mode=cidr+nodes` plus
   labelling control-plane node makes the Phase 2d ipBlock rule fire.
-- **Procedure:** TBD
-- **Result:** TBD
-- **Decides:** TBD
+- **Procedure:** SKIPPED. Plan rule: skip A-4 if A-2 or A-3 passes.
+- **Result:** N/A
+- **Decides:** N/A
 
 ## B-1 — iptables REDIRECT under Cilium config variants
 
