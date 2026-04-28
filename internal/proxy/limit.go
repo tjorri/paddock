@@ -7,8 +7,10 @@ you may not use this file except in compliance with the License.
 package proxy
 
 import (
+	"fmt"
 	"net"
 	"sync"
+	"syscall"
 
 	"github.com/go-logr/logr"
 )
@@ -115,4 +117,19 @@ func (c *limitedConn) Close() error {
 		c.release()
 	})
 	return c.Conn.Close()
+}
+
+// SyscallConn delegates to the wrapped conn so the transparent-mode
+// SO_ORIGINAL_DST path (transparent_linux.go::originalDestination) keeps
+// working when the listener is wrapped by LimitedListener (F-26). Without
+// this, originalDestination's type assertion fails on *limitedConn and
+// every transparent connection drops silently before the validator runs.
+// F-20 / F-26 interaction.
+func (c *limitedConn) SyscallConn() (syscall.RawConn, error) {
+	if sc, ok := c.Conn.(interface {
+		SyscallConn() (syscall.RawConn, error)
+	}); ok {
+		return sc.SyscallConn()
+	}
+	return nil, fmt.Errorf("limitedConn: underlying %T does not support SyscallConn", c.Conn)
 }
