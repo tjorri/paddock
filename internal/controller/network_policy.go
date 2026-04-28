@@ -26,6 +26,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -343,6 +344,9 @@ func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *
 		BrokerPort:         r.BrokerPort,
 		APIServerIPs:       r.APIServerIPs,
 	}
+	if r.CiliumCNPAvailable {
+		return r.ensureRunCiliumNetworkPolicy(ctx, run, cfg)
+	}
 	desired := buildRunNetworkPolicy(run, cfg)
 	np := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -372,23 +376,72 @@ func (r *HarnessRunReconciler) ensureRunNetworkPolicy(ctx context.Context, run *
 	return nil
 }
 
+// ensureRunCiliumNetworkPolicy is the CNP-emitting counterpart to
+// ensureRunNetworkPolicy. CreateOrUpdate semantics mirror the
+// standard-NP path, including the F-43 audit emit on a re-create.
+func (r *HarnessRunReconciler) ensureRunCiliumNetworkPolicy(
+	ctx context.Context,
+	run *paddockv1alpha1.HarnessRun,
+	cfg networkPolicyConfig,
+) error {
+	desired := buildRunCiliumNetworkPolicy(run, cfg)
+	cnp := &unstructured.Unstructured{}
+	cnp.SetGroupVersionKind(CiliumNetworkPolicyGVK)
+	cnp.SetName(desired.GetName())
+	cnp.SetNamespace(desired.GetNamespace())
+
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, cnp, func() error {
+		if err := controllerutil.SetControllerReference(run, cnp, r.Scheme); err != nil {
+			return err
+		}
+		cnp.SetLabels(desired.GetLabels())
+		spec, _, err := unstructured.NestedMap(desired.Object, "spec")
+		if err != nil {
+			return err
+		}
+		return unstructured.SetNestedMap(cnp.Object, spec, "spec")
+	})
+	if err != nil && !apierrors.IsConflict(err) {
+		return fmt.Errorf("upserting run CiliumNetworkPolicy: %w", err)
+	}
+	if op == controllerutil.OperationResultCreated && run.Status.ObservedGeneration > 0 {
+		r.Audit.EmitNetworkPolicyEnforcementWithdrawn(ctx, run.Name, run.Namespace,
+			fmt.Sprintf("per-run CiliumNetworkPolicy %s was missing on reconcile; re-created", desired.GetName()))
+	}
+	return nil
+}
+
 // deleteRunNetworkPolicy deletes the per-run NetworkPolicy if it exists.
 // Called from the empty-`requires` branch in Reconcile to clean up any
 // stale NP from a previous reconcile that did emit one (e.g., template
 // edited to drop requires). Not called for the active flag-flip case
 // — the pinned Status.NetworkPolicyEnforced field makes that
 // unnecessary post-Phase-2d.
+//
+// When CNP CRDs are available, also cleans up any per-run CNP. Both
+// deletes are idempotent (NotFound → nil).
 func (r *HarnessRunReconciler) deleteRunNetworkPolicy(ctx context.Context, run *paddockv1alpha1.HarnessRun) error {
-	var np networkingv1.NetworkPolicy
 	key := client.ObjectKey{Namespace: run.Namespace, Name: runNetworkPolicyName(run.Name)}
-	if err := r.Get(ctx, key, &np); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
+	// Standard NP.
+	var np networkingv1.NetworkPolicy
+	if err := r.Get(ctx, key, &np); err == nil {
+		if delErr := r.Delete(ctx, &np); delErr != nil && !apierrors.IsNotFound(delErr) {
+			return delErr
 		}
+	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
-	if err := r.Delete(ctx, &np); err != nil && !apierrors.IsNotFound(err) {
-		return err
+	// CNP (only attempt when CNP CRDs are available).
+	if r.CiliumCNPAvailable {
+		cnp := &unstructured.Unstructured{}
+		cnp.SetGroupVersionKind(CiliumNetworkPolicyGVK)
+		if err := r.Get(ctx, key, cnp); err == nil {
+			if delErr := r.Delete(ctx, cnp); delErr != nil && !apierrors.IsNotFound(delErr) {
+				return delErr
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return err
+		}
 	}
 	return nil
 }

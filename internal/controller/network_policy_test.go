@@ -24,7 +24,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
@@ -357,6 +360,68 @@ func TestBuildEgressNetworkPolicy_HasLoopbackAllow(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected egress rule with ipBlock 127.0.0.0/8 and protocol TCP")
+	}
+}
+
+func TestEnsureRunNetworkPolicy_EmitsCNPWhenAvailable(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := paddockv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("corev1 scheme: %v", err)
+	}
+	if err := networkingv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("networkingv1 scheme: %v", err)
+	}
+
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "tenant", ResourceVersion: "1"},
+		Status: paddockv1alpha1.HarnessRunStatus{
+			NetworkPolicyEnforced: ptr.To(true),
+			ObservedGeneration:    1,
+		},
+	}
+	cli := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(run).
+		Build()
+
+	r := &HarnessRunReconciler{
+		Client: cli,
+		Scheme: scheme,
+		Audit:  &ControllerAudit{Sink: &capturedSink{}},
+		ProxyBrokerConfig: ProxyBrokerConfig{
+			ClusterPodCIDR:     "10.244.0.0/16",
+			ClusterServiceCIDR: "10.96.0.0/12",
+			BrokerNamespace:    "paddock-system",
+			BrokerPort:         8443,
+			CiliumCNPAvailable: true,
+		},
+	}
+
+	if err := r.ensureRunNetworkPolicy(context.Background(), run); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	// Expect a CNP, no standard NP.
+	cnpList := &unstructured.UnstructuredList{}
+	cnpList.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicyList",
+	})
+	if err := cli.List(context.Background(), cnpList); err != nil {
+		t.Fatalf("list cnp: %v", err)
+	}
+	if len(cnpList.Items) != 1 {
+		t.Fatalf("expected 1 CNP, got %d", len(cnpList.Items))
+	}
+
+	npList := &networkingv1.NetworkPolicyList{}
+	if err := cli.List(context.Background(), npList); err != nil {
+		t.Fatalf("list np: %v", err)
+	}
+	if len(npList.Items) != 0 {
+		t.Fatalf("expected 0 standard NetworkPolicy when CNP path is used, got %d", len(npList.Items))
 	}
 }
 

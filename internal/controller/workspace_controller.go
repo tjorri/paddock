@@ -31,6 +31,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -488,16 +489,26 @@ func (r *WorkspaceReconciler) ensureSeedNetworkPolicy(ctx context.Context, ws *p
 	}
 	if !enforced {
 		// Delete any stale policy if enforcement flipped off.
-		var np networkingv1.NetworkPolicy
 		key := client.ObjectKey{Namespace: ws.Namespace, Name: seedNetworkPolicyName(ws)}
-		if err := r.Get(ctx, key, &np); err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil
+		var np networkingv1.NetworkPolicy
+		if err := r.Get(ctx, key, &np); err == nil {
+			if delErr := r.Delete(ctx, &np); delErr != nil && !apierrors.IsNotFound(delErr) {
+				return delErr
 			}
+		} else if !apierrors.IsNotFound(err) {
 			return err
 		}
-		if err := r.Delete(ctx, &np); err != nil && !apierrors.IsNotFound(err) {
-			return err
+		// Mirror cleanup for the CNP variant when CNP CRDs are available.
+		if r.CiliumCNPAvailable {
+			cnp := &unstructured.Unstructured{}
+			cnp.SetGroupVersionKind(CiliumNetworkPolicyGVK)
+			if err := r.Get(ctx, key, cnp); err == nil {
+				if delErr := r.Delete(ctx, cnp); delErr != nil && !apierrors.IsNotFound(delErr) {
+					return delErr
+				}
+			} else if !apierrors.IsNotFound(err) {
+				return err
+			}
 		}
 		return nil
 	}
@@ -507,6 +518,9 @@ func (r *WorkspaceReconciler) ensureSeedNetworkPolicy(ctx context.Context, ws *p
 		BrokerNamespace:    r.BrokerNamespace,
 		BrokerPort:         r.BrokerPort,
 		APIServerIPs:       r.APIServerIPs,
+	}
+	if r.CiliumCNPAvailable {
+		return r.ensureSeedCiliumNetworkPolicy(ctx, ws, cfg)
 	}
 	desired := buildSeedNetworkPolicy(ws, cfg)
 	np := &networkingv1.NetworkPolicy{
@@ -525,6 +539,35 @@ func (r *WorkspaceReconciler) ensureSeedNetworkPolicy(ctx context.Context, ws *p
 	})
 	if err != nil && !apierrors.IsConflict(err) {
 		return fmt.Errorf("upserting seed NetworkPolicy: %w", err)
+	}
+	return nil
+}
+
+// ensureSeedCiliumNetworkPolicy is the CNP-emitting counterpart to
+// ensureSeedNetworkPolicy. Same shape as ensureRunCiliumNetworkPolicy.
+func (r *WorkspaceReconciler) ensureSeedCiliumNetworkPolicy(
+	ctx context.Context,
+	ws *paddockv1alpha1.Workspace,
+	cfg networkPolicyConfig,
+) error {
+	desired := buildSeedCiliumNetworkPolicy(ws, cfg)
+	cnp := &unstructured.Unstructured{}
+	cnp.SetGroupVersionKind(CiliumNetworkPolicyGVK)
+	cnp.SetName(desired.GetName())
+	cnp.SetNamespace(desired.GetNamespace())
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cnp, func() error {
+		if err := controllerutil.SetControllerReference(ws, cnp, r.Scheme); err != nil {
+			return err
+		}
+		cnp.SetLabels(desired.GetLabels())
+		spec, _, err := unstructured.NestedMap(desired.Object, "spec")
+		if err != nil {
+			return err
+		}
+		return unstructured.SetNestedMap(cnp.Object, spec, "spec")
+	})
+	if err != nil && !apierrors.IsConflict(err) {
+		return fmt.Errorf("upserting seed CiliumNetworkPolicy: %w", err)
 	}
 	return nil
 }
