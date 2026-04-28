@@ -22,6 +22,10 @@
 
 set -euo pipefail
 
+command -v helm >/dev/null || { echo "helm not installed; install from https://helm.sh" >&2; exit 1; }
+command -v kubectl >/dev/null || { echo "kubectl not installed" >&2; exit 1; }
+command -v docker >/dev/null || { echo "docker not installed" >&2; exit 1; }
+
 CLUSTER_NAME="${CLUSTER_NAME:-paddock-dev}"
 CILIUM_VERSION="${CILIUM_VERSION:-1.16.5}"
 PROBE_VARIANT="${PROBE_VARIANT:-baseline-kpr-on}"
@@ -67,8 +71,15 @@ esac
 
 control_plane_node="${CLUSTER_NAME}-control-plane"
 control_plane_ip=$(docker inspect "${control_plane_node}" \
-  --format '{{ .NetworkSettings.Networks.kind.IPAddress }}')
+  --format '{{ .NetworkSettings.Networks.kind.IPAddress }}' 2>/dev/null || true)
+if [ -z "${control_plane_ip}" ]; then
+  echo "could not find control-plane IP for ${control_plane_node}; is the cluster up? try 'make kind-up'" >&2
+  exit 1
+fi
 helm_args+=(--set k8sServiceHost="${control_plane_ip}" --set k8sServicePort=6443)
+
+helm repo add cilium https://helm.cilium.io >/dev/null 2>&1 || true
+helm repo update cilium >/dev/null
 
 echo ">>> applying cilium variant: ${PROBE_VARIANT}"
 helm upgrade --install cilium cilium/cilium "${helm_args[@]}" --wait --timeout=10m
@@ -124,7 +135,13 @@ spec:
 POD
 
 echo ">>> waiting for pod"
-kubectl -n "${NS}" wait pod/${POD_NAME} --for=condition=Ready --timeout=60s || true
+if ! kubectl -n "${NS}" wait pod/${POD_NAME} --for=condition=Ready --timeout=60s; then
+  echo "pod ${POD_NAME} did not become Ready within 60s; dumping diagnostics" >&2
+  kubectl -n "${NS}" get pod "${POD_NAME}" -o wide >&2 || true
+  kubectl -n "${NS}" describe pod "${POD_NAME}" >&2 || true
+  echo "common cause: 'paddock-iptables-init:dev' not loaded into the kind cluster — run 'make docker-build && kind load docker-image paddock-iptables-init:dev'" >&2
+  exit 1
+fi
 
 # Give the curl + sink time to interact; then assert sink saw bytes.
 sleep "${TIMEOUT_SEC}"
