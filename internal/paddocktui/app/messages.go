@@ -68,4 +68,4 @@ type runCancelledMsg struct{ Name string } //nolint:unused // wired in Task 18
 
 type errMsg struct{ Err error } //nolint:unused // wired in Task 18
 
-func (e errMsg) Error() string { return e.Err.Error() } //nolint:unused // wired in Task 18
+func (e errMsg) Error() string { return e.Err.Error() }
