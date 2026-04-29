@@ -29,6 +29,12 @@ whether to use a vertical provider (Anthropic, GitHub App, PAT pool) or
 - [github-app.md](./github-app.md) — `GitHubApp` vertical provider.
 - [pat-pool.md](./pat-pool.md) — `PATPool` vertical provider.
 
+### End-to-end walkthroughs
+
+- [claude-code-tui-quickstart.md](./claude-code-tui-quickstart.md) — fresh
+  namespace to a working interactive Claude Code session driven by
+  `paddock-tui`, using a `CLAUDE_CODE_OAUTH_TOKEN` `UserSuppliedSecret`.
+
 ### Operational workflows
 
 - [interception-mode.md](./interception-mode.md) — choosing transparent vs
