@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.1](https://github.com/tjorri/paddock/compare/v0.5.0...v0.5.1) (2026-04-29)
+
+
+### Bug Fixes
+
+* **broker:** derive SubstituteAuth from credential grants ([#84](https://github.com/tjorri/paddock/issues/84)) ([8553957](https://github.com/tjorri/paddock/commit/8553957f759f6b9b928e61b1eb2d5ed5829719dc))
+* cilium per-run NP loopback allow + CNP variant for kube-apiserver ([#82](https://github.com/tjorri/paddock/issues/82)) ([dc80af7](https://github.com/tjorri/paddock/commit/dc80af769b0250d4a87bd9ca5d8e16d64fc51098))
+
+
+### Documentation
+
+* agent gotchas in CLAUDE.md; relax AI-attribution policy ([#80](https://github.com/tjorri/paddock/issues/80)) ([c68215e](https://github.com/tjorri/paddock/commit/c68215e7209266c4e45f856379d26644b728dc82))
+
 ## [0.5.0](https://github.com/tjorri/paddock/compare/v0.4.1...v0.5.0) (2026-04-28)
 
 
