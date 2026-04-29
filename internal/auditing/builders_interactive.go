@@ -207,6 +207,45 @@ func NewCredentialRenewalFailed(in CredentialRenewalFailedInput) *paddockv1alpha
 	return ae
 }
 
+// CredentialRenewedInput is the input shape for NewCredentialRenewed.
+type CredentialRenewedInput struct {
+	RunName   string
+	Namespace string
+	Provider  string
+	LeaseID   string
+	ExpiresAt time.Time // RFC3339 in Detail; zero means "no expiry"
+	When      time.Time // for nowOr; tests inject deterministic time
+}
+
+// NewCredentialRenewed builds a credential-renewed AuditEvent. Decision is
+// always Granted — failures use NewCredentialRenewalFailed.
+func NewCredentialRenewed(in CredentialRenewedInput) *paddockv1alpha1.AuditEvent {
+	detail := map[string]string{
+		"provider": in.Provider,
+		"leaseID":  in.LeaseID,
+	}
+	if !in.ExpiresAt.IsZero() {
+		detail["expiresAt"] = in.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	ae := &paddockv1alpha1.AuditEvent{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "credential-renewed-",
+			Namespace:    in.Namespace,
+		},
+		Spec: paddockv1alpha1.AuditEventSpec{
+			Kind:      paddockv1alpha1.AuditKindCredentialRenewed,
+			Decision:  paddockv1alpha1.AuditDecisionGranted,
+			Timestamp: metav1.NewTime(nowOr(in.When)),
+			Detail:    detail,
+		},
+	}
+	if in.RunName != "" {
+		ae.Spec.RunRef = &paddockv1alpha1.LocalObjectReference{Name: in.RunName}
+	}
+	stampLabels(ae, in.RunName)
+	return ae
+}
+
 // InteractiveRunTerminatedInput is the input for NewInteractiveRunTerminated.
 // Reason is one of: idle, detach, max-lifetime, explicit, error.
 // Decision must be set by the caller: AuditDecisionGranted for planned

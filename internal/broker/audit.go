@@ -118,3 +118,25 @@ func (w *AuditWriter) CredentialRevoked(ctx context.Context, e CredentialAudit) 
 		When:           e.When,
 	}))
 }
+
+// CredentialRenewed emits an audit event for a successful renewal.
+func (w *AuditWriter) CredentialRenewed(ctx context.Context, namespace, runName, provider, leaseID string, expiresAt time.Time) {
+	_ = w.sink().Write(ctx, auditing.NewCredentialRenewed(auditing.CredentialRenewedInput{
+		RunName:   runName,
+		Namespace: namespace,
+		Provider:  provider,
+		LeaseID:   leaseID,
+		ExpiresAt: expiresAt,
+	}))
+}
+
+// CredentialRenewalFailed emits an audit event for a renewal failure.
+func (w *AuditWriter) CredentialRenewalFailed(ctx context.Context, namespace, runName, provider, leaseID string, err error) {
+	_ = w.sink().Write(ctx, auditing.NewCredentialRenewalFailed(auditing.CredentialRenewalFailedInput{
+		RunName:   runName,
+		Namespace: namespace,
+		Provider:  provider,
+		LeaseID:   leaseID,
+		Error:     err.Error(),
+	}))
+}

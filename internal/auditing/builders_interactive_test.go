@@ -168,3 +168,57 @@ func TestNewInteractiveRunTerminated_WhenTimestamp(t *testing.T) {
 		t.Fatalf("timestamp = %v, want %v", ae.Spec.Timestamp.Time, fixed)
 	}
 }
+
+func TestNewCredentialRenewed(t *testing.T) {
+	t.Parallel()
+
+	t.Run("fields carried correctly", func(t *testing.T) {
+		t.Parallel()
+		fixed := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+		exp := time.Date(2026, 3, 1, 11, 0, 0, 0, time.UTC)
+		ae := auditing.NewCredentialRenewed(auditing.CredentialRenewedInput{
+			RunName:   "run-1",
+			Namespace: "ns",
+			Provider:  "GitHubApp",
+			LeaseID:   "lease-42",
+			ExpiresAt: exp,
+			When:      fixed,
+		})
+		if ae.Spec.Kind != paddockv1alpha1.AuditKindCredentialRenewed {
+			t.Fatalf("kind = %q, want %q", ae.Spec.Kind, paddockv1alpha1.AuditKindCredentialRenewed)
+		}
+		if ae.Spec.Decision != paddockv1alpha1.AuditDecisionGranted {
+			t.Fatalf("decision = %q, want Granted", ae.Spec.Decision)
+		}
+		if ae.Spec.RunRef == nil || ae.Spec.RunRef.Name != "run-1" {
+			t.Fatalf("RunRef = %v, want run-1", ae.Spec.RunRef)
+		}
+		if ae.Namespace != "ns" {
+			t.Fatalf("namespace = %q, want ns", ae.Namespace)
+		}
+		if ae.Spec.Detail["provider"] != "GitHubApp" {
+			t.Fatalf("detail.provider = %q", ae.Spec.Detail["provider"])
+		}
+		if ae.Spec.Detail["leaseID"] != "lease-42" {
+			t.Fatalf("detail.leaseID = %q", ae.Spec.Detail["leaseID"])
+		}
+		if ae.Spec.Detail["expiresAt"] != "2026-03-01T11:00:00Z" {
+			t.Fatalf("detail.expiresAt = %q", ae.Spec.Detail["expiresAt"])
+		}
+		if !ae.Spec.Timestamp.Time.Equal(fixed) {
+			t.Fatalf("timestamp = %v, want %v", ae.Spec.Timestamp.Time, fixed)
+		}
+	})
+
+	t.Run("zero ExpiresAt omits detail key", func(t *testing.T) {
+		t.Parallel()
+		ae := auditing.NewCredentialRenewed(auditing.CredentialRenewedInput{
+			RunName:  "run-2",
+			Provider: "GitHubApp",
+			LeaseID:  "lease-0",
+		})
+		if _, ok := ae.Spec.Detail["expiresAt"]; ok {
+			t.Fatalf("expected expiresAt absent for zero ExpiresAt, got %q", ae.Spec.Detail["expiresAt"])
+		}
+	})
+}
