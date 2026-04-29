@@ -116,6 +116,15 @@ var _ = BeforeSuite(func() {
 	_, err := utils.Run(exec.Command("make", "install"))
 	Expect(err).NotTo(HaveOccurred(), "make install")
 
+	By("deploying the controller-manager (suite-level)")
+	_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage)))
+	Expect(err).NotTo(HaveOccurred(), "make deploy")
+
+	By("waiting for the controller-manager to roll out (suite-level)")
+	_, err = utils.Run(exec.Command("kubectl", "-n", "paddock-system",
+		"rollout", "status", "deploy/paddock-controller-manager", "--timeout=180s"))
+	Expect(err).NotTo(HaveOccurred(), "rollout status")
+
 	By("seeding paddock-proxy-upstream-cas ConfigMap (dummy CA so per-run proxy Pods can mount it)")
 	dummyCA, _, _, err := utils.GenerateCAAndLeaf("paddock-e2e-dummy.invalid")
 	Expect(err).NotTo(HaveOccurred(), "GenerateCAAndLeaf for dummy upstream CA")
@@ -132,15 +141,6 @@ data:
 	cmd.Stdin = strings.NewReader(dummyCMYaml)
 	_, err = utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "seeding dummy upstream-CAs ConfigMap")
-
-	By("deploying the controller-manager (suite-level)")
-	_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage)))
-	Expect(err).NotTo(HaveOccurred(), "make deploy")
-
-	By("waiting for the controller-manager to roll out (suite-level)")
-	_, err = utils.Run(exec.Command("kubectl", "-n", "paddock-system",
-		"rollout", "status", "deploy/paddock-controller-manager", "--timeout=180s"))
-	Expect(err).NotTo(HaveOccurred(), "rollout status")
 
 	By("patching paddock-controller-manager to enable upstream-extra-cas (e2e only)")
 	currentArgs, _ := utils.Run(exec.Command("kubectl", "-n", "paddock-system",
