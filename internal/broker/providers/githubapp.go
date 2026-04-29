@@ -106,6 +106,9 @@ type GitHubAppProvider struct {
 // githubLease tracks what a minted Paddock bearer stands for. The
 // provider config is copied in at Issue time so a later BrokerPolicy
 // edit doesn't silently shift which App a live bearer maps to.
+//
+// Fields are immutable after Issue except ExpiresAt, which is updated
+// by Renew under p.mu.
 type githubLease struct {
 	Namespace      string
 	SecretRef      paddockv1alpha1.SecretKeyReference
@@ -448,6 +451,12 @@ func (p *GitHubAppProvider) exchangeInstallationToken(ctx context.Context, lease
 // Value, the preserved LeaseID, and the GitHub-reported ExpiresAt.
 // Renew does NOT mint a new Paddock bearer — the existing bearer
 // remains valid and still resolves to the refreshed token.
+//
+// Note: unlike Issue, Renew returns the *raw GitHub installation
+// token* in Value, not a Paddock bearer. The Paddock bearer is stable
+// across renewals (the broker's substitution path uses the cached
+// token transparently). Value here is the fresh material for
+// InContainer-mode env updates and for status reflection.
 func (p *GitHubAppProvider) Renew(ctx context.Context, lease paddockv1alpha1.IssuedLease) (*IssueResult, error) {
 	internal := p.leaseByID(lease.LeaseID)
 	if internal == nil {
@@ -479,14 +488,18 @@ func (p *GitHubAppProvider) Renew(ctx context.Context, lease paddockv1alpha1.Iss
 		return nil, fmt.Errorf("GitHubApp.Renew: %w", err)
 	}
 
-	// Update the cached token so subsequent SubstituteAuth calls
-	// transparently use the fresh installation token.
+	// Update the in-memory lease expiry AND the cached token together
+	// under one lock acquisition. The lease.ExpiresAt write must be
+	// atomic with respect to SubstituteAuth's expiry check — without
+	// it, a SubstituteAuth at the original expiry instant would reject
+	// the bearer as expired even though the token cache is fresh.
 	key := githubTokenKey{
 		RunName:        internal.RunName,
 		Namespace:      internal.Namespace,
 		CredentialName: internal.CredentialName,
 	}
 	p.mu.Lock()
+	internal.ExpiresAt = expiresAt
 	if p.tokens == nil {
 		p.tokens = make(map[githubTokenKey]*installationToken)
 	}

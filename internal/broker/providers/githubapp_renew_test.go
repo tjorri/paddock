@@ -133,6 +133,105 @@ func TestGitHubApp_Renew_GitHubError(t *testing.T) {
 	}
 }
 
+// TestGitHubApp_Renew_UpdatesLeaseExpiresAt is a regression test for the
+// bug where Renew updated the token cache but left the in-memory
+// lease.ExpiresAt at the original Issue-time value. A SubstituteAuth call
+// made after the original expiry would incorrectly reject the bearer with
+// "github bearer expired" even though Renew had successfully refreshed the
+// token.
+func TestGitHubApp_Renew_UpdatesLeaseExpiresAt(t *testing.T) {
+	t.Parallel()
+
+	// srv returns a fresh token whose expiry is 1h in the future relative
+	// to the server's static response time. The first Issue call does not
+	// hit this server (Issue defers GitHub API calls to SubstituteAuth);
+	// Renew calls it once.
+	renewedExpiry := time.Unix(1_700_010_000, 0) // well beyond the 10-min Issue window
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/access_tokens") {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"token":"ghs_renewed_token","expires_at":"` +
+			renewedExpiry.UTC().Format(time.RFC3339) + `"}`))
+	}))
+	defer srv.Close()
+
+	// Start the clock at t=0; Issue sets lease.ExpiresAt = t0 + defaultGitHubAppTokenTTL (1h).
+	t0 := time.Unix(1_700_000_000, 0)
+	issueExpiry := t0.Add(defaultGitHubAppTokenTTL)
+
+	key := generateRSAKey(t)
+	c := fake.NewClientBuilder().
+		WithScheme(buildScheme(t)).
+		WithObjects(githubSecret(key)).
+		Build()
+	clock := t0
+	p := &GitHubAppProvider{
+		Client:      c,
+		HTTPClient:  srv.Client(),
+		APIEndpoint: srv.URL,
+		clockSource: clockSource{Now: func() time.Time { return clock }},
+	}
+
+	// Issue: lease.ExpiresAt = t0 + 10min.
+	issued, err := p.Issue(context.Background(), IssueRequest{
+		RunName:        "cc-renew-1",
+		Namespace:      "my-team",
+		CredentialName: "GITHUB_TOKEN",
+		Grant:          githubGrant(),
+		GitRepos:       githubRepos(),
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if !issued.ExpiresAt.Equal(issueExpiry) {
+		t.Fatalf("Issue ExpiresAt = %v, want %v", issued.ExpiresAt, issueExpiry)
+	}
+
+	// Renew at t0+55min (inside the original 1h window so the bearer is
+	// still valid). Renew must (a) return the renewed ExpiresAt, AND (b)
+	// update the in-memory lease.ExpiresAt so a later SubstituteAuth beyond
+	// the original expiry succeeds.
+	clock = t0.Add(55 * time.Minute)
+	renewed, err := p.Renew(context.Background(), paddockv1alpha1.IssuedLease{
+		Provider:       "GitHubApp",
+		LeaseID:        issued.LeaseID,
+		CredentialName: "GITHUB_TOKEN",
+		ExpiresAt:      &metav1.Time{Time: issueExpiry},
+	})
+	if err != nil {
+		t.Fatalf("Renew: %v", err)
+	}
+	if renewed.Value != "ghs_renewed_token" {
+		t.Fatalf("Renew Value = %q, want ghs_renewed_token", renewed.Value)
+	}
+	if !renewed.ExpiresAt.Equal(renewedExpiry) {
+		t.Fatalf("Renew ExpiresAt = %v, want %v", renewed.ExpiresAt, renewedExpiry)
+	}
+
+	// Advance clock past the original Issue-time expiry (t0+10min+1s).
+	// Before fix #1, lease.ExpiresAt was still issueExpiry, so
+	// SubstituteAuth would reject the bearer here with "github bearer expired".
+	// After fix #1, lease.ExpiresAt == renewedExpiry, so this must succeed.
+	clock = issueExpiry.Add(time.Second)
+
+	sub, err := p.SubstituteAuth(context.Background(), SubstituteRequest{
+		RunName:        "cc-renew-1",
+		Namespace:      "my-team",
+		Host:           "github.com",
+		Port:           443,
+		IncomingBearer: "Bearer " + issued.Value,
+	})
+	if err != nil {
+		t.Fatalf("SubstituteAuth after Renew: %v (want success; pre-fix this would fail with 'github bearer expired')", err)
+	}
+	if !sub.Matched {
+		t.Fatalf("SubstituteAuth Matched = false, want true")
+	}
+}
+
 // TestRenewableProviderOf_StaticProviderReturnsNil ensures non-renewable
 // providers return nil from the helper.
 func TestRenewableProviderOf_StaticProviderReturnsNil(t *testing.T) {
