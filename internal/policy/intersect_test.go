@@ -208,6 +208,87 @@ func TestIntersect_SpecificPortMismatch(t *testing.T) {
 	}
 }
 
+func TestIntersectMatches_Runs(t *testing.T) {
+	t.Run("interact from one policy shell from another", func(t *testing.T) {
+		pInteract := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "interact-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Interact: true,
+					},
+				},
+			},
+		}
+		pShell := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "shell-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Shell: &paddockv1alpha1.ShellCapability{
+							Target: "adapter",
+						},
+					},
+				},
+			},
+		}
+		result := policy.IntersectMatches(
+			[]*paddockv1alpha1.BrokerPolicy{pInteract, pShell},
+			paddockv1alpha1.RequireSpec{},
+		)
+		if !result.RunsInteract {
+			t.Errorf("RunsInteract = false, want true")
+		}
+		if result.Shell == nil {
+			t.Fatalf("Shell = nil, want non-nil")
+		}
+		if result.Shell.Target != "adapter" {
+			t.Errorf("Shell.Target = %q, want %q", result.Shell.Target, "adapter")
+		}
+	})
+
+	t.Run("most permissive shell target wins (agent beats adapter)", func(t *testing.T) {
+		pAdapter := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "adapter-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Shell: &paddockv1alpha1.ShellCapability{
+							Target: "adapter",
+						},
+					},
+				},
+			},
+		}
+		pAgent := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "agent-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Shell: &paddockv1alpha1.ShellCapability{
+							Target: "agent",
+						},
+					},
+				},
+			},
+		}
+		result := policy.IntersectMatches(
+			[]*paddockv1alpha1.BrokerPolicy{pAdapter, pAgent},
+			paddockv1alpha1.RequireSpec{},
+		)
+		if result.Shell == nil {
+			t.Fatalf("Shell = nil, want non-nil")
+		}
+		if result.Shell.Target != "agent" {
+			t.Errorf("Shell.Target = %q, want %q", result.Shell.Target, "agent")
+		}
+	})
+}
+
 func TestDescribeShortfall_NoPolicies(t *testing.T) {
 	res := &policy.IntersectionResult{
 		Admitted:           false,

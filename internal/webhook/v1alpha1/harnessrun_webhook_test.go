@@ -31,6 +31,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
@@ -581,6 +583,124 @@ var _ = Describe("HarnessRun Webhook", func() {
 		Expect(err.Error()).To(ContainSubstring("expired"))
 	})
 })
+
+// ---------------------------------------------------------------------------
+// Standard-library unit tests for Interactive admission gate (Task 4)
+// ---------------------------------------------------------------------------
+
+// TestValidateAgainstTemplate_InteractiveAdmission tests that the
+// validateAgainstTemplate function enforces:
+//  1. an Interactive run against a template without spec.interactive.mode is rejected;
+//  2. an Interactive run with no policy granting runs.interact is rejected;
+//  3. an Interactive run with a template declaring spec.interactive.mode and a
+//     policy granting runs.interact is admitted.
+func TestValidateAgainstTemplate_InteractiveAdmission(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := paddockv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+
+	interactiveRun := func(ns, templateName string) *paddockv1alpha1.HarnessRun {
+		return &paddockv1alpha1.HarnessRun{
+			ObjectMeta: metav1.ObjectMeta{Name: "irun", Namespace: ns},
+			Spec: paddockv1alpha1.HarnessRunSpec{
+				TemplateRef: paddockv1alpha1.TemplateRef{Name: templateName},
+				Prompt:      "hello",
+				Mode:        paddockv1alpha1.HarnessRunModeInteractive,
+			},
+		}
+	}
+
+	t.Run("interactive run against template with no spec.interactive rejected", func(t *testing.T) {
+		ns := "interactive-admit-test-1"
+		tpl := &paddockv1alpha1.HarnessTemplate{
+			ObjectMeta: metav1.ObjectMeta{Name: "no-interactive", Namespace: ns},
+			Spec: paddockv1alpha1.HarnessTemplateSpec{
+				Harness: "echo", Image: "img", Command: []string{"/bin/echo"},
+				// Interactive is nil — no interactive support
+			},
+		}
+		bp := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "bp", Namespace: ns},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{Interact: true},
+				},
+			},
+		}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(tpl, bp).Build()
+		v := &HarnessRunCustomValidator{Client: c}
+		run := interactiveRun(ns, "no-interactive")
+		_, err := v.ValidateCreate(context.Background(), run)
+		if err == nil {
+			t.Fatal("expected rejection, got nil")
+		}
+		if !strings.Contains(err.Error(), "does not declare spec.interactive.mode") {
+			t.Errorf("error = %q, want it to mention 'does not declare spec.interactive.mode'", err.Error())
+		}
+	})
+
+	t.Run("interactive run with no policy granting runs.interact rejected", func(t *testing.T) {
+		ns := "interactive-admit-test-2"
+		tpl := &paddockv1alpha1.HarnessTemplate{
+			ObjectMeta: metav1.ObjectMeta{Name: "interactive-tpl", Namespace: ns},
+			Spec: paddockv1alpha1.HarnessTemplateSpec{
+				Harness: "echo", Image: "img", Command: []string{"/bin/echo"},
+				Interactive: &paddockv1alpha1.InteractiveSpec{
+					Mode: "per-prompt-process",
+				},
+			},
+		}
+		// Policy exists but does NOT grant runs.interact
+		bp := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "bp", Namespace: ns},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants:             paddockv1alpha1.BrokerPolicyGrants{},
+			},
+		}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(tpl, bp).Build()
+		v := &HarnessRunCustomValidator{Client: c}
+		run := interactiveRun(ns, "interactive-tpl")
+		_, err := v.ValidateCreate(context.Background(), run)
+		if err == nil {
+			t.Fatal("expected rejection, got nil")
+		}
+		if !strings.Contains(err.Error(), "runs.interact") {
+			t.Errorf("error = %q, want it to mention 'runs.interact'", err.Error())
+		}
+	})
+
+	t.Run("interactive run with template and matching grant admitted", func(t *testing.T) {
+		ns := "interactive-admit-test-3"
+		tpl := &paddockv1alpha1.HarnessTemplate{
+			ObjectMeta: metav1.ObjectMeta{Name: "interactive-tpl", Namespace: ns},
+			Spec: paddockv1alpha1.HarnessTemplateSpec{
+				Harness: "echo", Image: "img", Command: []string{"/bin/echo"},
+				Interactive: &paddockv1alpha1.InteractiveSpec{
+					Mode: "per-prompt-process",
+				},
+			},
+		}
+		bp := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "bp", Namespace: ns},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{Interact: true},
+				},
+			},
+		}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(tpl, bp).Build()
+		v := &HarnessRunCustomValidator{Client: c}
+		run := interactiveRun(ns, "interactive-tpl")
+		_, err := v.ValidateCreate(context.Background(), run)
+		if err != nil {
+			t.Fatalf("expected admission, got: %v", err)
+		}
+	})
+}
 
 // ---------------------------------------------------------------------------
 // Standard-library unit tests for audit emission (F-32)

@@ -163,6 +163,7 @@ func validateBrokerPolicySpec(spec *paddockv1alpha1.BrokerPolicySpec, now time.T
 	errs = append(errs, validateEgressGrants(grantsPath.Child("egress"), spec.Grants.Egress)...)
 	errs = append(errs, validateGitRepoGrants(grantsPath.Child("gitRepos"), spec.Grants.GitRepos)...)
 	errs = append(errs, validateCredentialHostsCoveredByEgress(grantsPath, spec.Grants)...)
+	errs = append(errs, validateRunsGrant(grantsPath.Child("runs"), spec.Grants.Runs)...)
 	errs = append(errs, validateInterception(specPath.Child("interception"), spec.Interception)...)
 	errs = append(errs, validateEgressDiscovery(specPath.Child("egressDiscovery"), spec.EgressDiscovery, now)...)
 
@@ -474,6 +475,57 @@ func validateGitRepoGrants(p *field.Path, grants []paddockv1alpha1.GitRepoGrant)
 			continue
 		}
 		seen[key] = i
+	}
+	return errs
+}
+
+// phasesWithPod is the set of HarnessRunPhases during which a Pod is
+// present (and therefore a shell session is possible).
+var phasesWithPod = map[paddockv1alpha1.HarnessRunPhase]struct{}{
+	paddockv1alpha1.HarnessRunPhaseRunning:   {},
+	paddockv1alpha1.HarnessRunPhaseIdle:      {},
+	paddockv1alpha1.HarnessRunPhaseSucceeded: {},
+	paddockv1alpha1.HarnessRunPhaseFailed:    {},
+	paddockv1alpha1.HarnessRunPhaseCancelled: {},
+}
+
+// phasesWithPodList is the sorted slice of phasesWithPod keys, used for
+// deterministic field.NotSupported messages.
+var phasesWithPodList = []string{
+	string(paddockv1alpha1.HarnessRunPhaseCancelled),
+	string(paddockv1alpha1.HarnessRunPhaseFailed),
+	string(paddockv1alpha1.HarnessRunPhaseIdle),
+	string(paddockv1alpha1.HarnessRunPhaseRunning),
+	string(paddockv1alpha1.HarnessRunPhaseSucceeded),
+}
+
+// validateRunsGrant validates the optional runs capability block on a
+// BrokerPolicyGrants. Returns nil when in is nil (the field is optional).
+func validateRunsGrant(p *field.Path, in *paddockv1alpha1.GrantRunsCapabilities) field.ErrorList {
+	if in == nil {
+		return nil
+	}
+	if in.Shell == nil {
+		return nil
+	}
+	var errs field.ErrorList
+	shellPath := p.Child("shell")
+	for i, phase := range in.Shell.AllowedPhases {
+		if _, ok := phasesWithPod[phase]; !ok {
+			errs = append(errs, field.NotSupported(
+				shellPath.Child("allowedPhases").Index(i),
+				phase,
+				phasesWithPodList,
+			))
+		}
+	}
+	for i, c := range in.Shell.Command {
+		if c == "" {
+			errs = append(errs, field.Invalid(shellPath.Child("command").Index(i), c, "must be non-empty"))
+		}
+	}
+	if len(in.Shell.Command) > 0 && in.Shell.Command[0] != "" && !strings.HasPrefix(in.Shell.Command[0], "/") {
+		errs = append(errs, field.Invalid(shellPath.Child("command").Index(0), in.Shell.Command[0], "must be an absolute path"))
 	}
 	return errs
 }

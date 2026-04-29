@@ -171,9 +171,20 @@ func (v *HarnessRunCustomValidator) validateAgainstTemplate(ctx context.Context,
 		}
 		return fmt.Errorf("resolving template: %w", err)
 	}
-	if policy.RequiresEmpty(spec.Requires) {
+	// Interactive mode gate: checked before requires-intersection so it
+	// fires even when the template has no requires block.
+	if run.Spec.Mode == paddockv1alpha1.HarnessRunModeInteractive {
+		if spec.Interactive == nil || spec.Interactive.Mode == "" {
+			return fmt.Errorf("template %q does not declare spec.interactive.mode; "+
+				"Interactive runs require the template to declare an interactive mode",
+				run.Spec.TemplateRef.Name)
+		}
+	}
+
+	if policy.RequiresEmpty(spec.Requires) && run.Spec.Mode != paddockv1alpha1.HarnessRunModeInteractive {
 		return nil
 	}
+
 	matches, err := policy.ListMatchingPolicies(ctx, v.Client, run.Namespace, run.Spec.TemplateRef.Name)
 	if err != nil {
 		return fmt.Errorf("listing BrokerPolicies: %w", err)
@@ -198,6 +209,15 @@ func (v *HarnessRunCustomValidator) validateAgainstTemplate(ctx context.Context,
 	if !result.Admitted {
 		return fmt.Errorf("%s", policy.DescribeShortfall(result, run.Spec.TemplateRef.Name, run.Namespace))
 	}
+
+	if run.Spec.Mode == paddockv1alpha1.HarnessRunModeInteractive {
+		if !result.RunsInteract {
+			return fmt.Errorf("no matching BrokerPolicy grants runs.interact for template %q in namespace %q; "+
+				"add grants.runs.interact: true to a BrokerPolicy that applies to this template",
+				run.Spec.TemplateRef.Name, run.Namespace)
+		}
+	}
+
 	return nil
 }
 

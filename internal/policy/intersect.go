@@ -51,6 +51,17 @@ type IntersectionResult struct {
 	// policy + provider that granted it. Informational — for
 	// diagnostics and M10's `policy check` CLI.
 	CoveredCredentials map[string]CoveredCredential
+
+	// RunsInteract is true if at least one matching policy's grants.runs
+	// has Interact: true. Aggregated across matching policies.
+	RunsInteract bool
+
+	// Shell is the resolved shell capability — nil if no matching
+	// policy declares one. Multi-policy merge takes the most-permissive
+	// (target=agent over adapter; union of allowedPhases [empty wins
+	// i.e. "any phase"]; recordTranscript=true if any sets it; first
+	// non-empty Command wins).
+	Shell *paddockv1alpha1.ShellCapability
 }
 
 // CredentialShortfall names a required credential that no policy granted.
@@ -153,7 +164,62 @@ func IntersectMatches(matching []*paddockv1alpha1.BrokerPolicy, requires paddock
 		}
 	}
 
+	for _, p := range matching {
+		runs := p.Spec.Grants.Runs
+		if runs == nil {
+			continue
+		}
+		if runs.Interact {
+			result.RunsInteract = true
+		}
+		if runs.Shell != nil {
+			result.Shell = mergeShell(result.Shell, runs.Shell)
+		}
+	}
+
 	return result
+}
+
+// mergeShell merges two ShellCapability values using most-permissive semantics:
+//   - target=agent wins over adapter;
+//   - allowedPhases is unioned (empty means "any phase", so empty wins);
+//   - recordTranscript is true if any policy sets it;
+//   - first non-empty Command wins.
+func mergeShell(a, b *paddockv1alpha1.ShellCapability) *paddockv1alpha1.ShellCapability {
+	if a == nil {
+		cp := *b
+		return &cp
+	}
+	out := *a
+	// target: agent beats adapter
+	if b.Target == "agent" {
+		out.Target = "agent"
+	}
+	// allowedPhases: empty means "any phase" — union, with empty winning
+	if len(b.AllowedPhases) == 0 {
+		out.AllowedPhases = nil
+	} else if len(out.AllowedPhases) > 0 {
+		// merge by deduplication
+		seen := make(map[paddockv1alpha1.HarnessRunPhase]struct{}, len(out.AllowedPhases)+len(b.AllowedPhases))
+		for _, ph := range out.AllowedPhases {
+			seen[ph] = struct{}{}
+		}
+		for _, ph := range b.AllowedPhases {
+			if _, ok := seen[ph]; !ok {
+				out.AllowedPhases = append(out.AllowedPhases, ph)
+				seen[ph] = struct{}{}
+			}
+		}
+	}
+	// recordTranscript: true if any policy enables it
+	if b.RecordTranscript {
+		out.RecordTranscript = true
+	}
+	// command: first non-empty wins (a wins unless a is empty)
+	if len(out.Command) == 0 && len(b.Command) > 0 {
+		out.Command = b.Command
+	}
+	return &out
 }
 
 // DescribeShortfall formats an admission-diagnostic string from an

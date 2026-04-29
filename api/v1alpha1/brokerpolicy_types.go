@@ -63,6 +63,55 @@ type BrokerPolicyGrants struct {
 	Egress []EgressGrant `json:"egress,omitempty"`
 	// +optional
 	GitRepos []GitRepoGrant `json:"gitRepos,omitempty"`
+	// Runs declares run-time interaction capabilities (interactive prompt
+	// submission, shell open). Independent of Credentials, Egress,
+	// GitRepos.
+	// +optional
+	Runs *GrantRunsCapabilities `json:"runs,omitempty"`
+}
+
+// GrantRunsCapabilities declares run-time capabilities granted to runs
+// against templates this policy applies to. See
+// docs/superpowers/specs/2026-04-29-interactive-harnessrun-design.md §1.4.
+type GrantRunsCapabilities struct {
+	// Interact enables prompt submission and event streaming for runs
+	// matching this policy. Default false. Required for spec.mode:
+	// Interactive admission.
+	// +optional
+	Interact bool `json:"interact,omitempty"`
+
+	// Shell, when non-nil, enables shell-session open against runs
+	// matching this policy. Nil means denied.
+	// +optional
+	Shell *ShellCapability `json:"shell,omitempty"`
+}
+
+// ShellCapability declares the shape of granted shell access.
+type ShellCapability struct {
+	// Target is which container the broker exec's into.
+	// +kubebuilder:validation:Enum=agent;adapter
+	// +kubebuilder:default=agent
+	// +optional
+	Target string `json:"target,omitempty"`
+
+	// Command overrides the default shell-discovery (try /bin/bash, fall
+	// back to /bin/sh). When set, broker requires this exact path to
+	// exist in the target container; otherwise the open is rejected.
+	// +optional
+	Command []string `json:"command,omitempty"`
+
+	// AllowedPhases restricts which run phases can host a shell session.
+	// Default (when empty): all phases that have a pod (Running, Idle,
+	// Succeeded, Failed, Cancelled).
+	// +optional
+	AllowedPhases []HarnessRunPhase `json:"allowedPhases,omitempty"`
+
+	// RecordTranscript captures the WebSocket bytestream to
+	// <workspace>/.paddock/shell/<session-id>.log when true. Default
+	// false — recording doubles disk I/O and stores potentially-sensitive
+	// output.
+	// +optional
+	RecordTranscript bool `json:"recordTranscript,omitempty"`
 }
 
 // CredentialGrant supplies a provider + configuration for one logical
