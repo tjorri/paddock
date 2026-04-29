@@ -48,6 +48,16 @@ func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 		s.log().V(1).Info("SO_ORIGINAL_DST failed", "err", err)
 		return
 	}
+	// INFO-level per-connection visibility: every transparent-mode
+	// accept gets one line so operators can correlate "agent dialed X"
+	// with proxy behaviour without enabling V(1) globally. Pairs with
+	// the egress-decision log below and the MITM-end log in
+	// mitmTransparent.
+	s.log().Info("transparent connection accepted",
+		"remote_addr", conn.RemoteAddr().String(),
+		"orig_ip", origIP.String(),
+		"orig_port", origPort,
+	)
 
 	// F-22 layer 2 transparent: reject early when SO_ORIGINAL_DST resolves
 	// to a denied CIDR (private/cluster-internal network). This fires before
@@ -111,7 +121,8 @@ func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 	if !decision.Allowed {
-		s.log().V(1).Info("denied", "host", sni, "port", origPort, "reason", decision.Reason)
+		s.log().Info("egress denied (transparent)",
+			"host", sni, "port", origPort, "reason", decision.Reason)
 		if aErr := s.recordEgress(ctx, EgressEvent{
 			Host: sni, Port: origPort,
 			Decision: paddockv1alpha1.AuditDecisionDenied,
@@ -122,6 +133,12 @@ func (s *Server) HandleTransparentConn(ctx context.Context, conn net.Conn) {
 		}
 		return
 	}
+	s.log().Info("egress allowed (transparent)",
+		"host", sni, "port", origPort,
+		"orig_ip", origIP.String(),
+		"policy", decision.MatchedPolicy,
+		"discovery", decision.DiscoveryAllow,
+	)
 
 	// F-22 layer 1 transparent: re-resolve SNI via the proxy's own
 	// resolver and compare to the agent-chosen origIP. Mismatch -> deny.

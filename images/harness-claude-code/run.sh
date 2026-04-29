@@ -20,6 +20,29 @@ set -euo pipefail
 
 mkdir -p "$(dirname "$PADDOCK_RAW_PATH")"
 
+# Combine the Alpine system CA bundle with the paddock proxy CA
+# into a single file, then point all standard trust-store env vars
+# at it. The controller mounts the paddock proxy CA (the cluster
+# root paddock-proxy-ca, self-signed) at $SSL_CERT_FILE and exports
+# SSL_CERT_FILE + NODE_EXTRA_CA_CERTS + REQUESTS_CA_BUNDLE +
+# GIT_SSL_CAINFO. Tools that read a SINGLE bundle file (rather than
+# the cert directory) need both the public roots (for talking to
+# any non-paddock service) AND the paddock root (for talking to the
+# proxy's MITM cert) in one file. The concat below produces
+# /tmp/paddock-trust.pem and re-exports the variables; downstream
+# tools pick up the combined bundle without changes.
+if [[ -n "${SSL_CERT_FILE:-}" \
+   && "${SSL_CERT_FILE}" != "/etc/ssl/certs/ca-certificates.crt" \
+   && -r "${SSL_CERT_FILE}" \
+   && -r /etc/ssl/certs/ca-certificates.crt ]]; then
+  cat /etc/ssl/certs/ca-certificates.crt "${SSL_CERT_FILE}" > /tmp/paddock-trust.pem
+  export SSL_CERT_FILE=/tmp/paddock-trust.pem
+  export NODE_EXTRA_CA_CERTS=/tmp/paddock-trust.pem
+  export REQUESTS_CA_BUNDLE=/tmp/paddock-trust.pem
+  export CURL_CA_BUNDLE=/tmp/paddock-trust.pem
+  export GIT_SSL_CAINFO=/tmp/paddock-trust.pem
+fi
+
 # Install the Claude Code CLI at run time so operators can pick the
 # version via PADDOCK_CLAUDE_CODE_VERSION without rebuilding the image.
 # The harness pod's egress is locked down by iptables-init before this

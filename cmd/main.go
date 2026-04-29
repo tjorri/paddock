@@ -30,6 +30,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -328,6 +329,14 @@ func main() {
 		npAuto = enabled
 		setupLog.Info("NetworkPolicy auto-detection complete", "enforced", enabled, "reason", reason)
 	}
+	cnpAvailable, err := controller.DetectCiliumCNP(
+		discovery.NewDiscoveryClientForConfigOrDie(cfg),
+	)
+	if err != nil {
+		setupLog.Error(err, "CNP discovery failed; falling back to standard NetworkPolicy")
+		cnpAvailable = false
+	}
+	setupLog.Info("CiliumNetworkPolicy detection complete", "available", cnpAvailable)
 	// Construct the shared config after the CNI probe so npAuto reflects the
 	// post-probe value. Both reconcilers receive the same struct, so a single
 	// populate site is the only place that needs updating when flags change.
@@ -347,6 +356,7 @@ func main() {
 		ClusterPodCIDR:           clusterPodCIDR,
 		ClusterServiceCIDR:       clusterServiceCIDR,
 		APIServerIPs:             apiserverIPs,
+		CiliumCNPAvailable:       cnpAvailable,
 	}
 	setupLog.Info("NetworkPolicy enforcement", "mode", npEnforce,
 		"effective", npEnforce == controller.NetworkPolicyEnforceOn ||

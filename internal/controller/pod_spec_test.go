@@ -363,6 +363,7 @@ func TestBuildPodSpec_ProxySidecar(t *testing.T) {
 		"HTTP_PROXY":          proxyHTTPSProxy,
 		"NO_PROXY":            "127.0.0.1,localhost,kubernetes.default.svc",
 		"SSL_CERT_FILE":       agentCABundleMountPath,
+		"CURL_CA_BUNDLE":      agentCABundleMountPath,
 		"NODE_EXTRA_CA_CERTS": agentCABundleMountPath,
 		"REQUESTS_CA_BUNDLE":  agentCABundleMountPath,
 		"GIT_SSL_CAINFO":      agentCABundleMountPath,
@@ -448,7 +449,7 @@ func TestBuildPodSpec_TransparentMode(t *testing.T) {
 		}
 	}
 	// CA-trust envs still present in transparent mode.
-	for _, k := range []string{"SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO"} {
+	for _, k := range []string{"SSL_CERT_FILE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO"} {
 		if env[k] != agentCABundleMountPath {
 			t.Errorf("agent env[%q] = %q, want %q", k, env[k], agentCABundleMountPath)
 		}

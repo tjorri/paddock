@@ -21,6 +21,8 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -72,4 +74,39 @@ func DetectNetworkPolicyCNI(ctx context.Context, c client.Reader) (bool, string,
 	}
 	return false, "no known NetworkPolicy-capable CNI DaemonSet found in kube-system " +
 		"(searched calico-node, cilium, weave-net, kube-router, antrea-agent)", nil
+}
+
+// CiliumNetworkPolicyDiscovery is the minimum subset of
+// discovery.DiscoveryInterface this package uses. Defined locally so
+// tests can supply a fake without dragging in client-go's full fake
+// discovery client.
+type CiliumNetworkPolicyDiscovery interface {
+	ServerResourcesForGroupVersion(groupVersion string) (*metav1.APIResourceList, error)
+}
+
+// CiliumGroupVersion is the API group/version that hosts
+// CiliumNetworkPolicy. Stable across Cilium 1.x.
+const CiliumGroupVersion = "cilium.io/v2"
+
+// DetectCiliumCNP reports whether the cluster has the
+// CiliumNetworkPolicy resource registered. Called once at controller-
+// manager startup; callers fall back to standard NetworkPolicy when
+// this returns false.
+//
+// Treats group-not-found as "not Cilium" rather than an error: most
+// non-Cilium clusters do not register cilium.io/v2 at all.
+func DetectCiliumCNP(d CiliumNetworkPolicyDiscovery) (bool, error) {
+	list, err := d.ServerResourcesForGroupVersion(CiliumGroupVersion)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("discovery for %s: %w", CiliumGroupVersion, err)
+	}
+	for _, r := range list.APIResources {
+		if r.Kind == "CiliumNetworkPolicy" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
