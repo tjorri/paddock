@@ -49,15 +49,14 @@ func NewRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Default action: launch the TUI. Wired in Task 27.
-			return cmd.Help()
+			return runTUI(cfg)
 		},
 	}
 	cfg.AddFlags(root.PersistentFlags())
 
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newSessionCmd(cfg))
-	// Subsequent tasks register: tui.
+	root.AddCommand(newTUICmd(cfg))
 
 	root.SetErr(os.Stderr)
 	root.SetOut(os.Stdout)
@@ -67,7 +66,7 @@ func NewRootCmd() *cobra.Command {
 // newClient builds a controller-runtime client from the kubectl-style
 // config flags. Shared by every subcommand. Returns the resolved
 // namespace as the second value.
-func newClient(cfg *genericclioptions.ConfigFlags) (client.Client, string, error) { //nolint:unused // called by subcommands wired in later tasks
+func newClient(cfg *genericclioptions.ConfigFlags) (client.Client, string, error) {
 	restConfig, err := cfg.ToRESTConfig()
 	if err != nil {
 		return nil, "", fmt.Errorf("loading kubeconfig: %w", err)
