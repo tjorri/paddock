@@ -58,14 +58,16 @@ func NewModel(c client.Client, ns string) Model {
 }
 
 // Init kicks off the initial session-list load and the watch loop.
-// Wired in Task 18 (commands.go) — body is commented out until then.
 func (m Model) Init() tea.Cmd {
-	// return tea.Batch(loadSessionsCmd(m.Client, m.Namespace), watchSessionsCmd(m.Client, m.Namespace))
-	return nil
+	return tea.Batch(loadSessionsCmd(m.Client, m.Namespace), watchSessionsCmd(m.Client, m.Namespace))
 }
 
 // Update is implemented in update.go (Task 19).
-// View is implemented in ui/view.go (Task 22).
+//
+// View is a placeholder so Model satisfies tea.Model — the real
+// rendering lives in package ui (Task 22) and is wired in by the
+// cmd-package teaModel adapter that embeds Model.
+func (m Model) View() string { return "" }
 
 // Modal-state placeholders — implementations land in Task 17.
 type NewSessionModalState struct {
