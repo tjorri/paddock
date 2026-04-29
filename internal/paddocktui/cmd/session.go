@@ -31,6 +31,6 @@ func newSessionCmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {
 	}
 	c.AddCommand(newSessionListCmd(cfg))
 	c.AddCommand(newSessionNewCmd(cfg))
-	// added in Task 13: c.AddCommand(newSessionEndCmd(cfg))
+	c.AddCommand(newSessionEndCmd(cfg))
 	return c
 }
