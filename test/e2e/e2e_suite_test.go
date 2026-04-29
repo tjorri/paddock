@@ -141,6 +141,23 @@ data:
 	_, err = utils.Run(exec.Command("kubectl", "-n", "paddock-system",
 		"rollout", "status", "deploy/paddock-controller-manager", "--timeout=180s"))
 	Expect(err).NotTo(HaveOccurred(), "rollout status")
+
+	By("patching paddock-controller-manager to enable upstream-extra-cas (e2e only)")
+	currentArgs, _ := utils.Run(exec.Command("kubectl", "-n", "paddock-system",
+		"get", "deploy", "paddock-controller-manager",
+		"-o", "jsonpath={.spec.template.spec.containers[0].args}"))
+	const e2eExtraCAsFlag = "--proxy-upstream-extra-cas-configmap=paddock-proxy-upstream-cas"
+	if !strings.Contains(currentArgs, e2eExtraCAsFlag) {
+		_, err = utils.Run(exec.Command("kubectl", "-n", "paddock-system",
+			"patch", "deploy", "paddock-controller-manager",
+			"--type=json",
+			"-p", fmt.Sprintf(`[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":%q}]`, e2eExtraCAsFlag)))
+		Expect(err).NotTo(HaveOccurred(), "patching manager Deployment with e2e extra-cas flag")
+		_, err = utils.Run(exec.Command("kubectl", "-n", "paddock-system",
+			"rollout", "status", "deploy/paddock-controller-manager", "--timeout=180s"))
+		Expect(err).NotTo(HaveOccurred(), "waiting for manager rollout after e2e flag patch")
+	}
+
 	// Note: rollout status returning Ready does NOT guarantee the
 	// webhook is reachable — the Endpoints object is populated
 	// before kube-proxy finishes programming the ClusterIP rules,
