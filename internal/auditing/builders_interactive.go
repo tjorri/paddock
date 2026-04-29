@@ -34,6 +34,7 @@ type PromptAuditInput struct {
 	PromptHash   string
 	PromptLength int
 	TurnSeq      int32
+	When         time.Time
 }
 
 // NewPromptSubmitted builds a prompt-submitted AuditEvent.
@@ -46,7 +47,7 @@ func NewPromptSubmitted(in PromptAuditInput) *paddockv1alpha1.AuditEvent {
 		Spec: paddockv1alpha1.AuditEventSpec{
 			Decision:  paddockv1alpha1.AuditDecisionGranted,
 			Kind:      paddockv1alpha1.AuditKindPromptSubmitted,
-			Timestamp: metav1.NewTime(time.Now()),
+			Timestamp: metav1.NewTime(nowOr(in.When)),
 			Detail: map[string]string{
 				"submitterSA":  in.SubmitterSA,
 				"promptHash":   in.PromptHash,
@@ -70,6 +71,7 @@ type PromptCompletedInput struct {
 	DurationMs int64
 	EventCount int32
 	Outcome    string // "ok" | "error" | "interrupted"
+	When       time.Time
 }
 
 // NewPromptCompleted builds a prompt-completed AuditEvent.
@@ -82,7 +84,7 @@ func NewPromptCompleted(in PromptCompletedInput) *paddockv1alpha1.AuditEvent {
 		Spec: paddockv1alpha1.AuditEventSpec{
 			Decision:  paddockv1alpha1.AuditDecisionGranted,
 			Kind:      paddockv1alpha1.AuditKindPromptCompleted,
-			Timestamp: metav1.NewTime(time.Now()),
+			Timestamp: metav1.NewTime(nowOr(in.When)),
 			Detail: map[string]string{
 				"turnSeq":    strconv.Itoa(int(in.TurnSeq)),
 				"durationMs": strconv.FormatInt(in.DurationMs, 10),
@@ -106,6 +108,7 @@ type ShellOpenedInput struct {
 	SubmitterSA string
 	Target      string
 	Command     []string
+	When        time.Time
 }
 
 // NewShellSessionOpened builds a shell-session-opened AuditEvent.
@@ -118,7 +121,7 @@ func NewShellSessionOpened(in ShellOpenedInput) *paddockv1alpha1.AuditEvent {
 		Spec: paddockv1alpha1.AuditEventSpec{
 			Decision:  paddockv1alpha1.AuditDecisionGranted,
 			Kind:      paddockv1alpha1.AuditKindShellSessionOpened,
-			Timestamp: metav1.NewTime(time.Now()),
+			Timestamp: metav1.NewTime(nowOr(in.When)),
 			Detail: map[string]string{
 				"sessionID":   in.SessionID,
 				"submitterSA": in.SubmitterSA,
@@ -141,6 +144,7 @@ type ShellClosedInput struct {
 	SessionID  string
 	DurationMs int64
 	ByteCount  int64
+	When       time.Time
 }
 
 // NewShellSessionClosed builds a shell-session-closed AuditEvent.
@@ -153,7 +157,7 @@ func NewShellSessionClosed(in ShellClosedInput) *paddockv1alpha1.AuditEvent {
 		Spec: paddockv1alpha1.AuditEventSpec{
 			Decision:  paddockv1alpha1.AuditDecisionGranted,
 			Kind:      paddockv1alpha1.AuditKindShellSessionClosed,
-			Timestamp: metav1.NewTime(time.Now()),
+			Timestamp: metav1.NewTime(nowOr(in.When)),
 			Detail: map[string]string{
 				"sessionID":  in.SessionID,
 				"durationMs": strconv.FormatInt(in.DurationMs, 10),
@@ -175,6 +179,7 @@ type CredentialRenewalFailedInput struct {
 	Provider  string
 	LeaseID   string
 	Error     string
+	When      time.Time
 }
 
 // NewCredentialRenewalFailed builds a credential-renewal-failed AuditEvent.
@@ -187,7 +192,7 @@ func NewCredentialRenewalFailed(in CredentialRenewalFailedInput) *paddockv1alpha
 		Spec: paddockv1alpha1.AuditEventSpec{
 			Decision:  paddockv1alpha1.AuditDecisionDenied,
 			Kind:      paddockv1alpha1.AuditKindCredentialRenewalFailed,
-			Timestamp: metav1.NewTime(time.Now()),
+			Timestamp: metav1.NewTime(nowOr(in.When)),
 			Detail: map[string]string{
 				"provider": in.Provider,
 				"leaseID":  in.LeaseID,
@@ -204,10 +209,15 @@ func NewCredentialRenewalFailed(in CredentialRenewalFailedInput) *paddockv1alpha
 
 // InteractiveRunTerminatedInput is the input for NewInteractiveRunTerminated.
 // Reason is one of: idle, detach, max-lifetime, explicit, error.
+// Decision must be set by the caller: AuditDecisionGranted for planned
+// terminations (idle/detach/max-lifetime/explicit) and AuditDecisionWarned
+// for error-triggered terminations.
 type InteractiveRunTerminatedInput struct {
 	RunName   string
 	Namespace string
 	Reason    string
+	Decision  paddockv1alpha1.AuditDecision
+	When      time.Time
 }
 
 // NewInteractiveRunTerminated builds an interactive-run-terminated AuditEvent.
@@ -218,9 +228,9 @@ func NewInteractiveRunTerminated(in InteractiveRunTerminatedInput) *paddockv1alp
 			Namespace:    in.Namespace,
 		},
 		Spec: paddockv1alpha1.AuditEventSpec{
-			Decision:  paddockv1alpha1.AuditDecisionGranted,
+			Decision:  in.Decision,
 			Kind:      paddockv1alpha1.AuditKindInteractiveRunTerminated,
-			Timestamp: metav1.NewTime(time.Now()),
+			Timestamp: metav1.NewTime(nowOr(in.When)),
 			Detail: map[string]string{
 				"reason": in.Reason,
 			},

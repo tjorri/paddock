@@ -18,6 +18,7 @@ package auditing_test
 
 import (
 	"testing"
+	"time"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	"paddock.dev/paddock/internal/auditing"
@@ -116,15 +117,54 @@ func TestNewCredentialRenewalFailed(t *testing.T) {
 
 func TestNewInteractiveRunTerminated(t *testing.T) {
 	t.Parallel()
+
+	t.Run("planned termination emits Granted", func(t *testing.T) {
+		t.Parallel()
+		ae := auditing.NewInteractiveRunTerminated(auditing.InteractiveRunTerminatedInput{
+			RunName:   "r1",
+			Namespace: "ns",
+			Reason:    "idle",
+			Decision:  paddockv1alpha1.AuditDecisionGranted,
+		})
+		if ae.Spec.Kind != paddockv1alpha1.AuditKindInteractiveRunTerminated {
+			t.Fatalf("kind: %q", ae.Spec.Kind)
+		}
+		if ae.Spec.Detail["reason"] != "idle" {
+			t.Fatalf("reason: %q", ae.Spec.Detail["reason"])
+		}
+		if ae.Spec.Decision != paddockv1alpha1.AuditDecisionGranted {
+			t.Fatalf("decision = %q, want Granted", ae.Spec.Decision)
+		}
+	})
+
+	t.Run("error termination emits Warned", func(t *testing.T) {
+		t.Parallel()
+		ae := auditing.NewInteractiveRunTerminated(auditing.InteractiveRunTerminatedInput{
+			RunName:   "r2",
+			Namespace: "ns",
+			Reason:    "error",
+			Decision:  paddockv1alpha1.AuditDecisionWarned,
+		})
+		if ae.Spec.Kind != paddockv1alpha1.AuditKindInteractiveRunTerminated {
+			t.Fatalf("kind: %q", ae.Spec.Kind)
+		}
+		if ae.Spec.Decision != paddockv1alpha1.AuditDecisionWarned {
+			t.Fatalf("decision = %q, want Warned", ae.Spec.Decision)
+		}
+	})
+}
+
+func TestNewInteractiveRunTerminated_WhenTimestamp(t *testing.T) {
+	t.Parallel()
+	fixed := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
 	ae := auditing.NewInteractiveRunTerminated(auditing.InteractiveRunTerminatedInput{
 		RunName:   "r1",
 		Namespace: "ns",
-		Reason:    "idle",
+		Reason:    "explicit",
+		Decision:  paddockv1alpha1.AuditDecisionGranted,
+		When:      fixed,
 	})
-	if ae.Spec.Kind != paddockv1alpha1.AuditKindInteractiveRunTerminated {
-		t.Fatalf("kind: %q", ae.Spec.Kind)
-	}
-	if ae.Spec.Detail["reason"] != "idle" {
-		t.Fatalf("reason: %q", ae.Spec.Detail["reason"])
+	if !ae.Spec.Timestamp.Time.Equal(fixed) {
+		t.Fatalf("timestamp = %v, want %v", ae.Spec.Timestamp.Time, fixed)
 	}
 }
