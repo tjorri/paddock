@@ -27,11 +27,11 @@ jobs:
     runs-on: ubuntu-latest
     # Skip while the PR is in draft. workflow_dispatch always runs.
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    # 30 min is head-room above the 22-min go test deadline + 21-min
+    # 45 min is head-room above the 32-min go test deadline + 30-min
     # Ginkgo suite deadline in the Makefile. Leaves time for cold
     # GH-runner dep downloads, image builds, and `kind export logs` on
     # failure without clipping the Ginkgo summary.
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Clone the code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
