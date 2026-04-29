@@ -136,12 +136,15 @@ type PromptSource struct {
 }
 
 // HarnessRunPhase is the lifecycle phase of a HarnessRun.
-// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed;Cancelled
+// +kubebuilder:validation:Enum=Pending;Running;Idle;Succeeded;Failed;Cancelled
 type HarnessRunPhase string
 
 const (
 	HarnessRunPhasePending   HarnessRunPhase = "Pending"
 	HarnessRunPhaseRunning   HarnessRunPhase = "Running"
+	// HarnessRunPhaseIdle indicates an Interactive run is alive and waiting
+	// for the next prompt. The pod is running; no turn is in progress.
+	HarnessRunPhaseIdle      HarnessRunPhase = "Idle"
 	HarnessRunPhaseSucceeded HarnessRunPhase = "Succeeded"
 	HarnessRunPhaseFailed    HarnessRunPhase = "Failed"
 	HarnessRunPhaseCancelled HarnessRunPhase = "Cancelled"
@@ -184,6 +187,19 @@ const (
 	// namespace PSA or the manager's configuration cannot provide it.
 	// The run is terminal Failed; no fallback to cooperative.
 	HarnessRunConditionInterceptionUnavailable = "InterceptionUnavailable"
+)
+
+// Condition types specific to Interactive HarnessRuns.
+const (
+	// HarnessRunConditionAttached is True when at least one client session
+	// is currently attached to the Interactive run's prompt endpoint.
+	HarnessRunConditionAttached = "Attached"
+	// HarnessRunConditionIdle is True while the Interactive run is in the
+	// Idle phase — pod alive, no prompt turn in progress.
+	HarnessRunConditionIdle = "Idle"
+	// HarnessRunConditionCredentialsRenewed is True after the broker has
+	// completed at least one credential renewal for this Interactive run.
+	HarnessRunConditionCredentialsRenewed = "CredentialsRenewed"
 )
 
 // MaxInlinePromptBytes caps spec.prompt at 256 KiB, well under the
@@ -271,6 +287,50 @@ type HarnessRunStatus struct {
 	// +listMapKey=leaseID
 	// +optional
 	IssuedLeases []IssuedLease `json:"issuedLeases,omitempty"`
+
+	// Interactive carries live-session counters and timestamps for
+	// Interactive runs. Nil for Batch runs.
+	// +optional
+	Interactive *InteractiveStatus `json:"interactive,omitempty"`
+}
+
+// InteractiveStatus carries counters and timestamps for an Interactive run.
+// Populated and updated by the controller as prompts arrive and sessions
+// attach/detach.
+type InteractiveStatus struct {
+	// PromptCount is the total number of prompt turns submitted since the
+	// run started.
+	PromptCount int32 `json:"promptCount,omitempty"`
+
+	// LastPromptAt is the time the most recent prompt was received.
+	// +optional
+	LastPromptAt *metav1.Time `json:"lastPromptAt,omitempty"`
+
+	// AttachedSessions is the current number of client sessions attached
+	// to the run's prompt stream.
+	AttachedSessions int32 `json:"attachedSessions,omitempty"`
+
+	// LastAttachedAt is the time the most recent session attached.
+	// +optional
+	LastAttachedAt *metav1.Time `json:"lastAttachedAt,omitempty"`
+
+	// IdleSince is the time the run entered the Idle phase most recently.
+	// Nil if the run has never been idle.
+	// +optional
+	IdleSince *metav1.Time `json:"idleSince,omitempty"`
+
+	// CurrentTurnSeq is the monotonically increasing sequence number of
+	// the prompt turn currently in progress. Nil when no turn is active.
+	// +optional
+	CurrentTurnSeq *int32 `json:"currentTurnSeq,omitempty"`
+
+	// RenewalCount is the total number of credential renewals completed
+	// for this run.
+	RenewalCount int32 `json:"renewalCount,omitempty"`
+
+	// LastRenewalAt is the time of the most recent credential renewal.
+	// +optional
+	LastRenewalAt *metav1.Time `json:"lastRenewalAt,omitempty"`
 }
 
 // PaddockEvent is a structured event emitted by an adapter sidecar and

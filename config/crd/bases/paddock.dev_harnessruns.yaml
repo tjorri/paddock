@@ -543,6 +543,57 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              interactive:
+                description: |-
+                  Interactive carries live-session counters and timestamps for
+                  Interactive runs. Nil for Batch runs.
+                properties:
+                  attachedSessions:
+                    description: |-
+                      AttachedSessions is the current number of client sessions attached
+                      to the run's prompt stream.
+                    format: int32
+                    type: integer
+                  currentTurnSeq:
+                    description: |-
+                      CurrentTurnSeq is the monotonically increasing sequence number of
+                      the prompt turn currently in progress. Nil when no turn is active.
+                    format: int32
+                    type: integer
+                  idleSince:
+                    description: |-
+                      IdleSince is the time the run entered the Idle phase most recently.
+                      Nil if the run has never been idle.
+                    format: date-time
+                    type: string
+                  lastAttachedAt:
+                    description: LastAttachedAt is the time the most recent session
+                      attached.
+                    format: date-time
+                    type: string
+                  lastPromptAt:
+                    description: LastPromptAt is the time the most recent prompt was
+                      received.
+                    format: date-time
+                    type: string
+                  lastRenewalAt:
+                    description: LastRenewalAt is the time of the most recent credential
+                      renewal.
+                    format: date-time
+                    type: string
+                  promptCount:
+                    description: |-
+                      PromptCount is the total number of prompt turns submitted since the
+                      run started.
+                    format: int32
+                    type: integer
+                  renewalCount:
+                    description: |-
+                      RenewalCount is the total number of credential renewals completed
+                      for this run.
+                    format: int32
+                    type: integer
+                type: object
               issuedLeases:
                 description: |-
                   IssuedLeases records every credential lease the broker has minted
@@ -662,6 +713,7 @@ spec:
                 enum:
                 - Pending
                 - Running
+                - Idle
                 - Succeeded
                 - Failed
                 - Cancelled
