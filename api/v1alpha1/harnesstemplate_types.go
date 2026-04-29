@@ -90,6 +90,13 @@ type HarnessTemplateSpec struct {
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	PodTemplateOverlay *corev1.PodTemplateSpec `json:"podTemplateOverlay,omitempty"`
+
+	// Interactive declares the template's interactive-mode support and
+	// lifecycle defaults. When nil, runs against this template may not
+	// set spec.mode: Interactive (admission rejects). Always overridable
+	// on namespaced templates that inherit a ClusterHarnessTemplate.
+	// +optional
+	Interactive *InteractiveSpec `json:"interactive,omitempty"`
 }
 
 // HarnessTemplateDefaults are the run-time defaults a template applies.
@@ -114,6 +121,53 @@ type HarnessTemplateDefaults struct {
 	// +kubebuilder:default=60
 	// +optional
 	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
+}
+
+// InteractiveSpec declares interactive-mode support and lifecycle defaults
+// for a HarnessTemplate. When nil or with empty Mode, the template does
+// not support spec.mode: Interactive.
+//
+// See docs/superpowers/specs/2026-04-29-interactive-harnessrun-design.md.
+type InteractiveSpec struct {
+	// Mode declares which interactive implementation strategy the
+	// template's adapter image supports. The adapter image must declare
+	// a matching value via paddock.dev/interactive-modes annotation
+	// (validated at pod-spec generation, not at template admission).
+	// +kubebuilder:validation:Enum="";per-prompt-process;persistent-process
+	// +optional
+	Mode string `json:"mode,omitempty"`
+
+	// IdleTimeout is the maximum time since the last completed prompt
+	// before the run terminates, while at least one client is attached.
+	// Default 30m.
+	// +optional
+	// +kubebuilder:default="30m"
+	IdleTimeout *metav1.Duration `json:"idleTimeout,omitempty"`
+
+	// DetachIdleTimeout is the maximum idle time when no client is
+	// attached. Default 15m.
+	// +optional
+	// +kubebuilder:default="15m"
+	DetachIdleTimeout *metav1.Duration `json:"detachIdleTimeout,omitempty"`
+
+	// DetachTimeout is the maximum time with zero attached clients
+	// before termination. Default 5m.
+	// +optional
+	// +kubebuilder:default="5m"
+	DetachTimeout *metav1.Duration `json:"detachTimeout,omitempty"`
+
+	// MaxLifetime is the absolute hard cap on run lifetime regardless
+	// of activity. Default 24h. Non-negotiable upper bound.
+	// +optional
+	// +kubebuilder:default="24h"
+	MaxLifetime *metav1.Duration `json:"maxLifetime,omitempty"`
+
+	// MaxRecentEvents overrides HarnessRun.status.recentEvents ring size
+	// for runs against this template. Default 50; bounded [10, 500].
+	// +optional
+	// +kubebuilder:validation:Minimum=10
+	// +kubebuilder:validation:Maximum=500
+	MaxRecentEvents *int32 `json:"maxRecentEvents,omitempty"`
 }
 
 // EventAdapterSpec identifies the adapter sidecar image.

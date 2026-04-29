@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"fmt"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
@@ -93,10 +94,15 @@ func validateHarnessTemplateSpec(spec *paddockv1alpha1.HarnessTemplateSpec, isCl
 
 	errs = append(errs, validateRequireSpec(specPath.Child("requires"), &spec.Requires)...)
 
-	if len(errs) == 0 {
-		return nil
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", errs.ToAggregate().Error())
 	}
-	return fmt.Errorf("%s", errs.ToAggregate().Error())
+
+	if err := validateInteractiveSpec(spec.Interactive); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // MaxTerminationGracePeriodSeconds caps the per-template grace period
@@ -161,4 +167,46 @@ func validateRequireSpec(p *field.Path, req *paddockv1alpha1.RequireSpec) field.
 	}
 
 	return errs
+}
+
+// validateInteractiveSpec checks the optional InteractiveSpec for
+// internally-consistent timeout bounds. The Mode field's enum is
+// enforced by the kubebuilder validation tag at the API layer; here we
+// only check cross-field invariants and positive durations.
+func validateInteractiveSpec(in *paddockv1alpha1.InteractiveSpec) error {
+	if in == nil {
+		return nil
+	}
+	posOrZero := func(name string, d *metav1.Duration) error {
+		if d == nil {
+			return nil
+		}
+		if d.Duration <= 0 {
+			return fmt.Errorf("interactive.%s must be positive", name)
+		}
+		return nil
+	}
+	for name, d := range map[string]*metav1.Duration{
+		"idleTimeout":       in.IdleTimeout,
+		"detachIdleTimeout": in.DetachIdleTimeout,
+		"detachTimeout":     in.DetachTimeout,
+		"maxLifetime":       in.MaxLifetime,
+	} {
+		if err := posOrZero(name, d); err != nil {
+			return err
+		}
+	}
+	if in.IdleTimeout != nil && in.MaxLifetime != nil &&
+		in.IdleTimeout.Duration > in.MaxLifetime.Duration {
+		return fmt.Errorf("interactive.idleTimeout must not exceed maxLifetime")
+	}
+	if in.DetachTimeout != nil && in.MaxLifetime != nil &&
+		in.DetachTimeout.Duration > in.MaxLifetime.Duration {
+		return fmt.Errorf("interactive.detachTimeout must not exceed maxLifetime")
+	}
+	if in.DetachIdleTimeout != nil && in.IdleTimeout != nil &&
+		in.DetachIdleTimeout.Duration > in.IdleTimeout.Duration {
+		return fmt.Errorf("interactive.detachIdleTimeout must not exceed idleTimeout")
+	}
+	return nil
 }
