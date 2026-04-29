@@ -17,8 +17,14 @@ limitations under the License.
 package app
 
 import (
+	"context"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	pdkruns "paddock.dev/paddock/internal/paddocktui/runs"
+	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
 
 // Model is the Bubble Tea model for paddock-tui. Everything that
@@ -28,6 +34,19 @@ type Model struct {
 	// Cluster wiring.
 	Client    client.Client
 	Namespace string
+
+	// Lifecycle context for long-lived watch goroutines. Cancel is
+	// called on tea.Quit/teardown so the polling goroutines spawned by
+	// session.Watch / runs.Watch / events.Tail exit cleanly.
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	// Persistent watch channels. These are opened once per
+	// (workspace|run) and read one event at a time by the reducer so
+	// re-issuing nextXxxEventCmd does not spawn a fresh goroutine.
+	sessionWatchCh <-chan pdksession.Event
+	runWatches     map[string]<-chan pdkruns.Event                // keyed by workspaceRef
+	eventTails     map[string]<-chan paddockv1alpha1.PaddockEvent // keyed by runName
 
 	// Session list, keyed by Name. SessionOrder gives display order.
 	Sessions     map[string]*SessionState
@@ -50,16 +69,27 @@ type Model struct {
 
 // NewModel constructs a Model with the supplied cluster wiring.
 func NewModel(c client.Client, ns string) Model {
+	ctx, cancel := context.WithCancel(context.Background())
 	return Model{
-		Client:    c,
-		Namespace: ns,
-		Sessions:  map[string]*SessionState{},
+		Client:     c,
+		Namespace:  ns,
+		ctx:        ctx,
+		cancel:     cancel,
+		Sessions:   map[string]*SessionState{},
+		runWatches: map[string]<-chan pdkruns.Event{},
+		eventTails: map[string]<-chan paddockv1alpha1.PaddockEvent{},
 	}
 }
 
-// Init kicks off the initial session-list load and the watch loop.
+// Init kicks off the initial session-list load and opens the session
+// watch. The session watch is opened once for the lifetime of the
+// Model — Update re-issues nextSessionEventCmd to read further events
+// off the same channel without spawning new goroutines.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadSessionsCmd(m.Client, m.Namespace), watchSessionsCmd(m.Client, m.Namespace))
+	return tea.Batch(
+		loadSessionsCmd(m.Client, m.Namespace),
+		openSessionsWatchCmd(m.ctx, m.Client, m.Namespace),
+	)
 }
 
 // Update is implemented in update.go (Task 19).

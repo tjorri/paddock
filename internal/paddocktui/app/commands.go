@@ -41,18 +41,27 @@ func loadSessionsCmd(c client.Client, ns string) tea.Cmd { //nolint:unused // wi
 	}
 }
 
-// watchSessionsCmd polls List on a goroutine and returns Bubble Tea
-// messages on each change. The cmd never returns nil — it always
-// produces one message (the next event) so Update can re-issue it.
-func watchSessionsCmd(c client.Client, ns string) tea.Cmd { //nolint:unused // wired in Task 19
-	// Bubble Tea pattern: wrap a long-running channel as a series of
-	// tea.Cmd by returning a fresh Cmd from each message-handler.
-	// Here we kick off the goroutine via session.Watch and bridge.
-	ctx := context.Background()
-	ch, err := pdksession.Watch(ctx, c, ns, 0)
-	if err != nil {
-		return func() tea.Msg { return errMsg{Err: err} }
+// openSessionsWatchCmd opens a long-lived session watch goroutine via
+// pdksession.Watch and returns a sessionWatchOpenedMsg carrying the
+// channel back to Update. Unlike the earlier watchSessionsCmd, this is
+// only called *once* per Model — Update reads further events off the
+// returned channel via nextSessionEventCmd, so re-issuing on every
+// event no longer leaks a goroutine.
+func openSessionsWatchCmd(ctx context.Context, c client.Client, ns string) tea.Cmd { //nolint:unused // wired in Task 19
+	return func() tea.Msg {
+		ch, err := pdksession.Watch(ctx, c, ns, 0)
+		if err != nil {
+			return errMsg{Err: err}
+		}
+		return sessionWatchOpenedMsg{Ch: ch}
 	}
+}
+
+// nextSessionEventCmd reads ONE event off an already-open session
+// watch channel and translates it into the appropriate
+// sessionAdded/Updated/Deleted message. Update re-issues this on each
+// emitted event to pull the next one without spawning a new goroutine.
+func nextSessionEventCmd(ch <-chan pdksession.Event) tea.Cmd { //nolint:unused // wired in Task 19
 	return func() tea.Msg {
 		ev, ok := <-ch
 		if !ok {
@@ -70,13 +79,21 @@ func watchSessionsCmd(c client.Client, ns string) tea.Cmd { //nolint:unused // w
 	}
 }
 
-// watchRunsCmd watches HarnessRuns for one workspace.
-func watchRunsCmd(c client.Client, ns, workspaceRef string) tea.Cmd { //nolint:unused // wired in Task 19
-	ctx := context.Background()
-	ch, err := pdkruns.Watch(ctx, c, ns, workspaceRef, 0)
-	if err != nil {
-		return func() tea.Msg { return errMsg{Err: err} }
+// openRunWatchCmd opens a per-workspace HarnessRun watch and returns
+// the channel back to Update via runWatchOpenedMsg.
+func openRunWatchCmd(ctx context.Context, c client.Client, ns, workspaceRef string) tea.Cmd { //nolint:unused // wired in Task 19
+	return func() tea.Msg {
+		ch, err := pdkruns.Watch(ctx, c, ns, workspaceRef, 0)
+		if err != nil {
+			return errMsg{Err: err}
+		}
+		return runWatchOpenedMsg{WorkspaceRef: workspaceRef, Ch: ch}
 	}
+}
+
+// nextRunEventCmd reads ONE event off an already-open run watch
+// channel.
+func nextRunEventCmd(workspaceRef string, ch <-chan pdkruns.Event) tea.Cmd { //nolint:unused // wired in Task 19
 	return func() tea.Msg {
 		ev, ok := <-ch
 		if !ok {
@@ -92,13 +109,20 @@ func watchRunsCmd(c client.Client, ns, workspaceRef string) tea.Cmd { //nolint:u
 	}
 }
 
-// tailEventsCmd polls a HarnessRun's recentEvents.
-func tailEventsCmd(c client.Client, ns, runName string) tea.Cmd { //nolint:unused // wired in Task 19
-	ctx := context.Background()
-	ch, err := pdkevents.Tail(ctx, c, ns, runName, 0)
-	if err != nil {
-		return func() tea.Msg { return errMsg{Err: err} }
+// openEventTailCmd opens a per-run event tail and returns the channel
+// back to Update via eventTailOpenedMsg.
+func openEventTailCmd(ctx context.Context, c client.Client, ns, runName string) tea.Cmd { //nolint:unused // wired in Task 19
+	return func() tea.Msg {
+		ch, err := pdkevents.Tail(ctx, c, ns, runName, 0)
+		if err != nil {
+			return errMsg{Err: err}
+		}
+		return eventTailOpenedMsg{RunName: runName, Ch: ch}
 	}
+}
+
+// nextEventTailCmd reads ONE event off an already-open tail channel.
+func nextEventTailCmd(runName string, ch <-chan paddockv1alpha1.PaddockEvent) tea.Cmd { //nolint:unused // wired in Task 19
 	return func() tea.Msg {
 		ev, ok := <-ch
 		if !ok {

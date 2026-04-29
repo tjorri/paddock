@@ -18,8 +18,23 @@ package app
 
 import (
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	pdkruns "paddock.dev/paddock/internal/paddocktui/runs"
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
+
+// Watch-opened messages carry the channel that the reducer should
+// read next events from. They're emitted once per Watch / Tail —
+// subsequent events come back as the per-event message types below.
+
+type sessionWatchOpenedMsg struct{ Ch <-chan pdksession.Event } //nolint:unused // wired in Task 19
+type runWatchOpenedMsg struct {                                 //nolint:unused // wired in Task 19
+	WorkspaceRef string
+	Ch           <-chan pdkruns.Event
+}
+type eventTailOpenedMsg struct { //nolint:unused // wired in Task 19
+	RunName string
+	Ch      <-chan paddockv1alpha1.PaddockEvent
+}
 
 // Bubble Tea messages produced by the async commands in commands.go.
 // Each is a plain value type; Update branches on the concrete type.

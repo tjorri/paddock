@@ -17,14 +17,20 @@ limitations under the License.
 package app
 
 import (
+	"fmt"
 	"sort"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	pdkruns "paddock.dev/paddock/internal/paddocktui/runs"
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
+
+// errNoSessionFocused is the user-facing banner shown when an action
+// that needs a focused session is invoked while m.Focused is empty.
+const errNoSessionFocused = "no session focused"
 
 // Update dispatches messages to per-area handlers and returns the next
 // Model + a tea.Cmd. Watch commands re-issue themselves on every
@@ -36,19 +42,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, s := range msg.Sessions {
 			m = upsertSession(m, s)
 		}
-		// After initial load, focus the first session if any.
+		// After initial load, focus the first session if any. If a
+		// session is now focused and we don't have a run-watch open
+		// for it yet, open one.
 		if m.Focused == "" && len(m.SessionOrder) > 0 {
 			m.Focused = m.SessionOrder[0]
 		}
+		if cmd := ensureRunWatch(&m, m.Focused); cmd != nil {
+			return m, cmd
+		}
 		return m, nil
+
+	case sessionWatchOpenedMsg:
+		m.sessionWatchCh = msg.Ch
+		return m, nextSessionEventCmd(m.sessionWatchCh)
+
+	case runWatchOpenedMsg:
+		if m.runWatches == nil {
+			m.runWatches = map[string]<-chan pdkruns.Event{}
+		}
+		m.runWatches[msg.WorkspaceRef] = msg.Ch
+		return m, nextRunEventCmd(msg.WorkspaceRef, msg.Ch)
+
+	case eventTailOpenedMsg:
+		if m.eventTails == nil {
+			m.eventTails = map[string]<-chan paddockv1alpha1.PaddockEvent{}
+		}
+		m.eventTails[msg.RunName] = msg.Ch
+		return m, nextEventTailCmd(msg.RunName, msg.Ch)
 
 	case sessionAddedMsg:
 		m = upsertSession(m, msg.Session)
-		return m, watchSessionsCmd(m.Client, m.Namespace)
+		return m, nextSessionEventCmd(m.sessionWatchCh)
 
 	case sessionUpdatedMsg:
 		m = upsertSession(m, msg.Session)
-		return m, watchSessionsCmd(m.Client, m.Namespace)
+		return m, nextSessionEventCmd(m.sessionWatchCh)
 
 	case sessionDeletedMsg:
 		delete(m.Sessions, msg.Name)
@@ -56,24 +85,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.Focused == msg.Name {
 			m.Focused = ""
 		}
-		return m, watchSessionsCmd(m.Client, m.Namespace)
+		return m, nextSessionEventCmd(m.sessionWatchCh)
 
 	case runUpdatedMsg:
 		m = upsertRun(m, msg)
-		return m, watchRunsCmd(m.Client, m.Namespace, msg.WorkspaceRef)
+		ch := m.runWatches[msg.WorkspaceRef]
+		return m, nextRunEventCmd(msg.WorkspaceRef, ch)
 
 	case runDeletedMsg:
 		m = removeRun(m, msg)
-		return m, watchRunsCmd(m.Client, m.Namespace, msg.WorkspaceRef)
+		ch := m.runWatches[msg.WorkspaceRef]
+		return m, nextRunEventCmd(msg.WorkspaceRef, ch)
 
 	case eventReceivedMsg:
 		m = appendEvent(m, msg)
-		return m, tailEventsCmd(m.Client, m.Namespace, msg.RunName)
+		ch := m.eventTails[msg.RunName]
+		return m, nextEventTailCmd(msg.RunName, ch)
 
 	case runCreatedMsg:
-		// Start tailing events for this new run; the workspace-runs
-		// watch will pick up the run object itself.
-		return m, tailEventsCmd(m.Client, m.Namespace, msg.RunName)
+		// Open a long-lived event tail for this new run; the
+		// workspace-runs watch will pick up the run object itself.
+		return m, openEventTailCmd(m.ctx, m.Client, m.Namespace, msg.RunName)
 
 	case runCancelledMsg:
 		return m, nil
@@ -86,6 +118,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return handleKeyMsg(m, msg)
 	}
 	return m, nil
+}
+
+// ensureRunWatch opens a run watch for workspaceRef if one isn't
+// already open. Returns the open command, or nil when nothing needs
+// opening (empty ref or watch already present). Cleanup of stale
+// run watches on focus change is intentionally out of scope here —
+// see code-review fix-up for d5e44f3.
+func ensureRunWatch(m *Model, workspaceRef string) tea.Cmd {
+	if workspaceRef == "" {
+		return nil
+	}
+	if m.runWatches == nil {
+		m.runWatches = map[string]<-chan pdkruns.Event{}
+	}
+	if _, ok := m.runWatches[workspaceRef]; ok {
+		return nil
+	}
+	return openRunWatchCmd(m.ctx, m.Client, m.Namespace, workspaceRef)
 }
 
 // handleKeyMsg routes key events to modal handlers (which take priority)
@@ -108,12 +158,19 @@ func handleKeyMsg(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 func handleSidebarFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Type == tea.KeyRunes && string(key.Runes) == "q":
+		if m.cancel != nil {
+			m.cancel()
+		}
 		return m, tea.Quit
 	case key.Type == tea.KeyRunes && string(key.Runes) == "n":
 		// Open new-session modal; template list populated separately
 		// by a ModalOpen-side command in a later task.
 		return openNewSessionModal(m, []string{}), nil
 	case key.Type == tea.KeyRunes && string(key.Runes) == "e":
+		if m.Focused == "" {
+			m.ErrBanner = errNoSessionFocused
+			return m, nil
+		}
 		return openEndSessionModal(m, m.Focused), nil
 	case key.Type == tea.KeyTab:
 		m.FocusArea = FocusPrompt
@@ -121,7 +178,9 @@ func handleSidebarFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Type == tea.KeyRunes && string(key.Runes) == "?":
 		return openHelpModal(m), nil
 	}
-	return handleSidebarKey(m, key), nil
+	m = handleSidebarKey(m, key)
+	cmd := ensureRunWatch(&m, m.Focused)
+	return m, cmd
 }
 
 // handlePromptFocusKey edits the prompt buffer and dispatches Enter.
@@ -170,7 +229,14 @@ func handleModalKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// closeModal nils ModalNew.
 		if key.Type == tea.KeyEnter && m.ModalNew != nil && m.ModalNew.Field == 3 {
 			snapshot := *m.ModalNew
-			storage, _ := parseQuantity(snapshot.StorageInput)
+			storage, err := parseQuantity(snapshot.StorageInput)
+			if err != nil {
+				// Surface the bad input and keep the modal open so the
+				// user can fix it. Do NOT closeModal — that would
+				// silently drop their entries.
+				m.ErrBanner = fmt.Sprintf("invalid storage size: %v", err)
+				return m, nil
+			}
 			template := ""
 			if snapshot.TemplateIdx >= 0 && snapshot.TemplateIdx < len(snapshot.TemplatePicks) {
 				template = snapshot.TemplatePicks[snapshot.TemplateIdx]
@@ -202,8 +268,16 @@ func handleModalKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 func dispatchSlash(m Model, cmd SlashCmd, arg string) (Model, tea.Cmd) {
 	switch cmd {
 	case SlashCancel:
+		if m.Focused == "" {
+			m.ErrBanner = errNoSessionFocused
+			return m, nil
+		}
 		focused := m.Sessions[m.Focused]
-		if focused != nil && focused.Session.ActiveRunRef != "" {
+		if focused == nil {
+			m.ErrBanner = errNoSessionFocused
+			return m, nil
+		}
+		if focused.Session.ActiveRunRef != "" {
 			return m, cancelRunCmd(m.Client, m.Namespace, focused.Session.ActiveRunRef)
 		}
 	case SlashHelp:
@@ -213,12 +287,19 @@ func dispatchSlash(m Model, cmd SlashCmd, arg string) (Model, tea.Cmd) {
 			m.ErrBanner = ":template requires a template name"
 			return m, nil
 		}
-		if focused := m.Sessions[m.Focused]; focused != nil {
-			focused.Session.LastTemplate = arg
-			// Persist via annotation patch so reattach restores the
-			// override.
-			return m, patchLastTemplateCmd(m.Client, m.Namespace, m.Focused, arg)
+		if m.Focused == "" {
+			m.ErrBanner = errNoSessionFocused
+			return m, nil
 		}
+		focused := m.Sessions[m.Focused]
+		if focused == nil {
+			m.ErrBanner = errNoSessionFocused
+			return m, nil
+		}
+		focused.Session.LastTemplate = arg
+		// Persist via annotation patch so reattach restores the
+		// override.
+		return m, patchLastTemplateCmd(m.Client, m.Namespace, m.Focused, arg)
 	case SlashInteractive:
 		m.ErrBanner = "interactive mode is not yet implemented"
 	}
