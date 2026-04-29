@@ -18,6 +18,7 @@ package v1alpha1_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,5 +76,24 @@ func TestHarnessRunPhaseIdle_Recognised(t *testing.T) {
 
 	if v1alpha1.HarnessRunPhaseIdle != "Idle" {
 		t.Errorf("HarnessRunPhaseIdle = %q, want %q", v1alpha1.HarnessRunPhaseIdle, "Idle")
+	}
+}
+
+// TestInteractiveStatus_CountersAlwaysSerialized pins the JSON-tag
+// contract: PromptCount, AttachedSessions, and RenewalCount must
+// serialize even at zero, so status consumers see "promptCount: 0"
+// instead of an absent field. Guards against drift if someone
+// "tidies up" the tags by adding omitempty.
+func TestInteractiveStatus_CountersAlwaysSerialized(t *testing.T) {
+	t.Parallel()
+
+	b, err := json.Marshal(v1alpha1.InteractiveStatus{})
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	for _, key := range []string{`"promptCount"`, `"attachedSessions"`, `"renewalCount"`} {
+		if !strings.Contains(string(b), key) {
+			t.Errorf("zero-value status missing %s in: %s", key, b)
+		}
 	}
 }

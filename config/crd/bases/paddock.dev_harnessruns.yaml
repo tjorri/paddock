@@ -551,7 +551,7 @@ spec:
                   attachedSessions:
                     description: |-
                       AttachedSessions is the current number of client sessions attached
-                      to the run's prompt stream.
+                      to the run's prompt stream or shell endpoint. Always serialized.
                     format: int32
                     type: integer
                   currentTurnSeq:
@@ -584,15 +584,20 @@ spec:
                   promptCount:
                     description: |-
                       PromptCount is the total number of prompt turns submitted since the
-                      run started.
+                      run started. Always serialized (no omitempty) — zero is a real
+                      observable value for status consumers.
                     format: int32
                     type: integer
                   renewalCount:
                     description: |-
                       RenewalCount is the total number of credential renewals completed
-                      for this run.
+                      for this run. Always serialized.
                     format: int32
                     type: integer
+                required:
+                - attachedSessions
+                - promptCount
+                - renewalCount
                 type: object
               issuedLeases:
                 description: |-

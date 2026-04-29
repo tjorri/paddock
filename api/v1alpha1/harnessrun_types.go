@@ -192,7 +192,9 @@ const (
 // Condition types specific to Interactive HarnessRuns.
 const (
 	// HarnessRunConditionAttached is True when at least one client session
-	// is currently attached to the Interactive run's prompt endpoint.
+	// is currently attached to the Interactive run's prompt or shell
+	// endpoint. Message breaks down session counts when more than one is
+	// attached.
 	HarnessRunConditionAttached = "Attached"
 	// HarnessRunConditionIdle is True while the Interactive run is in the
 	// Idle phase — pod alive, no prompt turn in progress.
@@ -299,16 +301,17 @@ type HarnessRunStatus struct {
 // attach/detach.
 type InteractiveStatus struct {
 	// PromptCount is the total number of prompt turns submitted since the
-	// run started.
-	PromptCount int32 `json:"promptCount,omitempty"`
+	// run started. Always serialized (no omitempty) — zero is a real
+	// observable value for status consumers.
+	PromptCount int32 `json:"promptCount"`
 
 	// LastPromptAt is the time the most recent prompt was received.
 	// +optional
 	LastPromptAt *metav1.Time `json:"lastPromptAt,omitempty"`
 
 	// AttachedSessions is the current number of client sessions attached
-	// to the run's prompt stream.
-	AttachedSessions int32 `json:"attachedSessions,omitempty"`
+	// to the run's prompt stream or shell endpoint. Always serialized.
+	AttachedSessions int32 `json:"attachedSessions"`
 
 	// LastAttachedAt is the time the most recent session attached.
 	// +optional
@@ -325,8 +328,8 @@ type InteractiveStatus struct {
 	CurrentTurnSeq *int32 `json:"currentTurnSeq,omitempty"`
 
 	// RenewalCount is the total number of credential renewals completed
-	// for this run.
-	RenewalCount int32 `json:"renewalCount,omitempty"`
+	// for this run. Always serialized.
+	RenewalCount int32 `json:"renewalCount"`
 
 	// LastRenewalAt is the time of the most recent credential renewal.
 	// +optional
