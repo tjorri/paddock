@@ -47,6 +47,21 @@ func NewRenewalWalker(registry map[string]providers.Provider, window time.Durati
 // whose provider successfully renewed it. The original slice is not modified.
 // Errors from individual providers are logged and recorded as audit events but
 // do not cause WalkAndRenew to return an error.
+//
+// Concurrency: callers must serialize calls per (namespace, runName). Two
+// concurrent walkers for the same run can race-renew the same lease, doubling
+// upstream API calls and creating a brief window where the in-memory token
+// cache reflects whichever provider Renew won the lock. Task 11's prompt
+// handler is the single intended caller and serializes per-run via the
+// broker's interactiveRouter; do not add a second caller without revisiting
+// this contract.
+//
+// Slice safety: the returned slice is a fresh slice header (independent of
+// the input), but `*metav1.Time` pointers inside it may alias the input's
+// pointers. WalkAndRenew only ever assigns a *new* pointer to out[i].ExpiresAt
+// (never mutates *out[i].ExpiresAt), so no aliased mutation reaches the
+// caller's input. Future maintainers: do not write `*out[i].ExpiresAt = ...`
+// without first cloning.
 func (w *RenewalWalker) WalkAndRenew(ctx context.Context, namespace, runName string, leases []paddockv1alpha1.IssuedLease) ([]paddockv1alpha1.IssuedLease, error) {
 	logger := log.FromContext(ctx).WithValues("run", runName, "namespace", namespace)
 	out := append([]paddockv1alpha1.IssuedLease{}, leases...)
@@ -60,6 +75,14 @@ func (w *RenewalWalker) WalkAndRenew(ctx context.Context, namespace, runName str
 		}
 		p, ok := w.registry[lease.Provider]
 		if !ok {
+			// A lease references a provider not in the broker's registry.
+			// This is a configuration drift (a previously-registered
+			// provider was unregistered, or the run survived a restart
+			// without its provider being re-registered). Surface so
+			// operators can catch it before expiry hits — the lease will
+			// otherwise silently fail to renew.
+			logger.Info("renewal: skipping lease, provider not in registry",
+				"provider", lease.Provider, "leaseID", lease.LeaseID)
 			continue
 		}
 		rp := providers.RenewableProviderOf(p)
