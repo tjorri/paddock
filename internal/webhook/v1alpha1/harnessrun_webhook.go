@@ -328,7 +328,7 @@ func validateRunInteractiveSpec(spec *paddockv1alpha1.HarnessRunSpec, fldPath *f
 		if f.value.Duration <= 0 {
 			errs = append(errs, field.Invalid(
 				overridesPath.Child(f.name),
-				f.value.Duration.String(),
+				f.value.Duration,
 				"must be positive",
 			))
 		}
