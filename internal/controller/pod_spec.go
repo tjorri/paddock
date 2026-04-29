@@ -80,6 +80,13 @@ const (
 	proxyCAVolumeName  = "paddock-proxy-tls"
 	proxyCAMountPath   = "/etc/paddock-proxy/tls"
 
+	// upstreamExtraCAsVolumeName is the volume that mounts the operator-
+	// configured extra-CAs ConfigMap into the proxy container so the
+	// proxy can verify private upstream certs via --upstream-ca-bundle.
+	upstreamExtraCAsVolumeName = "upstream-extra-cas"
+	upstreamExtraCAsMountPath  = "/etc/paddock-proxy/extra-cas"
+	upstreamExtraCAsBundleKey  = "bundle.pem"
+
 	// Proxy ↔ broker wiring. The proxy sidecar authenticates to the
 	// broker with a ProjectedServiceAccountToken (audience=paddock-broker)
 	// and verifies the broker's serving cert via a Secret-projected CA
@@ -220,6 +227,13 @@ type podSpecInputs struct {
 	// sidecar as --deny-cidr. Built by proxyDeniedCIDRs (RFC1918 +
 	// link-local + cluster pod+service CIDRs). F-22.
 	proxyDenyCIDR string
+
+	// upstreamExtraCAsConfigMap, when non-empty, names a ConfigMap in the
+	// controller's own namespace whose `bundle.pem` key holds extra CA
+	// certs for the proxy's upstream verification. Surfaced as the new
+	// --proxy-upstream-extra-cas-configmap controller flag (cmd/main.go).
+	// Empty (production default) → no volume / mount / arg added.
+	upstreamExtraCAsConfigMap string
 }
 
 // buildJob renders the batchv1.Job for a HarnessRun. Assumes the caller
@@ -551,6 +565,18 @@ func buildPodVolumes(in podSpecInputs) []corev1.Volume {
 			},
 		})
 	}
+	if proxyEnabled(in) && in.upstreamExtraCAsConfigMap != "" {
+		vols = append(vols, corev1.Volume{
+			Name: upstreamExtraCAsVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: in.upstreamExtraCAsConfigMap,
+					},
+				},
+			},
+		})
+	}
 	// paddock-sa-token: explicit projected SA-token volume mounted on
 	// sidecars only (collector, adapter, proxy). Pod-level
 	// AutomountServiceAccountToken=false means the agent container
@@ -679,6 +705,15 @@ func buildProxyContainer(run *paddockv1alpha1.HarnessRun, in podSpecInputs) core
 			corev1.VolumeMount{Name: brokerTokenVolumeName, MountPath: brokerTokenMountPath, ReadOnly: true},
 			corev1.VolumeMount{Name: brokerCAVolumeName, MountPath: brokerCAMountPath, ReadOnly: true},
 		)
+	}
+	if in.upstreamExtraCAsConfigMap != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      upstreamExtraCAsVolumeName,
+			MountPath: upstreamExtraCAsMountPath,
+			ReadOnly:  true,
+		})
+		args = append(args,
+			fmt.Sprintf("--upstream-ca-bundle=%s/%s", upstreamExtraCAsMountPath, upstreamExtraCAsBundleKey))
 	}
 	uid := int64(proxyRunAsUID)
 	return corev1.Container{
