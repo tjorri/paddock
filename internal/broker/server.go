@@ -412,9 +412,15 @@ func (s *Server) handleValidateEgress(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	needsSubstitute, err := anyProxyInjectedHostCovers(ctx, s.Client, runNamespace, run.Spec.TemplateRef.Name, req.Host)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ProviderFailure", err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, brokerapi.ValidateEgressResponse{
-		Allowed:       true,
-		MatchedPolicy: policyName,
+		Allowed:        true,
+		MatchedPolicy:  policyName,
+		SubstituteAuth: needsSubstitute,
 	})
 }
 

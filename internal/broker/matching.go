@@ -125,3 +125,40 @@ func egressCovers(g *paddockv1alpha1.EgressGrant, host string, port int) bool {
 	}
 	return false
 }
+
+// anyProxyInjectedHostCovers reports whether any BrokerPolicy in
+// namespace that applies to templateName has a credential grant whose
+// deliveryMode.proxyInjected.hosts covers host. Used by
+// handleValidateEgress to decide SubstituteAuth on the allow path.
+//
+// Multi-policy semantics: any-wins (mirrors egressDiscovery; matches
+// the v0.4 ethos that matching policies compose additively). Host
+// matching reuses policy.AnyHostMatches so "*.foo.com" works.
+//
+// Errors propagate from List; nil error + false return on no match.
+func anyProxyInjectedHostCovers(
+	ctx context.Context,
+	c client.Client,
+	namespace, templateName, host string,
+) (bool, error) {
+	var list paddockv1alpha1.BrokerPolicyList
+	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return false, err
+	}
+	for i := range list.Items {
+		bp := &list.Items[i]
+		if !policy.AppliesToTemplate(bp.Spec.AppliesToTemplates, templateName) {
+			continue
+		}
+		for j := range bp.Spec.Grants.Credentials {
+			g := &bp.Spec.Grants.Credentials[j]
+			if g.Provider.DeliveryMode == nil || g.Provider.DeliveryMode.ProxyInjected == nil {
+				continue
+			}
+			if policy.AnyHostMatches(g.Provider.DeliveryMode.ProxyInjected.Hosts, host) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}

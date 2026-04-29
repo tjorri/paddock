@@ -1739,3 +1739,319 @@ func TestHandleIssue_PATPool_PopulatesPoolSecretRefAndSlotIndex(t *testing.T) {
 		t.Errorf("PoolSlotIndex = %d, want >= 0", *got.PoolSlotIndex)
 	}
 }
+
+// TestValidateEgress_SubstituteAuth_DerivedFromCredentialGrant asserts
+// that handleValidateEgress sets SubstituteAuth=true on the allow
+// response when a matching BrokerPolicy has a credential grant with
+// deliveryMode.proxyInjected.hosts covering the request host. Mirrors
+// the v0.4 design comment at api/v1alpha1/brokerpolicy_types.go:192.
+func TestValidateEgress_SubstituteAuth_DerivedFromCredentialGrant(t *testing.T) {
+	t.Parallel()
+	const ns = "my-team"
+
+	tpl := &paddockv1alpha1.HarnessTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessTemplateSpec{
+			Harness: "echo", Image: "paddock-echo:v1", Command: []string{"/bin/echo"},
+		},
+	}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hello", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Prompt:      "hi",
+		},
+	}
+	bp := &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: ns},
+		Spec: paddockv1alpha1.BrokerPolicySpec{
+			AppliesToTemplates: []string{"echo"},
+			Grants: paddockv1alpha1.BrokerPolicyGrants{
+				Egress: []paddockv1alpha1.EgressGrant{
+					{Host: "api.example.com", Ports: []int32{443}},
+				},
+				Credentials: []paddockv1alpha1.CredentialGrant{
+					{
+						Name: "TOKEN",
+						Provider: paddockv1alpha1.ProviderConfig{
+							Kind:      "UserSuppliedSecret",
+							SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+							DeliveryMode: &paddockv1alpha1.DeliveryMode{
+								ProxyInjected: &paddockv1alpha1.ProxyInjectedDelivery{
+									Hosts:  []string{"api.example.com"},
+									Header: &paddockv1alpha1.HeaderSubstitution{Name: "Authorization", ValuePrefix: "Bearer "},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(tpl, run, bp).Build()
+	registry, err := providers.NewRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	srv := &broker.Server{
+		Client: c, Auth: stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
+		Providers: registry,
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
+	}
+
+	body, _ := json.Marshal(brokerapi.ValidateEgressRequest{Host: "api.example.com", Port: 443})
+	rr := postValidateEgress(t, srv, "hello", "", "token-abc", string(body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got brokerapi.ValidateEgressResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Allowed {
+		t.Errorf("Allowed = false, want true")
+	}
+	if !got.SubstituteAuth {
+		t.Errorf("SubstituteAuth = false, want true (credential grant covers api.example.com)")
+	}
+}
+
+// substituteAuthTestHelper builds a fake client with the standard
+// (echo template, hello run) fixture plus the supplied policies, posts
+// the supplied (host, port) at /v1/validate-egress, and returns the
+// decoded ValidateEgressResponse. Used by the SubstituteAuth derivation
+// tests below to keep each case to its own BrokerPolicy fixture.
+func substituteAuthTestHelper(t *testing.T, host string, port int, policies ...*paddockv1alpha1.BrokerPolicy) brokerapi.ValidateEgressResponse {
+	t.Helper()
+	const ns = "my-team"
+	tpl := &paddockv1alpha1.HarnessTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessTemplateSpec{
+			Harness: "echo", Image: "paddock-echo:v1", Command: []string{"/bin/echo"},
+		},
+	}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hello", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Prompt:      "hi",
+		},
+	}
+	objs := make([]client.Object, 0, 2+len(policies))
+	objs = append(objs, tpl, run)
+	for _, p := range policies {
+		objs = append(objs, p)
+	}
+	c := fake.NewClientBuilder().WithScheme(buildScheme(t)).WithObjects(objs...).Build()
+	registry, err := providers.NewRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	srv := &broker.Server{
+		Client: c, Auth: stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "default"}},
+		Providers: registry,
+		Audit:     broker.NewAuditWriter(&auditing.KubeSink{Client: c, Component: "broker"}),
+	}
+	body, _ := json.Marshal(brokerapi.ValidateEgressRequest{Host: host, Port: port})
+	rr := postValidateEgress(t, srv, "hello", "", "token-abc", string(body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got brokerapi.ValidateEgressResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return got
+}
+
+// brokerPolicyFixture is a small DSL for the SubstituteAuth tests.
+// fields zero-value to "no grant of this kind"; pass non-nil to enable.
+type brokerPolicyFixture struct {
+	name             string
+	appliesToEcho    bool     // sets AppliesToTemplates: ["echo"] when true
+	egressHosts      []string // empty → no egress grants
+	credentialHosts  []string // empty → no proxyInjected credential grant
+	credentialIsBare bool     // if true: credential grant has provider.deliveryMode = nil (malformed)
+	credentialIsInC  bool     // if true: credential grant has only inContainer, no proxyInjected
+	discoveryActive  bool     // if true: sets EgressDiscovery with expiry +1h
+}
+
+// makePolicy builds a BrokerPolicy from f. Field combinations are
+// deliberately permissive — admission would reject some shapes, but
+// the runtime helper must handle them defensively.
+func makePolicy(f brokerPolicyFixture) *paddockv1alpha1.BrokerPolicy {
+	bp := &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: f.name, Namespace: "my-team"},
+		Spec:       paddockv1alpha1.BrokerPolicySpec{},
+	}
+	if f.appliesToEcho {
+		bp.Spec.AppliesToTemplates = []string{"echo"}
+	}
+	for _, h := range f.egressHosts {
+		bp.Spec.Grants.Egress = append(bp.Spec.Grants.Egress,
+			paddockv1alpha1.EgressGrant{Host: h, Ports: []int32{443}})
+	}
+	if len(f.credentialHosts) > 0 {
+		bp.Spec.Grants.Credentials = append(bp.Spec.Grants.Credentials,
+			paddockv1alpha1.CredentialGrant{
+				Name: "TOKEN",
+				Provider: paddockv1alpha1.ProviderConfig{
+					Kind:      "UserSuppliedSecret",
+					SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+					DeliveryMode: &paddockv1alpha1.DeliveryMode{
+						ProxyInjected: &paddockv1alpha1.ProxyInjectedDelivery{
+							Hosts:  f.credentialHosts,
+							Header: &paddockv1alpha1.HeaderSubstitution{Name: "Authorization", ValuePrefix: "Bearer "},
+						},
+					},
+				},
+			})
+	}
+	if f.credentialIsInC {
+		bp.Spec.Grants.Credentials = append(bp.Spec.Grants.Credentials,
+			paddockv1alpha1.CredentialGrant{
+				Name: "INC_TOKEN",
+				Provider: paddockv1alpha1.ProviderConfig{
+					Kind:      "UserSuppliedSecret",
+					SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+					DeliveryMode: &paddockv1alpha1.DeliveryMode{
+						InContainer: &paddockv1alpha1.InContainerDelivery{
+							Accepted: true, Reason: "inline plaintext for the inContainer test fixture",
+						},
+					},
+				},
+			})
+	}
+	if f.credentialIsBare {
+		bp.Spec.Grants.Credentials = append(bp.Spec.Grants.Credentials,
+			paddockv1alpha1.CredentialGrant{
+				Name: "BARE_TOKEN",
+				Provider: paddockv1alpha1.ProviderConfig{
+					Kind:      "UserSuppliedSecret",
+					SecretRef: &paddockv1alpha1.SecretKeyReference{Name: "s", Key: "k"},
+					// DeliveryMode intentionally nil
+				},
+			})
+	}
+	if f.discoveryActive {
+		bp.Spec.EgressDiscovery = &paddockv1alpha1.EgressDiscoverySpec{
+			Accepted:  true,
+			Reason:    "testing discovery branch leaves SubstituteAuth false",
+			ExpiresAt: metav1.NewTime(time.Now().Add(time.Hour)),
+		}
+	}
+	return bp
+}
+
+// TestValidateEgress_SubstituteAuth_NoCredentialGrant — egress only.
+func TestValidateEgress_SubstituteAuth_NoCredentialGrant(t *testing.T) {
+	t.Parallel()
+	got := substituteAuthTestHelper(t, "api.example.com", 443,
+		makePolicy(brokerPolicyFixture{
+			name: "p", appliesToEcho: true,
+			egressHosts: []string{"api.example.com"},
+		}))
+	if got.SubstituteAuth {
+		t.Errorf("SubstituteAuth = true, want false (no credential grant)")
+	}
+}
+
+// TestValidateEgress_SubstituteAuth_CredentialForDifferentHost — credential
+// grant covers a host other than the request host.
+func TestValidateEgress_SubstituteAuth_CredentialForDifferentHost(t *testing.T) {
+	t.Parallel()
+	got := substituteAuthTestHelper(t, "api.example.com", 443,
+		makePolicy(brokerPolicyFixture{
+			name: "p", appliesToEcho: true,
+			egressHosts:     []string{"api.example.com"},
+			credentialHosts: []string{"other.example.com"},
+		}))
+	if got.SubstituteAuth {
+		t.Errorf("SubstituteAuth = true, want false (credential covers other.example.com)")
+	}
+}
+
+// TestValidateEgress_SubstituteAuth_WildcardMatch — *.foo.com matches api.foo.com.
+func TestValidateEgress_SubstituteAuth_WildcardMatch(t *testing.T) {
+	t.Parallel()
+	got := substituteAuthTestHelper(t, "api.foo.com", 443,
+		makePolicy(brokerPolicyFixture{
+			name: "p", appliesToEcho: true,
+			egressHosts:     []string{"*.foo.com"},
+			credentialHosts: []string{"*.foo.com"},
+		}))
+	if !got.SubstituteAuth {
+		t.Errorf("SubstituteAuth = false, want true (*.foo.com covers api.foo.com)")
+	}
+}
+
+// TestValidateEgress_SubstituteAuth_MultiPolicyAnyWins — egress on policy 1,
+// credential on policy 2, both apply to "echo".
+func TestValidateEgress_SubstituteAuth_MultiPolicyAnyWins(t *testing.T) {
+	t.Parallel()
+	bp1 := makePolicy(brokerPolicyFixture{
+		name: "p-egress", appliesToEcho: true,
+		egressHosts: []string{"api.example.com"},
+	})
+	bp2 := makePolicy(brokerPolicyFixture{
+		name: "p-cred", appliesToEcho: true,
+		credentialHosts: []string{"api.example.com"},
+	})
+	got := substituteAuthTestHelper(t, "api.example.com", 443, bp1, bp2)
+	if !got.SubstituteAuth {
+		t.Errorf("SubstituteAuth = false, want true (second policy has covering credential)")
+	}
+}
+
+// TestValidateEgress_SubstituteAuth_DiscoveryAllowReturnsFalse — the
+// discovery branch of handleValidateEgress must NOT derive SubstituteAuth,
+// even when a covering credential grant exists on the same policy.
+func TestValidateEgress_SubstituteAuth_DiscoveryAllowReturnsFalse(t *testing.T) {
+	t.Parallel()
+	got := substituteAuthTestHelper(t, "api.example.com", 443,
+		makePolicy(brokerPolicyFixture{
+			name: "p", appliesToEcho: true,
+			// no egress grants → forces discovery branch
+			credentialHosts: []string{"api.example.com"},
+			discoveryActive: true,
+		}))
+	if !got.DiscoveryAllow {
+		t.Fatalf("DiscoveryAllow = false; precondition for this test is the discovery branch")
+	}
+	if got.SubstituteAuth {
+		t.Errorf("SubstituteAuth = true on discovery path, want false")
+	}
+}
+
+// TestValidateEgress_SubstituteAuth_InContainerOnlyReturnsFalse — a
+// credential grant with only inContainer delivery does NOT trigger MITM.
+func TestValidateEgress_SubstituteAuth_InContainerOnlyReturnsFalse(t *testing.T) {
+	t.Parallel()
+	got := substituteAuthTestHelper(t, "api.example.com", 443,
+		makePolicy(brokerPolicyFixture{
+			name: "p", appliesToEcho: true,
+			egressHosts:     []string{"api.example.com"},
+			credentialIsInC: true,
+		}))
+	if got.SubstituteAuth {
+		t.Errorf("SubstituteAuth = true for inContainer-only credential, want false")
+	}
+}
+
+// TestValidateEgress_SubstituteAuth_MalformedGrantReturnsFalse — a
+// credential grant with neither inContainer nor proxyInjected delivery
+// must not panic and must not trigger MITM. Admission should reject this
+// shape; the runtime must be defensive.
+func TestValidateEgress_SubstituteAuth_MalformedGrantReturnsFalse(t *testing.T) {
+	t.Parallel()
+	got := substituteAuthTestHelper(t, "api.example.com", 443,
+		makePolicy(brokerPolicyFixture{
+			name: "p", appliesToEcho: true,
+			egressHosts:      []string{"api.example.com"},
+			credentialIsBare: true,
+		}))
+	if got.SubstituteAuth {
+		t.Errorf("SubstituteAuth = true on malformed grant, want false")
+	}
+}
