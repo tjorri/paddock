@@ -116,6 +116,23 @@ var _ = BeforeSuite(func() {
 	_, err := utils.Run(exec.Command("make", "install"))
 	Expect(err).NotTo(HaveOccurred(), "make install")
 
+	By("seeding paddock-proxy-upstream-cas ConfigMap (dummy CA so per-run proxy Pods can mount it)")
+	dummyCA, _, _, err := utils.GenerateCAAndLeaf("paddock-e2e-dummy.invalid")
+	Expect(err).NotTo(HaveOccurred(), "GenerateCAAndLeaf for dummy upstream CA")
+	dummyCMYaml := fmt.Sprintf(`
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: paddock-proxy-upstream-cas
+  namespace: paddock-system
+data:
+  bundle.pem: |
+%s`, indent4(string(dummyCA)))
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(dummyCMYaml)
+	_, err = utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "seeding dummy upstream-CAs ConfigMap")
+
 	By("deploying the controller-manager (suite-level)")
 	_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage)))
 	Expect(err).NotTo(HaveOccurred(), "make deploy")
@@ -246,4 +263,14 @@ func buildAndLoad(image string, makeTargets []string) {
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "build %s via %v", image, makeTargets)
 	ExpectWithOffset(1, utils.LoadImageToKindClusterWithName(image)).To(Succeed(),
 		"load %s into Kind", image)
+}
+
+// indent4 prepends four spaces to every line in s. Used to embed a PEM
+// CA into a YAML literal-block scalar.
+func indent4(s string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = "    " + l
+	}
+	return strings.Join(lines, "\n")
 }
