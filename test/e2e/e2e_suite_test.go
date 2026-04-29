@@ -124,40 +124,6 @@ var _ = BeforeSuite(func() {
 	_, err = utils.Run(exec.Command("kubectl", "-n", "paddock-system",
 		"rollout", "status", "deploy/paddock-controller-manager", "--timeout=180s"))
 	Expect(err).NotTo(HaveOccurred(), "rollout status")
-
-	By("seeding paddock-proxy-upstream-cas ConfigMap (dummy CA so per-run proxy Pods can mount it)")
-	dummyCA, _, _, err := utils.GenerateCAAndLeaf("paddock-e2e-dummy.invalid")
-	Expect(err).NotTo(HaveOccurred(), "GenerateCAAndLeaf for dummy upstream CA")
-	dummyCMYaml := fmt.Sprintf(`
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: paddock-proxy-upstream-cas
-  namespace: paddock-system
-data:
-  bundle.pem: |
-%s`, indent4(string(dummyCA)))
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(dummyCMYaml)
-	_, err = utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), "seeding dummy upstream-CAs ConfigMap")
-
-	By("patching paddock-controller-manager to enable upstream-extra-cas (e2e only)")
-	currentArgs, _ := utils.Run(exec.Command("kubectl", "-n", "paddock-system",
-		"get", "deploy", "paddock-controller-manager",
-		"-o", "jsonpath={.spec.template.spec.containers[0].args}"))
-	const e2eExtraCAsFlag = "--proxy-upstream-extra-cas-configmap=paddock-proxy-upstream-cas"
-	if !strings.Contains(currentArgs, e2eExtraCAsFlag) {
-		_, err = utils.Run(exec.Command("kubectl", "-n", "paddock-system",
-			"patch", "deploy", "paddock-controller-manager",
-			"--type=json",
-			"-p", fmt.Sprintf(`[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":%q}]`, e2eExtraCAsFlag)))
-		Expect(err).NotTo(HaveOccurred(), "patching manager Deployment with e2e extra-cas flag")
-		_, err = utils.Run(exec.Command("kubectl", "-n", "paddock-system",
-			"rollout", "status", "deploy/paddock-controller-manager", "--timeout=180s"))
-		Expect(err).NotTo(HaveOccurred(), "waiting for manager rollout after e2e flag patch")
-	}
-
 	// Note: rollout status returning Ready does NOT guarantee the
 	// webhook is reachable — the Endpoints object is populated
 	// before kube-proxy finishes programming the ClusterIP rules,
@@ -280,14 +246,4 @@ func buildAndLoad(image string, makeTargets []string) {
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "build %s via %v", image, makeTargets)
 	ExpectWithOffset(1, utils.LoadImageToKindClusterWithName(image)).To(Succeed(),
 		"load %s into Kind", image)
-}
-
-// indent4 prepends four spaces to every line in s. Used to embed a PEM
-// CA into a YAML literal-block scalar.
-func indent4(s string) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	for i, l := range lines {
-		lines[i] = "    " + l
-	}
-	return strings.Join(lines, "\n")
 }

@@ -124,12 +124,6 @@ type HarnessRunReconciler struct {
 	// every run resolves to cooperative regardless of PSA labels.
 	IPTablesInitImage string
 
-	// ProxyUpstreamExtraCAsConfigMap, when non-empty, names a ConfigMap
-	// in the controller's own namespace whose `bundle.pem` key carries
-	// extra CA certs the per-run proxy trusts on the upstream side.
-	// Surfaced as --proxy-upstream-extra-cas-configmap on the manager.
-	ProxyUpstreamExtraCAsConfigMap string
-
 	// Audit emits per-decision AuditEvents. Nil-safe — when unset (e.g.
 	// in unit tests), all emits are no-ops. F-40.
 	Audit *ControllerAudit
@@ -1214,7 +1208,6 @@ func (r *HarnessRunReconciler) ensureJob(
 			ClusterPodCIDR:     r.ClusterPodCIDR,
 			ClusterServiceCIDR: r.ClusterServiceCIDR,
 		})
-		in.upstreamExtraCAsConfigMap = r.ProxyUpstreamExtraCAsConfigMap
 	}
 	desired := buildJob(run, tpl, run.Status.WorkspaceRef, in)
 	if err := controllerutil.SetControllerReference(run, desired, r.Scheme); err != nil {
