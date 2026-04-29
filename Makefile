@@ -171,6 +171,11 @@ cli: fmt vet ## Build the kubectl-paddock plugin binary.
 	go build -o bin/kubectl-paddock ./cmd/kubectl-paddock
 	@echo "built bin/kubectl-paddock — place on PATH to use as 'kubectl paddock'"
 
+.PHONY: paddock-tui
+paddock-tui: fmt vet ## Build the paddock-tui binary.
+	go build -o bin/paddock-tui ./cmd/paddock-tui
+	@echo "built bin/paddock-tui — interactive multi-session TUI for Paddock"
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
