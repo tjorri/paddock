@@ -1,0 +1,35 @@
+  Sessions (0)              │ (no session selected — pick one in the sidebar or press n to create) 
+   [+ new session]          │                                                                      
+  Active: 0                 │                                                                      
+ ↑↓ select · Enter focus · n new · e end · / search · q quit · ? help                              
+
+╭─────────────────────────────────────────────────────────────╮
+│                                                             │
+│  paddock-tui keybindings                                    │
+│                                                             │
+│  sidebar:                                                   │
+│    ↑↓ / jk    move selection                                │
+│    Enter      focus session                                 │
+│    n          new session                                   │
+│    e          end session                                   │
+│    /          filter                                        │
+│    q          quit                                          │
+│                                                             │
+│  prompt:                                                    │
+│    Enter      submit prompt (queues if a run is in flight)  │
+│    Ctrl-J     newline (multi-line prompt)                   │
+│    Ctrl-E     open $EDITOR                                  │
+│    Ctrl-X     cancel in-flight run                          │
+│    Ctrl-R     toggle raw events                             │
+│                                                             │
+│  slash commands (in prompt):                                │
+│    :cancel     cancel in-flight run                         │
+│    :queue      show queued prompts                          │
+│    :template T set last-template                            │
+│    :status     compact session summary                      │
+│    :interactive (reserved — not yet implemented)            │
+│    :help       this screen                                  │
+│                                                             │
+│  Esc / ?: close this help                                   │
+│                                                             │
+╰─────────────────────────────────────────────────────────────╯
