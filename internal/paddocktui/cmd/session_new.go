@@ -63,7 +63,13 @@ func newSessionNewCmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {
 				return err
 			}
 			opts.Namespace = ns
-			return runSessionNew(cmd.Context(), cl, opts, cmd.OutOrStdout())
+			if err := runSessionNew(cmd.Context(), cl, opts, cmd.OutOrStdout()); err != nil {
+				return err
+			}
+			if !opts.NoTUI {
+				return runTUI(cfg)
+			}
+			return nil
 		},
 	}
 	c.Flags().StringVar(&opts.Name, "name", "", "Session name (required)")
@@ -88,9 +94,5 @@ func runSessionNew(ctx context.Context, c client.Client, opts sessionNewOpts, ou
 		return err
 	}
 	fmt.Fprintf(out, "session %q created in %s (template=%s)\n", s.Name, s.Namespace, s.DefaultTemplate)
-	if !opts.NoTUI {
-		// Wired in Task 27. Until then, remind the user.
-		fmt.Fprintln(out, "(launching TUI not yet wired; pass --no-tui to suppress this message)")
-	}
 	return nil
 }

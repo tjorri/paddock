@@ -17,13 +17,21 @@ limitations under the License.
 package app
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
+
+// testSessionName is the canonical session name used across reducer
+// tests. Extracting it placates the goconst linter — multiple tests
+// hard-code the same string.
+const testSessionName = "alpha"
 
 // newTestModel builds a Model wired to a fake client for use across
 // reducer tests. The fake client has the paddock scheme registered so
@@ -62,6 +70,121 @@ func TestUpdate_DeleteSession(t *testing.T) {
 	}
 	if nm.Focused != "" {
 		t.Errorf("focus should clear when focused session deleted")
+	}
+}
+
+func TestUpdate_DrainQueueOnIdleTransition(t *testing.T) {
+	m := newTestModel(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+
+	// Seed the model: alpha is busy with run "hr-1" and has a queued
+	// prompt waiting for it to drain.
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName, ActiveRunRef: "hr-1"},
+	}
+	m.Sessions[testSessionName].Queue.Push("queued-1")
+	m.SessionOrder = []string{testSessionName}
+	m.Focused = testSessionName
+
+	// Simulate the run completing: ActiveRunRef goes from "hr-1" → "".
+	next, cmd := m.Update(sessionUpdatedMsg{Session: pdksession.Session{Name: testSessionName, ActiveRunRef: ""}})
+	nm := next.(Model)
+	if nm.Sessions[testSessionName].Queue.Len() != 0 {
+		t.Errorf("queue not drained: %v", nm.Sessions[testSessionName].Queue.Items())
+	}
+	if cmd == nil {
+		t.Fatal("expected a tea.Batch with submitRunCmd, got nil")
+	}
+}
+
+func TestUpdate_NoDrainWhenStillActive(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName, ActiveRunRef: "hr-1"},
+	}
+	m.Sessions[testSessionName].Queue.Push("queued-1")
+	m.SessionOrder = []string{testSessionName}
+
+	// ActiveRunRef stays non-empty (e.g. transitioned to a new run);
+	// the queue must not drain.
+	next, _ := m.Update(sessionUpdatedMsg{Session: pdksession.Session{Name: testSessionName, ActiveRunRef: "hr-2"}})
+	nm := next.(Model)
+	if nm.Sessions[testSessionName].Queue.Len() != 1 {
+		t.Errorf("queue drained too eagerly: len=%d", nm.Sessions[testSessionName].Queue.Len())
+	}
+}
+
+func TestUpdate_OpensEventTailForRunningRunOnReattach(t *testing.T) {
+	m := newTestModel(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+	}
+	m.SessionOrder = []string{testSessionName}
+
+	hr := paddockv1alpha1.HarnessRun{}
+	hr.Name = "hr-running"
+	hr.Spec.WorkspaceRef = testSessionName
+	hr.Status.Phase = paddockv1alpha1.HarnessRunPhaseRunning
+
+	// First sighting: no eventTail registered yet, so ensureEventTail
+	// must return a non-nil cmd (a tea.Batch).
+	_, cmd := m.Update(runUpdatedMsg{WorkspaceRef: testSessionName, Run: hr})
+	if cmd == nil {
+		t.Fatal("expected a batched cmd including openEventTailCmd, got nil")
+	}
+}
+
+func TestUpdate_DoesNotOpenEventTailForTerminalRun(t *testing.T) {
+	m := newTestModel(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+	}
+	m.SessionOrder = []string{testSessionName}
+
+	hr := paddockv1alpha1.HarnessRun{}
+	hr.Name = "hr-done"
+	hr.Spec.WorkspaceRef = testSessionName
+	hr.Status.Phase = paddockv1alpha1.HarnessRunPhaseSucceeded
+
+	if cmd := ensureEventTail(&m, hr); cmd != nil {
+		t.Errorf("expected no event tail for terminal phase, got %v", cmd)
+	}
+}
+
+func TestUpsertSession_SortsByLastActivityDesc(t *testing.T) {
+	m := newTestModel(t)
+	now := time.Now()
+	m = upsertSession(m, pdksession.Session{Name: testSessionName, LastActivity: now.Add(-10 * time.Minute)})
+	m = upsertSession(m, pdksession.Session{Name: "bravo", LastActivity: now})
+	m = upsertSession(m, pdksession.Session{Name: "charlie", LastActivity: now.Add(-5 * time.Minute)})
+	if got := m.SessionOrder; len(got) != 3 || got[0] != "bravo" || got[1] != "charlie" || got[2] != testSessionName {
+		t.Errorf("session order not by lastActivity desc: %v", got)
+	}
+}
+
+func TestUpdate_TemplatesLoadedCachesAndPatchesOpenModal(t *testing.T) {
+	m := newTestModel(t)
+	// Modal already open with no picks (loaded before templates arrived).
+	m.Modal = ModalNew
+	m.ModalNew = &NewSessionModalState{}
+	templates := []pdksession.TemplateInfo{{Name: "echo"}, {Name: "claude-code"}}
+	next, _ := m.Update(templatesLoadedMsg{Templates: templates})
+	nm := next.(Model)
+	if len(nm.availableTemplates) != 2 {
+		t.Errorf("availableTemplates not cached: %v", nm.availableTemplates)
+	}
+	if len(nm.ModalNew.TemplatePicks) != 2 {
+		t.Errorf("modal picks not patched in: %v", nm.ModalNew.TemplatePicks)
 	}
 }
 

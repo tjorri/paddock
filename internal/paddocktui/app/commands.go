@@ -41,6 +41,19 @@ func loadSessionsCmd(c client.Client, ns string) tea.Cmd { //nolint:unused // wi
 	}
 }
 
+// loadTemplatesCmd lists HarnessTemplates + ClusterHarnessTemplates so
+// the new-session modal has something to pick from. Cached on the
+// Model and refreshed each time the user presses 'n'.
+func loadTemplatesCmd(c client.Client, ns string) tea.Cmd { //nolint:unused // wired in Task 19
+	return func() tea.Msg {
+		ts, err := pdksession.ListTemplates(context.Background(), c, ns)
+		if err != nil {
+			return errMsg{Err: err}
+		}
+		return templatesLoadedMsg{Templates: ts}
+	}
+}
+
 // openSessionsWatchCmd opens a long-lived session watch goroutine via
 // pdksession.Watch and returns a sessionWatchOpenedMsg carrying the
 // channel back to Update. Unlike the earlier watchSessionsCmd, this is

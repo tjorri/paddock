@@ -45,6 +45,8 @@ type sessionAddedMsg struct{ Session pdksession.Session }      //nolint:unused /
 type sessionUpdatedMsg struct{ Session pdksession.Session }    //nolint:unused // wired in Task 18
 type sessionDeletedMsg struct{ Name string }                   //nolint:unused // wired in Task 18
 
+type templatesLoadedMsg struct{ Templates []pdksession.TemplateInfo } //nolint:unused // wired in Task 19
+
 type runUpdatedMsg struct { //nolint:unused // wired in Task 18
 	WorkspaceRef string
 	Run          paddockv1alpha1.HarnessRun

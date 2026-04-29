@@ -65,6 +65,11 @@ type Model struct {
 	ModalEnd   *EndSessionModalState
 	ModalHelp  bool
 	ModalQueue bool
+
+	// availableTemplates is the cached HarnessTemplate list shown by
+	// the new-session modal. Populated by loadTemplatesCmd on Init and
+	// refreshed each time the user opens the modal.
+	availableTemplates []pdksession.TemplateInfo
 }
 
 // NewModel constructs a Model with the supplied cluster wiring.
@@ -89,6 +94,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		loadSessionsCmd(m.Client, m.Namespace),
 		openSessionsWatchCmd(m.ctx, m.Client, m.Namespace),
+		loadTemplatesCmd(m.Client, m.Namespace),
 	)
 }
 

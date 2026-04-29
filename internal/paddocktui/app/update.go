@@ -19,6 +19,7 @@ package app
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -72,12 +73,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nextEventTailCmd(msg.RunName, msg.Ch)
 
 	case sessionAddedMsg:
+		prevActive := previousActiveRunRef(m, msg.Session.Name)
 		m = upsertSession(m, msg.Session)
-		return m, nextSessionEventCmd(m.sessionWatchCh)
+		next, drained := drainQueueIfFreed(m, msg.Session.Name, prevActive, msg.Session.ActiveRunRef)
+		if drained != nil {
+			return next, tea.Batch(nextSessionEventCmd(m.sessionWatchCh), drained)
+		}
+		return next, nextSessionEventCmd(m.sessionWatchCh)
 
 	case sessionUpdatedMsg:
+		prevActive := previousActiveRunRef(m, msg.Session.Name)
 		m = upsertSession(m, msg.Session)
-		return m, nextSessionEventCmd(m.sessionWatchCh)
+		next, drained := drainQueueIfFreed(m, msg.Session.Name, prevActive, msg.Session.ActiveRunRef)
+		if drained != nil {
+			return next, tea.Batch(nextSessionEventCmd(m.sessionWatchCh), drained)
+		}
+		return next, nextSessionEventCmd(m.sessionWatchCh)
 
 	case sessionDeletedMsg:
 		delete(m.Sessions, msg.Name)
@@ -90,10 +101,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runUpdatedMsg:
 		m = upsertRun(m, msg)
 		ch := m.runWatches[msg.WorkspaceRef]
+		// On reattach, the TUI sees in-flight HarnessRuns it didn't
+		// create itself. Open an event tail for any non-terminal run
+		// without one so the timeline isn't blank.
+		if tailCmd := ensureEventTail(&m, msg.Run); tailCmd != nil {
+			return m, tea.Batch(nextRunEventCmd(msg.WorkspaceRef, ch), tailCmd)
+		}
 		return m, nextRunEventCmd(msg.WorkspaceRef, ch)
 
 	case runDeletedMsg:
 		m = removeRun(m, msg)
+		// Allow the per-run tail goroutine to be reaped on quit by
+		// dropping the channel reference; the goroutine itself exits
+		// when ctx cancels.
+		delete(m.eventTails, msg.Name)
 		ch := m.runWatches[msg.WorkspaceRef]
 		return m, nextRunEventCmd(msg.WorkspaceRef, ch)
 
@@ -101,6 +122,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = appendEvent(m, msg)
 		ch := m.eventTails[msg.RunName]
 		return m, nextEventTailCmd(msg.RunName, ch)
+
+	case templatesLoadedMsg:
+		m.availableTemplates = msg.Templates
+		// If the new-session modal is currently open with no picks
+		// (it was opened before the initial template load completed),
+		// patch the picks in so the user doesn't have to reopen.
+		if m.Modal == ModalNew && m.ModalNew != nil && len(m.ModalNew.TemplatePicks) == 0 {
+			m.ModalNew.TemplatePicks = templateNames(msg.Templates)
+		}
+		return m, nil
 
 	case runCreatedMsg:
 		// Open a long-lived event tail for this new run; the
@@ -163,9 +194,12 @@ func handleSidebarFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	case key.Type == tea.KeyRunes && string(key.Runes) == "n":
-		// Open new-session modal; template list populated separately
-		// by a ModalOpen-side command in a later task.
-		return openNewSessionModal(m, []string{}), nil
+		// Open new-session modal with the cached template list and
+		// kick off a refresh so any HarnessTemplates added since the
+		// TUI started show up. A pending templatesLoadedMsg patches
+		// the modal in place if the picks are still empty.
+		return openNewSessionModal(m, templateNames(m.availableTemplates)),
+			loadTemplatesCmd(m.Client, m.Namespace)
 	case key.Type == tea.KeyRunes && string(key.Runes) == "e":
 		if m.Focused == "" {
 			m.ErrBanner = errNoSessionFocused
@@ -307,12 +341,11 @@ func dispatchSlash(m Model, cmd SlashCmd, arg string) (Model, tea.Cmd) {
 }
 
 // upsertSession inserts a new session or refreshes the projection of
-// an existing one. SessionOrder is sorted lexically — activity-based
-// sorting can be layered on later.
+// an existing one. SessionOrder is sorted by LastActivity desc (with
+// CreationTime as the tiebreaker), matching session.List's sort key.
 func upsertSession(m Model, s pdksession.Session) Model {
 	if _, exists := m.Sessions[s.Name]; !exists {
 		m.SessionOrder = append(m.SessionOrder, s.Name)
-		sort.Strings(m.SessionOrder)
 		m.Sessions[s.Name] = &SessionState{
 			Session: s,
 			Events:  map[string][]paddockv1alpha1.PaddockEvent{},
@@ -320,7 +353,99 @@ func upsertSession(m Model, s pdksession.Session) Model {
 	} else {
 		m.Sessions[s.Name].Session = s
 	}
+	sortSessionOrder(m)
 	return m
+}
+
+// sortSessionOrder reorders m.SessionOrder by LastActivity desc with
+// CreationTime as a tiebreaker. Names with both keys zero (unlikely
+// in practice) fall through to alphabetical to keep output stable.
+func sortSessionOrder(m Model) {
+	sort.SliceStable(m.SessionOrder, func(i, j int) bool {
+		a := m.Sessions[m.SessionOrder[i]]
+		b := m.Sessions[m.SessionOrder[j]]
+		if a == nil || b == nil {
+			return m.SessionOrder[i] < m.SessionOrder[j]
+		}
+		ka := sessionSortKey(a.Session)
+		kb := sessionSortKey(b.Session)
+		if ka.Equal(kb) {
+			return m.SessionOrder[i] < m.SessionOrder[j]
+		}
+		return ka.After(kb)
+	})
+}
+
+// sessionSortKey returns LastActivity if set, falling back to
+// CreationTime — same as session.List's activitySortKey.
+func sessionSortKey(s pdksession.Session) time.Time {
+	if !s.LastActivity.IsZero() {
+		return s.LastActivity
+	}
+	return s.CreationTime
+}
+
+// previousActiveRunRef returns the ActiveRunRef stored in m.Sessions
+// for name BEFORE an upsert overwrites it. Empty string if the
+// session is not yet known.
+func previousActiveRunRef(m Model, name string) string {
+	if prev, ok := m.Sessions[name]; ok && prev != nil {
+		return prev.Session.ActiveRunRef
+	}
+	return ""
+}
+
+// drainQueueIfFreed inspects an ActiveRunRef transition for the
+// session named. When it goes from non-empty to empty, the session
+// has just become idle — Pop the next queued prompt (if any) and
+// return a command to submit it. Otherwise return (m, nil).
+func drainQueueIfFreed(m Model, name, prevActive, newActive string) (Model, tea.Cmd) {
+	if prevActive == "" || newActive != "" {
+		return m, nil
+	}
+	state := m.Sessions[name]
+	if state == nil || state.Queue.Len() == 0 {
+		return m, nil
+	}
+	prompt, ok := state.Queue.Pop()
+	if !ok {
+		return m, nil
+	}
+	template := state.Session.LastTemplate
+	return m, submitRunCmd(m.Client, m.Namespace, name, template, prompt)
+}
+
+// ensureEventTail opens a per-run event tail for hr if it's
+// non-terminal and we don't already have one open. Used on
+// runUpdatedMsg so reattach sees events for in-flight runs the TUI
+// did not create itself.
+func ensureEventTail(m *Model, hr paddockv1alpha1.HarnessRun) tea.Cmd {
+	if hr.Name == "" {
+		return nil
+	}
+	if isTerminalPhase(hr.Status.Phase) {
+		return nil
+	}
+	if m.eventTails == nil {
+		m.eventTails = map[string]<-chan paddockv1alpha1.PaddockEvent{}
+	}
+	if _, ok := m.eventTails[hr.Name]; ok {
+		return nil
+	}
+	return openEventTailCmd(m.ctx, m.Client, m.Namespace, hr.Name)
+}
+
+// isTerminalPhase mirrors RunSummary.IsTerminal but operates on the
+// raw CR phase so callers don't need to round-trip through a
+// projection.
+func isTerminalPhase(p paddockv1alpha1.HarnessRunPhase) bool {
+	switch p {
+	case paddockv1alpha1.HarnessRunPhaseSucceeded,
+		paddockv1alpha1.HarnessRunPhaseFailed,
+		paddockv1alpha1.HarnessRunPhaseCancelled:
+		return true
+	}
+	return false
 }
 
 // upsertRun inserts or updates the RunSummary for the run carried in
@@ -373,6 +498,17 @@ func appendEvent(m Model, msg eventReceivedMsg) Model {
 	}
 	state.Events[msg.RunName] = append(state.Events[msg.RunName], msg.Event)
 	return m
+}
+
+// templateNames extracts the Name field of each TemplateInfo. The
+// new-session modal uses []string for the picks slice so the
+// underlying TemplateInfo metadata stays an app-package detail.
+func templateNames(ts []pdksession.TemplateInfo) []string {
+	out := make([]string, len(ts))
+	for i, t := range ts {
+		out[i] = t.Name
+	}
+	return out
 }
 
 // removeFromOrder returns a new slice with the named entry removed.

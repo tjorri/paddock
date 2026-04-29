@@ -30,6 +30,38 @@ func TestNewSessionModal_FieldNavigation(t *testing.T) {
 	}
 }
 
+func TestNewSessionModal_TemplateFieldCyclesPicks(t *testing.T) {
+	m := Model{Modal: ModalNew, ModalNew: &NewSessionModalState{
+		Field:         1,
+		TemplatePicks: []string{"echo", "claude-code", "scout"},
+	}}
+	m = handleNewSessionModalKey(m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.ModalNew.TemplateIdx != 1 {
+		t.Errorf("expected idx=1 after Down, got %d", m.ModalNew.TemplateIdx)
+	}
+	m = handleNewSessionModalKey(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if m.ModalNew.TemplateIdx != 2 {
+		t.Errorf("expected idx=2 after j, got %d", m.ModalNew.TemplateIdx)
+	}
+	// Bounded — does not overflow.
+	m = handleNewSessionModalKey(m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.ModalNew.TemplateIdx != 2 {
+		t.Errorf("expected idx clamped to 2, got %d", m.ModalNew.TemplateIdx)
+	}
+	m = handleNewSessionModalKey(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if m.ModalNew.TemplateIdx != 1 {
+		t.Errorf("expected idx=1 after k, got %d", m.ModalNew.TemplateIdx)
+	}
+}
+
+func TestNewSessionModal_BackspaceTrimsActiveField(t *testing.T) {
+	m := Model{Modal: ModalNew, ModalNew: &NewSessionModalState{Field: 0, NameInput: "abc"}}
+	m = handleNewSessionModalKey(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.ModalNew.NameInput != "ab" {
+		t.Errorf("expected name=ab, got %q", m.ModalNew.NameInput)
+	}
+}
+
 func TestEndSessionModal_RequiresExplicitConfirm(t *testing.T) {
 	m := Model{Modal: ModalEnd, ModalEnd: &EndSessionModalState{TargetName: "alpha"}}
 	m, confirmed := handleEndSessionModalKey(m, tea.KeyMsg{Type: tea.KeyEnter})
