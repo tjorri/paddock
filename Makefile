@@ -89,19 +89,22 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	@# Timeout budget, aligned with the 30-min CI workflow cap:
-	@#   -timeout=22m       → Go's test binary deadline.
-	@#   -ginkgo.timeout=21m → Ginkgo fails the current spec + prints
-	@#                         the summary ~1 min before Go kills the
+	@# Timeout budget, aligned with the 45-min CI workflow cap. Bumped
+	@# from 22m / 21m: a 16-min local run on a fast laptop left CI
+	@# (~1.5-2x slower) within minutes of the old cap, especially with
+	@# the new proxy-substitution spec.
+	@#   -timeout=32m       → Go's test binary deadline.
+	@#   -ginkgo.timeout=30m → Ginkgo fails the current spec + prints
+	@#                         the summary ~2 min before Go kills the
 	@#                         process, so CI logs always carry the
 	@#                         real failure reason (spec #24875514481
 	@#                         lost its summary to a Go-timeout panic).
 	@#
 	@# FAIL_FAST=1 → opt-in fast iteration: stop on the first failing
-	@#               spec instead of running all 10. Default off in CI
+	@#               spec instead of running all 21. Default off in CI
 	@#               so a single PR with two unrelated regressions
 	@#               surfaces both in one round-trip.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e -timeout=22m ./test/e2e/ -v -ginkgo.v -ginkgo.timeout=21m $(if $(FAIL_FAST),-ginkgo.fail-fast,)
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e -timeout=32m ./test/e2e/ -v -ginkgo.v -ginkgo.timeout=30m $(if $(FAIL_FAST),-ginkgo.fail-fast,)
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
