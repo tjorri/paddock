@@ -99,6 +99,7 @@ func main() {
 	var proxyCAClusterIssuer string
 	var proxyAllowList string
 	var iptablesInitImage string
+	var proxyUpstreamExtraCAsConfigMap string
 	var networkPolicyEnforce string
 	var brokerCAName string
 	var brokerCANamespace string
@@ -127,6 +128,10 @@ func main() {
 	flag.StringVar(&proxyImage, "proxy-image", "",
 		"Image for the per-run egress proxy sidecar (ADR-0013). Empty disables the sidecar; EgressConfigured "+
 			"condition stays False with reason=ProxyNotConfigured.")
+	flag.StringVar(&proxyUpstreamExtraCAsConfigMap, "proxy-upstream-extra-cas-configmap", "",
+		"Optional ConfigMap name (in the controller's namespace) whose `bundle.pem` "+
+			"key holds extra CA certs the per-run proxy trusts on its upstream side. "+
+			"Empty disables (production default).")
 	flag.StringVar(&proxyCAClusterIssuer, "proxy-ca-cluster-issuer-name", "paddock-proxy-ca-issuer",
 		"Name of the cert-manager ClusterIssuer (kind: CA) that signs per-run intermediate CAs. "+
 			"Empty disables proxy integration regardless of --proxy-image. "+
@@ -362,13 +367,14 @@ func main() {
 		"effective", npEnforce == controller.NetworkPolicyEnforceOn ||
 			(npEnforce == controller.NetworkPolicyEnforceAuto && npAuto))
 	hrReconciler := &controller.HarnessRunReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		CollectorImage:    collectorImage,
-		RingMaxEvents:     ringMaxEvents,
-		ProxyAllowList:    proxyAllowList,
-		IPTablesInitImage: iptablesInitImage,
-		ProxyBrokerConfig: proxyBrokerCfg,
+		Client:                         mgr.GetClient(),
+		Scheme:                         mgr.GetScheme(),
+		CollectorImage:                 collectorImage,
+		RingMaxEvents:                  ringMaxEvents,
+		ProxyAllowList:                 proxyAllowList,
+		IPTablesInitImage:              iptablesInitImage,
+		ProxyUpstreamExtraCAsConfigMap: proxyUpstreamExtraCAsConfigMap,
+		ProxyBrokerConfig:              proxyBrokerCfg,
 		Audit: &controller.ControllerAudit{
 			Sink: &auditing.KubeSink{Client: mgr.GetClient(), Component: "controller"},
 		},
