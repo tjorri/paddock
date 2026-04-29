@@ -141,7 +141,7 @@ The TUI is a single full-screen view with a sidebar (left, fixed ~25 columns) an
 │                               │ │ • edited CHANGELOG.md              ││
 │ ─────────                     │ │ Added an entry under [Unreleased]  ││
 │ Active runs: 1                │ │ describing `paddock session`.      ││
-│ Total today: 12               │ ╰─ Succeeded · 47s ──────────────────╯│
+│ Total runs: 47                │ ╰─ Succeeded · 47s ──────────────────╯│
 │                               │                                       │
 │                               │ > _                                   │
 ├───────────────────────────────┴───────────────────────────────────────┤
@@ -152,9 +152,9 @@ The TUI is a single full-screen view with a sidebar (left, fixed ~25 columns) an
 #### Sidebar
 
 - Sorted by `Workspace.status.lastActivity` desc.
-- Status glyphs: `▸` running (active `HarnessRun`), `·` idle, `!` last `HarnessRun` reached `Failed`, `★` focused.
-- A sticky `[+ new session]` entry opens the new-session modal.
-- Footer holds aggregate counters: active runs across all sessions, total `HarnessRuns` started today.
+- Status glyphs: `▸` running (active `HarnessRun`), `·` idle, `!` last `HarnessRun` reached `Failed`. The focused row is indicated by selection styling, not a glyph.
+- A sticky `[+ new session]` entry — always visible as the last item, doesn't scroll out — opens the new-session modal.
+- Footer holds aggregate counters: active runs across all sessions; sum of `Workspace.status.totalRuns` across all visible sessions.
 
 #### Main pane
 
@@ -167,7 +167,7 @@ The TUI is a single full-screen view with a sidebar (left, fixed ~25 columns) an
 
 - **New session** (`n` or selecting `[+ new session]`): wizard with template picker (lists `HarnessTemplates` with one-line descriptions from `metadata.annotations[paddock.dev/description]` if present, else the image), name input (auto-suggests a fun name if blank), optional seed-repo URL, optional storage size (default from template). Submit / Cancel.
 - **End session** (`e` on the selected sidebar item): confirmation. The MVP does **not** offer the "keep PVC" option — see §11.
-- **Help** (`?`): full keybinding list, dismissable with `Esc` or any key.
+- **Help** (`?`): full keybinding list, dismissable with `Esc` or `?`.
 
 ### 6. Key bindings
 
