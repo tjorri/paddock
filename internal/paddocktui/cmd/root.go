@@ -56,7 +56,8 @@ func NewRootCmd() *cobra.Command {
 	cfg.AddFlags(root.PersistentFlags())
 
 	root.AddCommand(newVersionCmd())
-	// Subsequent tasks register: tui, session list, session new, session end.
+	root.AddCommand(newSessionCmd(cfg))
+	// Subsequent tasks register: tui.
 
 	root.SetErr(os.Stderr)
 	root.SetOut(os.Stdout)
