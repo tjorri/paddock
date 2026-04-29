@@ -115,6 +115,16 @@ spec:
                 required:
                 - host
                 type: object
+              detail:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Detail carries kind-specific key-value pairs that do not fit the
+                  structured fields above. Used by interactive lifecycle kinds
+                  (prompt-submitted, shell-session-*, credential-renewal-failed,
+                  interactive-run-terminated) and any future kinds that need
+                  extensible metadata without CRD schema churn.
+                type: object
               kind:
                 description: |-
                   Kind categorises the event. Shape of Destination, Credential, and
@@ -138,6 +148,12 @@ spec:
                 - ca-misconfigured
                 - broker-creds-tampered
                 - interception-mode-cooperative-accepted
+                - prompt-submitted
+                - prompt-completed
+                - shell-session-opened
+                - shell-session-closed
+                - credential-renewal-failed
+                - interactive-run-terminated
                 type: string
               matchedPolicy:
                 description: |-
