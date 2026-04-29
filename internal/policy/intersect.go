@@ -187,10 +187,9 @@ func IntersectMatches(matching []*paddockv1alpha1.BrokerPolicy, requires paddock
 //   - first non-empty Command wins.
 func mergeShell(a, b *paddockv1alpha1.ShellCapability) *paddockv1alpha1.ShellCapability {
 	if a == nil {
-		cp := *b
-		return &cp
+		return b.DeepCopy()
 	}
-	out := *a
+	out := a.DeepCopy()
 	// target: agent beats adapter
 	if b.Target == "agent" {
 		out.Target = "agent"
@@ -215,11 +214,12 @@ func mergeShell(a, b *paddockv1alpha1.ShellCapability) *paddockv1alpha1.ShellCap
 	if b.RecordTranscript {
 		out.RecordTranscript = true
 	}
-	// command: first non-empty wins (a wins unless a is empty)
+	// command: first non-empty wins (a wins unless a is empty); use a fresh
+	// slice so callers cannot reach into b's backing array.
 	if len(out.Command) == 0 && len(b.Command) > 0 {
-		out.Command = b.Command
+		out.Command = append([]string(nil), b.Command...)
 	}
-	return &out
+	return out
 }
 
 // DescribeShortfall formats an admission-diagnostic string from an
