@@ -85,6 +85,32 @@ type HarnessRunSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
+
+	// Mode selects Batch (default — one-shot) or Interactive (long-lived
+	// pod, multi-prompt). When Interactive, the resolved template's
+	// spec.interactive.mode must be non-empty (admission webhook
+	// enforces). Immutable after creation, like the rest of the spec.
+	// +optional
+	Mode HarnessRunMode `json:"mode,omitempty"`
+
+	// InteractiveOverrides allows per-run overrides of the template's
+	// interactive timing values. Each override is bounded by the
+	// template's value (override may not exceed the template's bound).
+	// Ignored unless Mode == Interactive.
+	// +optional
+	InteractiveOverrides *InteractiveOverrides `json:"interactiveOverrides,omitempty"`
+}
+
+// InteractiveOverrides are per-run knobs for an Interactive run.
+type InteractiveOverrides struct {
+	// +optional
+	IdleTimeout *metav1.Duration `json:"idleTimeout,omitempty"`
+	// +optional
+	DetachIdleTimeout *metav1.Duration `json:"detachIdleTimeout,omitempty"`
+	// +optional
+	DetachTimeout *metav1.Duration `json:"detachTimeout,omitempty"`
+	// +optional
+	MaxLifetime *metav1.Duration `json:"maxLifetime,omitempty"`
 }
 
 // TemplateRef identifies a HarnessTemplate or ClusterHarnessTemplate.
@@ -119,6 +145,18 @@ const (
 	HarnessRunPhaseSucceeded HarnessRunPhase = "Succeeded"
 	HarnessRunPhaseFailed    HarnessRunPhase = "Failed"
 	HarnessRunPhaseCancelled HarnessRunPhase = "Cancelled"
+)
+
+// HarnessRunMode is the run-mode selector. Empty (default) means Batch —
+// today's behaviour, one prompt and the run terminates. Interactive runs
+// keep the pod alive and accept multiple prompts over time via the
+// broker's /v1/runs/{ns}/{name}/prompts endpoint.
+// +kubebuilder:validation:Enum="";Batch;Interactive
+type HarnessRunMode string
+
+const (
+	HarnessRunModeBatch       HarnessRunMode = "Batch"
+	HarnessRunModeInteractive HarnessRunMode = "Interactive"
 )
 
 // Condition types reported on HarnessRun.status.conditions.

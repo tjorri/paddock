@@ -224,6 +224,33 @@ spec:
                   - name
                   type: object
                 type: array
+              interactiveOverrides:
+                description: |-
+                  InteractiveOverrides allows per-run overrides of the template's
+                  interactive timing values. Each override is bounded by the
+                  template's value (override may not exceed the template's bound).
+                  Ignored unless Mode == Interactive.
+                properties:
+                  detachIdleTimeout:
+                    type: string
+                  detachTimeout:
+                    type: string
+                  idleTimeout:
+                    type: string
+                  maxLifetime:
+                    type: string
+                type: object
+              mode:
+                description: |-
+                  Mode selects Batch (default — one-shot) or Interactive (long-lived
+                  pod, multi-prompt). When Interactive, the resolved template's
+                  spec.interactive.mode must be non-empty (admission webhook
+                  enforces). Immutable after creation, like the rest of the spec.
+                enum:
+                - ""
+                - Batch
+                - Interactive
+                type: string
               model:
                 description: |-
                   Model overrides the template's default model (exported as

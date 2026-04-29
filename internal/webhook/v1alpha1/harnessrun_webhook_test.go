@@ -676,3 +676,102 @@ func TestHarnessRunValidator_SinkErrorOnReject_StillRejects(t *testing.T) {
 		t.Fatal("expected rejection regardless of sink error (fail-open)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests for spec.mode and spec.interactiveOverrides validation
+// ---------------------------------------------------------------------------
+
+func baseRunSpec() paddockv1alpha1.HarnessRunSpec {
+	return paddockv1alpha1.HarnessRunSpec{
+		TemplateRef: paddockv1alpha1.TemplateRef{Name: "tmpl"},
+		Prompt:      "hi",
+	}
+}
+
+func TestValidateHarnessRunSpec_Mode(t *testing.T) {
+	positiveDuration := func(s string) *metav1.Duration {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			t.Fatalf("bad duration %q: %v", s, err)
+		}
+		return &metav1.Duration{Duration: d}
+	}
+
+	cases := []struct {
+		name    string
+		mutate  func(*paddockv1alpha1.HarnessRunSpec)
+		wantErr string // empty → expect no error
+	}{
+		{
+			name:    "mode empty is fine (Batch default)",
+			mutate:  func(_ *paddockv1alpha1.HarnessRunSpec) {},
+			wantErr: "",
+		},
+		{
+			name: "mode Batch is fine",
+			mutate: func(s *paddockv1alpha1.HarnessRunSpec) {
+				s.Mode = paddockv1alpha1.HarnessRunModeBatch
+			},
+			wantErr: "",
+		},
+		{
+			name: "mode Interactive is fine at spec level",
+			mutate: func(s *paddockv1alpha1.HarnessRunSpec) {
+				s.Mode = paddockv1alpha1.HarnessRunModeInteractive
+			},
+			wantErr: "",
+		},
+		{
+			name: "interactiveOverrides without Interactive mode is rejected",
+			mutate: func(s *paddockv1alpha1.HarnessRunSpec) {
+				s.InteractiveOverrides = &paddockv1alpha1.InteractiveOverrides{
+					IdleTimeout: positiveDuration("10m"),
+				}
+			},
+			wantErr: "interactiveOverrides may only be set when spec.mode == Interactive",
+		},
+		{
+			name: "negative override rejected",
+			mutate: func(s *paddockv1alpha1.HarnessRunSpec) {
+				s.Mode = paddockv1alpha1.HarnessRunModeInteractive
+				s.InteractiveOverrides = &paddockv1alpha1.InteractiveOverrides{
+					IdleTimeout: &metav1.Duration{Duration: -1 * time.Minute},
+				}
+			},
+			wantErr: "must be positive",
+		},
+		{
+			name: "internally-consistent overrides allowed",
+			mutate: func(s *paddockv1alpha1.HarnessRunSpec) {
+				s.Mode = paddockv1alpha1.HarnessRunModeInteractive
+				s.InteractiveOverrides = &paddockv1alpha1.InteractiveOverrides{
+					IdleTimeout:       positiveDuration("20m"),
+					DetachIdleTimeout: positiveDuration("10m"),
+					DetachTimeout:     positiveDuration("3m"),
+					MaxLifetime:       positiveDuration("12h"),
+				}
+			},
+			wantErr: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := baseRunSpec()
+			tc.mutate(&spec)
+			err := validateHarnessRunSpec(&spec)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}

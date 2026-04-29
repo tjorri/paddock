@@ -286,8 +286,53 @@ func validateHarnessRunSpec(spec *paddockv1alpha1.HarnessRunSpec) error {
 		}
 	}
 
+	errs = append(errs, validateRunInteractiveSpec(spec, specPath)...)
+
 	if len(errs) == 0 {
 		return nil
 	}
 	return fmt.Errorf("%s", errs.ToAggregate().Error())
+}
+
+// validateRunInteractiveSpec validates spec.mode and spec.interactiveOverrides.
+// It follows the field.ErrorList convention used throughout this file.
+func validateRunInteractiveSpec(spec *paddockv1alpha1.HarnessRunSpec, fldPath *field.Path) field.ErrorList {
+	if spec.InteractiveOverrides == nil {
+		return nil
+	}
+
+	var errs field.ErrorList
+	overridesPath := fldPath.Child("interactiveOverrides")
+
+	if spec.Mode != paddockv1alpha1.HarnessRunModeInteractive {
+		errs = append(errs, field.Forbidden(overridesPath,
+			"interactiveOverrides may only be set when spec.mode == Interactive"))
+		// No point checking duration values if the mode gate already failed.
+		return errs
+	}
+
+	type durationField struct {
+		name  string
+		value *metav1.Duration
+	}
+	fields := []durationField{
+		{"idleTimeout", spec.InteractiveOverrides.IdleTimeout},
+		{"detachIdleTimeout", spec.InteractiveOverrides.DetachIdleTimeout},
+		{"detachTimeout", spec.InteractiveOverrides.DetachTimeout},
+		{"maxLifetime", spec.InteractiveOverrides.MaxLifetime},
+	}
+	for _, f := range fields {
+		if f.value == nil {
+			continue
+		}
+		if f.value.Duration <= 0 {
+			errs = append(errs, field.Invalid(
+				overridesPath.Child(f.name),
+				f.value.Duration.String(),
+				"must be positive",
+			))
+		}
+	}
+
+	return errs
 }
