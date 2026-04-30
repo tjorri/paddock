@@ -522,3 +522,49 @@ func TestUpdate_ColonDoesNotOpenPaletteOverModal(t *testing.T) {
 		t.Fatal(": should not open the palette while a modal is up")
 	}
 }
+
+func TestPalette_HelpOpensHelpModal(t *testing.T) {
+	m := newTestModel(t)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	nm := next.(Model)
+	for _, r := range []rune{'h', 'e', 'l', 'p'} {
+		next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		nm = next.(Model)
+	}
+	next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm = next.(Model)
+	if nm.Modal != ModalHelp {
+		t.Errorf("expected help modal open, got %v", nm.Modal)
+	}
+}
+
+func TestPalette_TemplateUpdatesLastTemplate(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName, LastTemplate: "old"},
+	}
+	m.SessionOrder = []string{testSessionName}
+	m.Focused = testSessionName
+	// Open the palette with ':'.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	nm := next.(Model)
+	// Type "template" one rune at a time.
+	for _, r := range "template" {
+		next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		nm = next.(Model)
+	}
+	// Space between "template" and "new".
+	next, _ = nm.Update(tea.KeyMsg{Type: tea.KeySpace})
+	nm = next.(Model)
+	// Type "new".
+	for _, r := range "new" {
+		next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		nm = next.(Model)
+	}
+	// Submit.
+	next, _ = nm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm = next.(Model)
+	if got := nm.Sessions[testSessionName].Session.LastTemplate; got != "new" {
+		t.Errorf("LastTemplate = %q, want %q", got, "new")
+	}
+}

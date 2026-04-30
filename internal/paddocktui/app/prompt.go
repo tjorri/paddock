@@ -22,8 +22,8 @@ package app
 //   - the next Model with PromptInput cleared
 //   - the prompt to submit IMMEDIATELY (empty string when queued)
 //
-// Slash commands are dispatched separately by handlePromptKey before
-// reaching here.
+// The command palette is dispatched separately; this handler only sees
+// prompt text.
 func handlePromptSubmit(m Model) (Model, string) {
 	if m.Focused == "" {
 		return m, ""

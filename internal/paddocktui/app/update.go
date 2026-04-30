@@ -334,13 +334,6 @@ func handlePromptFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.FocusArea = FocusSidebar
 		return m, nil
 	case tea.KeyEnter:
-		// Slash command? Dispatch.
-		cmd, arg, ok := ParseSlash(m.PromptInput)
-		if ok {
-			next, ext := dispatchSlash(m, cmd, arg)
-			next.PromptInput = ""
-			return next, ext
-		}
 		next, prompt := handlePromptSubmit(m)
 		if prompt == "" {
 			return next, nil
@@ -457,42 +450,24 @@ func autocompletePalette(input string) string {
 	return input
 }
 
-// dispatchPalette routes a parsed palette command. Each branch is
-// filled in by subsequent tasks; for now they're stubs returning the
-// model unchanged so the palette open/close key wiring can be tested
-// in isolation.
+// dispatchPalette routes a parsed palette command. Branches that
+// require interactive-mode plumbing (Cancel/End/Interactive/Reattach)
+// are placeholders here; later phase tasks fill them.
 func dispatchPalette(m Model, cmd PaletteCmd, arg string) (tea.Model, tea.Cmd) {
-	_ = arg
 	switch cmd {
-	case PaletteEmpty, PaletteUnknown,
-		PaletteCancel, PaletteEnd, PaletteInteractive,
-		PaletteTemplate, PaletteReattach,
-		PaletteStatus, PaletteEdit, PaletteHelp:
+	case PaletteEmpty:
 		return m, nil
-	}
-	return m, nil
-}
-
-// dispatchSlash maps recognised slash commands to side-effect commands
-// or in-Model state changes.
-func dispatchSlash(m Model, cmd SlashCmd, arg string) (Model, tea.Cmd) {
-	switch cmd {
-	case SlashCancel:
-		if m.Focused == "" {
-			m.ErrBanner = errNoSessionFocused
-			return m, nil
-		}
-		focused := m.Sessions[m.Focused]
-		if focused == nil {
-			m.ErrBanner = errNoSessionFocused
-			return m, nil
-		}
-		if focused.Session.ActiveRunRef != "" {
-			return m, cancelRunCmd(m.Client, m.Namespace, focused.Session.ActiveRunRef)
-		}
-	case SlashHelp:
+	case PaletteUnknown:
+		m.ErrBanner = fmt.Sprintf("unknown command: %s", arg)
+		return m, nil
+	case PaletteHelp:
 		return openHelpModal(m), nil
-	case SlashTemplate:
+	case PaletteStatus, PaletteEdit:
+		// No-op today: the prior slash dispatcher had no body for
+		// these either; placeholders kept for parity until a future
+		// task fills them.
+		return m, nil
+	case PaletteTemplate:
 		if arg == "" {
 			m.ErrBanner = ":template requires a template name"
 			return m, nil
@@ -507,11 +482,10 @@ func dispatchSlash(m Model, cmd SlashCmd, arg string) (Model, tea.Cmd) {
 			return m, nil
 		}
 		focused.Session.LastTemplate = arg
-		// Persist via annotation patch so reattach restores the
-		// override.
 		return m, patchLastTemplateCmd(m.Client, m.Namespace, m.Focused, arg)
-	case SlashInteractive:
-		m.ErrBanner = "interactive mode is not yet implemented"
+	case PaletteCancel, PaletteEnd, PaletteInteractive, PaletteReattach:
+		// Filled by later phase tasks (12, 19, 22, 23, 26).
+		return m, nil
 	}
 	return m, nil
 }
