@@ -46,6 +46,8 @@ whether to use a vertical provider (Anthropic, GitHub App, PAT pool) or
 - [interactive-harnessruns.md](./interactive-harnessruns.md) — long-lived
   multi-prompt runs, the `runs.{interact,shell}` grants, lifecycle
   timeouts, and the prompt/stream/shell endpoints.
+- [workspaces-and-home.md](./workspaces-and-home.md) — the
+  HOME-from-PVC default and how to think about workspace continuity.
 
 ## Related reading
 
