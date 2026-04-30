@@ -17,11 +17,11 @@ limitations under the License.
 package broker
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,6 +38,11 @@ import (
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 	"paddock.dev/paddock/internal/policy"
 )
+
+// interactiveSmallBodyCap caps the read length for /interrupt and /end
+// bodies. Both are tiny (InterruptRequest is empty, EndRequest is just
+// a short reason string); 1 KiB is a defensive cap against junk POSTs.
+const interactiveSmallBodyCap = 1 << 10
 
 // handlePrompts authenticates the caller, validates the run is in
 // Interactive mode with a runs.interact grant, allocates a turn
@@ -82,12 +87,21 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if run.Status.Phase == paddockv1alpha1.HarnessRunPhaseRunning {
-		writeError(w, http.StatusConflict, "Conflict", "a prompt is already in flight")
+		writeError(w, http.StatusConflict, brokerapi.CodeConflict, "a prompt is already in flight")
 		return
 	}
 
+	// MaxInlinePromptBytes is the single source of truth for the prompt
+	// body cap; +1 KiB of slack allows a max-sized Text to be read fully
+	// (JSON envelope + escaping) while short-circuiting a malicious body.
+	r.Body = http.MaxBytesReader(w, r.Body, paddockv1alpha1.MaxInlinePromptBytes+1024)
 	var body brokerapi.PromptRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusBadRequest, brokerapi.CodeBadRequest, "prompt body too large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, brokerapi.CodeBadRequest, fmt.Sprintf("decoding body: %v", err))
 		return
 	}
@@ -107,8 +121,9 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Invariant: cmd/broker wires Router in production; nil here means a malformed test setup or an incomplete bootstrap.
 	if s.Router == nil {
-		writeError(w, http.StatusServiceUnavailable, brokerapi.CodeProviderFailure, "interactive router not configured")
+		writeError(w, http.StatusServiceUnavailable, brokerapi.CodeNotConfigured, "interactive router not configured")
 		return
 	}
 	seq := s.Router.NextTurnSeq(ns, name)
@@ -144,10 +159,8 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, brokerapi.CodeProviderFailure, err.Error())
 		return
 	}
-	r.Body = newReadCloser(fwdBody)
-	r.ContentLength = int64(len(fwdBody))
 
-	s.Router.ForwardPrompt(ctx, w, r, ns, name)
+	s.Router.ForwardPromptWithBody(ctx, w, r, ns, name, fwdBody)
 
 	now := nowMeta()
 	if run.Status.Interactive == nil {
@@ -158,6 +171,7 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	seqCopy := seq
 	run.Status.Interactive.CurrentTurnSeq = &seqCopy
 	run.Status.Interactive.IdleSince = nil
+	// Best-effort: a lost write here just means the controller's next reconcile will see slightly stale Interactive counters. The run's authoritative state is the prompt-submitted AuditEvent we already persisted.
 	if uErr := s.Client.Status().Update(ctx, &run); uErr != nil {
 		logger.Error(uErr, "patching interactive status", "run", name)
 	}
@@ -198,8 +212,12 @@ func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 			"no BrokerPolicy grants runs.interact for this run's template")
 		return
 	}
+	// Defensive cap on /interrupt body: InterruptRequest is currently
+	// empty, but a junk POST shouldn't be allowed to stream upstream.
+	r.Body = http.MaxBytesReader(w, r.Body, interactiveSmallBodyCap)
+	// Invariant: cmd/broker wires Router in production; nil here means a malformed test setup or an incomplete bootstrap.
 	if s.Router == nil {
-		writeError(w, http.StatusServiceUnavailable, brokerapi.CodeProviderFailure, "interactive router not configured")
+		writeError(w, http.StatusServiceUnavailable, brokerapi.CodeNotConfigured, "interactive router not configured")
 		return
 	}
 	s.Router.ForwardInterrupt(ctx, w, r, ns, name)
@@ -244,17 +262,21 @@ func (s *Server) handleEnd(w http.ResponseWriter, r *http.Request) {
 
 	reason := "explicit"
 	// /end's body is optional; ignore decode errors so an empty body
-	// still terminates with the default reason.
+	// still terminates with the default reason. Cap defensively at 1 KiB.
 	var body brokerapi.EndRequest
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		r.Body = http.MaxBytesReader(w, r.Body, interactiveSmallBodyCap)
+		if dErr := json.NewDecoder(r.Body).Decode(&body); dErr != nil && dErr != io.EOF {
+			logger.V(1).Info("ignoring /end body decode error", "err", dErr.Error(), "ns", ns, "run", name)
+		}
 	}
 	if body.Reason != "" {
 		reason = body.Reason
 	}
 
+	// Invariant: cmd/broker wires Router in production; nil here means a malformed test setup or an incomplete bootstrap.
 	if s.Router == nil {
-		writeError(w, http.StatusServiceUnavailable, brokerapi.CodeProviderFailure, "interactive router not configured")
+		writeError(w, http.StatusServiceUnavailable, brokerapi.CodeNotConfigured, "interactive router not configured")
 		return
 	}
 	s.Router.ForwardEnd(ctx, w, r, ns, name)
@@ -326,6 +348,7 @@ func (s *Server) allowShell(ctx context.Context, run *paddockv1alpha1.HarnessRun
 // equalLeases reports whether two slices share the same Provider,
 // LeaseID, and ExpiresAt for every entry in order. Used to decide
 // whether the renewal walk produced a status-relevant change.
+// Order-sensitive: relies on RenewalWalker.WalkAndRenew preserving input slice order (see internal/broker/renewal.go).
 func equalLeases(a, b []paddockv1alpha1.IssuedLease) bool {
 	if len(a) != len(b) {
 		return false
@@ -363,8 +386,4 @@ func (s *Server) patchIssuedLeases(ctx context.Context, run *paddockv1alpha1.Har
 
 func nowMeta() metav1.Time {
 	return metav1.NewTime(time.Now().UTC())
-}
-
-func newReadCloser(b []byte) io.ReadCloser {
-	return io.NopCloser(bytes.NewReader(b))
 }

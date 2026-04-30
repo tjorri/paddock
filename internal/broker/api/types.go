@@ -65,11 +65,13 @@ const (
 	CodeAuditUnavailable   = "AuditUnavailable"
 	CodeBadRequest         = "BadRequest"
 	CodeBearerUnknown      = "BearerUnknown"
+	CodeConflict           = "Conflict"
 	CodeCredentialNotFound = "CredentialNotFound"
 	CodeEgressRevoked      = "EgressRevoked"
 	CodeForbidden          = "Forbidden"
 	CodeHostNotAllowed     = "HostNotAllowed"
 	CodeLeaseNotFound      = "LeaseNotFound"
+	CodeNotConfigured      = "NotConfigured"
 	CodePolicyMissing      = "PolicyMissing"
 	CodePolicyRevoked      = "PolicyRevoked"
 	CodeProviderFailure    = "ProviderFailure"
@@ -168,11 +170,13 @@ type ErrorResponse struct {
 	//   - "AuditUnavailable"     503 (audit write failed; see Phase 2c)
 	//   - "BadRequest"           400
 	//   - "BearerUnknown"        404 (SubstituteAuth could not match bearer)
+	//   - "Conflict"             409 (interactive phase guard: prompt already in flight)
 	//   - "CredentialNotFound"   404 (template does not declare it)
 	//   - "EgressRevoked"        403 (egress grant for host:port lost mid-run)
 	//   - "Forbidden"            403
 	//   - "HostNotAllowed"       403 (bearer presented for a host not in lease's AllowedHosts)
 	//   - "LeaseNotFound"        404 (revoke target unknown to this broker)
+	//   - "NotConfigured"        503 (broker reached an endpoint whose dependency was not wired)
 	//   - "PolicyMissing"        403 (no BrokerPolicy grants the cred)
 	//   - "PolicyRevoked"        403 (BrokerPolicy match was lost mid-run)
 	//   - "ProviderFailure"      500

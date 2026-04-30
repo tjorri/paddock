@@ -17,6 +17,7 @@ limitations under the License.
 package broker
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -122,32 +123,50 @@ func (r *InteractiveRouter) ForgetRun(namespace, runName string) {
 
 // ForwardPrompt reverse-proxies a POST /prompts request to the adapter.
 func (r *InteractiveRouter) ForwardPrompt(ctx context.Context, w http.ResponseWriter, req *http.Request, namespace, runName string) {
-	r.forward(ctx, w, req, namespace, runName, "/prompts")
+	r.forward(ctx, w, req, namespace, runName, "/prompts", nil)
+}
+
+// ForwardPromptWithBody is the variant the broker uses when it has
+// already constructed the upstream body (handlePrompts repacks
+// {text, seq, submitter} for the adapter). The supplied body replaces
+// req.Body for the upstream request.
+func (r *InteractiveRouter) ForwardPromptWithBody(ctx context.Context, w http.ResponseWriter, req *http.Request, namespace, runName string, body []byte) {
+	r.forward(ctx, w, req, namespace, runName, "/prompts", body)
 }
 
 // ForwardInterrupt reverse-proxies a POST /interrupt request to the adapter.
 func (r *InteractiveRouter) ForwardInterrupt(ctx context.Context, w http.ResponseWriter, req *http.Request, namespace, runName string) {
-	r.forward(ctx, w, req, namespace, runName, "/interrupt")
+	r.forward(ctx, w, req, namespace, runName, "/interrupt", nil)
 }
 
 // ForwardEnd reverse-proxies a POST /end request to the adapter.
 func (r *InteractiveRouter) ForwardEnd(ctx context.Context, w http.ResponseWriter, req *http.Request, namespace, runName string) {
-	r.forward(ctx, w, req, namespace, runName, "/end")
+	r.forward(ctx, w, req, namespace, runName, "/end", nil)
 }
 
 // forward resolves the adapter address and reverse-proxies the request
-// to the given path on the adapter's loopback HTTP server.
-func (r *InteractiveRouter) forward(ctx context.Context, w http.ResponseWriter, req *http.Request, namespace, runName, path string) {
+// to the given path on the adapter's loopback HTTP server. When body
+// is non-nil it replaces req.Body as the upstream payload (and sets
+// ContentLength explicitly); a nil body falls back to pass-through of
+// req.Body.
+func (r *InteractiveRouter) forward(ctx context.Context, w http.ResponseWriter, req *http.Request, namespace, runName, path string, body []byte) {
 	addr, err := r.resolve(ctx, namespace, runName)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("adapter unavailable: %v", err), http.StatusBadGateway)
 		return
 	}
 
-	outReq, err := http.NewRequestWithContext(ctx, req.Method, "http://"+addr+path, req.Body)
+	var upstreamBody io.Reader = req.Body
+	if body != nil {
+		upstreamBody = bytes.NewReader(body)
+	}
+	outReq, err := http.NewRequestWithContext(ctx, req.Method, "http://"+addr+path, upstreamBody)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("building upstream request: %v", err), http.StatusBadGateway)
 		return
+	}
+	if body != nil {
+		outReq.ContentLength = int64(len(body))
 	}
 
 	// Copy incoming request headers to outbound request, except

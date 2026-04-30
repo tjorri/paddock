@@ -302,16 +302,18 @@ func TestHandlePrompts_TooLarge(t *testing.T) {
 	f := newInteractiveFixture(t, true, paddockv1alpha1.HarnessRunModeInteractive)
 	f.srv.Audit = broker.NewAuditWriter(&recordingAuditSink{})
 
-	// limitBody caps the request body at 64 KiB. A 70 KiB text overflows
-	// that, so json.Decode returns an error and the handler responds 400.
-	// (The handler also enforces MaxInlinePromptBytes=256 KiB on Text,
-	// but that's unreachable through the limitBody-wrapped route.)
-	bigText := strings.Repeat("a", 70*1024)
+	// MaxInlinePromptBytes (256 KiB) is the single body cap. A 257 KiB
+	// text overflows the +1 KiB-slack MaxBytesReader inside handlePrompts,
+	// so the handler responds 400 with "too large".
+	bigText := strings.Repeat("a", paddockv1alpha1.MaxInlinePromptBytes+1024)
 	body := []byte(fmt.Sprintf(`{"text":%q}`, bigText))
 	rr := postInteractive(t, f.srv, "/v1/runs/team-a/r1/prompts", "valid-token", body)
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400, body = %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "too large") {
+		t.Errorf("body = %q, want contains 'too large'", rr.Body.String())
 	}
 }
 

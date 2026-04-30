@@ -89,9 +89,12 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc(brokerapi.PathSubstituteAuth, limitBody(s.handleSubstituteAuth))
 
 	// Interactive endpoints — gated by runs.interact in BrokerPolicy.
-	mux.HandleFunc("POST /v1/runs/{ns}/{name}/prompts", limitBody(s.handlePrompts))
-	mux.HandleFunc("POST /v1/runs/{ns}/{name}/interrupt", limitBody(s.handleInterrupt))
-	mux.HandleFunc("POST /v1/runs/{ns}/{name}/end", limitBody(s.handleEnd))
+	// Body caps are enforced inside the handlers (MaxInlinePromptBytes
+	// for /prompts; interactiveSmallBodyCap for /interrupt and /end) so
+	// the prompt cap matches the CRD-level constant exactly.
+	mux.HandleFunc("POST /v1/runs/{ns}/{name}/prompts", s.handlePrompts)
+	mux.HandleFunc("POST /v1/runs/{ns}/{name}/interrupt", s.handleInterrupt)
+	mux.HandleFunc("POST /v1/runs/{ns}/{name}/end", s.handleEnd)
 }
 
 // handleIssue is the core endpoint. It authenticates the caller, looks

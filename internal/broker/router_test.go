@@ -18,6 +18,7 @@ package broker_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -57,6 +58,49 @@ func TestInteractiveRouter_ForwardsToAdapter(t *testing.T) {
 	}
 	if receivedPath != "/prompts" {
 		t.Errorf("expected adapter to receive /prompts, got %q", receivedPath)
+	}
+}
+
+func TestInteractiveRouter_ForwardPromptWithBody(t *testing.T) {
+	// The adapter must receive exactly the bytes the broker passed via
+	// ForwardPromptWithBody, not the original req.Body.
+	var receivedPath string
+	var receivedBody []byte
+	adapterTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer adapterTS.Close()
+
+	addrWithoutScheme := strings.TrimPrefix(adapterTS.URL, "http://")
+	resolver := func(_ context.Context, _, _ string) (string, error) {
+		return addrWithoutScheme, nil
+	}
+
+	r := broker.NewInteractiveRouter(resolver)
+
+	// req.Body deliberately differs from the explicit body so we can
+	// assert the explicit body wins.
+	ctx := context.Background()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://broker/v1/runs/ns/run/prompts",
+		strings.NewReader(`original-body-should-not-be-forwarded`))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+
+	explicit := []byte(`{"text":"hi","seq":7,"submitter":"alice"}`)
+	rw := httptest.NewRecorder()
+	r.ForwardPromptWithBody(ctx, rw, req, "ns", "run", explicit)
+
+	if rw.Code != http.StatusAccepted {
+		t.Errorf("expected status 202, got %d", rw.Code)
+	}
+	if receivedPath != "/prompts" {
+		t.Errorf("expected adapter to receive /prompts, got %q", receivedPath)
+	}
+	if string(receivedBody) != string(explicit) {
+		t.Errorf("adapter body = %q, want %q", receivedBody, explicit)
 	}
 }
 
