@@ -22,6 +22,8 @@ import (
 	"errors"
 	"net"
 	"net/http"
+
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
 
 // Driver is the interface that per-prompt-process and persistent-process
@@ -77,6 +79,11 @@ func (s *Server) Handler() http.Handler {
 }
 
 // Listen creates a TCP listener on addr (use "127.0.0.1:0" in tests).
+//
+// TODO(security): callers should always pass a loopback address. The per-run
+// NetworkPolicy (Task 12) is the load-bearing control restricting reach to
+// broker pod IPs only; this binding-level enforcement would be defense in
+// depth. Consider rejecting non-loopback addresses here in a follow-up.
 func (s *Server) Listen(addr string) (net.Listener, error) {
 	return net.Listen("tcp", addr)
 }
@@ -91,7 +98,10 @@ func (s *Server) Serve(ln net.Listener) error {
 	return err
 }
 
-// Shutdown performs a graceful shutdown with the supplied context.
+// Shutdown performs a graceful shutdown with the supplied context. The
+// context's deadline is the per-request grace period: in-flight handlers
+// have until the deadline to return, then http.Server force-closes
+// connections and Shutdown returns context.DeadlineExceeded.
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
 }
@@ -102,6 +112,10 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// Cap the request body at MaxInlinePromptBytes + 1 (the +1 distinguishes
+	// "exactly the cap" from "exceeded"). Same boundary the CRD/CLI/broker
+	// pipeline enforces upstream; this is defense in depth at the adapter.
+	r.Body = http.MaxBytesReader(w, r.Body, paddockv1alpha1.MaxInlinePromptBytes+1)
 	var p Prompt
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
