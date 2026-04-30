@@ -28,7 +28,7 @@ func HelpModalView() string {
 		"  n          new session",
 		"  e          end session",
 		"  /          filter",
-		"  q          quit",
+		"  q / Ctrl-C quit",
 		"",
 		"prompt:",
 		"  Enter      submit prompt (queues if a run is in flight)",

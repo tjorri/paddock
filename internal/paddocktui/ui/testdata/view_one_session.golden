@@ -3,4 +3,4 @@
   · alpha                   │ > _                                                        
    [+ new session]          │                                                            
   Active: 0                 │                                                            
- Enter submit · Esc unfocus · :help · Ctrl-X cancel run                                  
+ Enter submit · Esc unfocus · Ctrl-X cancel run · Ctrl-C quit · :help                    

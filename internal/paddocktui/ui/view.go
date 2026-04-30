@@ -70,9 +70,9 @@ func TitleBarView(m app.Model, width int) string {
 func footerHints(m app.Model) string {
 	switch m.FocusArea {
 	case app.FocusSidebar:
-		return "↑↓ select · Enter focus · n new · e end · / search · q quit · ? help"
+		return "↑↓ select · Enter focus · n new · e end · / search · q/Ctrl-C quit · ? help"
 	case app.FocusPrompt:
-		return "Enter submit · Esc unfocus · :help · Ctrl-X cancel run"
+		return "Enter submit · Esc unfocus · Ctrl-X cancel run · Ctrl-C quit · :help"
 	}
 	return ""
 }

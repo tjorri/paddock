@@ -188,6 +188,29 @@ func TestUpdate_TemplatesLoadedCachesAndPatchesOpenModal(t *testing.T) {
 	}
 }
 
+func TestUpdate_CtrlCQuitsFromAnywhere(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mut  func(m *Model)
+	}{
+		{"sidebar focus", func(m *Model) { m.FocusArea = FocusSidebar }},
+		{"prompt focus", func(m *Model) { m.FocusArea = FocusPrompt }},
+		{"modal open", func(m *Model) { m.Modal = ModalHelp }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t)
+			tc.mut(&m)
+			_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+			if cmd == nil {
+				t.Fatal("expected tea.Quit cmd from Ctrl-C, got nil")
+			}
+			if _, ok := cmd().(tea.QuitMsg); !ok {
+				t.Errorf("expected QuitMsg, got %T", cmd())
+			}
+		})
+	}
+}
+
 func TestUpdate_PromptInputAcceptsSpaces(t *testing.T) {
 	m := newTestModel(t)
 	m.FocusArea = FocusPrompt

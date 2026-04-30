@@ -170,8 +170,15 @@ func ensureRunWatch(m *Model, workspaceRef string) tea.Cmd {
 }
 
 // handleKeyMsg routes key events to modal handlers (which take priority)
-// or per-focus-area handlers.
+// or per-focus-area handlers. Ctrl-C is handled globally so the user
+// can always escape, regardless of focus or modal state.
 func handleKeyMsg(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.Type == tea.KeyCtrlC {
+		if m.cancel != nil {
+			m.cancel()
+		}
+		return m, tea.Quit
+	}
 	if m.Modal != ModalNone {
 		return handleModalKey(m, key)
 	}
