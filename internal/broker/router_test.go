@@ -75,6 +75,22 @@ func TestInteractiveRouter_AttachCounter(t *testing.T) {
 	}
 }
 
+func TestInteractiveRouter_DetachUnderflowClamped(t *testing.T) {
+	r := broker.NewInteractiveRouter(nil)
+	// Detach without a paired Attach must clamp at 0, not go negative —
+	// a negative count would silently break the watchdog's idle-shutdown.
+	r.OnDetach("ns", "run")
+	if got := r.AttachedCount("ns", "run"); got != 0 {
+		t.Errorf("OnDetach on fresh state: count = %d, want 0 (clamped)", got)
+	}
+	r.OnAttach("ns", "run")
+	r.OnDetach("ns", "run")
+	r.OnDetach("ns", "run") // extra
+	if got := r.AttachedCount("ns", "run"); got != 0 {
+		t.Errorf("Extra OnDetach: count = %d, want 0 (clamped)", got)
+	}
+}
+
 func TestInteractiveRouter_TurnSequence(t *testing.T) {
 	r := broker.NewInteractiveRouter(nil)
 
