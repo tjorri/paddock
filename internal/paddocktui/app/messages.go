@@ -115,3 +115,15 @@ type interactiveInterruptedMsg struct{ RunName string } //nolint:unused // wired
 
 // interactiveEndedMsg is emitted after a successful End call.
 type interactiveEndedMsg struct{ RunName string } //nolint:unused // wired in Task 27
+
+// boundRunDetectedMsg is emitted by detectBoundRunCmd when a non-terminal
+// Interactive run is found for a workspace. Used to reattach the TUI to a
+// run that was created in a prior session (or before the TUI started).
+type boundRunDetectedMsg struct {
+	WorkspaceRef string
+	Run          paddockv1alpha1.HarnessRun
+}
+
+// noBoundRunMsg is emitted by detectBoundRunCmd when no non-terminal
+// Interactive run exists for the workspace. The session stays in Batch mode.
+type noBoundRunMsg struct{ WorkspaceRef string }

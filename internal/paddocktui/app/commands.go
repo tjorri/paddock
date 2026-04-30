@@ -225,6 +225,31 @@ func nextInteractiveFrameCmd(run string, ch <-chan paddockbroker.StreamFrame) te
 	}
 }
 
+// detectBoundRunCmd queries for the newest non-terminal Interactive run
+// for workspaceRef. If one is found it emits boundRunDetectedMsg so the
+// TUI can reattach; otherwise it emits noBoundRunMsg and the session
+// remains in Batch mode.
+func detectBoundRunCmd(c client.Client, ns, workspaceRef string) tea.Cmd {
+	return func() tea.Msg {
+		all, err := pdkruns.List(context.Background(), c, ns, workspaceRef)
+		if err != nil {
+			return errMsg{Err: err}
+		}
+		for _, r := range all {
+			if r.Spec.Mode != paddockv1alpha1.HarnessRunModeInteractive {
+				continue
+			}
+			switch r.Status.Phase {
+			case paddockv1alpha1.HarnessRunPhasePending,
+				paddockv1alpha1.HarnessRunPhaseRunning,
+				paddockv1alpha1.HarnessRunPhaseIdle:
+				return boundRunDetectedMsg{WorkspaceRef: workspaceRef, Run: r}
+			}
+		}
+		return noBoundRunMsg{WorkspaceRef: workspaceRef}
+	}
+}
+
 // cancelRunCmd cancels a HarnessRun.
 func cancelRunCmd(c client.Client, ns, name string) tea.Cmd { //nolint:unused // wired in Task 19
 	return func() tea.Msg {

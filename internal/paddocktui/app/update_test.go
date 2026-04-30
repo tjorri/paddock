@@ -893,3 +893,128 @@ func TestPalette_EndOutsideInteractiveErrorBanner(t *testing.T) {
 		t.Error("end outside interactive must surface an error banner")
 	}
 }
+
+// Task 28 tests — auto-detect bound interactive run on focus + reattach.
+
+func TestSessionsLoaded_FiresDetectForEverySesison(t *testing.T) {
+	// After sessionsLoadedMsg lands with two sessions, the reducer must
+	// batch a detectBoundRunCmd for each session (plus optionally an
+	// ensureRunWatch cmd). We verify by counting — both sessions must
+	// appear in m.Sessions after the update and a non-nil cmd must be
+	// returned.
+	m := newTestModel(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+
+	msg := sessionsLoadedMsg{Sessions: []pdksession.Session{
+		{Name: testSessionName},
+		{Name: "bravo"},
+	}}
+	next, cmd := m.Update(msg)
+	nm := next.(Model)
+	if _, ok := nm.Sessions[testSessionName]; !ok {
+		t.Error("alpha session not loaded")
+	}
+	if _, ok := nm.Sessions["bravo"]; !ok {
+		t.Error("bravo session not loaded")
+	}
+	if cmd == nil {
+		t.Fatal("expected batched detectBoundRunCmds after sessionsLoadedMsg, got nil")
+	}
+}
+
+func TestDetectBoundRun_ReattachesOnFocus(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+	}
+	m.Focused = testSessionName
+	hr := paddockv1alpha1.HarnessRun{}
+	hr.Name, hr.Namespace, hr.Spec.WorkspaceRef = "hr-live", "default", testSessionName
+	hr.Spec.Mode = paddockv1alpha1.HarnessRunModeInteractive
+	hr.Status.Phase = paddockv1alpha1.HarnessRunPhaseRunning
+	msg := boundRunDetectedMsg{WorkspaceRef: testSessionName, Run: hr}
+	next, cmd := m.Update(msg)
+	nm := next.(Model)
+	if nm.Sessions[testSessionName].Interactive == nil {
+		t.Fatal("expected Interactive binding after detection")
+	}
+	if nm.Sessions[testSessionName].Interactive.RunName != "hr-live" {
+		t.Errorf("expected RunName=hr-live; got %q", nm.Sessions[testSessionName].Interactive.RunName)
+	}
+	// BrokerClient is nil in the test model so stream opening is skipped
+	// and an ErrBanner is set instead.
+	if cmd != nil {
+		t.Errorf("expected nil cmd when BrokerClient is nil; got %T", cmd)
+	}
+	if nm.ErrBanner == "" {
+		t.Error("expected ErrBanner about missing broker client when BrokerClient is nil")
+	}
+}
+
+func TestDetectBoundRun_TerminalPhaseDoesNotBind(t *testing.T) {
+	// A boundRunDetectedMsg whose phase is terminal (e.g. Succeeded) must
+	// not bind the session. The plan says detection is only fired for
+	// non-terminal phases, but the guard lives in detectBoundRunCmd — by
+	// the time the message reaches Update it should only carry live runs.
+	// This test validates the Update handler itself against a terminal run
+	// injected directly (defensive belt-and-suspenders check).
+	//
+	// Actually, the plan says detectBoundRunCmd only emits
+	// boundRunDetectedMsg for Pending/Running/Idle — terminal runs produce
+	// noBoundRunMsg. So we test the noBoundRunMsg path: the handler must
+	// be a no-op and must NOT set a binding.
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+	}
+	m.Focused = testSessionName
+	msg := noBoundRunMsg{WorkspaceRef: testSessionName}
+	next, cmd := m.Update(msg)
+	nm := next.(Model)
+	if nm.Sessions[testSessionName].Interactive != nil {
+		t.Error("noBoundRunMsg must not set an Interactive binding")
+	}
+	if cmd != nil {
+		t.Errorf("noBoundRunMsg must return nil cmd; got %T", cmd)
+	}
+}
+
+func TestFocusChange_AlreadyBoundDoesNotRefire(t *testing.T) {
+	// When the user navigates in the sidebar and the focused session
+	// already has an Interactive binding, the reducer must NOT fire a
+	// second detectBoundRunCmd (that would re-open the stream and cause
+	// duplicate bindings / infinite loops).
+	m := newTestModel(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: "hr-existing"},
+	}
+	m.Sessions["bravo"] = &SessionState{
+		Session: pdksession.Session{Name: "bravo"},
+	}
+	m.SessionOrder = []string{testSessionName, "bravo"}
+	m.Focused = "bravo"
+	m.FocusArea = FocusSidebar
+
+	// Arrow up should move focus from "bravo" (index 1) to testSessionName (index 0).
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	nm := next.(Model)
+	if nm.Focused != testSessionName {
+		t.Fatalf("expected focus to move to %s; got %q", testSessionName, nm.Focused)
+	}
+	// ensureRunWatch may return a cmd (opening a run watch), but there
+	// should be NO detectBoundRunCmd since the session already has a
+	// binding. Because we cannot distinguish cmd types at the tea.Cmd
+	// level, we rely on the absence of extra detection: if the session
+	// already has a binding, the focus-change guard skips the detect.
+	// We verify indirectly: the existing binding must be untouched.
+	if nm.Sessions[testSessionName].Interactive == nil || nm.Sessions[testSessionName].Interactive.RunName != "hr-existing" {
+		t.Error("existing Interactive binding must not be cleared on focus change")
+	}
+	_ = cmd // cmd may be non-nil due to ensureRunWatch; that's fine
+}

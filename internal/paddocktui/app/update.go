@@ -53,10 +53,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.Focused == "" && len(m.SessionOrder) > 0 {
 			m.Focused = m.SessionOrder[0]
 		}
+		// Fire detect for every session so the TUI can reattach to any
+		// Interactive run that was started in a prior session. Each
+		// detectBoundRunCmd is independent — they land out of order and
+		// must be additive (boundRunDetectedMsg guards against
+		// double-binding the same run).
+		cmds := make([]tea.Cmd, 0, len(m.SessionOrder)+1)
 		if cmd := ensureRunWatch(&m, m.Focused); cmd != nil {
-			return m, cmd
+			cmds = append(cmds, cmd)
 		}
-		return m, nil
+		for _, name := range m.SessionOrder {
+			cmds = append(cmds, detectBoundRunCmd(m.Client, m.Namespace, name))
+		}
+		if len(cmds) == 0 {
+			return m, nil
+		}
+		return m, tea.Batch(cmds...)
 
 	case sessionWatchOpenedMsg:
 		m.sessionWatchCh = msg.Ch
@@ -166,6 +178,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, openInteractiveStreamCmd(m.ctx, m.BrokerClient, m.Namespace, msg.RunName)
 
 	case runCancelledMsg:
+		return m, nil
+
+	case boundRunDetectedMsg:
+		state := m.Sessions[msg.WorkspaceRef]
+		if state == nil {
+			return m, nil
+		}
+		// Guard against double-binding the same run (race between detect
+		// and runCreatedMsg / a prior detect for the same workspace).
+		if state.Interactive != nil && state.Interactive.RunName == msg.Run.Name {
+			return m, nil
+		}
+		state.Interactive = &InteractiveBinding{RunName: msg.Run.Name}
+		if m.BrokerClient == nil {
+			m.ErrBanner = "broker client not configured — cannot open interactive stream"
+			return m, nil
+		}
+		return m, openInteractiveStreamCmd(m.ctx, m.BrokerClient, m.Namespace, msg.Run.Name)
+
+	case noBoundRunMsg:
+		// No non-terminal Interactive run found; session stays in Batch mode.
 		return m, nil
 
 	case interactiveStreamOpenedMsg:
@@ -390,9 +423,25 @@ func handleSidebarFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Type == tea.KeyRunes && string(key.Runes) == "?":
 		return openHelpModal(m), nil
 	}
+	prevFocused := m.Focused
 	m = handleSidebarKey(m, key)
-	cmd := ensureRunWatch(&m, m.Focused)
-	return m, cmd
+	var cmds []tea.Cmd
+	if cmd := ensureRunWatch(&m, m.Focused); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	// When focus moves to a real session that doesn't yet have an
+	// Interactive binding, fire detection so the TUI can reattach.
+	if m.Focused != prevFocused &&
+		m.Focused != "" &&
+		m.Focused != NewSessionSentinel {
+		if state := m.Sessions[m.Focused]; state != nil && state.Interactive == nil {
+			cmds = append(cmds, detectBoundRunCmd(m.Client, m.Namespace, m.Focused))
+		}
+	}
+	if len(cmds) == 0 {
+		return m, nil
+	}
+	return m, tea.Batch(cmds...)
 }
 
 // handlePromptFocusKey edits the prompt buffer and dispatches Enter.
