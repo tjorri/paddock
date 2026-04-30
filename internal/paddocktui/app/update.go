@@ -17,6 +17,7 @@ limitations under the License.
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -24,8 +25,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
 	pdkruns "paddock.dev/paddock/internal/paddocktui/runs"
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
@@ -163,6 +166,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, openInteractiveStreamCmd(m.ctx, m.BrokerClient, m.Namespace, msg.RunName)
 
 	case runCancelledMsg:
+		return m, nil
+
+	case interactiveStreamOpenedMsg:
+		if m.interactiveFrames == nil {
+			m.interactiveFrames = map[string]<-chan paddockbroker.StreamFrame{}
+		}
+		m.interactiveFrames[msg.RunName] = msg.Ch
+		return m, nextInteractiveFrameCmd(msg.RunName, msg.Ch)
+
+	case interactiveFrameMsg:
+		state := m.Sessions[m.Focused]
+		if state == nil || state.Interactive == nil || state.Interactive.RunName != msg.RunName {
+			return m, nil
+		}
+		ev := frameToEvent(msg.Frame)
+		if state.Events == nil {
+			state.Events = map[string][]paddockv1alpha1.PaddockEvent{}
+		}
+		state.Events[msg.RunName] = appendEventDedup(state.Events[msg.RunName], ev)
+		state.Interactive.LastFrameAt = time.Now()
+		return m, nextInteractiveFrameCmd(msg.RunName, m.interactiveFrames[msg.RunName])
+
+	case interactiveStreamClosedMsg:
+		delete(m.interactiveFrames, msg.RunName)
 		return m, nil
 
 	case errMsg:
@@ -811,6 +838,35 @@ func removeFromOrder(slice []string, name string) []string {
 // decoupled from k8s.io/apimachinery imports.
 func parseQuantity(s string) (resource.Quantity, error) {
 	return resource.ParseQuantity(s)
+}
+
+// frameToEvent converts a StreamFrame into a PaddockEvent. The frame's
+// Type field becomes the event Type; the frame's Data is unmarshalled
+// into the remaining PaddockEvent fields (summary, ts, fields,
+// schemaVersion). Unknown keys in Data are silently ignored. If Data is
+// malformed the returned event carries only the Type and a zero timestamp
+// so the TUI can still display something rather than dropping the frame.
+func frameToEvent(frame paddockbroker.StreamFrame) paddockv1alpha1.PaddockEvent {
+	// frameData is the portion of a PaddockEvent that travels in
+	// StreamFrame.Data. We use a local struct with identical JSON tags so
+	// json.Unmarshal maps the wire fields without importing PaddockEvent's
+	// full validation machinery.
+	var fd struct {
+		SchemaVersion string            `json:"schemaVersion"`
+		Timestamp     metav1.Time       `json:"ts"`
+		Summary       string            `json:"summary,omitempty"`
+		Fields        map[string]string `json:"fields,omitempty"`
+	}
+	if len(frame.Data) > 0 {
+		_ = json.Unmarshal(frame.Data, &fd)
+	}
+	return paddockv1alpha1.PaddockEvent{
+		SchemaVersion: fd.SchemaVersion,
+		Timestamp:     fd.Timestamp,
+		Type:          frame.Type,
+		Summary:       fd.Summary,
+		Fields:        fd.Fields,
+	}
 }
 
 // runSummaryFromCR projects a HarnessRun into the TUI-shaped

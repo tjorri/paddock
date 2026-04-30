@@ -51,9 +51,10 @@ type Model struct {
 	// Persistent watch channels. These are opened once per
 	// (workspace|run) and read one event at a time by the reducer so
 	// re-issuing nextXxxEventCmd does not spawn a fresh goroutine.
-	sessionWatchCh <-chan pdksession.Event
-	runWatches     map[string]<-chan pdkruns.Event                // keyed by workspaceRef
-	eventTails     map[string]<-chan paddockv1alpha1.PaddockEvent // keyed by runName
+	sessionWatchCh    <-chan pdksession.Event
+	runWatches        map[string]<-chan pdkruns.Event                // keyed by workspaceRef
+	eventTails        map[string]<-chan paddockv1alpha1.PaddockEvent // keyed by runName
+	interactiveFrames map[string]<-chan paddockbroker.StreamFrame    // keyed by runName
 
 	// Session list, keyed by Name. SessionOrder gives display order.
 	Sessions     map[string]*SessionState

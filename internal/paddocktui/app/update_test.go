@@ -18,6 +18,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
 
@@ -738,5 +740,93 @@ func TestUpdate_RunCreatedBatchDoesNotBind(t *testing.T) {
 	}
 	if cmd != nil {
 		t.Errorf("Batch runCreatedMsg must return nil cmd; got %T", cmd)
+	}
+}
+
+func TestUpdate_FrameFoldsIntoBoundRun(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: "hr-int"},
+		Events:      map[string][]paddockv1alpha1.PaddockEvent{},
+	}
+	m.Focused = testSessionName
+	ch := make(chan paddockbroker.StreamFrame, 1)
+	if m.interactiveFrames == nil {
+		m.interactiveFrames = map[string]<-chan paddockbroker.StreamFrame{}
+	}
+	m.interactiveFrames["hr-int"] = ch
+	frame := paddockbroker.StreamFrame{Type: "Message", Data: json.RawMessage(`{"summary":"hi"}`)}
+	next, cmd := m.Update(interactiveFrameMsg{RunName: "hr-int", Frame: frame})
+	nm := next.(Model)
+	evs := nm.Sessions[testSessionName].Events["hr-int"]
+	if len(evs) != 1 || evs[0].Type != "Message" || evs[0].Summary != "hi" {
+		t.Errorf("expected one Message event with Summary=hi; got %+v", evs)
+	}
+	if cmd == nil {
+		t.Error("expected nextInteractiveFrameCmd to be returned, got nil")
+	}
+}
+
+func TestUpdate_FrameForUnknownRunDroppedSilently(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: "hr-int"},
+		Events:      map[string][]paddockv1alpha1.PaddockEvent{},
+	}
+	m.Focused = testSessionName
+	frame := paddockbroker.StreamFrame{Type: "Message", Data: json.RawMessage(`{"summary":"ghost"}`)}
+	// RunName does not match the bound session's RunName.
+	next, cmd := m.Update(interactiveFrameMsg{RunName: "hr-unknown", Frame: frame})
+	nm := next.(Model)
+	if evs := nm.Sessions[testSessionName].Events["hr-unknown"]; len(evs) != 0 {
+		t.Errorf("expected no events for unknown run; got %+v", evs)
+	}
+	if cmd != nil {
+		t.Errorf("expected nil cmd for unknown run; got %T", cmd)
+	}
+}
+
+func TestUpdate_FramesDeduplicate(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: "hr-int"},
+		Events:      map[string][]paddockv1alpha1.PaddockEvent{},
+	}
+	m.Focused = testSessionName
+	ch := make(chan paddockbroker.StreamFrame, 2)
+	if m.interactiveFrames == nil {
+		m.interactiveFrames = map[string]<-chan paddockbroker.StreamFrame{}
+	}
+	m.interactiveFrames["hr-int"] = ch
+	// Same frame data sent twice — should only appear once in the ring.
+	payload := json.RawMessage(`{"summary":"dup","ts":"2026-01-01T00:00:00Z"}`)
+	frame := paddockbroker.StreamFrame{Type: "Message", Data: payload}
+	next, _ := m.Update(interactiveFrameMsg{RunName: "hr-int", Frame: frame})
+	next, _ = next.(Model).Update(interactiveFrameMsg{RunName: "hr-int", Frame: frame})
+	evs := next.(Model).Sessions[testSessionName].Events["hr-int"]
+	if len(evs) != 1 {
+		t.Errorf("expected dedup to collapse identical frames; got %d events", len(evs))
+	}
+}
+
+func TestUpdate_StreamOpenedRegistersChannelAndSpawnsRead(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: "hr-int"},
+		Events:      map[string][]paddockv1alpha1.PaddockEvent{},
+	}
+	m.Focused = testSessionName
+	ch := make(chan paddockbroker.StreamFrame)
+	next, cmd := m.Update(interactiveStreamOpenedMsg{RunName: "hr-int", Ch: ch})
+	nm := next.(Model)
+	if nm.interactiveFrames == nil || nm.interactiveFrames["hr-int"] == nil {
+		t.Error("interactiveFrames map not populated after stream opened")
+	}
+	if cmd == nil {
+		t.Error("expected nextInteractiveFrameCmd cmd after stream opened, got nil")
 	}
 }
