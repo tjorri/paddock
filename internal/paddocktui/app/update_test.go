@@ -188,6 +188,22 @@ func TestUpdate_TemplatesLoadedCachesAndPatchesOpenModal(t *testing.T) {
 	}
 }
 
+func TestUpdate_PromptInputAcceptsSpaces(t *testing.T) {
+	m := newTestModel(t)
+	m.FocusArea = FocusPrompt
+	for _, k := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("hi")},
+		{Type: tea.KeySpace},
+		{Type: tea.KeyRunes, Runes: []rune("there")},
+	} {
+		next, _ := m.Update(k)
+		m = next.(Model)
+	}
+	if got, want := m.PromptInput, "hi there"; got != want {
+		t.Errorf("PromptInput=%q, want %q", got, want)
+	}
+}
+
 func TestUpdate_QuitOnQ(t *testing.T) {
 	m := newTestModel(t)
 	m.FocusArea = FocusSidebar

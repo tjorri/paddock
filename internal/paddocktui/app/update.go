@@ -244,6 +244,9 @@ func handlePromptFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyRunes:
 		m.PromptInput += string(key.Runes)
 		return m, nil
+	case tea.KeySpace:
+		m.PromptInput += " "
+		return m, nil
 	case tea.KeyBackspace:
 		if len(m.PromptInput) > 0 {
 			m.PromptInput = m.PromptInput[:len(m.PromptInput)-1]

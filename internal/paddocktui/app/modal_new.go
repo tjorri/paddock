@@ -71,6 +71,17 @@ func handleNewSessionModalKey(m Model, key tea.KeyMsg) Model {
 		case 3:
 			m.ModalNew.SeedRepoInput += string(key.Runes)
 		}
+	case tea.KeySpace:
+		// Bubble Tea fires KeySpace separately from KeyRunes; without this
+		// case the user can't type spaces in the text fields.
+		switch m.ModalNew.Field {
+		case 0:
+			m.ModalNew.NameInput += " "
+		case 2:
+			m.ModalNew.StorageInput += " "
+		case 3:
+			m.ModalNew.SeedRepoInput += " "
+		}
 	}
 	return m
 }

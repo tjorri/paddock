@@ -54,6 +54,36 @@ func TestNewSessionModal_TemplateFieldCyclesPicks(t *testing.T) {
 	}
 }
 
+func TestNewSessionModal_SpaceAppendsToActiveField(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		field int
+	}{
+		{"name", 0},
+		{"storage", 2},
+		{"seed", 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := Model{Modal: ModalNew, ModalNew: &NewSessionModalState{Field: tc.field}}
+			m = handleNewSessionModalKey(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+			m = handleNewSessionModalKey(m, tea.KeyMsg{Type: tea.KeySpace})
+			m = handleNewSessionModalKey(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+			var got string
+			switch tc.field {
+			case 0:
+				got = m.ModalNew.NameInput
+			case 2:
+				got = m.ModalNew.StorageInput
+			case 3:
+				got = m.ModalNew.SeedRepoInput
+			}
+			if got != "a b" {
+				t.Errorf("field %s = %q, want %q", tc.name, got, "a b")
+			}
+		})
+	}
+}
+
 func TestNewSessionModal_BackspaceTrimsActiveField(t *testing.T) {
 	m := Model{Modal: ModalNew, ModalNew: &NewSessionModalState{Field: 0, NameInput: "abc"}}
 	m = handleNewSessionModalKey(m, tea.KeyMsg{Type: tea.KeyBackspace})
