@@ -116,6 +116,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case runUpdatedMsg:
 		m = upsertRun(m, msg)
+		// When the bound interactive run reaches a terminal phase, clear
+		// the binding and surface an informational banner. Only fires when
+		// this specific run is the one the session is bound to — Batch
+		// runs are never in state.Interactive and are unaffected.
+		if state := m.Sessions[msg.WorkspaceRef]; state != nil &&
+			state.Interactive != nil &&
+			state.Interactive.RunName == msg.Run.Name &&
+			isTerminalPhase(msg.Run.Status.Phase) {
+			reason := terminationReason(msg.Run)
+			state.Interactive = nil
+			delete(m.interactiveFrames, msg.Run.Name)
+			m.Banner = fmt.Sprintf("interactive run ended (%s) — next prompt creates a Batch run", reason)
+			if m.PendingPrompt != "" {
+				m.Banner += " · pending prompt cleared"
+				m.PendingPrompt = ""
+			}
+		}
 		ch := m.runWatches[msg.WorkspaceRef]
 		// On reattach, the TUI sees in-flight HarnessRuns it didn't
 		// create itself. Open an event tail for any non-terminal run
@@ -746,6 +763,26 @@ func isTerminalPhase(p paddockv1alpha1.HarnessRunPhase) bool {
 		return true
 	}
 	return false
+}
+
+// terminationReason extracts a human-readable reason from the run's
+// status conditions. It first looks for an "InteractiveRunTerminated"
+// condition (set when the controller or broker explicitly signals the
+// reason) and prefers its Message, then its Reason. When no such
+// condition is present it falls back to the raw phase string so the
+// banner always has a non-empty value.
+func terminationReason(hr paddockv1alpha1.HarnessRun) string {
+	for _, c := range hr.Status.Conditions {
+		if c.Type == "InteractiveRunTerminated" {
+			if c.Message != "" {
+				return c.Message
+			}
+			if c.Reason != "" {
+				return c.Reason
+			}
+		}
+	}
+	return string(hr.Status.Phase)
 }
 
 // upsertRun inserts or updates the RunSummary for the run carried in

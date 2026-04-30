@@ -66,7 +66,11 @@ type Model struct {
 	Modal       ModalKind
 	PromptInput string
 	Filter      string
-	ErrBanner   string
+	// ErrBanner surfaces transient error messages (red / high-attention).
+	ErrBanner string
+	// Banner surfaces informational context messages (e.g. run ended).
+	// Distinct from ErrBanner so render code can colour them differently.
+	Banner string
 
 	// PendingPrompt holds a single submitted prompt that's waiting for
 	// the broker to stop returning 409 (an in-flight turn on the bound

@@ -34,7 +34,11 @@ import (
 // testSessionName is the canonical session name used across reducer
 // tests. Extracting it placates the goconst linter — multiple tests
 // hard-code the same string.
-const testSessionName = "alpha"
+const (
+	testSessionName      = "alpha"
+	testInteractiveRun   = "hr-int"
+	testDefaultNamespace = "default"
+)
 
 // newTestModel builds a Model wired to a fake client for use across
 // reducer tests. The fake client has the paddock scheme registered so
@@ -44,7 +48,7 @@ func newTestModel(t *testing.T) Model {
 	cli := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
 	return Model{
 		Client:    cli,
-		Namespace: "default",
+		Namespace: testDefaultNamespace,
 		Sessions:  map[string]*SessionState{},
 	}
 }
@@ -706,12 +710,12 @@ func TestUpdate_RunCreatedForArmedKickoffBindsAndOpensStream(t *testing.T) {
 	m.Focused = testSessionName
 	next, cmd := m.Update(runCreatedMsg{
 		WorkspaceRef: testSessionName,
-		RunName:      "hr-int",
+		RunName:      testInteractiveRun,
 		Mode:         paddockv1alpha1.HarnessRunModeInteractive,
 	})
 	nm := next.(Model)
 	if nm.Sessions[testSessionName].Interactive == nil ||
-		nm.Sessions[testSessionName].Interactive.RunName != "hr-int" {
+		nm.Sessions[testSessionName].Interactive.RunName != testInteractiveRun {
 		t.Errorf("expected Interactive binding to hr-int; got %+v", nm.Sessions[testSessionName].Interactive)
 	}
 	// BrokerClient is nil in the test model so we expect a nil cmd (stream
@@ -747,7 +751,7 @@ func TestUpdate_FrameFoldsIntoBoundRun(t *testing.T) {
 	m := newTestModel(t)
 	m.Sessions[testSessionName] = &SessionState{
 		Session:     pdksession.Session{Name: testSessionName},
-		Interactive: &InteractiveBinding{RunName: "hr-int"},
+		Interactive: &InteractiveBinding{RunName: testInteractiveRun},
 		Events:      map[string][]paddockv1alpha1.PaddockEvent{},
 	}
 	m.Focused = testSessionName
@@ -755,11 +759,11 @@ func TestUpdate_FrameFoldsIntoBoundRun(t *testing.T) {
 	if m.interactiveFrames == nil {
 		m.interactiveFrames = map[string]<-chan paddockbroker.StreamFrame{}
 	}
-	m.interactiveFrames["hr-int"] = ch
+	m.interactiveFrames[testInteractiveRun] = ch
 	frame := paddockbroker.StreamFrame{Type: "Message", Data: json.RawMessage(`{"summary":"hi"}`)}
-	next, cmd := m.Update(interactiveFrameMsg{RunName: "hr-int", Frame: frame})
+	next, cmd := m.Update(interactiveFrameMsg{RunName: testInteractiveRun, Frame: frame})
 	nm := next.(Model)
-	evs := nm.Sessions[testSessionName].Events["hr-int"]
+	evs := nm.Sessions[testSessionName].Events[testInteractiveRun]
 	if len(evs) != 1 || evs[0].Type != "Message" || evs[0].Summary != "hi" {
 		t.Errorf("expected one Message event with Summary=hi; got %+v", evs)
 	}
@@ -772,7 +776,7 @@ func TestUpdate_FrameForUnknownRunDroppedSilently(t *testing.T) {
 	m := newTestModel(t)
 	m.Sessions[testSessionName] = &SessionState{
 		Session:     pdksession.Session{Name: testSessionName},
-		Interactive: &InteractiveBinding{RunName: "hr-int"},
+		Interactive: &InteractiveBinding{RunName: testInteractiveRun},
 		Events:      map[string][]paddockv1alpha1.PaddockEvent{},
 	}
 	m.Focused = testSessionName
@@ -792,7 +796,7 @@ func TestUpdate_FramesDeduplicate(t *testing.T) {
 	m := newTestModel(t)
 	m.Sessions[testSessionName] = &SessionState{
 		Session:     pdksession.Session{Name: testSessionName},
-		Interactive: &InteractiveBinding{RunName: "hr-int"},
+		Interactive: &InteractiveBinding{RunName: testInteractiveRun},
 		Events:      map[string][]paddockv1alpha1.PaddockEvent{},
 	}
 	m.Focused = testSessionName
@@ -800,13 +804,13 @@ func TestUpdate_FramesDeduplicate(t *testing.T) {
 	if m.interactiveFrames == nil {
 		m.interactiveFrames = map[string]<-chan paddockbroker.StreamFrame{}
 	}
-	m.interactiveFrames["hr-int"] = ch
+	m.interactiveFrames[testInteractiveRun] = ch
 	// Same frame data sent twice — should only appear once in the ring.
 	payload := json.RawMessage(`{"summary":"dup","ts":"2026-01-01T00:00:00Z"}`)
 	frame := paddockbroker.StreamFrame{Type: "Message", Data: payload}
-	next, _ := m.Update(interactiveFrameMsg{RunName: "hr-int", Frame: frame})
-	next, _ = next.(Model).Update(interactiveFrameMsg{RunName: "hr-int", Frame: frame})
-	evs := next.(Model).Sessions[testSessionName].Events["hr-int"]
+	next, _ := m.Update(interactiveFrameMsg{RunName: testInteractiveRun, Frame: frame})
+	next, _ = next.(Model).Update(interactiveFrameMsg{RunName: testInteractiveRun, Frame: frame})
+	evs := next.(Model).Sessions[testSessionName].Events[testInteractiveRun]
 	if len(evs) != 1 {
 		t.Errorf("expected dedup to collapse identical frames; got %d events", len(evs))
 	}
@@ -816,14 +820,14 @@ func TestUpdate_StreamOpenedRegistersChannelAndSpawnsRead(t *testing.T) {
 	m := newTestModel(t)
 	m.Sessions[testSessionName] = &SessionState{
 		Session:     pdksession.Session{Name: testSessionName},
-		Interactive: &InteractiveBinding{RunName: "hr-int"},
+		Interactive: &InteractiveBinding{RunName: testInteractiveRun},
 		Events:      map[string][]paddockv1alpha1.PaddockEvent{},
 	}
 	m.Focused = testSessionName
 	ch := make(chan paddockbroker.StreamFrame)
-	next, cmd := m.Update(interactiveStreamOpenedMsg{RunName: "hr-int", Ch: ch})
+	next, cmd := m.Update(interactiveStreamOpenedMsg{RunName: testInteractiveRun, Ch: ch})
 	nm := next.(Model)
-	if nm.interactiveFrames == nil || nm.interactiveFrames["hr-int"] == nil {
+	if nm.interactiveFrames == nil || nm.interactiveFrames[testInteractiveRun] == nil {
 		t.Error("interactiveFrames map not populated after stream opened")
 	}
 	if cmd == nil {
@@ -836,7 +840,7 @@ func TestPalette_CancelDuringInteractiveCallsInterrupt(t *testing.T) {
 	m.BrokerClient = &paddockbroker.Client{}
 	m.Sessions[testSessionName] = &SessionState{
 		Session:     pdksession.Session{Name: testSessionName},
-		Interactive: &InteractiveBinding{RunName: "hr-int"},
+		Interactive: &InteractiveBinding{RunName: testInteractiveRun},
 	}
 	m.SessionOrder = []string{testSessionName}
 	m.Focused = testSessionName
@@ -866,7 +870,7 @@ func TestPalette_EndDuringInteractiveCallsEnd(t *testing.T) {
 	m.BrokerClient = &paddockbroker.Client{}
 	m.Sessions[testSessionName] = &SessionState{
 		Session:     pdksession.Session{Name: testSessionName},
-		Interactive: &InteractiveBinding{RunName: "hr-int"},
+		Interactive: &InteractiveBinding{RunName: testInteractiveRun},
 	}
 	m.SessionOrder = []string{testSessionName}
 	m.Focused = testSessionName
@@ -931,7 +935,7 @@ func TestDetectBoundRun_ReattachesOnFocus(t *testing.T) {
 	}
 	m.Focused = testSessionName
 	hr := paddockv1alpha1.HarnessRun{}
-	hr.Name, hr.Namespace, hr.Spec.WorkspaceRef = "hr-live", "default", testSessionName
+	hr.Name, hr.Namespace, hr.Spec.WorkspaceRef = "hr-live", testDefaultNamespace, testSessionName
 	hr.Spec.Mode = paddockv1alpha1.HarnessRunModeInteractive
 	hr.Status.Phase = paddockv1alpha1.HarnessRunPhaseRunning
 	msg := boundRunDetectedMsg{WorkspaceRef: testSessionName, Run: hr}
@@ -978,6 +982,137 @@ func TestDetectBoundRun_TerminalPhaseDoesNotBind(t *testing.T) {
 	}
 	if cmd != nil {
 		t.Errorf("noBoundRunMsg must return nil cmd; got %T", cmd)
+	}
+}
+
+// Task 29 tests — clear binding + banner on terminal phase.
+
+func TestUpdate_BoundRunReachingTerminalSurfacesBanner(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: testInteractiveRun},
+	}
+	m.Focused = testSessionName
+
+	hr := paddockv1alpha1.HarnessRun{}
+	hr.Name, hr.Namespace = testInteractiveRun, testDefaultNamespace
+	hr.Status.Phase = paddockv1alpha1.HarnessRunPhaseCancelled
+	cond := metav1.Condition{Type: "InteractiveRunTerminated", Reason: "detach"}
+	hr.Status.Conditions = []metav1.Condition{cond}
+
+	next, _ := m.Update(runUpdatedMsg{WorkspaceRef: testSessionName, Run: hr})
+	nm := next.(Model)
+	if nm.Sessions[testSessionName].Interactive != nil {
+		t.Error("Interactive binding must clear on terminal phase")
+	}
+	if nm.Banner == "" {
+		t.Error("expected a banner explaining the termination")
+	}
+}
+
+func TestUpdate_BoundRunTerminalClearsPendingPrompt(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: testInteractiveRun},
+	}
+	m.Focused = testSessionName
+	m.PendingPrompt = "user was typing this"
+
+	hr := paddockv1alpha1.HarnessRun{}
+	hr.Name, hr.Namespace = testInteractiveRun, testDefaultNamespace
+	hr.Status.Phase = paddockv1alpha1.HarnessRunPhaseSucceeded
+
+	next, _ := m.Update(runUpdatedMsg{WorkspaceRef: testSessionName, Run: hr})
+	nm := next.(Model)
+	if nm.PendingPrompt != "" {
+		t.Errorf("PendingPrompt must be cleared when bound run terminates; got %q", nm.PendingPrompt)
+	}
+	if nm.Banner == "" {
+		t.Error("expected Banner to be set when bound run terminates")
+	}
+}
+
+func TestUpdate_BatchRunTerminalDoesNotAffectBanner(t *testing.T) {
+	// A Batch run reaching terminal must not clear an unrelated Interactive
+	// binding or set a banner. Guards the Batch path from regression.
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: testInteractiveRun},
+	}
+	m.Focused = testSessionName
+
+	hr := paddockv1alpha1.HarnessRun{}
+	hr.Name, hr.Namespace = "hr-batch", testDefaultNamespace
+	hr.Status.Phase = paddockv1alpha1.HarnessRunPhaseSucceeded
+
+	next, _ := m.Update(runUpdatedMsg{WorkspaceRef: testSessionName, Run: hr})
+	nm := next.(Model)
+	if nm.Sessions[testSessionName].Interactive == nil ||
+		nm.Sessions[testSessionName].Interactive.RunName != testInteractiveRun {
+		t.Error("Batch run terminal must not clear an unrelated Interactive binding")
+	}
+	if nm.Banner != "" {
+		t.Errorf("Batch run terminal must not set Banner; got %q", nm.Banner)
+	}
+}
+
+func TestUpdate_BoundRunTerminalClearsInteractiveFrames(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: testInteractiveRun},
+	}
+	m.Focused = testSessionName
+	ch := make(chan paddockbroker.StreamFrame)
+	if m.interactiveFrames == nil {
+		m.interactiveFrames = map[string]<-chan paddockbroker.StreamFrame{}
+	}
+	m.interactiveFrames[testInteractiveRun] = ch
+
+	hr := paddockv1alpha1.HarnessRun{}
+	hr.Name, hr.Namespace = testInteractiveRun, testDefaultNamespace
+	hr.Status.Phase = paddockv1alpha1.HarnessRunPhaseFailed
+
+	next, _ := m.Update(runUpdatedMsg{WorkspaceRef: testSessionName, Run: hr})
+	nm := next.(Model)
+	if _, ok := nm.interactiveFrames[testInteractiveRun]; ok {
+		t.Error("interactiveFrames entry must be deleted when bound run terminates")
+	}
+}
+
+func TestTerminationReason_PrefersConditionMessage(t *testing.T) {
+	hr := paddockv1alpha1.HarnessRun{}
+	hr.Status.Phase = paddockv1alpha1.HarnessRunPhaseCancelled
+	hr.Status.Conditions = []metav1.Condition{
+		{Type: "InteractiveRunTerminated", Reason: "WatchdogExpired", Message: "watchdog timeout after 30m"},
+	}
+	got := terminationReason(hr)
+	if got != "watchdog timeout after 30m" {
+		t.Errorf("expected message; got %q", got)
+	}
+}
+
+func TestTerminationReason_FallsBackToConditionReason(t *testing.T) {
+	hr := paddockv1alpha1.HarnessRun{}
+	hr.Status.Phase = paddockv1alpha1.HarnessRunPhaseCancelled
+	hr.Status.Conditions = []metav1.Condition{
+		{Type: "InteractiveRunTerminated", Reason: "detach"},
+	}
+	got := terminationReason(hr)
+	if got != "detach" {
+		t.Errorf("expected reason; got %q", got)
+	}
+}
+
+func TestTerminationReason_FallsBackToPhase(t *testing.T) {
+	hr := paddockv1alpha1.HarnessRun{}
+	hr.Status.Phase = paddockv1alpha1.HarnessRunPhaseSucceeded
+	got := terminationReason(hr)
+	if got != string(paddockv1alpha1.HarnessRunPhaseSucceeded) {
+		t.Errorf("expected phase string fallback; got %q", got)
 	}
 }
 

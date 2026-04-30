@@ -37,8 +37,8 @@ func newScheme(t *testing.T) *runtime.Scheme {
 
 func TestNewModel(t *testing.T) {
 	cli := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
-	m := NewModel(cli, "default")
-	if m.Namespace != "default" || m.Sessions == nil {
+	m := NewModel(cli, testDefaultNamespace)
+	if m.Namespace != testDefaultNamespace || m.Sessions == nil {
 		t.Errorf("model not initialised: %+v", m)
 	}
 }
