@@ -40,6 +40,7 @@ func HelpModalView() string {
 		"main pane:",
 		"  PgUp/PgDn  scroll run history",
 		"  Home/End   snap to top / bottom",
+		"  mouse wheel  also scrolls (hold Shift for native terminal scroll)",
 		"",
 		"slash commands (in prompt):",
 		"  :cancel     cancel in-flight run",

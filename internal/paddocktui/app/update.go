@@ -151,6 +151,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return handleKeyMsg(m, msg)
+
+	case tea.MouseMsg:
+		return handleMouseMsg(m, msg)
 	}
 	return m, nil
 }
@@ -216,11 +219,35 @@ func handleKeyMsg(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleMouseMsg routes mouse events. Currently only the scroll wheel
+// is wired — wheel up/down moves the main pane offset by mainWheelStep
+// lines per tick. Mouse mode is enabled at program-init via
+// tea.WithMouseCellMotion in cmd/tui.go.
+func handleMouseMsg(m Model, msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.MainScrollFromBottom += mainWheelStep
+		return m, nil
+	case tea.MouseButtonWheelDown:
+		m.MainScrollFromBottom -= mainWheelStep
+		if m.MainScrollFromBottom < 0 {
+			m.MainScrollFromBottom = 0
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
 const (
 	// mainScrollStep is how many lines PgUp/PgDn moves the main pane.
 	// Roughly half a typical 24-row terminal so the user keeps a few
 	// lines of overlap as anchor.
 	mainScrollStep = 10
+
+	// mainWheelStep is how many lines a single mouse-wheel tick moves
+	// the main pane. Smaller than mainScrollStep so wheel feels
+	// fine-grained next to the bigger keyboard step.
+	mainWheelStep = 3
 
 	// mainScrollSnapTop is a sentinel offset for "scroll to the top".
 	// MainPaneView clamps to len(lines)-visibleHeight at render time,

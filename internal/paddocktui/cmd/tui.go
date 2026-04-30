@@ -72,7 +72,7 @@ func runTUI(cfg *genericclioptions.ConfigFlags) error {
 		return err
 	}
 	tm := teaModel{Model: pdkapp.NewModel(c, ns)}
-	prog := tea.NewProgram(tm, tea.WithAltScreen())
+	prog := tea.NewProgram(tm, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	final, err := prog.Run()
 	if err != nil {
 		return err

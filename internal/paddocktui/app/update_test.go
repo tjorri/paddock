@@ -293,6 +293,33 @@ func TestUpdate_EnterOnNewSessionSentinelOpensModal(t *testing.T) {
 	}
 }
 
+func TestUpdate_MouseWheelScrollsMain(t *testing.T) {
+	m := newTestModel(t)
+	if m.MainScrollFromBottom != 0 {
+		t.Fatalf("default offset should be 0, got %d", m.MainScrollFromBottom)
+	}
+	next, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	m = next.(Model)
+	if m.MainScrollFromBottom != mainWheelStep {
+		t.Errorf("after wheel-up, want %d, got %d", mainWheelStep, m.MainScrollFromBottom)
+	}
+	next, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	m = next.(Model)
+	next, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	m = next.(Model)
+	if m.MainScrollFromBottom != 0 {
+		t.Errorf("wheel-down should clamp at 0, got %d", m.MainScrollFromBottom)
+	}
+	// Other mouse buttons are ignored — clicking on a row shouldn't
+	// scroll.
+	m.MainScrollFromBottom = 5
+	next, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft})
+	m = next.(Model)
+	if m.MainScrollFromBottom != 5 {
+		t.Errorf("left-click must not affect scroll, got %d", m.MainScrollFromBottom)
+	}
+}
+
 func TestUpdate_PgUpPgDownScrollMain(t *testing.T) {
 	m := newTestModel(t)
 	if m.MainScrollFromBottom != 0 {
