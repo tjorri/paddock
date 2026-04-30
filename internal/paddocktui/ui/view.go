@@ -32,6 +32,9 @@ import (
 func View(m app.Model, width, height int) string {
 	title := TitleBarView(m, width)
 	footer := StyleStatusBar.Render(footerHints(m))
+	if m.PendingPrompt != "" {
+		footer = StyleStatusBar.Render("queued: "+truncate(m.PendingPrompt, 60)) + "\n" + footer
+	}
 	if m.ErrBanner != "" {
 		footer = StyleErrBanner.Render(m.ErrBanner) + "\n" + footer
 	}
@@ -91,4 +94,18 @@ func footerHints(m app.Model) string {
 // lipgloss.Place can replace this later without changing callers.
 func overlay(body, modal string) string {
 	return body + "\n\n" + modal
+}
+
+// truncate shortens s to at most n runes, appending "…" when cut.
+// Used for status-footer hints where overlong text would overflow
+// the bar.
+func truncate(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	rs := []rune(s)
+	if len(rs) <= n {
+		return s
+	}
+	return string(rs[:n-1]) + "…"
 }

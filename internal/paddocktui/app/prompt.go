@@ -37,6 +37,13 @@ func handlePromptSubmit(m Model) (Model, string) {
 	if prompt == "" {
 		return m, ""
 	}
+	// Interactive: if a turn is in flight on the bound run, buffer the
+	// prompt in PendingPrompt (replacing any previous buffered value).
+	// Non-buffered interactive submission lands in Task 24.
+	if state.Interactive != nil && state.Interactive.CurrentTurnSeq != nil {
+		m.PendingPrompt = prompt
+		return m, ""
+	}
 	if state.Session.ActiveRunRef != "" {
 		state.Queue.Push(prompt)
 		return m, ""

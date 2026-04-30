@@ -60,6 +60,12 @@ type Model struct {
 	Filter      string
 	ErrBanner   string
 
+	// PendingPrompt holds a single submitted prompt that's waiting for
+	// the broker to stop returning 409 (an in-flight turn on the bound
+	// interactive run). Submitting another prompt while non-empty
+	// replaces this one. The status footer surfaces a hint.
+	PendingPrompt string
+
 	// Palette tracks the command palette overlay's open/closed state and
 	// in-progress input. See palette.go.
 	Palette PaletteState

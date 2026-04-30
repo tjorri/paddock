@@ -47,6 +47,33 @@ func TestPromptSubmit_FiresWhenIdle(t *testing.T) {
 	}
 }
 
+func TestPromptSubmit_BuffersWhileTurnInFlight(t *testing.T) {
+	seq := int32(2)
+	state := &SessionState{
+		Session: pdksessionMockedIdle("alpha"),
+		Interactive: &InteractiveBinding{
+			RunName:        "hr-int",
+			CurrentTurnSeq: &seq,
+		},
+	}
+	m := Model{
+		Sessions:     map[string]*SessionState{"alpha": state},
+		SessionOrder: []string{"alpha"},
+		Focused:      "alpha",
+		PromptInput:  "next idea",
+	}
+	next, submit := handlePromptSubmit(m)
+	if submit != "" {
+		t.Errorf("expected buffer (no immediate submit), got submit=%q", submit)
+	}
+	if next.PendingPrompt != "next idea" {
+		t.Errorf("PendingPrompt = %q, want %q", next.PendingPrompt, "next idea")
+	}
+	if next.PromptInput != "" {
+		t.Errorf("PromptInput should clear after buffering; got %q", next.PromptInput)
+	}
+}
+
 func pdksessionMockedActive(name, runRef string) pdksession.Session {
 	return pdksession.Session{Name: name, ActiveRunRef: runRef, Phase: paddockv1alpha1.WorkspacePhaseActive, LastActivity: time.Now()}
 }
