@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
 
@@ -102,6 +103,9 @@ func TestPrompt_BoundSubmitCallsBrokerSubmit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m.ctx = ctx
+	// A non-nil zero-value Client is enough for this dispatch test —
+	// the returned cmd is never invoked, so no real broker call fires.
+	m.BrokerClient = &paddockbroker.Client{}
 	m.Sessions[testSessionName] = &SessionState{
 		Session:     pdksession.Session{Name: testSessionName},
 		Interactive: &InteractiveBinding{RunName: "hr-int"},
@@ -109,9 +113,32 @@ func TestPrompt_BoundSubmitCallsBrokerSubmit(t *testing.T) {
 	m.Focused = testSessionName
 	m.FocusArea = FocusPrompt
 	m.PromptInput = "next prompt"
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("expected submitInteractivePromptCmd; got nil")
+	}
+	if nm.(Model).ErrBanner != "" {
+		t.Errorf("expected no ErrBanner; got %q", nm.(Model).ErrBanner)
+	}
+}
+
+func TestPrompt_BoundSubmitWithoutBrokerShowsBanner(t *testing.T) {
+	m := newTestModel(t)
+	// BrokerClient is nil by default; verify the dispatch fails gracefully
+	// instead of nil-dereferencing inside submitInteractivePromptCmd.
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: "hr-int"},
+	}
+	m.Focused = testSessionName
+	m.FocusArea = FocusPrompt
+	m.PromptInput = "next prompt"
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Error("expected nil cmd when BrokerClient is unset")
+	}
+	if nm.(Model).ErrBanner == "" {
+		t.Error("expected ErrBanner when BrokerClient is unset")
 	}
 }
 

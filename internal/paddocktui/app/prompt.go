@@ -59,7 +59,14 @@ func handlePromptSubmit(m Model) (Model, tea.Cmd) {
 			m.PendingPrompt = prompt
 			return m, nil
 		}
-		// Idle interactive run: submit via the broker.
+		// Idle interactive run: submit via the broker. Guard the nil
+		// BrokerClient: until Phase 5 wires it, this dispatch could
+		// otherwise panic if a session somehow reaches SessionBound
+		// without the broker being connected.
+		if m.BrokerClient == nil {
+			m.ErrBanner = "broker not connected"
+			return m, nil
+		}
 		return m, submitInteractivePromptCmd(
 			m.BrokerClient,
 			m.Namespace,
