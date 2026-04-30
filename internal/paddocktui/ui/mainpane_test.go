@@ -30,6 +30,62 @@ import (
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
 
+func TestMainPaneView_ClipsToHeight(t *testing.T) {
+	// Build a model with enough run-history that the rendered content
+	// exceeds a typical terminal height, then verify the slice
+	// honours the height bound and the MainScrollFromBottom offset.
+	startTs := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	runs := make([]app.RunSummary, 30)
+	events := map[string][]paddockv1alpha1.PaddockEvent{}
+	for i := range runs {
+		runs[i] = app.RunSummary{
+			Name:           "hr-" + string(rune('a'+i%26)) + string(rune('0'+i/26)),
+			Phase:          paddockv1alpha1.HarnessRunPhaseSucceeded,
+			Prompt:         "p",
+			StartTime:      startTs.Add(time.Duration(i) * time.Minute),
+			CompletionTime: startTs.Add(time.Duration(i)*time.Minute + time.Second),
+		}
+	}
+	m := app.Model{
+		Sessions: map[string]*app.SessionState{
+			"alpha": {
+				Session: pdksession.Session{Name: "alpha", LastTemplate: "claude-code"},
+				Runs:    runs,
+				Events:  events,
+			},
+		},
+		SessionOrder: []string{"alpha"},
+		Focused:      "alpha",
+	}
+	full := MainPaneView(m, 80, 0)
+	fullLines := strings.Count(full, "\n") + 1
+	if fullLines <= 24 {
+		t.Skipf("test setup produced only %d lines; need >24 to exercise clipping", fullLines)
+	}
+
+	// Sticky-bottom: last 24 lines.
+	clipped := MainPaneView(m, 80, 24)
+	if got := strings.Count(clipped, "\n") + 1; got != 24 {
+		t.Errorf("expected 24 lines visible, got %d", got)
+	}
+	// The bottom-most content is the prompt area; it should still be there.
+	if !strings.Contains(clipped, ">") {
+		t.Errorf("expected the prompt input row in the sticky-bottom slice, got:\n%s", clipped)
+	}
+
+	// Scrolled up: prompt area should fall out of the visible window.
+	m.MainScrollFromBottom = 100
+	scrolled := MainPaneView(m, 80, 24)
+	if got := strings.Count(scrolled, "\n") + 1; got != 24 {
+		t.Errorf("scrolled view should still be 24 lines, got %d", got)
+	}
+	// Header for the focused session ("alpha · claude-code") should be
+	// visible since we scrolled all the way up.
+	if !strings.Contains(scrolled, "alpha · claude-code") {
+		t.Errorf("expected the session header to appear after scrolling up, got:\n%s", scrolled)
+	}
+}
+
 func TestRenderRun_FiltersResultEvent(t *testing.T) {
 	// Result events duplicate the last Message for narrative harnesses
 	// (claude-code in particular). They must be omitted from the body
@@ -80,7 +136,7 @@ func TestMainPaneView_RunSucceeded(t *testing.T) {
 		Focused:      "starlight-7",
 		FocusArea:    app.FocusPrompt,
 	}
-	got := MainPaneView(m, 80)
+	got := MainPaneView(m, 80, 0)
 	golden := filepath.Join("testdata", "mainpane_run_succeeded.golden")
 	if os.Getenv("UPDATE_GOLDEN") == "1" {
 		_ = os.WriteFile(golden, []byte(got), 0o600) //nolint:gosec // test helper writes to repo testdata

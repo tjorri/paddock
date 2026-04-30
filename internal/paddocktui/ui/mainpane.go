@@ -27,8 +27,48 @@ import (
 )
 
 // MainPaneView renders the focused session's run timeline plus the
-// prompt input. When no session is focused, returns a placeholder.
-func MainPaneView(m app.Model, width int) string {
+// prompt input.
+//
+// height bounds how many lines are visible at once. When the rendered
+// content exceeds height, the slice shown is anchored to the BOTTOM
+// (so the latest run is always in view by default), shifted upward by
+// m.MainScrollFromBottom so the user can review older history with
+// PgUp/PgDn. height <= 0 disables clipping (useful for tests that
+// don't care about layout).
+func MainPaneView(m app.Model, width, height int) string {
+	content := mainPaneContent(m)
+	if height <= 0 {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) <= height {
+		return content
+	}
+	// Clamp scroll-from-bottom so PgUp can't run off the top.
+	maxScroll := len(lines) - height
+	scroll := m.MainScrollFromBottom
+	if scroll < 0 {
+		scroll = 0
+	}
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+	bottom := len(lines) - scroll
+	top := bottom - height
+	if top < 0 {
+		top = 0
+	}
+	if bottom > len(lines) {
+		bottom = len(lines)
+	}
+	return strings.Join(lines[top:bottom], "\n")
+}
+
+// mainPaneContent returns the unclipped main-pane content. Splitting
+// rendering from clipping keeps the snapshot tests for MainPaneView's
+// content stable while still giving the live view a viewport-style
+// scrollable region.
+func mainPaneContent(m app.Model) string {
 	if m.Focused == "" {
 		return StyleHeader.Render("(no session selected — pick one in the sidebar or press n to create)")
 	}

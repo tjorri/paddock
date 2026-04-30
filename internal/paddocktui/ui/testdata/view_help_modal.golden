@@ -23,6 +23,10 @@
 │    Ctrl-X     cancel in-flight run                                          │
 │    Ctrl-R     toggle raw events                                             │
 │                                                                             │
+│  main pane:                                                                 │
+│    PgUp/PgDn  scroll run history                                            │
+│    Home/End   snap to top / bottom                                          │
+│                                                                             │
 │  slash commands (in prompt):                                                │
 │    :cancel     cancel in-flight run                                         │
 │    :queue      show queued prompts                                          │

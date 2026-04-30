@@ -24,15 +24,24 @@ import (
 
 // View renders the full TUI: title bar / sidebar | main pane / footer
 // status bar, with an optional modal overlay.
+//
+// The main pane is bounded to (height - title - footer) lines so a
+// long run history can't push the sidebar or footer off the visible
+// terminal. Scroll within that bounded view with PgUp/PgDn/Home/End
+// (handled globally in the reducer).
 func View(m app.Model, width, height int) string {
 	title := TitleBarView(m, width)
-	sidebar := SidebarView(m)
-	main := MainPaneView(m, width-30)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, main)
 	footer := StyleStatusBar.Render(footerHints(m))
 	if m.ErrBanner != "" {
 		footer = StyleErrBanner.Render(m.ErrBanner) + "\n" + footer
 	}
+	bodyHeight := height - lipgloss.Height(title) - lipgloss.Height(footer)
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+	sidebar := SidebarView(m)
+	main := MainPaneView(m, width-30, bodyHeight)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, main)
 	composed := lipgloss.JoinVertical(lipgloss.Left, title, body, footer)
 	switch m.Modal {
 	case app.ModalNew:

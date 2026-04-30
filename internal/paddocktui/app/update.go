@@ -175,13 +175,34 @@ func ensureRunWatch(m *Model, workspaceRef string) tea.Cmd {
 
 // handleKeyMsg routes key events to modal handlers (which take priority)
 // or per-focus-area handlers. Ctrl-C is handled globally so the user
-// can always escape, regardless of focus or modal state.
+// can always escape, regardless of focus or modal state. PgUp/PgDn/
+// Home/End scroll the main pane and are also global — the user wants
+// to review old runs whether they're typing or navigating sessions.
 func handleKeyMsg(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.Type == tea.KeyCtrlC {
 		if m.cancel != nil {
 			m.cancel()
 		}
 		return m, tea.Quit
+	}
+	switch key.Type {
+	case tea.KeyPgUp:
+		m.MainScrollFromBottom += mainScrollStep
+		return m, nil
+	case tea.KeyPgDown:
+		m.MainScrollFromBottom -= mainScrollStep
+		if m.MainScrollFromBottom < 0 {
+			m.MainScrollFromBottom = 0
+		}
+		return m, nil
+	case tea.KeyHome:
+		// Snap to top (very large value; render-time clamp brings it
+		// down to len(lines)-visibleHeight).
+		m.MainScrollFromBottom = mainScrollSnapTop
+		return m, nil
+	case tea.KeyEnd:
+		m.MainScrollFromBottom = 0
+		return m, nil
 	}
 	if m.Modal != ModalNone {
 		return handleModalKey(m, key)
@@ -194,6 +215,18 @@ func handleKeyMsg(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
+const (
+	// mainScrollStep is how many lines PgUp/PgDn moves the main pane.
+	// Roughly half a typical 24-row terminal so the user keeps a few
+	// lines of overlap as anchor.
+	mainScrollStep = 10
+
+	// mainScrollSnapTop is a sentinel offset for "scroll to the top".
+	// MainPaneView clamps to len(lines)-visibleHeight at render time,
+	// so this just needs to be larger than any plausible run history.
+	mainScrollSnapTop = 1 << 20
+)
 
 // handleSidebarFocusKey maps top-level keystrokes when the sidebar
 // holds focus.

@@ -293,6 +293,39 @@ func TestUpdate_EnterOnNewSessionSentinelOpensModal(t *testing.T) {
 	}
 }
 
+func TestUpdate_PgUpPgDownScrollMain(t *testing.T) {
+	m := newTestModel(t)
+	if m.MainScrollFromBottom != 0 {
+		t.Fatalf("default offset should be 0, got %d", m.MainScrollFromBottom)
+	}
+	// PgUp moves up by mainScrollStep.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = next.(Model)
+	if m.MainScrollFromBottom != mainScrollStep {
+		t.Errorf("after PgUp, want %d, got %d", mainScrollStep, m.MainScrollFromBottom)
+	}
+	// PgDown brings it back; clamped at 0.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = next.(Model)
+	if m.MainScrollFromBottom != 0 {
+		t.Errorf("PgDown should clamp at 0, got %d", m.MainScrollFromBottom)
+	}
+	// Home snaps to a large value (render-time clamp).
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
+	m = next.(Model)
+	if m.MainScrollFromBottom != mainScrollSnapTop {
+		t.Errorf("Home should snap to mainScrollSnapTop, got %d", m.MainScrollFromBottom)
+	}
+	// End returns to bottom.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = next.(Model)
+	if m.MainScrollFromBottom != 0 {
+		t.Errorf("End should reset to 0, got %d", m.MainScrollFromBottom)
+	}
+}
+
 func TestUpdate_EnterOnRealSessionFocusesPrompt(t *testing.T) {
 	m := newTestModel(t)
 	m.Sessions["alpha"] = &SessionState{Session: pdksession.Session{Name: "alpha"}}

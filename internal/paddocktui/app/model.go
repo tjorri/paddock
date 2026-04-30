@@ -70,6 +70,12 @@ type Model struct {
 	// the new-session modal. Populated by loadTemplatesCmd on Init and
 	// refreshed each time the user opens the modal.
 	availableTemplates []pdksession.TemplateInfo
+
+	// MainScrollFromBottom is the number of lines the main pane has
+	// been scrolled UP from the bottom. 0 means stick to bottom (the
+	// most recent run is fully visible). PgUp/PgDown adjust this in
+	// the reducer; the View slices the rendered content accordingly.
+	MainScrollFromBottom int
 }
 
 // NewModel constructs a Model with the supplied cluster wiring.
