@@ -31,8 +31,9 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// Options configure a Client. All four fields are required; Source is
-// the rest.Config for the cluster the broker lives in.
+// Options configure a Client. Service, Namespace, Port,
+// ServiceAccount, and Source are required. Source is the rest.Config
+// for the cluster the broker lives in.
 type Options struct {
 	Service        string
 	Namespace      string
@@ -61,11 +62,13 @@ type Client struct {
 	pf      *forwarder
 }
 
-// New initialises a Client. Returns an error if the port-forward
-// fails or the CA cannot be loaded.
+// New initialises a Client. Returns an error if Options are
+// incomplete or the kube client cannot be constructed. Subsequent
+// tasks add port-forward + CA loading; those failures will surface
+// here too once wired in.
 func New(ctx context.Context, opts Options) (*Client, error) {
-	if opts.Service == "" || opts.Namespace == "" || opts.Port == 0 {
-		return nil, errors.New("broker.New: Service, Namespace, Port required")
+	if opts.Service == "" || opts.Namespace == "" || opts.Port == 0 || opts.ServiceAccount == "" {
+		return nil, errors.New("broker.New: Service, Namespace, Port, ServiceAccount required")
 	}
 	if opts.Source == nil {
 		return nil, errors.New("broker.New: Source rest.Config required")

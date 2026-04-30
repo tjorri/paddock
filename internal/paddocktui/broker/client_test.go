@@ -26,6 +26,8 @@ func TestNew_ValidatesOpts(t *testing.T) {
 		{},
 		{Service: "paddock-broker"},
 		{Service: "paddock-broker", Namespace: "paddock-system"},
+		{Service: "paddock-broker", Namespace: "paddock-system", Port: 8443},
+		{Service: "paddock-broker", Namespace: "paddock-system", Port: 8443, ServiceAccount: "paddock-tui"},
 	}
 	for i, opts := range cases {
 		if _, err := New(context.Background(), opts); err == nil {
