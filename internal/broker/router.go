@@ -22,7 +22,13 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 )
+
+// adapterForwardTimeout caps the broker→adapter request duration. The
+// adapter is loopback-local and should respond immediately; a hung
+// adapter pinning broker goroutines is a worse outcome than a 502.
+const adapterForwardTimeout = 30 * time.Second
 
 // AdapterResolver looks up the loopback HTTP address (host:port, no
 // scheme) of the adapter sidecar for the given run. Wired to a
@@ -50,7 +56,7 @@ type runState struct {
 func NewInteractiveRouter(resolver AdapterResolver) *InteractiveRouter {
 	return &InteractiveRouter{
 		resolve: resolver,
-		client:  &http.Client{},
+		client:  &http.Client{Timeout: adapterForwardTimeout},
 		state:   map[string]*runState{},
 	}
 }
@@ -76,11 +82,16 @@ func (r *InteractiveRouter) OnAttach(namespace, runName string) {
 }
 
 // OnDetach decrements the count of clients attached to (ns, name).
+// Clamps at zero to defend against an unpaired Detach (e.g., a deferred
+// cleanup running on a path where Attach never succeeded). A negative
+// count would silently break the watchdog's idle-shutdown logic.
 func (r *InteractiveRouter) OnDetach(namespace, runName string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := r.getLocked(namespace, runName)
-	s.attached--
+	if s.attached > 0 {
+		s.attached--
+	}
 }
 
 // AttachedCount returns the current number of attached clients for
@@ -139,8 +150,15 @@ func (r *InteractiveRouter) forward(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 
-	// Copy incoming request headers to outbound request.
+	// Copy incoming request headers to outbound request, except
+	// credentials. The user's bearer authenticated them to the broker;
+	// the adapter doesn't need it (NetworkPolicy is the gate to the
+	// loopback port) and the adapter shouldn't see user credentials.
 	for key, vals := range req.Header {
+		switch http.CanonicalHeaderKey(key) {
+		case "Authorization", "Cookie":
+			continue
+		}
 		for _, v := range vals {
 			outReq.Header.Add(key, v)
 		}
