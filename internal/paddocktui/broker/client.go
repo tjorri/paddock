@@ -58,7 +58,7 @@ type Options struct {
 type Client struct {
 	opts    Options
 	kube    kubernetes.Interface
-	httpCli *http.Client //nolint:unused // populated by prompt.go (Task 20)
+	httpCli *http.Client
 	tlsCfg  *tls.Config
 	auth    *tokenCache
 	pf      *forwarder
@@ -96,15 +96,18 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	tlsCfg := &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 	c := &Client{
-		opts:    opts,
-		kube:    kc,
-		tlsCfg:  &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+		opts:   opts,
+		kube:   kc,
+		tlsCfg: tlsCfg,
+		httpCli: &http.Client{
+			Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		},
 		auth:    newTokenCache(kc, opts.Namespace, opts.ServiceAccount, time.Hour),
 		pf:      pf,
 		baseURL: "https://" + pf.Address(),
 	}
-	// Subsequent tasks fill in httpCli.
 	return c, nil
 }
 
