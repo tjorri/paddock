@@ -208,12 +208,17 @@ func handleKeyMsg(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.MainScrollFromBottom = 0
 		return m, nil
 	}
-	// Palette key handling — palette claims keys when open; from
-	// closed it can be opened by ":" (only on an empty prompt) or
-	// Ctrl-K (anywhere).
+	// Palette claims all keys when already open (must run before the
+	// modal gate so Esc/Enter inside the palette aren't routed to a
+	// background modal).
 	if m.Palette.Open() {
 		return handlePaletteKey(m, key)
 	}
+	if m.Modal != ModalNone {
+		return handleModalKey(m, key)
+	}
+	// Palette opener triggers — only when no modal is up: ":" on an
+	// empty prompt or Ctrl-K anywhere.
 	if key.Type == tea.KeyCtrlK {
 		m.Palette = m.Palette.WithOpen(true)
 		return m, nil
@@ -225,9 +230,6 @@ func handleKeyMsg(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.PromptInput += ":"
 		}
 		return m, nil
-	}
-	if m.Modal != ModalNone {
-		return handleModalKey(m, key)
 	}
 	switch m.FocusArea {
 	case FocusSidebar:

@@ -502,3 +502,23 @@ func TestUpdate_EscClosesPalette(t *testing.T) {
 		t.Errorf("closed palette must have empty input; got %q", nm.Palette.Input())
 	}
 }
+
+func TestUpdate_CtrlKDoesNotOpenPaletteOverModal(t *testing.T) {
+	m := newTestModel(t)
+	m.Modal = ModalHelp
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	nm := next.(Model)
+	if nm.Palette.Open() {
+		t.Fatal("Ctrl-K should not open the palette while a modal is up")
+	}
+}
+
+func TestUpdate_ColonDoesNotOpenPaletteOverModal(t *testing.T) {
+	m := newTestModel(t)
+	m.Modal = ModalHelp
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	nm := next.(Model)
+	if nm.Palette.Open() {
+		t.Fatal(": should not open the palette while a modal is up")
+	}
+}
