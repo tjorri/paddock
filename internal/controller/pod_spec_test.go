@@ -1277,3 +1277,23 @@ func TestBuildPodSpec_InteractiveModeEnvVar(t *testing.T) {
 		t.Fatalf("PADDOCK_INTERACTIVE_MODE env var not found on adapter container")
 	}
 }
+
+func TestEffectiveHomePath(t *testing.T) {
+	cases := []struct {
+		name       string
+		mountPath  string
+		wantPrefix string
+	}{
+		{"default mount", "", "/workspace/.home"},
+		{"custom mount", "/repo", "/repo/.home"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := &resolvedTemplate{}
+			tmpl.Spec.Workspace.MountPath = tc.mountPath
+			if got := effectiveHomePath(tmpl); got != tc.wantPrefix {
+				t.Errorf("effectiveHomePath() = %q, want %q", got, tc.wantPrefix)
+			}
+		})
+	}
+}

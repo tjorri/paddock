@@ -18,6 +18,7 @@ package controller
 
 import (
 	"fmt"
+	"path"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -873,6 +874,20 @@ func effectiveWorkspaceMount(template *resolvedTemplate) string {
 		return template.Spec.Workspace.MountPath
 	}
 	return defaultWorkspaceMount
+}
+
+// homeSubdirRelPath is the relative path under the workspace mount
+// that hosts the agent's HOME. Spec: "single shared HOME at
+// <mount>/.home/" — partitioning to per-harness HOMEs was explicitly
+// rejected during brainstorming so tool installs and login state
+// carry across harness families.
+const homeSubdirRelPath = ".home"
+
+// effectiveHomePath returns the absolute HOME directory for the
+// agent container of any run using template. The path lives under
+// the same workspace mount the agent already sees as cwd.
+func effectiveHomePath(template *resolvedTemplate) string {
+	return path.Join(effectiveWorkspaceMount(template), homeSubdirRelPath)
 }
 
 func effectiveModel(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate) string {
