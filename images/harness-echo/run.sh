@@ -41,3 +41,10 @@ if [ -n "${PADDOCK_RESULT_PATH:-}" ]; then
 }
 EOF
 fi
+
+# Interactive mode: stay alive so the controller observes Phase=Running.
+# The adapter sidecar handles broker prompts via its loopback server.
+# Exits on SIGTERM (kubelet pod-shutdown).
+if [ -n "${PADDOCK_INTERACTIVE_MODE:-}" ]; then
+  exec sleep infinity
+fi

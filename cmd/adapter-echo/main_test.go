@@ -20,6 +20,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,6 +122,105 @@ func appendRawLines(t *testing.T, path string, lines ...string) {
 		if _, err := f.WriteString(l + "\n"); err != nil {
 			t.Fatalf("append raw: %v", err)
 		}
+	}
+}
+
+// TestInteractive_PromptReturns202 exercises the interactive-mode loopback
+// HTTP server: POST /prompts must return 202 and append a synthetic event
+// to events.jsonl so a tailing collector can observe the prompt.
+func TestInteractive_PromptReturns202(t *testing.T) {
+	tmp := t.TempDir()
+	eventsPath := filepath.Join(tmp, "events.jsonl")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runInteractive(ctx, ln, eventsPath) }()
+
+	// Poll until the server is accepting connections.
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(2 * time.Second)
+	var resp *http.Response
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			"http://"+addr+"/prompts", strings.NewReader(`{"text":"hi","seq":1}`))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		r, err := client.Do(req)
+		if err == nil {
+			resp = r
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if resp == nil {
+		t.Fatalf("server never started")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+
+	// Cancel and wait for the server to exit before reading events.jsonl
+	// — the handler may still be flushing when the response returns.
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("runInteractive returned err: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("runInteractive did not exit on context cancel")
+	}
+
+	data, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	if !strings.Contains(string(data), "interactive echo received prompt seq=1") {
+		t.Fatalf("events.jsonl missing prompt event: %s", string(data))
+	}
+}
+
+// TestInteractive_ServerExitsOnContextCancel verifies the server exits
+// cleanly (nil error, no stuck goroutines) when its context is cancelled.
+func TestInteractive_ServerExitsOnContextCancel(t *testing.T) {
+	tmp := t.TempDir()
+	eventsPath := filepath.Join(tmp, "events.jsonl")
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		cancel()
+		t.Fatalf("listen: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runInteractive(ctx, ln, eventsPath) }()
+
+	// Give it a moment to bind, then cancel.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("runInteractive returned err: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("runInteractive did not exit on context cancel")
 	}
 }
 
