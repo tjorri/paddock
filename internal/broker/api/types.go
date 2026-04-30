@@ -317,6 +317,34 @@ type BasicAuth struct {
 	Password string `json:"password"`
 }
 
+// PromptRequest is the body of POST /v1/runs/{ns}/{name}/prompts.
+type PromptRequest struct {
+	// Text is the user prompt. Capped at MaxInlinePromptBytes upstream.
+	Text string `json:"text"`
+}
+
+// PromptResponse is returned from POST /v1/runs/{ns}/{name}/prompts.
+type PromptResponse struct {
+	// Seq is the turn sequence number assigned to this prompt.
+	Seq int32 `json:"seq"`
+}
+
+// InterruptRequest is the body of POST /v1/runs/{ns}/{name}/interrupt.
+// Empty for now; reserved for future per-turn-id interrupts.
+type InterruptRequest struct{}
+
+// EndRequest is the body of POST /v1/runs/{ns}/{name}/end.
+type EndRequest struct {
+	// Reason is recorded in the InteractiveRunTerminated audit event.
+	// One of "explicit", "client-quit". Default "explicit".
+	Reason string `json:"reason,omitempty"`
+}
+
+// HeaderShellSessionID is the response header returned from
+// /v1/runs/{ns}/{name}/shell upgrade carrying the session id used in
+// audit events.
+const HeaderShellSessionID = "X-Paddock-Shell-Session-Id"
+
 // PoolSecretRef is the wire-side counterpart of api/v1alpha1.SecretKeyReference,
 // kept here so the broker's HTTP types depend only on stdlib + this
 // package. The controller copies its fields into a v1alpha1.SecretKeyReference
