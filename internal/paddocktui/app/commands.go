@@ -161,7 +161,7 @@ func submitRunCmd(c client.Client, ns, workspaceRef, template, prompt string, mo
 		if err != nil {
 			return errMsg{Err: err}
 		}
-		return runCreatedMsg{WorkspaceRef: workspaceRef, RunName: name}
+		return runCreatedMsg{WorkspaceRef: workspaceRef, RunName: name, Mode: mode}
 	}
 }
 

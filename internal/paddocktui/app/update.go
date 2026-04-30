@@ -141,7 +141,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// runUpdatedMsg (the eventTailOpenedMsg registration is async)
 		// and produces duplicate tails — every event was being emitted
 		// twice.
-		return m, nil
+		//
+		// For Interactive runs we arm the session binding and open the
+		// WebSocket stream. The binding is set even when BrokerClient is
+		// nil (so Reattach in Task 28 can find it); stream opening is
+		// skipped and a banner is surfaced instead.
+		if msg.Mode != paddockv1alpha1.HarnessRunModeInteractive {
+			return m, nil
+		}
+		state := m.Sessions[msg.WorkspaceRef]
+		if state == nil {
+			// Session was deleted in the brief window between the run
+			// being created and this message arriving — don't crash.
+			return m, nil
+		}
+		state.Interactive = &InteractiveBinding{RunName: msg.RunName}
+		if m.BrokerClient == nil {
+			m.ErrBanner = "broker client not configured — cannot open interactive stream"
+			return m, nil
+		}
+		return m, openInteractiveStreamCmd(m.ctx, m.BrokerClient, m.Namespace, msg.RunName)
 
 	case runCancelledMsg:
 		return m, nil

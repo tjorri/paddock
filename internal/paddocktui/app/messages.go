@@ -65,6 +65,7 @@ type eventReceivedMsg struct { //nolint:unused // wired in Task 18
 type runCreatedMsg struct { //nolint:unused // wired in Task 18
 	WorkspaceRef string
 	RunName      string
+	Mode         paddockv1alpha1.HarnessRunMode
 }
 
 type runCancelledMsg struct{ Name string } //nolint:unused // wired in Task 18

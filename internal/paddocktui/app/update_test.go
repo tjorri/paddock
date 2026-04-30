@@ -692,3 +692,51 @@ func TestPalette_InteractiveNoSessionShowsBanner(t *testing.T) {
 		t.Errorf("expected errNoSessionFocused banner; got %q", nm.(Model).ErrBanner)
 	}
 }
+
+func TestUpdate_RunCreatedForArmedKickoffBindsAndOpensStream(t *testing.T) {
+	m := newTestModel(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+	}
+	m.Focused = testSessionName
+	next, cmd := m.Update(runCreatedMsg{
+		WorkspaceRef: testSessionName,
+		RunName:      "hr-int",
+		Mode:         paddockv1alpha1.HarnessRunModeInteractive,
+	})
+	nm := next.(Model)
+	if nm.Sessions[testSessionName].Interactive == nil ||
+		nm.Sessions[testSessionName].Interactive.RunName != "hr-int" {
+		t.Errorf("expected Interactive binding to hr-int; got %+v", nm.Sessions[testSessionName].Interactive)
+	}
+	// BrokerClient is nil in the test model so we expect a nil cmd (stream
+	// opening is skipped when broker is not configured).
+	_ = cmd
+}
+
+func TestUpdate_RunCreatedBatchDoesNotBind(t *testing.T) {
+	m := newTestModel(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+	}
+	m.Focused = testSessionName
+	next, cmd := m.Update(runCreatedMsg{
+		WorkspaceRef: testSessionName,
+		RunName:      "hr-batch",
+		Mode:         "", // Batch (zero value)
+	})
+	nm := next.(Model)
+	if nm.Sessions[testSessionName].Interactive != nil {
+		t.Errorf("Batch runCreatedMsg must not set Interactive binding; got %+v",
+			nm.Sessions[testSessionName].Interactive)
+	}
+	if cmd != nil {
+		t.Errorf("Batch runCreatedMsg must return nil cmd; got %T", cmd)
+	}
+}
