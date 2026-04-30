@@ -1297,3 +1297,36 @@ func TestEffectiveHomePath(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildEnv_HomeFromPVC(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{}
+	run.Name = "hr-x"
+	tmpl := &resolvedTemplate{}
+	env := buildEnv(run, tmpl, podSpecInputs{})
+	var got string
+	for _, e := range env {
+		if e.Name == "HOME" {
+			got = e.Value
+		}
+	}
+	if got != "/workspace/.home" {
+		t.Errorf("HOME env = %q, want %q", got, "/workspace/.home")
+	}
+}
+
+func TestBuildEnv_HomeFollowsCustomMount(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{}
+	run.Name = "hr-y"
+	tmpl := &resolvedTemplate{}
+	tmpl.Spec.Workspace.MountPath = "/repo"
+	env := buildEnv(run, tmpl, podSpecInputs{})
+	var got string
+	for _, e := range env {
+		if e.Name == "HOME" {
+			got = e.Value
+		}
+	}
+	if got != "/repo/.home" {
+		t.Errorf("HOME env = %q, want %q", got, "/repo/.home")
+	}
+}

@@ -829,6 +829,17 @@ func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in po
 		corev1.EnvVar{Name: "PADDOCK_MODEL", Value: effectiveModel(run, template)},
 	)
 
+	// HOME-from-PVC default (spec 2026-04-30-paddock-tui-interactive
+	// §3 / Resolved Q3): the agent's HOME lives on the workspace PVC
+	// so tool installs and one-time logins (e.g. claude /login)
+	// persist across runs in the same workspace. Single shared HOME
+	// for every harness — partitioning was rejected because
+	// continuity across harness families is the desired behaviour.
+	env = append(env, corev1.EnvVar{
+		Name:  "HOME",
+		Value: effectiveHomePath(template),
+	})
+
 	// PADDOCK_INTERACTIVE_MODE on the agent container so the harness
 	// entrypoint can branch on interactive vs batch (e.g. stay alive
 	// after the initial event flush instead of exiting). Same value as
