@@ -199,27 +199,24 @@ func TestStream_PatchAttachStatusPersists(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 
-	// Wait for the attach to be observed by the router.
-	attachDeadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(attachDeadline) {
-		if f.srv.Router.AttachedCount("team-a", "r1") == 1 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if got := f.srv.Router.AttachedCount("team-a", "r1"); got != 1 {
-		_ = c.Close(websocket.StatusNormalClosure, "bye")
-		t.Fatalf("AttachedCount after attach = %d, want 1", got)
-	}
-
-	// Re-read the run from the fake client and assert persisted status.
+	// Poll the persisted status. AttachedCount flips to 1 in OnAttach
+	// before patchAttachStatus(true) writes Status.Interactive, so the
+	// in-memory counter is not a reliable observation point — wait for
+	// the patch to land.
 	getCtx, cancelGet := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelGet()
 	var got paddockv1alpha1.HarnessRun
 	key := types.NamespacedName{Namespace: "team-a", Name: "r1"}
-	if err := f.srv.Client.Get(getCtx, key, &got); err != nil {
-		_ = c.Close(websocket.StatusNormalClosure, "bye")
-		t.Fatalf("get run after attach: %v", err)
+	attachDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(attachDeadline) {
+		var g paddockv1alpha1.HarnessRun
+		if err := f.srv.Client.Get(getCtx, key, &g); err == nil &&
+			g.Status.Interactive != nil &&
+			g.Status.Interactive.AttachedSessions == 1 {
+			got = g
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if got.Status.Interactive == nil {
 		_ = c.Close(websocket.StatusNormalClosure, "bye")
