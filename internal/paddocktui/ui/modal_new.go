@@ -23,7 +23,13 @@ import (
 	"paddock.dev/paddock/internal/paddocktui/app"
 )
 
-func NewSessionModalView(s *app.NewSessionModalState) string {
+// NewSessionModalView renders the new-session modal. It takes the
+// whole Model (rather than just the modal state) so it can show the
+// target namespace at the top — sessions created here land in
+// m.Namespace, so making that visible BEFORE submission avoids
+// surprise admission rejections.
+func NewSessionModalView(m app.Model) string {
+	s := m.ModalNew
 	if s == nil {
 		return ""
 	}
@@ -38,7 +44,13 @@ func NewSessionModalView(s *app.NewSessionModalState) string {
 	if len(s.TemplatePicks) > 0 {
 		tmpl = s.TemplatePicks[s.TemplateIdx]
 	}
+	ns := m.Namespace
+	if ns == "" {
+		ns = "default"
+	}
 	body := strings.Join([]string{
+		"Namespace: " + ns,
+		"─────────────────────────────",
 		field("name", s.NameInput, s.Field == 0),
 		field("template", tmpl, s.Field == 1),
 		field("storage", s.StorageInput, s.Field == 2),

@@ -22,9 +22,10 @@ import (
 	"paddock.dev/paddock/internal/paddocktui/app"
 )
 
-// View renders the full TUI: sidebar | main pane, with footer status
-// bar and an optional modal overlay.
+// View renders the full TUI: title bar / sidebar | main pane / footer
+// status bar, with an optional modal overlay.
 func View(m app.Model, width, height int) string {
+	title := TitleBarView(m, width)
 	sidebar := SidebarView(m)
 	main := MainPaneView(m, width-30)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, main)
@@ -32,16 +33,38 @@ func View(m app.Model, width, height int) string {
 	if m.ErrBanner != "" {
 		footer = StyleErrBanner.Render(m.ErrBanner) + "\n" + footer
 	}
-	composed := lipgloss.JoinVertical(lipgloss.Left, body, footer)
+	composed := lipgloss.JoinVertical(lipgloss.Left, title, body, footer)
 	switch m.Modal {
 	case app.ModalNew:
-		return overlay(composed, NewSessionModalView(m.ModalNew))
+		return overlay(composed, NewSessionModalView(m))
 	case app.ModalEnd:
 		return overlay(composed, EndSessionModalView(m.ModalEnd))
 	case app.ModalHelp:
 		return overlay(composed, HelpModalView())
 	}
 	return composed
+}
+
+// TitleBarView renders the one-line title bar at the top of the TUI:
+// the binary name on the left and the active namespace on the right.
+// The width parameter controls how far apart left and right are
+// pushed; when width is non-positive a sensible default is used.
+func TitleBarView(m app.Model, width int) string {
+	if width <= 0 {
+		width = 80
+	}
+	left := StyleHeader.Render("paddock-tui")
+	ns := m.Namespace
+	if ns == "" {
+		ns = "default"
+	}
+	right := StyleStatusBar.Render("ns: " + ns)
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	spacer := lipgloss.NewStyle().Width(gap).Render("")
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, spacer, right)
 }
 
 func footerHints(m app.Model) string {

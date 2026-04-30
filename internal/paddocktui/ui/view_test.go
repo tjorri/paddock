@@ -26,7 +26,7 @@ import (
 )
 
 func TestView_EmptyState(t *testing.T) {
-	m := app.Model{Sessions: map[string]*app.SessionState{}, FocusArea: app.FocusSidebar}
+	m := app.Model{Sessions: map[string]*app.SessionState{}, FocusArea: app.FocusSidebar, Namespace: "default"}
 	got := View(m, 80, 24)
 	checkGolden(t, got, "view_empty.golden")
 }
@@ -37,13 +37,14 @@ func TestView_OneSessionFocused(t *testing.T) {
 		SessionOrder: []string{"alpha"},
 		Focused:      "alpha",
 		FocusArea:    app.FocusPrompt,
+		Namespace:    "default",
 	}
 	got := View(m, 80, 24)
 	checkGolden(t, got, "view_one_session.golden")
 }
 
 func TestView_HelpModalOpen(t *testing.T) {
-	m := app.Model{Sessions: map[string]*app.SessionState{}, FocusArea: app.FocusSidebar, Modal: app.ModalHelp}
+	m := app.Model{Sessions: map[string]*app.SessionState{}, FocusArea: app.FocusSidebar, Modal: app.ModalHelp, Namespace: "default"}
 	got := View(m, 80, 24)
 	checkGolden(t, got, "view_help_modal.golden")
 }
