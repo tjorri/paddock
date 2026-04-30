@@ -86,6 +86,37 @@ func TestMainPaneView_ClipsToHeight(t *testing.T) {
 	}
 }
 
+func TestRenderRun_PrefixesMultiLineEventBody(t *testing.T) {
+	// Regression: when a Message event summary contained embedded
+	// newlines (common for narrative harnesses returning prose), only
+	// the first line carried the "│ " box-side prefix and subsequent
+	// lines started flush against the terminal edge — the run's box
+	// shape visually broke at every newline. Every continuation line
+	// must keep the vertical bar.
+	startTs := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	r := app.RunSummary{
+		Name:           "hr-1",
+		Phase:          paddockv1alpha1.HarnessRunPhaseSucceeded,
+		Prompt:         "tell me a story\nin two parts",
+		StartTime:      startTs,
+		CompletionTime: startTs.Add(2 * time.Second),
+	}
+	events := []paddockv1alpha1.PaddockEvent{
+		{SchemaVersion: "1", Timestamp: metav1.NewTime(startTs.Add(time.Second)), Type: "Message", Summary: "Once upon a time\nthere was a goroutine\nthat never returned."},
+	}
+	got := renderRun(r, events)
+	for _, line := range strings.Split(got, "\n") {
+		// Header and footer use ╭/╰; every other line is a body line
+		// that must start with │ to keep the box vertical bar.
+		if line == "" || strings.HasPrefix(line, "╭") || strings.HasPrefix(line, "╰") {
+			continue
+		}
+		if !strings.HasPrefix(line, "│") {
+			t.Errorf("body line missing │ prefix: %q\nfull render:\n%s", line, got)
+		}
+	}
+}
+
 func TestRenderRun_FiltersResultEvent(t *testing.T) {
 	// Result events duplicate the last Message for narrative harnesses
 	// (claude-code in particular). They must be omitted from the body

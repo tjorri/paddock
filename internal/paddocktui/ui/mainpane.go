@@ -99,16 +99,34 @@ func renderRun(r app.RunSummary, events []paddockv1alpha1.PaddockEvent) string {
 		if skipInBody(ev) {
 			continue
 		}
-		body = append(body, "│ "+renderEvent(ev))
+		body = append(body, prefixBoxLines("│ ", "│ ", renderEvent(ev)))
 	}
 	footer := StyleRunFooter.Render(fmt.Sprintf("╰─ %s · %s ", phaseLabel(r), durationLabel(r)))
 	out := []string{header}
 	if r.Prompt != "" {
-		out = append(out, "│ > "+r.Prompt)
+		// Continuation lines align past the "> " marker so a multi-line
+		// prompt reads as one block rather than re-greeting on each row.
+		out = append(out, prefixBoxLines("│ > ", "│   ", r.Prompt))
 	}
 	out = append(out, body...)
 	out = append(out, footer)
 	return strings.Join(out, "\n")
+}
+
+// prefixBoxLines applies first to the opening line and cont to every
+// subsequent line of s. Used so a multi-line event summary or prompt
+// keeps the run's left vertical bar (│) on every row instead of having
+// the box shape break wherever the content embeds a newline.
+func prefixBoxLines(first, cont, s string) string {
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		if i == 0 {
+			lines[i] = first + ln
+		} else {
+			lines[i] = cont + ln
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // skipInBody reports whether an event should be omitted from the run's
