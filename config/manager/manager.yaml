@@ -99,6 +99,11 @@ spec:
           # injected when the run's namespace PSA admits NET_ADMIN.
           # Empty disables transparent mode entirely.
           - --iptables-init-image=paddock-iptables-init:dev
+          # paddock-home-init image (creates HOME inside the workspace
+          # PVC). Empty falls back to the in-source busybox:1.36
+          # default; operators in air-gapped clusters should override
+          # via the chart's homeInitImage value.
+          - --home-init-image=
           # Per-run NetworkPolicy enforcement (ADR-0013 §7.4).
           # auto: probe kube-system for a known NP-capable CNI.
           # on: always emit; off: never emit.

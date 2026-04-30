@@ -62,6 +62,12 @@ iptablesInitImage:
 # emit a startup warning. F-49 / ADR-0018.
 seedImage: ""
 
+# Image used by the paddock-home-init init container that creates HOME
+# on the workspace PVC. Defaults to the in-source busybox:1.36 fallback.
+# Operators in air-gapped clusters should override with a digest-pinned
+# reference to a mirrored busybox.
+homeInitImage: ""
+
 # Per-run NetworkPolicy enforcement (ADR-0013 §7.4). Defence-in-depth
 # on top of the proxy sidecar — blocks agent egress that somehow
 # bypasses iptables (raw sockets, privileged escapes). Values:
