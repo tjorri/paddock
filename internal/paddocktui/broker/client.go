@@ -32,8 +32,9 @@ import (
 )
 
 // Options configure a Client. Service, Namespace, Port,
-// ServiceAccount, and Source are required. Source is the rest.Config
-// for the cluster the broker lives in.
+// ServiceAccount, Source, CASecretName, and CASecretNamespace are
+// required. Source is the rest.Config for the cluster the broker
+// lives in.
 type Options struct {
 	Service        string
 	Namespace      string
@@ -56,9 +57,9 @@ type Options struct {
 type Client struct {
 	opts    Options
 	kube    kubernetes.Interface
-	httpCli *http.Client //nolint:unused // populated by tls.go (Task 17)
-	tlsCfg  *tls.Config  //nolint:unused // populated by tls.go (Task 17)
-	auth    *tokenCache  //nolint:unused // populated by auth.go (Task 18)
+	httpCli *http.Client //nolint:unused // populated by portforward.go (Task 18)
+	tlsCfg  *tls.Config
+	auth    *tokenCache //nolint:unused // populated by auth.go (Task 19)
 	pf      *forwarder
 }
 
@@ -70,6 +71,9 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	if opts.Service == "" || opts.Namespace == "" || opts.Port == 0 || opts.ServiceAccount == "" {
 		return nil, errors.New("broker.New: Service, Namespace, Port, ServiceAccount required")
 	}
+	if opts.CASecretName == "" || opts.CASecretNamespace == "" {
+		return nil, errors.New("broker.New: CASecretName, CASecretNamespace required")
+	}
 	if opts.Source == nil {
 		return nil, errors.New("broker.New: Source rest.Config required")
 	}
@@ -77,8 +81,16 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("broker.New: kube client: %w", err)
 	}
-	c := &Client{opts: opts, kube: kc}
-	// Subsequent tasks fill in tlsCfg, auth, pf, httpCli.
+	pool, err := loadCAFromSecret(ctx, kc, opts.CASecretNamespace, opts.CASecretName, opts.CASecretKey)
+	if err != nil {
+		return nil, err
+	}
+	c := &Client{
+		opts:   opts,
+		kube:   kc,
+		tlsCfg: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+	}
+	// Subsequent tasks fill in auth, pf, httpCli.
 	return c, nil
 }
 
