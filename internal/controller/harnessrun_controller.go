@@ -124,6 +124,10 @@ type HarnessRunReconciler struct {
 	// every run resolves to cooperative regardless of PSA labels.
 	IPTablesInitImage string
 
+	// HomeInitImage overrides the image used for the paddock-home-init
+	// init container. Empty falls back to DefaultHomeInitImage.
+	HomeInitImage string
+
 	// Audit emits per-decision AuditEvents. Nil-safe — when unset (e.g.
 	// in unit tests), all emits are no-ops. F-40.
 	Audit *ControllerAudit
@@ -1275,6 +1279,7 @@ func (r *HarnessRunReconciler) ensureJob(
 		promptSecret:    promptSecretName(run),
 		outputConfigMap: outputCMName(run),
 		collectorImage:  r.CollectorImage,
+		homeInitImage:   r.HomeInitImage,
 		serviceAccount:  collectorSAName(run),
 	}
 	if len(tpl.Spec.Requires.Credentials) > 0 {
