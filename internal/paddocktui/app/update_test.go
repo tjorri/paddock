@@ -293,6 +293,22 @@ func TestUpdate_EnterOnNewSessionSentinelOpensModal(t *testing.T) {
 	}
 }
 
+func TestUpdate_EnterOnRealSessionFocusesPrompt(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions["alpha"] = &SessionState{Session: pdksession.Session{Name: "alpha"}}
+	m.SessionOrder = []string{"alpha"}
+	m.Focused = "alpha"
+	m.FocusArea = FocusSidebar
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := next.(Model)
+	if nm.FocusArea != FocusPrompt {
+		t.Errorf("expected FocusArea=FocusPrompt after Enter on a real session, got %v", nm.FocusArea)
+	}
+	if nm.Focused != "alpha" {
+		t.Errorf("expected Focused to remain alpha, got %q", nm.Focused)
+	}
+}
+
 func TestUpdate_EOnSentinelSetsErrBanner(t *testing.T) {
 	m := newTestModel(t)
 	m.FocusArea = FocusSidebar

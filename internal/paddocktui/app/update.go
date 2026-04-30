@@ -222,10 +222,14 @@ func handleSidebarFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// modal — same behaviour as pressing 'n', so a user who arrowed
 		// down to the sticky row at the bottom of the sidebar doesn't
 		// also have to learn a separate keybinding. Enter on a real
-		// session is a no-op for now (selection already focuses).
+		// session moves focus to the prompt input so the user can start
+		// typing immediately.
 		if m.Focused == NewSessionSentinel {
 			return openNewSessionModal(m, templateNames(m.availableTemplates)),
 				loadTemplatesCmd(m.Client, m.Namespace)
+		}
+		if m.Focused != "" {
+			m.FocusArea = FocusPrompt
 		}
 		return m, nil
 	case key.Type == tea.KeyTab:

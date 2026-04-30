@@ -24,7 +24,7 @@ func HelpModalView() string {
 		"",
 		"sidebar:",
 		"  ↑↓ / jk    move selection",
-		"  Enter      focus session",
+		"  Enter      type a prompt (or open new-session modal on [+ new session])",
 		"  n          new session",
 		"  e          end session",
 		"  /          filter",
