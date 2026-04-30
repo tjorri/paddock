@@ -1351,4 +1351,15 @@ func TestBuildHomeInitContainer(t *testing.T) {
 	if c.SecurityContext == nil || c.SecurityContext.RunAsUser == nil || *c.SecurityContext.RunAsUser != 0 {
 		t.Errorf("init container must run as root for chmod; got SC=%+v", c.SecurityContext)
 	}
+	if c.SecurityContext.ReadOnlyRootFilesystem == nil || !*c.SecurityContext.ReadOnlyRootFilesystem {
+		t.Errorf("init container must set ReadOnlyRootFilesystem=true; got SC=%+v", c.SecurityContext)
+	}
+}
+
+func TestBuildHomeInitContainer_DefaultImageWhenEmpty(t *testing.T) {
+	tmpl := &resolvedTemplate{}
+	c := buildHomeInitContainer(tmpl, podSpecInputs{}) // empty homeInitImage
+	if c.Image != DefaultHomeInitImage {
+		t.Errorf("Image = %q, want %q (DefaultHomeInitImage fallback)", c.Image, DefaultHomeInitImage)
+	}
 }

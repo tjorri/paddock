@@ -828,6 +828,7 @@ func buildHomeInitContainer(template *resolvedTemplate, in podSpecInputs) corev1
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser:                ptr.To(int64(0)),
 			AllowPrivilegeEscalation: ptr.To(false),
+			ReadOnlyRootFilesystem:   ptr.To(true),
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
