@@ -37,8 +37,7 @@ import (
 )
 
 // newPerPromptDriver constructs a Driver for "per-prompt-process" mode.
-// Implemented in Task 9.
-func newPerPromptDriver(_ *log.Logger) Driver { panic("Task 9: implement") }
+func newPerPromptDriver(logger *log.Logger) Driver { return NewPerPromptDriver(logger) }
 
 // newPersistentDriver constructs a Driver for "persistent-process" mode.
 // Implemented in Task 14.
