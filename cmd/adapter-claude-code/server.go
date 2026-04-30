@@ -78,12 +78,15 @@ func (s *Server) Handler() http.Handler {
 	return s.mux
 }
 
-// Listen creates a TCP listener on addr (use "127.0.0.1:0" in tests).
+// Listen creates a TCP listener on addr.
 //
-// TODO(security): callers should always pass a loopback address. The per-run
-// NetworkPolicy (Task 12) is the load-bearing control restricting reach to
-// broker pod IPs only; this binding-level enforcement would be defense in
-// depth. Consider rejecting non-loopback addresses here in a follow-up.
+// Production binds ":8431" (all interfaces). The broker connects from
+// another pod via the run pod's eth0 IP, so a loopback-only listener
+// would be unreachable. The per-run NetworkPolicy (controller Task 12)
+// is the load-bearing security gate, restricting the peer set to
+// broker-namespace + broker-pod labels.
+//
+// Tests pass "127.0.0.1:0" to bind an ephemeral local port.
 func (s *Server) Listen(addr string) (net.Listener, error) {
 	return net.Listen("tcp", addr)
 }

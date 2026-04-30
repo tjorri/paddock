@@ -42,7 +42,12 @@ import (
 
 const (
 	defaultPoll            = 200 * time.Millisecond
-	defaultInteractiveAddr = "127.0.0.1:8431"
+	// Bind to all interfaces. The broker connects from another pod via
+	// the run pod's eth0 IP, so a loopback-only listener (127.0.0.1)
+	// would be unreachable. NetworkPolicy ingress (controller Task 12)
+	// restricts the actual peer set to broker-namespace + broker-pod
+	// labels, which is the load-bearing security gate.
+	defaultInteractiveAddr = ":8431"
 )
 
 func main() {
