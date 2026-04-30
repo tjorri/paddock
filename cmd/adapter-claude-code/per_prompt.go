@@ -61,24 +61,31 @@ func NewPerPromptDriver(logger *log.Logger) Driver {
 	}
 }
 
-func (d *perPromptDriver) SubmitPrompt(ctx context.Context, p Prompt) error {
-	// Write the prompt to <workspace>/.paddock/runs/<run>/prompts/<seq>.txt
-	dir := filepath.Join(d.workspace, ".paddock", "runs", d.runName, "prompts")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("mkdir prompts: %w", err)
-	}
-	promptPath := filepath.Join(dir, fmt.Sprintf("%d.txt", p.Seq))
-	if err := os.WriteFile(promptPath, []byte(p.Text), 0o600); err != nil {
-		return fmt.Errorf("write prompt: %w", err)
-	}
-
+func (d *perPromptDriver) SubmitPrompt(_ context.Context, p Prompt) error {
+	// Fix #2: take the lock first so a rejected concurrent submit never
+	// leaves a stale prompt file on disk.
 	d.mu.Lock()
 	if d.currentCmd != nil {
 		d.mu.Unlock()
 		return fmt.Errorf("a prompt is already in flight")
 	}
+	// Slot is free — write the prompt file while still holding the lock so
+	// we remain the exclusive submitter until Start returns.
+	dir := filepath.Join(d.workspace, ".paddock", "runs", d.runName, "prompts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		d.mu.Unlock()
+		return fmt.Errorf("mkdir prompts: %w", err)
+	}
+	promptPath := filepath.Join(dir, fmt.Sprintf("%d.txt", p.Seq))
+	if err := os.WriteFile(promptPath, []byte(p.Text), 0o600); err != nil {
+		d.mu.Unlock()
+		return fmt.Errorf("write prompt: %w", err)
+	}
+
+	// Fix #1: use exec.Command (no context binding) so the spawned process
+	// is not killed when the HTTP request context is cancelled after 202.
 	args := []string{"--print", "--input-format", "stream-json", "--output-format", "stream-json"}
-	cmd := exec.CommandContext(ctx, d.claudeBin, args...)
+	cmd := exec.Command(d.claudeBin, args...)
 	cmd.Dir = d.workspace
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()
@@ -110,6 +117,22 @@ func (d *perPromptDriver) SubmitPrompt(ctx context.Context, p Prompt) error {
 		_ = cmd.Wait()
 	}()
 	return nil
+}
+
+// wait blocks until no prompt is in flight (currentCmd == nil). Intended for
+// tests only; production callers should use Interrupt/End + their own timeouts.
+func (d *perPromptDriver) wait(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		d.mu.Lock()
+		done := d.currentCmd == nil
+		d.mu.Unlock()
+		if done {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 func (d *perPromptDriver) Interrupt(ctx context.Context) error {

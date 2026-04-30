@@ -71,7 +71,7 @@ printf '{"type":"result","result":"done","session_id":"test"}\n'
 }
 
 // TestPerPromptDriver_InterruptKills verifies that Interrupt sends SIGINT to a
-// running claude process without returning an error.
+// running claude process and that the process actually exits as a result.
 func TestPerPromptDriver_InterruptKills(t *testing.T) {
 	tmp := t.TempDir()
 
@@ -89,9 +89,10 @@ sleep 60
 	t.Setenv("PADDOCK_CLAUDE_BINARY", fakeBin)
 
 	drv := NewPerPromptDriver(testLogger())
+	pdrv := drv.(*perPromptDriver)
 
 	go func() {
-		// Ignore the error; the context may be cancelled when the process is killed.
+		// Ignore the error; the process exits when killed.
 		_ = drv.SubmitPrompt(context.Background(), Prompt{Text: "hi", Seq: 1})
 	}()
 
@@ -100,5 +101,10 @@ sleep 60
 
 	if err := drv.Interrupt(context.Background()); err != nil {
 		t.Fatalf("Interrupt returned error: %v", err)
+	}
+
+	// Fix #3: verify the spawned process actually exited within 2 s.
+	if !pdrv.wait(2 * time.Second) {
+		t.Fatal("timed out waiting for in-flight process to exit after Interrupt")
 	}
 }
