@@ -45,7 +45,7 @@ func TestInteractiveRouter_ForwardsToAdapter(t *testing.T) {
 	r := broker.NewInteractiveRouter(resolver)
 
 	// Build a fake request to the broker.
-	req, err := http.NewRequest(http.MethodPost, "http://broker/v1/runs/ns/run/prompts", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://broker/v1/runs/ns/run/prompts", nil)
 	if err != nil {
 		t.Fatalf("building request: %v", err)
 	}

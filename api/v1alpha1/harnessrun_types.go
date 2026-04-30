@@ -140,8 +140,8 @@ type PromptSource struct {
 type HarnessRunPhase string
 
 const (
-	HarnessRunPhasePending   HarnessRunPhase = "Pending"
-	HarnessRunPhaseRunning   HarnessRunPhase = "Running"
+	HarnessRunPhasePending HarnessRunPhase = "Pending"
+	HarnessRunPhaseRunning HarnessRunPhase = "Running"
 	// HarnessRunPhaseIdle indicates an Interactive run is alive and waiting
 	// for the next prompt. The pod is running; no turn is in progress.
 	HarnessRunPhaseIdle      HarnessRunPhase = "Idle"

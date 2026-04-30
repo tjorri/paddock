@@ -28,10 +28,10 @@ import (
 
 // stubDriver is a test-only Driver implementation that records calls.
 type stubDriver struct {
-	prompted   int
+	prompted    int
 	interrupted int
-	ended      int
-	lastPrompt Prompt
+	ended       int
+	lastPrompt  Prompt
 }
 
 func (s *stubDriver) SubmitPrompt(_ context.Context, p Prompt) error {
@@ -67,7 +67,7 @@ func TestServer_PromptsRouted(t *testing.T) {
 	srv := NewServer(Config{Mode: "per-prompt-process", Driver: drv})
 
 	body := `{"text":"hello world","seq":1,"submitter":"broker"}`
-	req := httptest.NewRequest(http.MethodPost, "/prompts", stringReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/prompts", stringReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -93,7 +93,7 @@ func TestServer_InterruptRouted(t *testing.T) {
 	drv := &stubDriver{}
 	srv := NewServer(Config{Mode: "per-prompt-process", Driver: drv})
 
-	req := httptest.NewRequest(http.MethodPost, "/interrupt", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/interrupt", nil)
 	rec := httptest.NewRecorder()
 
 	srv.Handler().ServeHTTP(rec, req)
@@ -106,17 +106,18 @@ func TestServer_InterruptRouted(t *testing.T) {
 	}
 }
 
-// TestServer_LoopbackOnly verifies that Listen binds to the loopback
-// interface (127.0.0.1), not all interfaces.
+// TestServer_LoopbackOnly verifies that Listen with a 127.0.0.1
+// address binds to the loopback interface — exercises the test-time
+// path; production binds ":8431" all-interfaces (gated by NetworkPolicy).
 func TestServer_LoopbackOnly(t *testing.T) {
 	drv := &stubDriver{}
 	srv := NewServer(Config{Mode: "per-prompt-process", Driver: drv})
 
-	ln, err := srv.Listen("127.0.0.1:0")
+	ln, err := srv.Listen(context.Background(), "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	addr := ln.Addr().(*net.TCPAddr)
 	if !addr.IP.IsLoopback() {
@@ -129,7 +130,7 @@ func TestServer_GracefulShutdown(t *testing.T) {
 	drv := &stubDriver{}
 	srv := NewServer(Config{Mode: "per-prompt-process", Driver: drv})
 
-	ln, err := srv.Listen("127.0.0.1:0")
+	ln, err := srv.Listen(context.Background(), "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}

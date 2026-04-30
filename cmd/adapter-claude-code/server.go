@@ -22,6 +22,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"time"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
@@ -63,7 +64,16 @@ type Server struct {
 // NewServer creates a Server, registers all routes, and returns it.
 func NewServer(cfg Config) *Server {
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
-	s.httpServer = &http.Server{Handler: s.mux}
+	// ReadHeaderTimeout guards against Slowloris (gosec G112): the
+	// broker is the only legitimate client and finishes its headers
+	// promptly. ReadTimeout / WriteTimeout cover full request bodies
+	// for /prompts (capped at MaxInlinePromptBytes upstream).
+	s.httpServer = &http.Server{
+		Handler:           s.mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+	}
 
 	s.mux.HandleFunc("/prompts", s.handlePrompts)
 	s.mux.HandleFunc("/interrupt", s.handleInterrupt)
@@ -87,8 +97,9 @@ func (s *Server) Handler() http.Handler {
 // broker-namespace + broker-pod labels.
 //
 // Tests pass "127.0.0.1:0" to bind an ephemeral local port.
-func (s *Server) Listen(addr string) (net.Listener, error) {
-	return net.Listen("tcp", addr)
+func (s *Server) Listen(ctx context.Context, addr string) (net.Listener, error) {
+	var lc net.ListenConfig
+	return lc.Listen(ctx, "tcp", addr)
 }
 
 // Serve starts the HTTP server on ln. It returns nil when the server is

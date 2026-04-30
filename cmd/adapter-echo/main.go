@@ -41,7 +41,7 @@ import (
 )
 
 const (
-	defaultPoll            = 200 * time.Millisecond
+	defaultPoll = 200 * time.Millisecond
 	// Bind to all interfaces. The broker connects from another pod via
 	// the run pod's eth0 IP, so a loopback-only listener (127.0.0.1)
 	// would be unreachable. NetworkPolicy ingress (controller Task 12)

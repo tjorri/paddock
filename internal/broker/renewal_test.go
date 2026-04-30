@@ -76,14 +76,6 @@ func leaseExpiringIn(provider, leaseID string, d time.Duration) paddockv1alpha1.
 	}
 }
 
-func leaseNoExpiry(provider, leaseID string) paddockv1alpha1.IssuedLease {
-	return paddockv1alpha1.IssuedLease{
-		Provider:       provider,
-		LeaseID:        leaseID,
-		CredentialName: "test-cred",
-	}
-}
-
 func TestRenewalWalker_RenewsExpiringLease(t *testing.T) {
 	t.Parallel()
 

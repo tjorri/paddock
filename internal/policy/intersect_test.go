@@ -337,7 +337,7 @@ func TestIntersectMatches_Runs(t *testing.T) {
 				Grants: paddockv1alpha1.BrokerPolicyGrants{
 					Runs: &paddockv1alpha1.GrantRunsCapabilities{
 						Shell: &paddockv1alpha1.ShellCapability{
-							Target:          "adapter",
+							Target:           "adapter",
 							RecordTranscript: false,
 						},
 					},
@@ -351,7 +351,7 @@ func TestIntersectMatches_Runs(t *testing.T) {
 				Grants: paddockv1alpha1.BrokerPolicyGrants{
 					Runs: &paddockv1alpha1.GrantRunsCapabilities{
 						Shell: &paddockv1alpha1.ShellCapability{
-							Target:          "adapter",
+							Target:           "adapter",
 							RecordTranscript: true,
 						},
 					},

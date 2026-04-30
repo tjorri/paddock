@@ -388,7 +388,6 @@ func TestValidateHarnessTemplateSpec_Interactive(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := &paddockv1alpha1.HarnessTemplateSpec{

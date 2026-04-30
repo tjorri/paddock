@@ -59,17 +59,17 @@ func runInteractive(mode string) {
 
 	srv := NewServer(Config{Mode: mode, Driver: drv})
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
 	// Bind to all interfaces. The broker connects from another pod via
 	// the run pod's eth0 IP, so a loopback-only listener (127.0.0.1)
 	// would be unreachable. NetworkPolicy ingress (controller Task 12)
 	// restricts the actual peer set to broker-namespace + broker-pod.
-	ln, err := srv.Listen(":8431")
+	ln, err := srv.Listen(ctx, ":8431")
 	if err != nil {
 		logger.Fatalf("listen: %v", err)
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
 
 	go func() {
 		<-ctx.Done()
