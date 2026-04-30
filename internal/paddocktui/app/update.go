@@ -551,11 +551,27 @@ func dispatchPalette(m Model, cmd PaletteCmd, arg string) (tea.Model, tea.Cmd) {
 			m.ErrBanner = errNoSessionFocused
 			return m, nil
 		}
+		if focused.Interactive != nil {
+			// Interactive mode: a "cancel" interrupts the in-flight turn
+			// via the broker rather than tearing down the bound run.
+			return m, interruptInteractiveCmd(m.BrokerClient, m.Namespace, focused.Interactive.RunName)
+		}
 		if focused.Session.ActiveRunRef == "" {
 			m.ErrBanner = "nothing to cancel"
 			return m, nil
 		}
 		return m, cancelRunCmd(m.Client, m.Namespace, focused.Session.ActiveRunRef)
+	case PaletteEnd:
+		focused := m.Sessions[m.Focused]
+		if focused == nil {
+			m.ErrBanner = errNoSessionFocused
+			return m, nil
+		}
+		if focused.Interactive == nil {
+			m.ErrBanner = "no interactive run bound to this session"
+			return m, nil
+		}
+		return m, endInteractiveCmd(m.BrokerClient, m.Namespace, focused.Interactive.RunName, "user-requested")
 	case PaletteInteractive:
 		focused := m.Sessions[m.Focused]
 		if focused == nil {
@@ -568,8 +584,8 @@ func dispatchPalette(m Model, cmd PaletteCmd, arg string) (tea.Model, tea.Cmd) {
 		}
 		focused.Armed = true
 		return m, nil
-	case PaletteEnd, PaletteReattach:
-		// Filled by later phase tasks (27, 31).
+	case PaletteReattach:
+		// Filled by Task 31.
 		return m, nil
 	}
 	return m, nil

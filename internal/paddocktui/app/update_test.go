@@ -830,3 +830,66 @@ func TestUpdate_StreamOpenedRegistersChannelAndSpawnsRead(t *testing.T) {
 		t.Error("expected nextInteractiveFrameCmd cmd after stream opened, got nil")
 	}
 }
+
+func TestPalette_CancelDuringInteractiveCallsInterrupt(t *testing.T) {
+	m := newTestModel(t)
+	m.BrokerClient = &paddockbroker.Client{}
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: "hr-int"},
+	}
+	m.SessionOrder = []string{testSessionName}
+	m.Focused = testSessionName
+
+	_, cmd := dispatchPalette(m, PaletteCancel, "")
+	if cmd == nil {
+		t.Fatal("cancel during interactive must produce interruptInteractiveCmd; got nil")
+	}
+}
+
+func TestPalette_CancelOutsideInteractiveStillCancelsBatchRun(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName, ActiveRunRef: "hr-batch"},
+	}
+	m.SessionOrder = []string{testSessionName}
+	m.Focused = testSessionName
+
+	_, cmd := dispatchPalette(m, PaletteCancel, "")
+	if cmd == nil {
+		t.Fatal("cancel with active batch run must produce cancelRunCmd; got nil")
+	}
+}
+
+func TestPalette_EndDuringInteractiveCallsEnd(t *testing.T) {
+	m := newTestModel(t)
+	m.BrokerClient = &paddockbroker.Client{}
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: "hr-int"},
+	}
+	m.SessionOrder = []string{testSessionName}
+	m.Focused = testSessionName
+
+	_, cmd := dispatchPalette(m, PaletteEnd, "")
+	if cmd == nil {
+		t.Fatal("end during interactive must produce endInteractiveCmd; got nil")
+	}
+}
+
+func TestPalette_EndOutsideInteractiveErrorBanner(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+	}
+	m.SessionOrder = []string{testSessionName}
+	m.Focused = testSessionName
+
+	next, cmd := dispatchPalette(m, PaletteEnd, "")
+	if cmd != nil {
+		t.Error("end without interactive binding must not fire any cmd")
+	}
+	if next.(Model).ErrBanner == "" {
+		t.Error("end outside interactive must surface an error banner")
+	}
+}
