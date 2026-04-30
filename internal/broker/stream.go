@@ -174,6 +174,7 @@ func (s *Server) patchAttachStatus(ctx context.Context, ns, runName string, atta
 		logger.V(1).Info("patchAttachStatus: get run", "ns", ns, "run", runName, "err", err.Error())
 		return
 	}
+	patch := client.MergeFrom(run.DeepCopy())
 	if run.Status.Interactive == nil {
 		run.Status.Interactive = &paddockv1alpha1.InteractiveStatus{}
 	}
@@ -182,10 +183,8 @@ func (s *Server) patchAttachStatus(ctx context.Context, ns, runName string, atta
 		now := metav1.Now()
 		run.Status.Interactive.LastAttachedAt = &now
 	}
-	patch := client.MergeFrom(run.DeepCopy())
 	if err := s.Client.Status().Patch(ctx, &run, patch); err != nil {
-		// Fall back to a Status().Update for fake clients without
-		// merge-patch support, mirroring patchIssuedLeases.
+		// Patch failure (e.g., fake clients without strategic-merge support) falls back to Update; the controller's reconcile is the eventual-consistency backstop in production.
 		if uErr := s.Client.Status().Update(ctx, &run); uErr != nil {
 			logger.V(1).Info("patchAttachStatus: status update", "ns", ns, "run", runName, "err", uErr.Error())
 		}

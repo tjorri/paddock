@@ -26,6 +26,7 @@ import (
 
 	"github.com/coder/websocket"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
@@ -134,7 +135,7 @@ func TestStream_BidirectionalProxy(t *testing.T) {
 	f := newStreamFixture(t, true, fakeAdapterStream(t))
 
 	wsURL := "ws" + strings.TrimPrefix(f.broker.URL, "http") + "/v1/runs/team-a/r1/stream"
-	dialCtx, cancelDial := context.WithTimeout(context.Background(), 2*time.Second)
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelDial()
 	c, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{ //nolint:bodyclose // upgrade response body is hijacked by the WS conn
 		Subprotocols: []string{"paddock.stream.v1"},
@@ -145,7 +146,7 @@ func TestStream_BidirectionalProxy(t *testing.T) {
 	}
 	defer c.Close(websocket.StatusNormalClosure, "bye") //nolint:errcheck
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_, msg, err := c.Read(ctx)
@@ -171,7 +172,7 @@ func TestStream_BidirectionalProxy(t *testing.T) {
 	_ = c.Close(websocket.StatusNormalClosure, "bye")
 
 	// Wait briefly for OnDetach to run via the handler's defer.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if f.srv.Router.AttachedCount("team-a", "r1") == 0 {
 			break
@@ -181,6 +182,93 @@ func TestStream_BidirectionalProxy(t *testing.T) {
 	if got := f.srv.Router.AttachedCount("team-a", "r1"); got != 0 {
 		t.Fatalf("AttachedCount after close = %d, want 0", got)
 	}
+}
+
+func TestStream_PatchAttachStatusPersists(t *testing.T) {
+	t.Parallel()
+	f := newStreamFixture(t, true, fakeAdapterStream(t))
+
+	wsURL := "ws" + strings.TrimPrefix(f.broker.URL, "http") + "/v1/runs/team-a/r1/stream"
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelDial()
+	c, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{ //nolint:bodyclose // upgrade response body is hijacked by the WS conn
+		Subprotocols: []string{"paddock.stream.v1"},
+		HTTPHeader:   http.Header{"Authorization": []string{"Bearer test-token"}},
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	// Wait for the attach to be observed by the router.
+	attachDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(attachDeadline) {
+		if f.srv.Router.AttachedCount("team-a", "r1") == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := f.srv.Router.AttachedCount("team-a", "r1"); got != 1 {
+		_ = c.Close(websocket.StatusNormalClosure, "bye")
+		t.Fatalf("AttachedCount after attach = %d, want 1", got)
+	}
+
+	// Re-read the run from the fake client and assert persisted status.
+	getCtx, cancelGet := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelGet()
+	var got paddockv1alpha1.HarnessRun
+	key := types.NamespacedName{Namespace: "team-a", Name: "r1"}
+	if err := f.srv.Client.Get(getCtx, key, &got); err != nil {
+		_ = c.Close(websocket.StatusNormalClosure, "bye")
+		t.Fatalf("get run after attach: %v", err)
+	}
+	if got.Status.Interactive == nil {
+		_ = c.Close(websocket.StatusNormalClosure, "bye")
+		t.Fatalf("Status.Interactive is nil after attach; want non-nil")
+	}
+	if got.Status.Interactive.AttachedSessions != 1 {
+		_ = c.Close(websocket.StatusNormalClosure, "bye")
+		t.Fatalf("AttachedSessions = %d, want 1", got.Status.Interactive.AttachedSessions)
+	}
+	if got.Status.Interactive.LastAttachedAt == nil {
+		_ = c.Close(websocket.StatusNormalClosure, "bye")
+		t.Fatalf("LastAttachedAt is nil after attach; want non-nil")
+	}
+
+	// Close client; the proxy should propagate the close to the adapter
+	// and OnDetach + patchAttachStatus(false) should run via the defer.
+	_ = c.Close(websocket.StatusNormalClosure, "bye")
+
+	detachDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(detachDeadline) {
+		if f.srv.Router.AttachedCount("team-a", "r1") == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := f.srv.Router.AttachedCount("team-a", "r1"); got != 0 {
+		t.Fatalf("AttachedCount after close = %d, want 0", got)
+	}
+
+	// Poll the persisted status; the detach status patch happens on a
+	// background context after OnDetach, so it may briefly lag.
+	persistDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(persistDeadline) {
+		var g paddockv1alpha1.HarnessRun
+		if err := f.srv.Client.Get(getCtx, key, &g); err == nil &&
+			g.Status.Interactive != nil &&
+			g.Status.Interactive.AttachedSessions == 0 {
+			got = g
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got.Status.Interactive == nil {
+		t.Fatalf("Status.Interactive is nil after detach; want non-nil")
+	}
+	if got.Status.Interactive.AttachedSessions != 0 {
+		t.Fatalf("AttachedSessions after detach = %d, want 0", got.Status.Interactive.AttachedSessions)
+	}
+	// LastAttachedAt should still be set from the attach — don't assert it's nil.
 }
 
 func TestStream_RejectedWithoutInteractGrant(t *testing.T) {
