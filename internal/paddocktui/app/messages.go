@@ -18,6 +18,7 @@ package app
 
 import (
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
 	pdkruns "paddock.dev/paddock/internal/paddocktui/runs"
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
@@ -71,3 +72,45 @@ type runCancelledMsg struct{ Name string } //nolint:unused // wired in Task 18
 type errMsg struct{ Err error } //nolint:unused // wired in Task 18
 
 func (e errMsg) Error() string { return e.Err.Error() }
+
+// Interactive session messages — wired in Task 24.
+
+// interactivePromptSubmittedMsg is emitted by submitInteractivePromptCmd
+// when the broker accepts a new turn prompt.
+type interactivePromptSubmittedMsg struct {
+	WorkspaceRef string
+	Seq          int32
+}
+
+// interactiveBoundMsg is emitted when an interactive HarnessRun is
+// created and the TUI is ready to bind to it.
+type interactiveBoundMsg struct { //nolint:unused // wired in Task 25
+	WorkspaceRef string
+	RunName      string
+}
+
+// interactiveStreamOpenedMsg is emitted by openInteractiveStreamCmd
+// once the WebSocket stream to the broker is established.
+type interactiveStreamOpenedMsg struct { //nolint:unused // wired in Task 25
+	RunName string
+	Ch      <-chan paddockbroker.StreamFrame
+}
+
+// interactiveFrameMsg carries a single frame from the broker stream.
+type interactiveFrameMsg struct { //nolint:unused // wired in Task 25
+	RunName string
+	Frame   paddockbroker.StreamFrame
+}
+
+// interactiveStreamClosedMsg signals that the broker stream channel was
+// closed (normal shutdown or exhausted reconnects).
+type interactiveStreamClosedMsg struct { //nolint:unused // wired in Task 25
+	RunName string
+	Err     error
+}
+
+// interactiveInterruptedMsg is emitted after a successful Interrupt call.
+type interactiveInterruptedMsg struct{ RunName string } //nolint:unused // wired in Task 27
+
+// interactiveEndedMsg is emitted after a successful End call.
+type interactiveEndedMsg struct{ RunName string } //nolint:unused // wired in Task 27

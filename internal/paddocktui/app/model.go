@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
 	pdkruns "paddock.dev/paddock/internal/paddocktui/runs"
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
@@ -34,6 +35,12 @@ type Model struct {
 	// Cluster wiring.
 	Client    client.Client
 	Namespace string
+
+	// BrokerClient is the authenticated HTTP+WebSocket client for the
+	// paddock-broker. Nil until Phase 5 wire-up populates it from the
+	// binary entry point. Unit tests that do not exercise the broker
+	// call leaf leave it nil.
+	BrokerClient *paddockbroker.Client
 
 	// Lifecycle context for long-lived watch goroutines. Cancel is
 	// called on tea.Quit/teardown so the polling goroutines spawned by

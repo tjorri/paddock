@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
 	pdkevents "paddock.dev/paddock/internal/paddocktui/events"
 	pdkruns "paddock.dev/paddock/internal/paddocktui/runs"
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
@@ -145,19 +146,82 @@ func nextEventTailCmd(runName string, ch <-chan paddockv1alpha1.PaddockEvent) te
 	}
 }
 
-// submitRunCmd creates a HarnessRun.
-func submitRunCmd(c client.Client, ns, workspaceRef, template, prompt string) tea.Cmd { //nolint:unused // wired in Task 19
+// submitRunCmd creates a HarnessRun. Mode selects between Batch (zero
+// value) and Interactive; passing an empty string keeps Batch behaviour
+// so existing callers are unaffected.
+func submitRunCmd(c client.Client, ns, workspaceRef, template, prompt string, mode paddockv1alpha1.HarnessRunMode) tea.Cmd { //nolint:unused // wired in Task 19
 	return func() tea.Msg {
 		name, err := pdkruns.Create(context.Background(), c, pdkruns.CreateOptions{
 			Namespace:    ns,
 			WorkspaceRef: workspaceRef,
 			Template:     template,
 			Prompt:       prompt,
+			Mode:         mode,
 		})
 		if err != nil {
 			return errMsg{Err: err}
 		}
 		return runCreatedMsg{WorkspaceRef: workspaceRef, RunName: name}
+	}
+}
+
+// submitInteractivePromptCmd POSTs a user prompt to the broker's
+// /prompts endpoint for an already-bound interactive run.
+func submitInteractivePromptCmd(c *paddockbroker.Client, ns, run, text, workspaceRef string) tea.Cmd { //nolint:unused // wired in Task 24
+	return func() tea.Msg {
+		seq, err := c.Submit(context.Background(), ns, run, text)
+		if err != nil {
+			return errMsg{Err: err}
+		}
+		return interactivePromptSubmittedMsg{WorkspaceRef: workspaceRef, Seq: seq}
+	}
+}
+
+// interruptInteractiveCmd signals the broker to drop the in-flight turn
+// on the named interactive run.
+func interruptInteractiveCmd(c *paddockbroker.Client, ns, run string) tea.Cmd { //nolint:unused // wired in Task 24
+	return func() tea.Msg {
+		if err := c.Interrupt(context.Background(), ns, run); err != nil {
+			return errMsg{Err: err}
+		}
+		return interactiveInterruptedMsg{RunName: run}
+	}
+}
+
+// endInteractiveCmd terminates an interactive run cleanly via the broker.
+func endInteractiveCmd(c *paddockbroker.Client, ns, run, reason string) tea.Cmd { //nolint:unused // wired in Task 24
+	return func() tea.Msg {
+		if err := c.End(context.Background(), ns, run, reason); err != nil {
+			return errMsg{Err: err}
+		}
+		return interactiveEndedMsg{RunName: run}
+	}
+}
+
+// openInteractiveStreamCmd dials the broker WebSocket stream for run
+// ns/run. On success it emits interactiveStreamOpenedMsg carrying the
+// frame channel; frames are then pumped one at a time via
+// nextInteractiveFrameCmd.
+func openInteractiveStreamCmd(ctx context.Context, c *paddockbroker.Client, ns, run string) tea.Cmd { //nolint:unused // wired in Task 24
+	return func() tea.Msg {
+		ch, err := c.Open(ctx, ns, run)
+		if err != nil {
+			return errMsg{Err: err}
+		}
+		return interactiveStreamOpenedMsg{RunName: run, Ch: ch}
+	}
+}
+
+// nextInteractiveFrameCmd reads one frame off the already-open stream
+// channel. Returns interactiveStreamClosedMsg when the channel is
+// closed. Update re-issues this after each frame to drive the stream.
+func nextInteractiveFrameCmd(run string, ch <-chan paddockbroker.StreamFrame) tea.Cmd { //nolint:unused // wired in Task 24
+	return func() tea.Msg {
+		f, ok := <-ch
+		if !ok {
+			return interactiveStreamClosedMsg{RunName: run}
+		}
+		return interactiveFrameMsg{RunName: run, Frame: f}
 	}
 }
 

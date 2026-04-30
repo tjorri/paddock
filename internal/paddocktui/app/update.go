@@ -356,13 +356,7 @@ func handlePromptFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.FocusArea = FocusSidebar
 		return m, nil
 	case tea.KeyEnter:
-		next, prompt := handlePromptSubmit(m)
-		if prompt == "" {
-			return next, nil
-		}
-		focused := next.Sessions[next.Focused]
-		template := focused.Session.LastTemplate
-		return next, submitRunCmd(next.Client, next.Namespace, next.Focused, template, prompt)
+		return handlePromptSubmit(m)
 	case tea.KeyRunes:
 		m.PromptInput += string(key.Runes)
 		return m, nil
@@ -607,7 +601,7 @@ func drainQueueIfFreed(m Model, name, prevActive, newActive string) (Model, tea.
 		return m, nil
 	}
 	template := state.Session.LastTemplate
-	return m, submitRunCmd(m.Client, m.Namespace, name, template, prompt)
+	return m, submitRunCmd(m.Client, m.Namespace, name, template, prompt, "")
 }
 
 // ensureEventTail opens a per-run event tail for hr if it's
