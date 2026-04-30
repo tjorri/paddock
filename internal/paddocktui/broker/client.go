@@ -58,9 +58,9 @@ type Options struct {
 type Client struct {
 	opts    Options
 	kube    kubernetes.Interface
-	httpCli *http.Client //nolint:unused // populated by auth.go (Task 19)
+	httpCli *http.Client //nolint:unused // populated by prompt.go (Task 20)
 	tlsCfg  *tls.Config
-	auth    *tokenCache //nolint:unused // populated by auth.go (Task 19)
+	auth    *tokenCache
 	pf      *forwarder
 	baseURL string // https://127.0.0.1:<local-port>; set by New after port-forward is ready
 }
@@ -100,10 +100,11 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 		opts:    opts,
 		kube:    kc,
 		tlsCfg:  &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+		auth:    newTokenCache(kc, opts.Namespace, opts.ServiceAccount, time.Hour),
 		pf:      pf,
 		baseURL: "https://" + pf.Address(),
 	}
-	// Subsequent tasks fill in auth, httpCli.
+	// Subsequent tasks fill in httpCli.
 	return c, nil
 }
 
@@ -114,6 +115,3 @@ func (c *Client) Close() error {
 	}
 	return nil
 }
-
-// tokenCache is defined in auth.go.
-type tokenCache struct{} //nolint:unused // expanded by auth.go (Task 19)
