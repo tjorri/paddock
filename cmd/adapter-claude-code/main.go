@@ -40,8 +40,7 @@ import (
 func newPerPromptDriver(logger *log.Logger) Driver { return NewPerPromptDriver(logger) }
 
 // newPersistentDriver constructs a Driver for "persistent-process" mode.
-// Implemented in Task 14.
-func newPersistentDriver(_ *log.Logger) Driver { panic("Task 14: implement") }
+func newPersistentDriver(logger *log.Logger) Driver { return NewPersistentDriver(logger) }
 
 // runInteractive starts the loopback HTTP server for interactive mode and
 // blocks until SIGTERM or SIGINT is received.

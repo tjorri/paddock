@@ -17,6 +17,7 @@ require (
 	k8s.io/client-go v0.35.4
 	k8s.io/pod-security-admission v0.35.4
 	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5
+	nhooyr.io/websocket v1.8.17
 	sigs.k8s.io/controller-runtime v0.23.3
 	sigs.k8s.io/yaml v1.6.0
 )
