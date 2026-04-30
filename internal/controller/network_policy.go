@@ -328,7 +328,9 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyCon
 // defence-in-depth goal. Operators in that posture get no broker→adapter
 // path until they configure --broker-namespace.
 //
-// TODO: parity with cilium_network_policy.go for clusters using CNP — tracked separately.
+// TODO: cilium parity — buildRunCiliumNetworkPolicy in cilium_network_policy.go
+// needs an equivalent CiliumNetworkPolicy ingress rule for Interactive
+// runs. Future task.
 func applyInteractiveIngress(np *networkingv1.NetworkPolicy, cfg networkPolicyConfig) {
 	if cfg.BrokerNamespace == "" {
 		return

@@ -1166,10 +1166,18 @@ func TestBuildPodSpec_PassesInterceptionAcceptanceArgs(t *testing.T) {
 // not be force-killed by the Job controller mid-prompt.
 func TestBuildJob_InteractiveSkipsActiveDeadline(t *testing.T) {
 	t.Parallel()
+	// A non-zero Defaults.Timeout is required to exercise the Interactive
+	// guard in buildJob: without it, effectiveTimeout returns 0 and
+	// ActiveDeadlineSeconds would be nil regardless of mode (toothless
+	// test). With a 1h default, removing the `Mode != Interactive` guard
+	// would cause ActiveDeadlineSeconds to be set to 3600.
 	tpl := &resolvedTemplate{
 		SourceName: "echo",
 		Spec: paddockv1alpha1.HarnessTemplateSpec{
 			Image: "x:v1",
+			Defaults: paddockv1alpha1.HarnessTemplateDefaults{
+				Timeout: &metav1.Duration{Duration: time.Hour},
+			},
 			Interactive: &paddockv1alpha1.InteractiveSpec{
 				Mode:        "per-prompt-process",
 				MaxLifetime: &metav1.Duration{Duration: 24 * time.Hour},
@@ -1207,6 +1215,34 @@ func TestBuildPodSpec_InteractiveLongerGrace(t *testing.T) {
 	podSpec := buildPodSpec(run, tpl, podSpecInputs{})
 	if podSpec.TerminationGracePeriodSeconds == nil || *podSpec.TerminationGracePeriodSeconds != 300 {
 		t.Fatalf("grace = %v, want 300 for Interactive", podSpec.TerminationGracePeriodSeconds)
+	}
+}
+
+// TestBuildPodSpec_InteractiveTemplateDefaultsOverrideGrace pins the
+// precedence order in buildPodSpec: an explicit
+// template.Spec.Defaults.TerminationGracePeriodSeconds wins over the
+// 300s Interactive default. Reversing the order in buildPodSpec must
+// fail this test.
+func TestBuildPodSpec_InteractiveTemplateDefaultsOverrideGrace(t *testing.T) {
+	t.Parallel()
+	explicit := int64(120)
+	tpl := &resolvedTemplate{Spec: paddockv1alpha1.HarnessTemplateSpec{
+		Image:       "x:v1",
+		Interactive: &paddockv1alpha1.InteractiveSpec{Mode: "per-prompt-process"},
+		Defaults: paddockv1alpha1.HarnessTemplateDefaults{
+			TerminationGracePeriodSeconds: &explicit,
+		},
+	}}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: "ns"},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Mode:        paddockv1alpha1.HarnessRunModeInteractive,
+		},
+	}
+	podSpec := buildPodSpec(run, tpl, podSpecInputs{})
+	if podSpec.TerminationGracePeriodSeconds == nil || *podSpec.TerminationGracePeriodSeconds != 120 {
+		t.Fatalf("grace = %v, want 120 (template Defaults override Interactive default)", podSpec.TerminationGracePeriodSeconds)
 	}
 }
 
