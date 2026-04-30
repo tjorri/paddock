@@ -49,6 +49,11 @@ const (
 // public-internet egress rules; the linked except list narrows it.
 const openCIDR = "0.0.0.0/0"
 
+// interactiveAdapterPort is the TCP port the Interactive adapter
+// sidecar listens on inside the run pod. The broker initiates HTTP
+// connections to this port to deliver prompts and stream events.
+const interactiveAdapterPort int32 = 8431
+
 // runNetworkPolicyName returns the per-run NP's name.
 func runNetworkPolicyName(runName string) string {
 	return runName + "-egress"
@@ -290,7 +295,7 @@ func buildEgressNetworkPolicy(
 // upstream IPs rotate. Per-FQDN egress is a CNI-specific feature
 // (Cilium etc.) and is Phase 2b territory.
 func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyConfig) *networkingv1.NetworkPolicy {
-	return buildEgressNetworkPolicy(
+	np := buildEgressNetworkPolicy(
 		metav1.LabelSelector{MatchLabels: map[string]string{"paddock.dev/run": run.Name}},
 		runNetworkPolicyName(run.Name),
 		run.Namespace,
@@ -301,6 +306,53 @@ func buildRunNetworkPolicy(run *paddockv1alpha1.HarnessRun, cfg networkPolicyCon
 		},
 		cfg,
 	)
+	if run.Spec.Mode == paddockv1alpha1.HarnessRunModeInteractive {
+		applyInteractiveIngress(np, cfg)
+	}
+	return np
+}
+
+// applyInteractiveIngress mutates np to also allow the broker pod to
+// reach the adapter on TCP/interactiveAdapterPort. NetworkPolicy is
+// open-by-default for ingress unless PolicyTypes includes Ingress; we
+// add it explicitly so the rule actually narrows traffic.
+//
+// The broker peer is selected by the same label set used for the
+// egress allow rule (buildBrokerEgressRule): namespace label
+// kubernetes.io/metadata.name=<BrokerNamespace> AND pod labels
+// app.kubernetes.io/component=broker + app.kubernetes.io/name=paddock.
+//
+// When BrokerNamespace is empty the operator has no in-cluster broker
+// configured; we skip the rule rather than emit a permissive
+// "allow from any namespace/pod" peer that would defeat the
+// defence-in-depth goal. Operators in that posture get no broker→adapter
+// path until they configure --broker-namespace.
+//
+// TODO: parity with cilium_network_policy.go for clusters using CNP — tracked separately.
+func applyInteractiveIngress(np *networkingv1.NetworkPolicy, cfg networkPolicyConfig) {
+	if cfg.BrokerNamespace == "" {
+		return
+	}
+	tcp := corev1.ProtocolTCP
+	port := intstr.FromInt32(interactiveAdapterPort)
+	np.Spec.PolicyTypes = append(np.Spec.PolicyTypes, networkingv1.PolicyTypeIngress)
+	np.Spec.Ingress = append(np.Spec.Ingress, networkingv1.NetworkPolicyIngressRule{
+		From: []networkingv1.NetworkPolicyPeer{{
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"kubernetes.io/metadata.name": cfg.BrokerNamespace},
+			},
+			PodSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app.kubernetes.io/component": "broker",
+					"app.kubernetes.io/name":      "paddock",
+				},
+			},
+		}},
+		Ports: []networkingv1.NetworkPolicyPort{{
+			Protocol: &tcp,
+			Port:     &port,
+		}},
+	})
 }
 
 // buildSeedNetworkPolicy mirrors buildRunNetworkPolicy for workspace

@@ -61,6 +61,13 @@ const (
 	proxyContainerName        = "proxy"
 	iptablesInitContainerName = "iptables-init"
 	defaultGracePeriodSecs    = 60
+	// interactiveGracePeriodSecs is the default
+	// terminationGracePeriodSeconds applied to Interactive runs (when the
+	// template's Defaults.TerminationGracePeriodSeconds is not set). 300s
+	// is long enough for an in-flight prompt to finish flushing and the
+	// adapter to drain its raw/event streams before SIGKILL. Still
+	// clamped at maxPodGracePeriodSecs.
+	interactiveGracePeriodSecs = 300
 	// maxPodGracePeriodSecs is the controller-side belt-and-braces clamp
 	// matching the admission cap (MaxTerminationGracePeriodSeconds in the
 	// webhook package). F-42: even if a template predates the admission
@@ -237,9 +244,16 @@ func buildJob(
 
 	backoff := run.Spec.Retries
 	var activeDeadline *int64
-	if t := effectiveTimeout(run, template); t > 0 {
-		secs := int64(t.Seconds())
-		activeDeadline = &secs
+	// Interactive runs are long-lived multi-prompt sessions; setting an
+	// activeDeadlineSeconds would have the Job controller force-kill the
+	// pod mid-conversation. Lifetime is bounded instead by the template's
+	// InteractiveSpec (MaxLifetime / IdleTimeout / DetachTimeout), which
+	// the broker enforces.
+	if run.Spec.Mode != paddockv1alpha1.HarnessRunModeInteractive {
+		if t := effectiveTimeout(run, template); t > 0 {
+			secs := int64(t.Seconds())
+			activeDeadline = &secs
+		}
 	}
 
 	return &batchv1.Job{
@@ -273,7 +287,17 @@ func buildPodSpec(
 	template *resolvedTemplate,
 	in podSpecInputs,
 ) corev1.PodSpec {
+	// Grace-period precedence (highest wins):
+	//   1. template.Spec.Defaults.TerminationGracePeriodSeconds (operator
+	//      explicitly chose a value).
+	//   2. interactiveGracePeriodSecs when run.Spec.Mode == Interactive
+	//      (give in-flight prompts time to drain).
+	//   3. defaultGracePeriodSecs (Batch default).
+	// All are clamped at maxPodGracePeriodSecs (F-42).
 	grace := int64(defaultGracePeriodSecs)
+	if run.Spec.Mode == paddockv1alpha1.HarnessRunModeInteractive {
+		grace = interactiveGracePeriodSecs
+	}
 	if template.Spec.Defaults.TerminationGracePeriodSeconds != nil {
 		grace = *template.Spec.Defaults.TerminationGracePeriodSeconds
 	}
@@ -296,7 +320,7 @@ func buildPodSpec(
 	}
 
 	if template.Spec.EventAdapter != nil {
-		initContainers = append(initContainers, buildAdapterContainer(template))
+		initContainers = append(initContainers, buildAdapterContainer(run, template))
 	}
 	initContainers = append(initContainers, buildCollectorContainer(run, template, collectorImage, in.outputConfigMap))
 	if proxyEnabled(in) {
@@ -429,7 +453,7 @@ func buildAgentContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemp
 // buildAdapterContainer constructs the per-harness event adapter as a
 // native sidecar. It sees only the shared /paddock volume; the
 // workspace PVC is the collector's concern.
-func buildAdapterContainer(template *resolvedTemplate) corev1.Container {
+func buildAdapterContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate) corev1.Container {
 	always := corev1.ContainerRestartPolicyAlways
 	sc := runContainerSecurityContextBaseline()
 	sc.RunAsUser = ptr.To(int64(adapterRunAsUID))
@@ -440,15 +464,29 @@ func buildAdapterContainer(template *resolvedTemplate) corev1.Container {
 	// GID 0 when RunAsUser overrides the image's USER and no entry for
 	// 1338 exists in /etc/passwd. F-20 follow-up.
 	sc.RunAsGroup = ptr.To(int64(65532))
+	env := []corev1.EnvVar{
+		{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
+		{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
+	}
+	// Interactive runs: signal the adapter which interactive driver
+	// strategy the template's adapter image should use (per-prompt-process
+	// vs persistent-process). Only emitted when both the run is
+	// Interactive AND the template declares a non-empty Interactive.Mode;
+	// Batch runs and templates without an InteractiveSpec are unaffected.
+	if run.Spec.Mode == paddockv1alpha1.HarnessRunModeInteractive &&
+		template.Spec.Interactive != nil &&
+		template.Spec.Interactive.Mode != "" {
+		env = append(env, corev1.EnvVar{
+			Name:  "PADDOCK_INTERACTIVE_MODE",
+			Value: template.Spec.Interactive.Mode,
+		})
+	}
 	c := corev1.Container{
 		Name:            adapterContainerName,
 		Image:           template.Spec.EventAdapter.Image,
 		RestartPolicy:   &always,
 		SecurityContext: sc,
-		Env: []corev1.EnvVar{
-			{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
-			{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
-		},
+		Env:             env,
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: sharedVolumeName, MountPath: sharedMountPath},
 			{Name: paddockSAVolumeName, MountPath: paddockSAMountPath, ReadOnly: true},

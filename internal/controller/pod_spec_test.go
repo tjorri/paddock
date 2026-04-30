@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1157,5 +1158,86 @@ func TestBuildPodSpec_PassesInterceptionAcceptanceArgs(t *testing.T) {
 	}
 	if !slices.Contains(p.Args, wantPolicyArg) {
 		t.Errorf("proxy args missing %q; got %v", wantPolicyArg, p.Args)
+	}
+}
+
+// TestBuildJob_InteractiveSkipsActiveDeadline verifies that Interactive
+// runs do not get an activeDeadlineSeconds — long-lived sessions must
+// not be force-killed by the Job controller mid-prompt.
+func TestBuildJob_InteractiveSkipsActiveDeadline(t *testing.T) {
+	t.Parallel()
+	tpl := &resolvedTemplate{
+		SourceName: "echo",
+		Spec: paddockv1alpha1.HarnessTemplateSpec{
+			Image: "x:v1",
+			Interactive: &paddockv1alpha1.InteractiveSpec{
+				Mode:        "per-prompt-process",
+				MaxLifetime: &metav1.Duration{Duration: 24 * time.Hour},
+			},
+		},
+	}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: "ns"},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Mode:        paddockv1alpha1.HarnessRunModeInteractive,
+		},
+	}
+	job := buildJob(run, tpl, "ws-1", podSpecInputs{})
+	if job.Spec.ActiveDeadlineSeconds != nil {
+		t.Fatalf("activeDeadlineSeconds = %v, want nil for Interactive", job.Spec.ActiveDeadlineSeconds)
+	}
+}
+
+// TestBuildPodSpec_InteractiveLongerGrace verifies that Interactive runs
+// get the longer 300s terminationGracePeriodSeconds default.
+func TestBuildPodSpec_InteractiveLongerGrace(t *testing.T) {
+	t.Parallel()
+	tpl := &resolvedTemplate{Spec: paddockv1alpha1.HarnessTemplateSpec{
+		Image:       "x:v1",
+		Interactive: &paddockv1alpha1.InteractiveSpec{Mode: "per-prompt-process"},
+	}}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: "ns"},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Mode:        paddockv1alpha1.HarnessRunModeInteractive,
+		},
+	}
+	podSpec := buildPodSpec(run, tpl, podSpecInputs{})
+	if podSpec.TerminationGracePeriodSeconds == nil || *podSpec.TerminationGracePeriodSeconds != 300 {
+		t.Fatalf("grace = %v, want 300 for Interactive", podSpec.TerminationGracePeriodSeconds)
+	}
+}
+
+// TestBuildPodSpec_InteractiveModeEnvVar verifies that the adapter
+// container receives PADDOCK_INTERACTIVE_MODE for Interactive runs.
+func TestBuildPodSpec_InteractiveModeEnvVar(t *testing.T) {
+	t.Parallel()
+	tpl := &resolvedTemplate{Spec: paddockv1alpha1.HarnessTemplateSpec{
+		Image:        "x:v1",
+		Interactive:  &paddockv1alpha1.InteractiveSpec{Mode: "persistent-process"},
+		EventAdapter: &paddockv1alpha1.EventAdapterSpec{Image: "adapter:v1"},
+	}}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: "ns"},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Mode:        paddockv1alpha1.HarnessRunModeInteractive,
+		},
+	}
+	podSpec := buildPodSpec(run, tpl, podSpecInputs{})
+	var found bool
+	for _, c := range podSpec.InitContainers {
+		if c.Name == adapterContainerName {
+			for _, e := range c.Env {
+				if e.Name == "PADDOCK_INTERACTIVE_MODE" && e.Value == "persistent-process" {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("PADDOCK_INTERACTIVE_MODE env var not found on adapter container")
 	}
 }

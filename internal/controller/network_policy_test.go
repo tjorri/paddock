@@ -452,3 +452,64 @@ func TestNetworkPolicyEnforced(t *testing.T) {
 		}
 	}
 }
+
+// TestNetworkPolicy_InteractiveIngress verifies that an Interactive run's
+// per-run NetworkPolicy carries an ingress rule on TCP/8431 from the
+// broker pod, plus PolicyTypes[Ingress] so the rule is enforced.
+func TestNetworkPolicy_InteractiveIngress(t *testing.T) {
+	t.Parallel()
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "ns"},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			Mode: paddockv1alpha1.HarnessRunModeInteractive,
+		},
+	}
+	cfg := networkPolicyConfig{BrokerNamespace: "paddock-system"}
+	np := buildRunNetworkPolicy(run, cfg)
+	var has8431 bool
+	for _, ing := range np.Spec.Ingress {
+		for _, p := range ing.Ports {
+			if p.Port != nil && p.Port.IntValue() == 8431 {
+				has8431 = true
+			}
+		}
+	}
+	if !has8431 {
+		t.Fatalf("interactive run NetworkPolicy missing ingress for TCP/8431")
+	}
+	// PolicyTypes must include Ingress for the rule to take effect.
+	var hasIngressType bool
+	for _, pt := range np.Spec.PolicyTypes {
+		if pt == networkingv1.PolicyTypeIngress {
+			hasIngressType = true
+		}
+	}
+	if !hasIngressType {
+		t.Fatalf("interactive NP missing PolicyTypes[Ingress]")
+	}
+}
+
+// TestNetworkPolicy_BatchNoExtraIngress verifies that Batch runs do NOT
+// pick up the Interactive ingress rule or PolicyTypes[Ingress].
+func TestNetworkPolicy_BatchNoExtraIngress(t *testing.T) {
+	t.Parallel()
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "ns"},
+		Spec:       paddockv1alpha1.HarnessRunSpec{Mode: ""},
+	}
+	cfg := networkPolicyConfig{BrokerNamespace: "paddock-system"}
+	np := buildRunNetworkPolicy(run, cfg)
+	for _, ing := range np.Spec.Ingress {
+		for _, p := range ing.Ports {
+			if p.Port != nil && p.Port.IntValue() == 8431 {
+				t.Fatalf("batch run should not have TCP/8431 ingress")
+			}
+		}
+	}
+	// No PolicyTypes[Ingress] for batch.
+	for _, pt := range np.Spec.PolicyTypes {
+		if pt == networkingv1.PolicyTypeIngress {
+			t.Fatalf("batch run NP should not include PolicyTypes[Ingress]")
+		}
+	}
+}
