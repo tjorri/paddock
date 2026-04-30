@@ -48,8 +48,9 @@ type StreamFrame struct {
 // Reconnects with exponential backoff (1s/2s/4s/8s, max 5 attempts);
 // a successful dial resets the backoff counter.
 func (c *Client) Open(ctx context.Context, ns, run string) (<-chan StreamFrame, error) {
-	tok, err := c.auth.Get(ctx)
-	if err != nil {
+	// Validate the initial token fetch succeeds so a misconfigured client
+	// fails fast at Open() rather than silently looping in the goroutine.
+	if _, err := c.auth.Get(ctx); err != nil {
 		return nil, err
 	}
 
@@ -65,6 +66,19 @@ func (c *Client) Open(ctx context.Context, ns, run string) (<-chan StreamFrame, 
 			case <-ctx.Done():
 				return
 			default:
+			}
+
+			// Refresh the token on every dial so a long-lived stream picks
+			// up rotations from tokenCache. tokenCache caches near-half-TTL
+			// so this is cheap on the steady-state path.
+			tok, err := c.auth.Get(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				backoff(ctx, attempt)
+				attempt++
+				continue
 			}
 
 			conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{ //nolint:bodyclose // upgrade response body is hijacked by the WS conn

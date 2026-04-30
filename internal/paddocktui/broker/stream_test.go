@@ -22,7 +22,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -275,19 +274,19 @@ func TestStream_CtxCancel(t *testing.T) {
 	}
 }
 
-// TestStream_ReconnectCounterResets asserts that a successful reconnect
-// resets the backoff counter so a second disconnection starts the
-// delay sequence at 1s, not 8s.
+// TestStream_ReconnectCounterResets asserts that every successful dial
+// resets the backoff counter, so each subsequent disconnect-then-redial
+// pays only the attempt-0 cost (1s).
 //
-// Sequence:
+// Sequence: three drops after a fresh handshake, then the fourth dial
+// sends a frame.
 //
-//	conn 1: established (resets counter to 0), then drops
-//	conn 2: established (resets counter to 0), sends frame, closes cleanly
+//	With reset:    backoffs = 1+1+1 = 3s
+//	Without reset: backoffs = 1+2+4 = 7s
 //
-// If the counter were not reset after conn 1, attempt 0 for conn 2
-// would carry over and the delay before conn 2 would grow. We verify
-// that both drops are retried promptly (< 3s total), which is only
-// possible if the counter resets.
+// A 5s deadline distinguishes the two: a non-resetting implementation
+// would still be sleeping when the deadline fires; the resetting
+// implementation receives the frame around the 3s mark.
 func TestStream_ReconnectCounterResets(t *testing.T) {
 	t.Parallel()
 
@@ -300,42 +299,27 @@ func TestStream_ReconnectCounterResets(t *testing.T) {
 		if err != nil {
 			return
 		}
-
 		n := dialCount.Add(1)
-
-		switch n {
-		case 1:
-			// Drop immediately after accepting (simulates a crash right after
-			// the 101 handshake).
+		if n < 4 {
+			// Drop immediately to force a reconnect.
 			_ = conn.CloseNow()
-		case 2:
-			// Second connection: drop again after a tiny delay.
-			time.Sleep(5 * time.Millisecond)
-			_ = conn.CloseNow()
-		default:
-			// Third connection: send a frame and close cleanly.
-			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-			defer cancel()
-			defer conn.Close(websocket.StatusNormalClosure, "") //nolint:errcheck
-			frame := mustFrame(t, "done", map[string]string{"msg": "ok"})
-			_ = conn.Write(ctx, websocket.MessageText, frame)
+			return
 		}
+		// Fourth connection: send a frame and close cleanly.
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		defer conn.Close(websocket.StatusNormalClosure, "") //nolint:errcheck
+		frame := mustFrame(t, "done", map[string]string{"msg": "ok"})
+		_ = conn.Write(ctx, websocket.MessageText, frame)
 	}))
 	defer srv.Close()
 
 	c := newStreamTestClient(t, srv)
 
-	// If the counter does NOT reset, the sequence of delays would be:
-	//   after conn 1 drop: backoff(0) = 1s
-	//   after conn 2 drop: backoff(1) = 2s  (or backoff(0)=1s if it resets)
-	//   after conn 3 drop: backoff(2) = 4s  (or backoff(0)=1s if it resets)
-	// With two drops and reset we need at most 1+1 = 2s of backoff.
-	// Without reset we need at most 1+2 = 3s. Use 8s to be safe on slow
-	// CI, but the important signal is that we DO receive the frame, which
-	// only happens if reconnects are attempted.
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	start := time.Now()
 	ch, err := c.Open(ctx, "ns", "run1")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -349,13 +333,20 @@ func TestStream_ReconnectCounterResets(t *testing.T) {
 		if f.Type != "done" {
 			t.Errorf("frame.Type = %q, want done", f.Type)
 		}
+		elapsed := time.Since(start)
+		// With reset the frame should arrive in ~3s; without reset it
+		// would still be sleeping past the 5s deadline. Allow some slack
+		// for slow CI but stay below the no-reset floor of 7s.
+		if elapsed > 4500*time.Millisecond {
+			t.Errorf("frame took %s; counter likely not resetting (no-reset floor ~7s, reset target ~3s)", elapsed)
+		}
 	case <-ctx.Done():
-		t.Fatalf("timed out; dialCount=%d — reconnect counter may not be resetting",
-			dialCount.Load())
+		t.Fatalf("timed out at %s; dialCount=%d — counter not resetting (no-reset would take ~7s)",
+			time.Since(start), dialCount.Load())
 	}
 
-	if dialCount.Load() < 3 {
-		t.Errorf("dialCount = %d, want >= 3", dialCount.Load())
+	if got := dialCount.Load(); got < 4 {
+		t.Errorf("dialCount = %d, want >= 4", got)
 	}
 }
 
@@ -365,8 +356,8 @@ func TestStream_BearerTokenSent(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-			http.Error(w, "missing bearer", http.StatusUnauthorized)
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			http.Error(w, "missing or wrong bearer: "+got, http.StatusUnauthorized)
 			return
 		}
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
