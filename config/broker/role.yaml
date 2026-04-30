@@ -30,3 +30,15 @@ rules:
   - apiGroups: ["paddock.dev"]
     resources: ["auditevents"]
     verbs: ["create"]
+  # Resolve adapter pod IPs (InteractiveRouter) and patch run status
+  # (patchIssuedLeases on /prompts, patchAttachStatus on /stream).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["paddock.dev"]
+    resources: ["harnessruns/status"]
+    verbs: ["update", "patch"]
+  # Open shell sessions via SPDY against pods/exec (handleShell).
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
