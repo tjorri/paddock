@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -233,7 +234,7 @@ func (d *persistentDriver) Interrupt(_ context.Context) error {
 	// if the agent spawns helpers.
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGINT); err != nil {
 		// ESRCH means the group is already gone; treat as success.
-		if err == syscall.ESRCH {
+		if errors.Is(err, syscall.ESRCH) {
 			return nil
 		}
 		return fmt.Errorf("signal: %w", err)
@@ -292,17 +293,28 @@ func (d *persistentDriver) StreamHandler() http.Handler {
 			d.logger.Printf("websocket accept: %v", err)
 			return
 		}
-		defer func() { _ = c.Close(websocket.StatusInternalError, "exit") }()
+		// Derive a cancellable context so we can synchronize the
+		// outbound goroutine's exit with the deferred close. Without
+		// this, the goroutine's c.Write could race the close.
+		ctx, cancel := context.WithCancel(r.Context())
+		// done lets us wait for the outbound goroutine to return
+		// after we cancel, so CloseNow cannot race a concurrent
+		// c.Write.
+		done := make(chan struct{})
+		// Defers run LIFO: CloseNow last → first cancel ctx, then
+		// wait for the goroutine, then close the connection.
+		defer func() { _ = c.CloseNow() }()
+		defer func() { <-done }()
+		defer cancel()
 
 		ch := d.fanout.subscribe()
 		defer d.fanout.unsubscribe(ch)
-
-		ctx := r.Context()
 
 		// Outbound: drain the fanout to the client. When the inbound
 		// loop terminates (client disconnect or read error), ctx is
 		// canceled and Write returns; the goroutine exits.
 		go func() {
+			defer close(done)
 			for {
 				select {
 				case <-ctx.Done():
