@@ -140,6 +140,20 @@ func (c *ControllerAudit) EmitNetworkPolicyEnforcementWithdrawn(ctx context.Cont
 	}), "network-policy-enforcement-withdrawn")
 }
 
+// EmitInteractiveRunTerminated records a watchdog-driven termination of an
+// Interactive run. Reason is one of "idle", "detach", "max-lifetime"
+// (matching watchdogAction.Reason()). Decision is always Granted because
+// these are planned terminations under operator-configured timeouts; an
+// error-driven termination would route through EmitRunFailed instead.
+func (c *ControllerAudit) EmitInteractiveRunTerminated(ctx context.Context, runName, namespace, reason string) {
+	c.write(ctx, auditing.NewInteractiveRunTerminated(auditing.InteractiveRunTerminatedInput{
+		RunName:   runName,
+		Namespace: namespace,
+		Reason:    reason,
+		Decision:  paddockv1alpha1.AuditDecisionGranted,
+	}), "interactive-run-terminated")
+}
+
 // EmitBrokerCredsTampered records that the controller detected
 // unexpected keys on a run's broker-creds Secret (e.g., a tenant
 // `kubectl edit secret <run>-broker-creds` injecting an extra envFrom

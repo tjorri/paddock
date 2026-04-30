@@ -23,6 +23,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -143,7 +145,9 @@ func main() {
 		os.Exit(1)
 	}
 	brokerReady.Store(true)
-	_ = directClient // reserved for future direct-Secret reads if we move off the cached client
+	// directClient is the broker's uncached client — used by the
+	// adapter resolver below where the cached client's lazy-sync
+	// would race a freshly created pod.
 
 	kclient, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
@@ -175,7 +179,63 @@ func main() {
 		Providers:  registry,
 		Audit:      broker.NewAuditWriter(&auditing.KubeSink{Client: cachedClient, Component: "broker"}),
 		RunLimiter: broker.NewRunLimiterRegistry(),
+		RestConfig: cfg,
 	}
+
+	// Interactive wiring (Tasks 10-16): InteractiveRouter with an
+	// uncached adapter pod-IP resolver, and a RenewalWalker driving
+	// lazy credential renewal during /prompts.
+	//
+	// The resolver uses directClient (not cachedClient) on purpose:
+	// controller-runtime's cache lazy-starts an informer on the first
+	// List call, and the initial sync can take seconds — long enough
+	// that a /prompts arriving right after Phase=Running fails with
+	// "no ready pod" because the cache hasn't observed it yet. Pod
+	// resolution is low-frequency (one List per /prompts /interrupt
+	// /end /stream /shell call), so the apiserver round-trip is a
+	// fine trade for accuracy.
+	adapterResolver := func(ctx context.Context, ns, runName string) (string, error) {
+		var pods corev1.PodList
+		if err := directClient.List(ctx, &pods, client.InNamespace(ns), client.MatchingLabels{"paddock.dev/run": runName}); err != nil {
+			return "", fmt.Errorf("list pods: %w", err)
+		}
+		// Prefer Running pods with a non-empty PodIP and no
+		// DeletionTimestamp; among ties, most-recent CreationTimestamp.
+		// Mirrors the resolveRunPod selection in stream.go.
+		var best *corev1.Pod
+		for i := range pods.Items {
+			p := &pods.Items[i]
+			if p.DeletionTimestamp != nil || p.Status.PodIP == "" {
+				continue
+			}
+			if best == nil {
+				best = p
+				continue
+			}
+			br := best.Status.Phase == corev1.PodRunning
+			pr := p.Status.Phase == corev1.PodRunning
+			if pr && !br {
+				best = p
+				continue
+			}
+			if pr == br && p.CreationTimestamp.After(best.CreationTimestamp.Time) {
+				best = p
+			}
+		}
+		if best == nil {
+			return "", fmt.Errorf("no ready pod for run %s/%s", ns, runName)
+		}
+		return best.Status.PodIP + ":8431", nil
+	}
+	srv.Router = broker.NewInteractiveRouter(adapterResolver)
+
+	renewerRegistry := make(map[string]providers.Provider, 4)
+	for _, p := range registry.All() {
+		renewerRegistry[p.Name()] = p
+	}
+	srv.Renewer = broker.NewRenewalWalker(renewerRegistry, 5*time.Minute, srv.Audit)
+
+	setupLog.Info("interactive endpoints wired", "renewWindow", "5m", "adapterPort", 8431)
 
 	go func() {
 		t := time.NewTicker(time.Minute)

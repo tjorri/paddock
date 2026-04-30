@@ -41,6 +41,27 @@ rules:
       - auditevents
     verbs:
       - create
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - paddock.dev
+    resources:
+      - harnessruns/status
+    verbs:
+      - update
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - pods/exec
+    verbs:
+      - create
 ---
 ---
 apiVersion: rbac.authorization.k8s.io/v1

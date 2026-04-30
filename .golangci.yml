@@ -108,15 +108,39 @@ linters:
           - gosec
         text: "G104"
         path: internal/cli/.*
-      # gosec G301/G302: adapter and collector write event files into a
-      # Pod-local workspace directory (/paddock/…). 0o755 dirs and 0o644
+      # gosec G301/G302/G306: adapter and collector write event files into
+      # a Pod-local workspace directory (/paddock/…). 0o755 dirs and 0o644
       # files are intentional — sibling containers in the same Pod must be
-      # able to read the audit trail. The files are never exposed outside
-      # the Pod.
+      # able to read the audit trail. Test fakes (fake-claude.sh) need
+      # 0o755 to be exec'd. The files are never exposed outside the Pod.
       - linters:
           - gosec
-        text: "G30[12]"
+        text: "G30[126]"
         path: cmd/(adapter-claude-code|adapter-echo|collector)/.*
+      # gosec G204 / noctx: adapter-claude-code's per-prompt and
+      # persistent drivers spawn the claude binary whose path comes
+      # from the PADDOCK_CLAUDE_BINARY env var (controller-set on the
+      # agent container's Pod spec). Not user input. exec.Command is
+      # the canonical idiom; CommandContext can't be used here because
+      # the subprocess lifecycle is owned by Driver.Interrupt / End,
+      # not the incoming HTTP request context (which is cancelled when
+      # the broker hangs up after the 202 response and would otherwise
+      # kill the child immediately).
+      - linters:
+          - gosec
+          - noctx
+        text: "G204|os/exec.Command"
+        path: cmd/adapter-claude-code/.*
+      # gosec G703: per-prompt driver writes prompt files and events.jsonl
+      # under <PADDOCK_WORKSPACE>/.paddock/runs/<run>/. Both env vars are
+      # controller-set on the agent container's Pod spec (trusted control
+      # plane). gosec's taint analysis treats os.Getenv as user-controlled,
+      # which is spurious here — the agent container's environment is
+      # under operator control via the HarnessTemplate.
+      - linters:
+          - gosec
+        text: "G703"
+        path: cmd/adapter-claude-code/.*
       # gosec G304: file paths from variables in these packages come from
       # trusted sources:
       #   - cmd/adapter-*/collector: paths from flags/env set by the
@@ -189,6 +213,15 @@ linters:
           - gosec
         text: "G704"
         path: internal/proxy/broker_client\.go
+      # gosec G704: InteractiveRouter forwards to the adapter sidecar at
+      # an address resolved from the run pod's IP via a controller-runtime
+      # cache lookup (see cmd/broker/main.go's adapterResolver). Neither
+      # the URL host nor the path comes from user input — the resolver
+      # only emits "<podIP>:8431" / fixed paths /prompts /interrupt /end.
+      - linters:
+          - gosec
+        text: "G704"
+        path: internal/broker/router\.go
       # gosec G103: SO_ORIGINAL_DST recovery requires unsafe.Pointer to
       # pass a *RawSockaddrInet4 to syscall.Syscall6 — the canonical Linux
       # idiom for raw socket-options not exposed by the stdlib syscall

@@ -37,6 +37,9 @@ whether to use a vertical provider (Anthropic, GitHub App, PAT pool) or
   iterate-and-deny loop for new harnesses.
 - [discovery-window.md](./discovery-window.md) — `egressDiscovery` for
   bootstrapping a large or unfamiliar surface.
+- [interactive-harnessruns.md](./interactive-harnessruns.md) — long-lived
+  multi-prompt runs, the `runs.{interact,shell}` grants, lifecycle
+  timeouts, and the prompt/stream/shell endpoints.
 
 ## Related reading
 

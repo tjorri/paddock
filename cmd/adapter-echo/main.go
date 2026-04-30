@@ -30,14 +30,25 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 )
 
-const defaultPoll = 200 * time.Millisecond
+const (
+	defaultPoll = 200 * time.Millisecond
+	// Bind to all interfaces. The broker connects from another pod via
+	// the run pod's eth0 IP, so a loopback-only listener (127.0.0.1)
+	// would be unreachable. NetworkPolicy ingress (controller Task 12)
+	// restricts the actual peer set to broker-namespace + broker-pod
+	// labels, which is the load-bearing security gate.
+	defaultInteractiveAddr = ":8431"
+)
 
 func main() {
 	rawPath := flag.String("raw", envOr("PADDOCK_RAW_PATH", "/paddock/raw/out"), "Path to raw input JSONL (tailed).")
@@ -48,8 +59,115 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	if os.Getenv("PADDOCK_INTERACTIVE_MODE") != "" {
+		// We deliberately don't log the env-var value: gosec's taint
+		// tracker treats os.Getenv as user-controlled (G706), and the
+		// value carries no operator-debug signal beyond "interactive
+		// vs batch", which the address line below already tells you.
+		log.Printf("adapter-echo: starting in interactive mode")
+		var lc net.ListenConfig
+		ln, err := lc.Listen(ctx, "tcp", defaultInteractiveAddr)
+		if err != nil {
+			log.Fatalf("adapter-echo interactive: listen %s: %v", defaultInteractiveAddr, err)
+		}
+		if err := runInteractive(ctx, ln, *eventsPath); err != nil {
+			log.Fatalf("adapter-echo interactive: %v", err)
+		}
+		return
+	}
+
 	if err := run(ctx, *rawPath, *eventsPath, *poll); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("adapter-echo: %v", err)
+	}
+}
+
+// runInteractive starts the loopback HTTP server for interactive mode and
+// blocks until ctx is cancelled (SIGTERM/SIGINT) or the server fails.
+//
+// It mirrors cmd/adapter-claude-code's runInteractive but for the echo
+// harness — no per-prompt subprocess and no WebSocket /stream (the e2e
+// MVP for the echo harness does not exercise streaming). Each handler
+// returns 202 Accepted; /prompts also appends a synthetic PaddockEvent
+// to events.jsonl so a tailing collector can observe that the prompt
+// arrived.
+func runInteractive(ctx context.Context, ln net.Listener, eventsPath string) error {
+	if err := os.MkdirAll(filepath.Dir(eventsPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir events dir: %w", err)
+	}
+	out, err := os.OpenFile(eventsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open events: %w", err)
+	}
+	defer out.Close()
+
+	enc := json.NewEncoder(out)
+	var mu sync.Mutex // serialises events.jsonl writes
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/prompts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		// Drain up to 256 KiB of the body just to consume it; the echo
+		// adapter is a stub and doesn't actually process the prompt
+		// content beyond echoing it into events.jsonl.
+		var body struct {
+			Text string `json:"text"`
+			Seq  int32  `json:"seq"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 256*1024)).Decode(&body)
+		mu.Lock()
+		_ = enc.Encode(map[string]any{
+			"schemaVersion": "1",
+			"ts":            time.Now().UTC().Format(time.RFC3339Nano),
+			"type":          "Message",
+			"summary":       fmt.Sprintf("interactive echo received prompt seq=%d", body.Seq),
+			"fields":        map[string]string{"text": body.Text},
+		})
+		_ = out.Sync()
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	})
+	mux.HandleFunc("/interrupt", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	mux.HandleFunc("/end", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("adapter-echo interactive: listening on %s", ln.Addr())
+		errCh <- srv.Serve(ln)
+	}()
+
+	select {
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return fmt.Errorf("interactive server: %w", err)
+	case <-ctx.Done():
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+		return nil
 	}
 }
 

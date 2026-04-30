@@ -36,6 +36,56 @@ import (
 	"time"
 )
 
+// newPerPromptDriver constructs a Driver for "per-prompt-process" mode.
+func newPerPromptDriver(logger *log.Logger) Driver { return NewPerPromptDriver(logger) }
+
+// newPersistentDriver constructs a Driver for "persistent-process" mode.
+func newPersistentDriver(logger *log.Logger) Driver { return NewPersistentDriver(logger) }
+
+// runInteractive starts the loopback HTTP server for interactive mode and
+// blocks until SIGTERM or SIGINT is received.
+func runInteractive(mode string) {
+	logger := log.New(os.Stderr, "adapter-claude-code: ", log.LstdFlags)
+
+	var drv Driver
+	switch mode {
+	case "per-prompt-process":
+		drv = newPerPromptDriver(logger)
+	case "persistent-process":
+		drv = newPersistentDriver(logger)
+	default:
+		logger.Fatalf("unknown PADDOCK_INTERACTIVE_MODE %q", mode)
+	}
+
+	srv := NewServer(Config{Mode: mode, Driver: drv})
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	// Bind to all interfaces. The broker connects from another pod via
+	// the run pod's eth0 IP, so a loopback-only listener (127.0.0.1)
+	// would be unreachable. NetworkPolicy ingress (controller Task 12)
+	// restricts the actual peer set to broker-namespace + broker-pod.
+	ln, err := srv.Listen(ctx, ":8431")
+	if err != nil {
+		logger.Fatalf("listen: %v", err)
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutCtx); err != nil {
+			logger.Printf("shutdown: %v", err)
+		}
+	}()
+
+	logger.Printf("interactive mode %q listening on %s", mode, ln.Addr())
+	if err := srv.Serve(ln); err != nil {
+		logger.Fatalf("serve: %v", err)
+	}
+}
+
 const defaultPoll = 200 * time.Millisecond
 
 func main() {
@@ -43,6 +93,11 @@ func main() {
 	eventsPath := flag.String("events", envOr("PADDOCK_EVENTS_PATH", "/paddock/events/events.jsonl"), "Path to PaddockEvents output JSONL.")
 	poll := flag.Duration("poll", defaultPoll, "Poll interval while tailing input.")
 	flag.Parse()
+
+	if mode := os.Getenv("PADDOCK_INTERACTIVE_MODE"); mode != "" {
+		runInteractive(mode)
+		return
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

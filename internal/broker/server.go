@@ -32,6 +32,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -70,6 +71,21 @@ type Server struct {
 	// against per-(namespace, run) token buckets. Tests may leave this
 	// nil to bypass rate limiting; production wires it via cmd/broker.
 	RunLimiter *RunLimiterRegistry
+
+	// Router is required for /prompts, /interrupt, /end. May be nil at
+	// construction time and wired by cmd/broker once the resolver is
+	// available; handlers reject with 503 when nil.
+	Router *InteractiveRouter
+
+	// Renewer drives lazy credential renewal during /prompts. May be nil
+	// in tests; the prompts handler skips renewal when unset.
+	Renewer *RenewalWalker
+
+	// RestConfig is the rest.Config the broker initialised at startup.
+	// Used by the /shell handler to dial the K8s pods/exec subresource
+	// via SPDY. May be nil in tests that don't exercise /shell;
+	// handleShell returns 503 NotConfigured when nil.
+	RestConfig *rest.Config
 }
 
 // Register installs the broker's handlers on the given mux.
@@ -78,6 +94,24 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc(brokerapi.PathRevoke, limitBody(s.handleRevoke))
 	mux.HandleFunc(brokerapi.PathValidateEgress, limitBody(s.handleValidateEgress))
 	mux.HandleFunc(brokerapi.PathSubstituteAuth, limitBody(s.handleSubstituteAuth))
+
+	// Interactive endpoints — gated by runs.interact in BrokerPolicy.
+	// Body caps are enforced inside the handlers (MaxInlinePromptBytes
+	// for /prompts; interactiveSmallBodyCap for /interrupt and /end) so
+	// the prompt cap matches the CRD-level constant exactly.
+	mux.HandleFunc("POST /v1/runs/{ns}/{name}/prompts", s.handlePrompts)
+	mux.HandleFunc("POST /v1/runs/{ns}/{name}/interrupt", s.handleInterrupt)
+	mux.HandleFunc("POST /v1/runs/{ns}/{name}/end", s.handleEnd)
+
+	// Streaming endpoint: WebSocket reverse proxy onto the adapter's
+	// /stream. Not wrapped in limitBody — WebSocket needs the raw body
+	// for the upgrade handshake.
+	mux.HandleFunc("GET /v1/runs/{ns}/{name}/stream", s.handleStream)
+
+	// Shell endpoint: WebSocket-tunneled kubectl exec into the run pod.
+	// Gated by runs.shell in BrokerPolicy. Not wrapped in limitBody for
+	// the same reason as /stream.
+	mux.HandleFunc("GET /v1/runs/{ns}/{name}/shell", s.handleShell)
 }
 
 // handleIssue is the core endpoint. It authenticates the caller, looks

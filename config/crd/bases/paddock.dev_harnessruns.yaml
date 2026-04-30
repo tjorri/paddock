@@ -224,6 +224,33 @@ spec:
                   - name
                   type: object
                 type: array
+              interactiveOverrides:
+                description: |-
+                  InteractiveOverrides allows per-run overrides of the template's
+                  interactive timing values. Each override is bounded by the
+                  template's value (override may not exceed the template's bound).
+                  Ignored unless Mode == Interactive.
+                properties:
+                  detachIdleTimeout:
+                    type: string
+                  detachTimeout:
+                    type: string
+                  idleTimeout:
+                    type: string
+                  maxLifetime:
+                    type: string
+                type: object
+              mode:
+                description: |-
+                  Mode selects Batch (default — one-shot) or Interactive (long-lived
+                  pod, multi-prompt). When Interactive, the resolved template's
+                  spec.interactive.mode must be non-empty (admission webhook
+                  enforces). Immutable after creation, like the rest of the spec.
+                enum:
+                - ""
+                - Batch
+                - Interactive
+                type: string
               model:
                 description: |-
                   Model overrides the template's default model (exported as
@@ -516,6 +543,62 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              interactive:
+                description: |-
+                  Interactive carries live-session counters and timestamps for
+                  Interactive runs. Nil for Batch runs.
+                properties:
+                  attachedSessions:
+                    description: |-
+                      AttachedSessions is the current number of client sessions attached
+                      to the run's prompt stream or shell endpoint. Always serialized.
+                    format: int32
+                    type: integer
+                  currentTurnSeq:
+                    description: |-
+                      CurrentTurnSeq is the monotonically increasing sequence number of
+                      the prompt turn currently in progress. Nil when no turn is active.
+                    format: int32
+                    type: integer
+                  idleSince:
+                    description: |-
+                      IdleSince is the time the run entered the Idle phase most recently.
+                      Nil if the run has never been idle.
+                    format: date-time
+                    type: string
+                  lastAttachedAt:
+                    description: LastAttachedAt is the time the most recent session
+                      attached.
+                    format: date-time
+                    type: string
+                  lastPromptAt:
+                    description: LastPromptAt is the time the most recent prompt was
+                      received.
+                    format: date-time
+                    type: string
+                  lastRenewalAt:
+                    description: LastRenewalAt is the time of the most recent credential
+                      renewal.
+                    format: date-time
+                    type: string
+                  promptCount:
+                    description: |-
+                      PromptCount is the total number of prompt turns submitted since the
+                      run started. Always serialized (no omitempty) — zero is a real
+                      observable value for status consumers.
+                    format: int32
+                    type: integer
+                  renewalCount:
+                    description: |-
+                      RenewalCount is the total number of credential renewals completed
+                      for this run. Always serialized.
+                    format: int32
+                    type: integer
+                required:
+                - attachedSessions
+                - promptCount
+                - renewalCount
+                type: object
               issuedLeases:
                 description: |-
                   IssuedLeases records every credential lease the broker has minted
@@ -635,6 +718,7 @@ spec:
                 enum:
                 - Pending
                 - Running
+                - Idle
                 - Succeeded
                 - Failed
                 - Cancelled

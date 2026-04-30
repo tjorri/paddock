@@ -27,4 +27,6 @@ WORKDIR /
 COPY --from=builder /workspace/adapter-claude-code .
 USER 65532:65532
 
+LABEL paddock.dev/interactive-modes="per-prompt-process,persistent-process"
+
 ENTRYPOINT ["/adapter-claude-code"]

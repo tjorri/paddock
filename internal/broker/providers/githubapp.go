@@ -106,6 +106,9 @@ type GitHubAppProvider struct {
 // githubLease tracks what a minted Paddock bearer stands for. The
 // provider config is copied in at Issue time so a later BrokerPolicy
 // edit doesn't silently shift which App a live bearer maps to.
+//
+// Fields are immutable after Issue except ExpiresAt, which is updated
+// by Renew under p.mu.
 type githubLease struct {
 	Namespace      string
 	SecretRef      paddockv1alpha1.SecretKeyReference
@@ -145,8 +148,9 @@ type installationToken struct {
 
 // Compile-time checks.
 var (
-	_ Provider    = (*GitHubAppProvider)(nil)
-	_ Substituter = (*GitHubAppProvider)(nil)
+	_ Provider          = (*GitHubAppProvider)(nil)
+	_ Substituter       = (*GitHubAppProvider)(nil)
+	_ RenewableProvider = (*GitHubAppProvider)(nil)
 )
 
 func (p *GitHubAppProvider) Name() string { return "GitHubApp" }
@@ -435,6 +439,93 @@ func (p *GitHubAppProvider) exchangeInstallationToken(ctx context.Context, lease
 		expires = p.now().Add(defaultGitHubAppTokenTTL)
 	}
 	return out.Token, expires, nil
+}
+
+// Renew re-issues a GitHub App installation token for an existing
+// lease without changing the lease's identity. It looks up the
+// in-memory githubLease by LeaseID (to recover the original install
+// config), mints a fresh App JWT, and exchanges it for a new
+// installation token via /app/installations/{id}/access_tokens.
+//
+// The returned IssueResult carries the new raw installation token as
+// Value, the preserved LeaseID, and the GitHub-reported ExpiresAt.
+// Renew does NOT mint a new Paddock bearer — the existing bearer
+// remains valid and still resolves to the refreshed token.
+//
+// Note: unlike Issue, Renew returns the *raw GitHub installation
+// token* in Value, not a Paddock bearer. The Paddock bearer is stable
+// across renewals (the broker's substitution path uses the cached
+// token transparently). Value here is the fresh material for
+// InContainer-mode env updates and for status reflection.
+func (p *GitHubAppProvider) Renew(ctx context.Context, lease paddockv1alpha1.IssuedLease) (*IssueResult, error) {
+	internal := p.leaseByID(lease.LeaseID)
+	if internal == nil {
+		return nil, fmt.Errorf("GitHubApp.Renew: no in-memory lease for leaseID %q", lease.LeaseID)
+	}
+
+	var secret corev1.Secret
+	secretKey := types.NamespacedName{Name: internal.SecretRef.Name, Namespace: internal.Namespace}
+	if err := p.Client.Get(ctx, secretKey, &secret); err != nil {
+		return nil, fmt.Errorf("GitHubApp.Renew: reading secret %s/%s: %w", internal.Namespace, internal.SecretRef.Name, err)
+	}
+	privPEM := secret.Data[internal.SecretRef.Key]
+	if len(privPEM) == 0 {
+		return nil, fmt.Errorf("GitHubApp.Renew: key %q missing or empty in secret %s/%s",
+			internal.SecretRef.Key, internal.Namespace, internal.SecretRef.Name)
+	}
+	privKey, err := parsePrivateKey(privPEM)
+	if err != nil {
+		return nil, fmt.Errorf("GitHubApp.Renew: parsing private key: %w", err)
+	}
+
+	jwt, err := signAppJWT(internal.AppID, privKey, p.now())
+	if err != nil {
+		return nil, fmt.Errorf("GitHubApp.Renew: signing app JWT: %w", err)
+	}
+
+	token, expiresAt, err := p.exchangeInstallationToken(ctx, internal, jwt)
+	if err != nil {
+		return nil, fmt.Errorf("GitHubApp.Renew: %w", err)
+	}
+
+	// Update the in-memory lease expiry AND the cached token together
+	// under one lock acquisition. The lease.ExpiresAt write must be
+	// atomic with respect to SubstituteAuth's expiry check — without
+	// it, a SubstituteAuth at the original expiry instant would reject
+	// the bearer as expired even though the token cache is fresh.
+	key := githubTokenKey{
+		RunName:        internal.RunName,
+		Namespace:      internal.Namespace,
+		CredentialName: internal.CredentialName,
+	}
+	p.mu.Lock()
+	internal.ExpiresAt = expiresAt
+	if p.tokens == nil {
+		p.tokens = make(map[githubTokenKey]*installationToken)
+	}
+	p.tokens[key] = &installationToken{Token: token, ExpiresAt: expiresAt}
+	p.mu.Unlock()
+
+	return &IssueResult{
+		Value:        token,
+		LeaseID:      lease.LeaseID,
+		ExpiresAt:    expiresAt,
+		DeliveryMode: "ProxyInjected",
+		Hosts:        internal.AllowedHosts,
+	}, nil
+}
+
+// leaseByID returns the first in-memory githubLease whose LeaseID
+// matches leaseID, or nil if not found. Safe for concurrent use.
+func (p *GitHubAppProvider) leaseByID(leaseID string) *githubLease {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, lease := range p.bearers {
+		if lease.LeaseID == leaseID {
+			return lease
+		}
+	}
+	return nil
 }
 
 // sweep drops expired bearers + tokens. Holds the provider lock; call

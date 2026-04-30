@@ -10,7 +10,7 @@ see [`architecture.md`](architecture.md) once written.
 | Component | Role |
 |---|---|
 | `ClusterHarnessTemplate` / `HarnessTemplate` | Pod shape + `requires` capability declarations |
-| `HarnessRun` | One invocation of a template with a prompt |
+| `HarnessRun` | One invocation of a template — Batch (default, single prompt) or Interactive (long-lived pod, multi-prompt). See [`../guides/interactive-harnessruns.md`](../guides/interactive-harnessruns.md). |
 | `Workspace` | PVC with optional multi-repo git seeding |
 | `BrokerPolicy` | Operator's consent surface: which credentials + egress + gitRepos the broker will back |
 | `AuditEvent` | Per-decision security trail with TTL-based retention |

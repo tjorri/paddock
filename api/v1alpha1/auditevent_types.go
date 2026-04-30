@@ -42,7 +42,7 @@ const (
 
 // AuditKind names the category of a recorded decision. See spec 0002 §9
 // for the full taxonomy.
-// +kubebuilder:validation:Enum=credential-issued;credential-denied;credential-renewed;credential-revoked;egress-allow;egress-block;egress-block-summary;egress-discovery-allow;policy-applied;policy-rejected;broker-unavailable;run-failed;run-completed;ca-projected;network-policy-enforcement-withdrawn;ca-misconfigured;broker-creds-tampered;interception-mode-cooperative-accepted
+// +kubebuilder:validation:Enum=credential-issued;credential-denied;credential-renewed;credential-revoked;egress-allow;egress-block;egress-block-summary;egress-discovery-allow;policy-applied;policy-rejected;broker-unavailable;run-failed;run-completed;ca-projected;network-policy-enforcement-withdrawn;ca-misconfigured;broker-creds-tampered;interception-mode-cooperative-accepted;prompt-submitted;prompt-completed;shell-session-opened;shell-session-closed;credential-renewal-failed;interactive-run-terminated
 type AuditKind string
 
 const (
@@ -67,6 +67,13 @@ const (
 	// startup when --mode=cooperative. Carries the BrokerPolicy reason for
 	// the audit trail (F-19 residual).
 	AuditKindInterceptionModeCooperativeAccepted AuditKind = "interception-mode-cooperative-accepted"
+
+	AuditKindPromptSubmitted          AuditKind = "prompt-submitted"
+	AuditKindPromptCompleted          AuditKind = "prompt-completed"
+	AuditKindShellSessionOpened       AuditKind = "shell-session-opened"
+	AuditKindShellSessionClosed       AuditKind = "shell-session-closed"
+	AuditKindCredentialRenewalFailed  AuditKind = "credential-renewal-failed"
+	AuditKindInteractiveRunTerminated AuditKind = "interactive-run-terminated"
 )
 
 // AuditEventSpec records one security-relevant decision. Write-once:
@@ -138,6 +145,14 @@ type AuditEventSpec struct {
 
 	// +optional
 	WindowEnd *metav1.Time `json:"windowEnd,omitempty"`
+
+	// Detail carries kind-specific key-value pairs that do not fit the
+	// structured fields above. Used by interactive lifecycle kinds
+	// (prompt-submitted, shell-session-*, credential-renewal-failed,
+	// interactive-run-terminated) and any future kinds that need
+	// extensible metadata without CRD schema churn.
+	// +optional
+	Detail map[string]string `json:"detail,omitempty"`
 }
 
 // AuditDestination describes an upstream target.

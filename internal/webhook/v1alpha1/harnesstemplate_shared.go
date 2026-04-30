@@ -19,10 +19,18 @@ package v1alpha1
 import (
 	"fmt"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
+
+// durationField pairs a field name with its duration pointer for deterministic
+// iteration over InteractiveSpec duration fields.
+type durationField struct {
+	name string
+	val  *metav1.Duration
+}
 
 // validateHarnessTemplateSpec enforces the shared validation rules for
 // ClusterHarnessTemplate and HarnessTemplate. See docs/contributing/adr/0003-template-
@@ -93,10 +101,13 @@ func validateHarnessTemplateSpec(spec *paddockv1alpha1.HarnessTemplateSpec, isCl
 
 	errs = append(errs, validateRequireSpec(specPath.Child("requires"), &spec.Requires)...)
 
-	if len(errs) == 0 {
-		return nil
+	errs = append(errs, validateInteractiveSpec(spec.Interactive, specPath.Child("interactive"))...)
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", errs.ToAggregate().Error())
 	}
-	return fmt.Errorf("%s", errs.ToAggregate().Error())
+
+	return nil
 }
 
 // MaxTerminationGracePeriodSeconds caps the per-template grace period
@@ -160,5 +171,52 @@ func validateRequireSpec(p *field.Path, req *paddockv1alpha1.RequireSpec) field.
 		}
 	}
 
+	return errs
+}
+
+// validateInteractiveSpec checks the optional InteractiveSpec for
+// internally-consistent timeout bounds. The Mode field's enum is
+// enforced by the kubebuilder validation tag at the API layer; here we
+// only check cross-field invariants and positive durations.
+func validateInteractiveSpec(in *paddockv1alpha1.InteractiveSpec, fldPath *field.Path) field.ErrorList {
+	if in == nil {
+		return nil
+	}
+	var errs field.ErrorList
+
+	mustBePositive := func(childName string, d *metav1.Duration) {
+		if d == nil {
+			return
+		}
+		if d.Duration <= 0 {
+			errs = append(errs, field.Invalid(fldPath.Child(childName), d.Duration, "must be positive"))
+		}
+	}
+
+	// Iterate in a fixed order so error messages are deterministic.
+	for _, f := range []durationField{
+		{"idleTimeout", in.IdleTimeout},
+		{"detachIdleTimeout", in.DetachIdleTimeout},
+		{"detachTimeout", in.DetachTimeout},
+		{"maxLifetime", in.MaxLifetime},
+	} {
+		mustBePositive(f.name, f.val)
+	}
+
+	if in.IdleTimeout != nil && in.MaxLifetime != nil &&
+		in.IdleTimeout.Duration > in.MaxLifetime.Duration {
+		errs = append(errs, field.Invalid(fldPath.Child("idleTimeout"), in.IdleTimeout.Duration,
+			"idleTimeout must not exceed maxLifetime"))
+	}
+	if in.DetachTimeout != nil && in.MaxLifetime != nil &&
+		in.DetachTimeout.Duration > in.MaxLifetime.Duration {
+		errs = append(errs, field.Invalid(fldPath.Child("detachTimeout"), in.DetachTimeout.Duration,
+			"detachTimeout must not exceed maxLifetime"))
+	}
+	if in.DetachIdleTimeout != nil && in.IdleTimeout != nil &&
+		in.DetachIdleTimeout.Duration > in.IdleTimeout.Duration {
+		errs = append(errs, field.Invalid(fldPath.Child("detachIdleTimeout"), in.DetachIdleTimeout.Duration,
+			"detachIdleTimeout must not exceed idleTimeout"))
+	}
 	return errs
 }

@@ -22,6 +22,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	"paddock.dev/paddock/internal/auditing"
 )
 
@@ -117,4 +118,36 @@ func (w *AuditWriter) CredentialRevoked(ctx context.Context, e CredentialAudit) 
 		Reason:         e.Reason,
 		When:           e.When,
 	}))
+}
+
+// CredentialRenewed emits an audit event for a successful renewal.
+func (w *AuditWriter) CredentialRenewed(ctx context.Context, namespace, runName, provider, leaseID string, expiresAt time.Time) {
+	_ = w.sink().Write(ctx, auditing.NewCredentialRenewed(auditing.CredentialRenewedInput{
+		RunName:   runName,
+		Namespace: namespace,
+		Provider:  provider,
+		LeaseID:   leaseID,
+		ExpiresAt: expiresAt,
+	}))
+}
+
+// CredentialRenewalFailed emits an audit event for a renewal failure.
+func (w *AuditWriter) CredentialRenewalFailed(ctx context.Context, namespace, runName, provider, leaseID string, err error) {
+	_ = w.sink().Write(ctx, auditing.NewCredentialRenewalFailed(auditing.CredentialRenewalFailedInput{
+		RunName:   runName,
+		Namespace: namespace,
+		Provider:  provider,
+		LeaseID:   leaseID,
+		Error:     err.Error(),
+	}))
+}
+
+// Write is a thin shim that lets handlers emit pre-built AuditEvents
+// (constructed via auditing.New* builders) through the same Sink as the
+// older typed helpers. New broker code should consume an auditing.Sink
+// directly via Server.Sink once the migration tracked in the B-11
+// mini-card lands; until then, this shim keeps callers off the
+// non-exported sink() helper.
+func (w *AuditWriter) Write(ctx context.Context, ae *paddockv1alpha1.AuditEvent) error {
+	return w.sink().Write(ctx, ae)
 }

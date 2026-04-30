@@ -201,6 +201,58 @@ spec:
                   Image is the agent container image. Required when BaseTemplateRef is
                   not set. Locked (must be empty) when inheriting.
                 type: string
+              interactive:
+                description: |-
+                  Interactive declares the template's interactive-mode support and
+                  lifecycle defaults. When nil, runs against this template may not
+                  set spec.mode: Interactive (admission rejects). Always overridable
+                  on namespaced templates that inherit a ClusterHarnessTemplate.
+                properties:
+                  detachIdleTimeout:
+                    default: 15m
+                    description: |-
+                      DetachIdleTimeout is the maximum idle time when no client is
+                      attached. Default 15m.
+                    type: string
+                  detachTimeout:
+                    default: 5m
+                    description: |-
+                      DetachTimeout is the maximum time with zero attached clients
+                      before termination. Default 5m.
+                    type: string
+                  idleTimeout:
+                    default: 30m
+                    description: |-
+                      IdleTimeout is the maximum time since the last completed prompt
+                      before the run terminates, while at least one client is attached.
+                      Default 30m.
+                    type: string
+                  maxLifetime:
+                    default: 24h
+                    description: |-
+                      MaxLifetime is the absolute hard cap on run lifetime regardless
+                      of activity. Default 24h. Non-negotiable upper bound.
+                    type: string
+                  maxRecentEvents:
+                    description: |-
+                      MaxRecentEvents overrides HarnessRun.status.recentEvents ring size
+                      for runs against this template. Default 50; bounded [10, 500].
+                    format: int32
+                    maximum: 500
+                    minimum: 10
+                    type: integer
+                  mode:
+                    description: |-
+                      Mode declares which interactive implementation strategy the
+                      template's adapter image supports. The adapter image must declare
+                      a matching value via paddock.dev/interactive-modes annotation
+                      (validated at pod-spec generation, not at template admission).
+                    enum:
+                    - ""
+                    - per-prompt-process
+                    - persistent-process
+                    type: string
+                type: object
               podTemplateOverlay:
                 description: |-
                   PodTemplateOverlay is strategically merged into the generated

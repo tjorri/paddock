@@ -721,4 +721,56 @@ var _ = Describe("BrokerPolicy Webhook", func() {
 			Expect(err).To(HaveOccurred())
 		})
 	})
+
+	// --- Runs capability grant -------------------------------------------
+
+	Context("TestValidateBrokerPolicySpec_Runs", func() {
+		It("nil runs is fine", func() {
+			spec := minimalSpec()
+			spec.Grants.Runs = nil
+			Expect(validate(spec)).To(Succeed())
+		})
+
+		It("interact only is fine", func() {
+			spec := minimalSpec()
+			spec.Grants.Runs = &paddockv1alpha1.GrantRunsCapabilities{
+				Interact: true,
+			}
+			Expect(validate(spec)).To(Succeed())
+		})
+
+		It("shell with valid target is fine", func() {
+			spec := minimalSpec()
+			spec.Grants.Runs = &paddockv1alpha1.GrantRunsCapabilities{
+				Shell: &paddockv1alpha1.ShellCapability{
+					Target: "agent",
+				},
+			}
+			Expect(validate(spec)).To(Succeed())
+		})
+
+		It("shell with invalid phase rejected", func() {
+			spec := minimalSpec()
+			spec.Grants.Runs = &paddockv1alpha1.GrantRunsCapabilities{
+				Shell: &paddockv1alpha1.ShellCapability{
+					AllowedPhases: []paddockv1alpha1.HarnessRunPhase{"Pending"},
+				},
+			}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("Pending"))
+		})
+
+		It("shell with command but no abs path rejected", func() {
+			spec := minimalSpec()
+			spec.Grants.Runs = &paddockv1alpha1.GrantRunsCapabilities{
+				Shell: &paddockv1alpha1.ShellCapability{
+					Command: []string{"bash"},
+				},
+			}
+			err := validate(spec)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must be an absolute path"))
+		})
+	})
 })

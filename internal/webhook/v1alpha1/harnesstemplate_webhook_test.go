@@ -17,8 +17,13 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"strings"
+	"testing"
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 )
@@ -294,3 +299,110 @@ var _ = Describe("HarnessTemplate Webhook", func() {
 		})
 	})
 })
+
+func TestValidateHarnessTemplateSpec_Interactive(t *testing.T) {
+	t.Parallel()
+	dur := func(s string) *metav1.Duration {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			t.Fatalf("parse duration %q: %v", s, err)
+		}
+		return &metav1.Duration{Duration: d}
+	}
+	cases := []struct {
+		name    string
+		mutate  func(s *paddockv1alpha1.HarnessTemplateSpec)
+		wantErr string // substring; "" means no error
+	}{
+		{
+			name: "interactive nil is fine",
+			mutate: func(s *paddockv1alpha1.HarnessTemplateSpec) {
+				s.Interactive = nil
+			},
+		},
+		{
+			name: "mode empty is fine (declared-but-disabled)",
+			mutate: func(s *paddockv1alpha1.HarnessTemplateSpec) {
+				s.Interactive = &paddockv1alpha1.InteractiveSpec{Mode: ""}
+			},
+		},
+		{
+			name: "mode per-prompt-process is fine",
+			mutate: func(s *paddockv1alpha1.HarnessTemplateSpec) {
+				s.Interactive = &paddockv1alpha1.InteractiveSpec{
+					Mode: "per-prompt-process",
+				}
+			},
+		},
+		{
+			name: "mode persistent-process is fine",
+			mutate: func(s *paddockv1alpha1.HarnessTemplateSpec) {
+				s.Interactive = &paddockv1alpha1.InteractiveSpec{
+					Mode: "persistent-process",
+				}
+			},
+		},
+		{
+			name: "detachTimeout > maxLifetime is rejected",
+			mutate: func(s *paddockv1alpha1.HarnessTemplateSpec) {
+				s.Interactive = &paddockv1alpha1.InteractiveSpec{
+					Mode:          "per-prompt-process",
+					DetachTimeout: dur("48h"),
+					MaxLifetime:   dur("24h"),
+				}
+			},
+			wantErr: "detachTimeout must not exceed maxLifetime",
+		},
+		{
+			name: "idleTimeout > maxLifetime is rejected",
+			mutate: func(s *paddockv1alpha1.HarnessTemplateSpec) {
+				s.Interactive = &paddockv1alpha1.InteractiveSpec{
+					Mode:        "per-prompt-process",
+					IdleTimeout: dur("36h"),
+					MaxLifetime: dur("24h"),
+				}
+			},
+			wantErr: "idleTimeout must not exceed maxLifetime",
+		},
+		{
+			name: "detachIdleTimeout > idleTimeout is rejected (loosens against intent)",
+			mutate: func(s *paddockv1alpha1.HarnessTemplateSpec) {
+				s.Interactive = &paddockv1alpha1.InteractiveSpec{
+					Mode:              "per-prompt-process",
+					IdleTimeout:       dur("10m"),
+					DetachIdleTimeout: dur("30m"),
+				}
+			},
+			wantErr: "detachIdleTimeout must not exceed idleTimeout",
+		},
+		{
+			name: "negative timeout rejected",
+			mutate: func(s *paddockv1alpha1.HarnessTemplateSpec) {
+				s.Interactive = &paddockv1alpha1.InteractiveSpec{
+					Mode:        "per-prompt-process",
+					IdleTimeout: &metav1.Duration{Duration: -time.Second},
+				}
+			},
+			wantErr: "must be positive",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := &paddockv1alpha1.HarnessTemplateSpec{
+				Harness: "echo",
+				Image:   "paddock-echo:v1",
+				Command: []string{"/bin/echo"},
+			}
+			tc.mutate(s)
+			err := validateHarnessTemplateSpec(s, false /* not cluster-scoped */)
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("got error %v, want nil", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("got error %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}

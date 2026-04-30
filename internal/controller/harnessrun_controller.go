@@ -614,7 +614,77 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	run.Status.Phase = newPhase
 
-	// 8. Commit status; release workspace on terminal transitions.
+	// 8. Interactive watchdog: fire idle / detach / max-lifetime
+	// deadlines into a terminal Cancelled. Skipped on terminal
+	// transitions in this same pass — the Job already drove the run to
+	// Succeeded/Failed/Cancelled and the watchdog has nothing to add.
+	// Only Idle and Running are watchdog-eligible: Pending runs don't
+	// have a meaningful idle/detach baseline yet.
+	var (
+		watchdogReq      ctrl.Result
+		watchdogFired    bool
+		watchdogReason   string
+		watchdogHasAfter bool
+	)
+	if run.Spec.Mode == paddockv1alpha1.HarnessRunModeInteractive &&
+		(newPhase == paddockv1alpha1.HarnessRunPhaseIdle ||
+			newPhase == paddockv1alpha1.HarnessRunPhaseRunning) {
+		action, after := nextDeadline(time.Now(), &run, tpl)
+		if action != watchdogActionNone {
+			// Delete the Job BEFORE committing Phase=Cancelled. If the
+			// Delete returns a non-NotFound error we bail out without
+			// touching the status: the run stays Idle/Running, the next
+			// reconcile re-evaluates, sees the watchdog still wants to
+			// fire, and retries. The previous order (commit Cancelled →
+			// then Delete) leaked the Job behind a terminal status —
+			// the watchdog branch is gated on Idle||Running and would
+			// skip the retry entirely.
+			jName := run.Status.JobName
+			if jName == "" {
+				jName = jobName(&run)
+			}
+			var job batchv1.Job
+			jobKey := client.ObjectKey{Namespace: run.Namespace, Name: jName}
+			gErr := r.Get(ctx, jobKey, &job)
+			switch {
+			case apierrors.IsNotFound(gErr):
+				// Already gone — proceed.
+			case gErr != nil:
+				return ctrl.Result{}, gErr
+			default:
+				if job.DeletionTimestamp.IsZero() {
+					bg := metav1.DeletePropagationBackground
+					if dErr := r.Delete(ctx, &job, &client.DeleteOptions{PropagationPolicy: &bg}); dErr != nil && !apierrors.IsNotFound(dErr) {
+						return ctrl.Result{}, dErr
+					}
+				}
+			}
+
+			newPhase = paddockv1alpha1.HarnessRunPhaseCancelled
+			run.Status.Phase = newPhase
+			if run.Status.CompletionTime == nil {
+				now := metav1.Now()
+				run.Status.CompletionTime = &now
+			}
+			setCondition(&run.Status.Conditions, metav1.Condition{
+				Type:               paddockv1alpha1.HarnessRunConditionCompleted,
+				Status:             metav1.ConditionTrue,
+				Reason:             action.ConditionReason(),
+				Message:            "interactive run terminated by watchdog: " + action.Reason(),
+				ObservedGeneration: run.Generation,
+			})
+			watchdogFired = true
+			watchdogReason = action.Reason()
+		} else {
+			// Use the watchdog's pacing for the requeue instead of the
+			// default 5s — for an Interactive run idling 20m the next
+			// fire is hours away, no point spinning every 5s.
+			watchdogReq = ctrl.Result{RequeueAfter: after}
+			watchdogHasAfter = true
+		}
+	}
+
+	// 9. Commit status; release workspace on terminal transitions.
 	if isTerminal(newPhase) {
 		if err := r.clearWorkspaceBinding(ctx, ws, run.Name); err != nil {
 			return ctrl.Result{}, err
@@ -625,11 +695,26 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
+	if watchdogFired {
+		// Companion audit alongside the run-completed{warned} that
+		// commitStatus → emitTerminalAudit just emitted. Specific
+		// kind so operators can filter "watchdog killed me" cleanly.
+		// Job has already been deleted above (or was already gone).
+		r.Audit.EmitInteractiveRunTerminated(ctx, run.Name, run.Namespace, watchdogReason)
+		return ctrl.Result{}, nil
+	}
+
 	if !isTerminal(newPhase) {
 		// Poll while we wait for the Job to complete. Requeue cadence
 		// kept short to keep the demo feel snappy on Kind; for
 		// production-scale installs we'd trim this via a Watch on Jobs
 		// (already wired via Owns) plus exponential backoff.
+		// Interactive runs override this with the watchdog's pacing
+		// (the next-soonest deadline) — no need to spin every 5s when
+		// idle for 20+ minutes.
+		if watchdogHasAfter {
+			return watchdogReq, nil
+		}
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil

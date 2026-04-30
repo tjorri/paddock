@@ -65,11 +65,13 @@ const (
 	CodeAuditUnavailable   = "AuditUnavailable"
 	CodeBadRequest         = "BadRequest"
 	CodeBearerUnknown      = "BearerUnknown"
+	CodeConflict           = "Conflict"
 	CodeCredentialNotFound = "CredentialNotFound"
 	CodeEgressRevoked      = "EgressRevoked"
 	CodeForbidden          = "Forbidden"
 	CodeHostNotAllowed     = "HostNotAllowed"
 	CodeLeaseNotFound      = "LeaseNotFound"
+	CodeNotConfigured      = "NotConfigured"
 	CodePolicyMissing      = "PolicyMissing"
 	CodePolicyRevoked      = "PolicyRevoked"
 	CodeProviderFailure    = "ProviderFailure"
@@ -168,11 +170,13 @@ type ErrorResponse struct {
 	//   - "AuditUnavailable"     503 (audit write failed; see Phase 2c)
 	//   - "BadRequest"           400
 	//   - "BearerUnknown"        404 (SubstituteAuth could not match bearer)
+	//   - "Conflict"             409 (interactive phase guard: prompt already in flight)
 	//   - "CredentialNotFound"   404 (template does not declare it)
 	//   - "EgressRevoked"        403 (egress grant for host:port lost mid-run)
 	//   - "Forbidden"            403
 	//   - "HostNotAllowed"       403 (bearer presented for a host not in lease's AllowedHosts)
 	//   - "LeaseNotFound"        404 (revoke target unknown to this broker)
+	//   - "NotConfigured"        503 (broker reached an endpoint whose dependency was not wired)
 	//   - "PolicyMissing"        403 (no BrokerPolicy grants the cred)
 	//   - "PolicyRevoked"        403 (BrokerPolicy match was lost mid-run)
 	//   - "ProviderFailure"      500
@@ -316,6 +320,34 @@ type BasicAuth struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
+
+// PromptRequest is the body of POST /v1/runs/{ns}/{name}/prompts.
+type PromptRequest struct {
+	// Text is the user prompt. Capped at MaxInlinePromptBytes upstream.
+	Text string `json:"text"`
+}
+
+// PromptResponse is returned from POST /v1/runs/{ns}/{name}/prompts.
+type PromptResponse struct {
+	// Seq is the turn sequence number assigned to this prompt.
+	Seq int32 `json:"seq"`
+}
+
+// InterruptRequest is the body of POST /v1/runs/{ns}/{name}/interrupt.
+// Empty for now; reserved for future per-turn-id interrupts.
+type InterruptRequest struct{}
+
+// EndRequest is the body of POST /v1/runs/{ns}/{name}/end.
+type EndRequest struct {
+	// Reason is recorded in the InteractiveRunTerminated audit event.
+	// One of "explicit", "client-quit". Default "explicit".
+	Reason string `json:"reason,omitempty"`
+}
+
+// HeaderShellSessionID is the response header returned from
+// /v1/runs/{ns}/{name}/shell upgrade carrying the session id used in
+// audit events.
+const HeaderShellSessionID = "X-Paddock-Shell-Session-Id"
 
 // PoolSecretRef is the wire-side counterpart of api/v1alpha1.SecretKeyReference,
 // kept here so the broker's HTTP types depend only on stdlib + this

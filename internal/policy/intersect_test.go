@@ -208,6 +208,224 @@ func TestIntersect_SpecificPortMismatch(t *testing.T) {
 	}
 }
 
+func TestIntersectMatches_Runs(t *testing.T) {
+	t.Run("interact from one policy shell from another", func(t *testing.T) {
+		pInteract := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "interact-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Interact: true,
+					},
+				},
+			},
+		}
+		pShell := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "shell-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Shell: &paddockv1alpha1.ShellCapability{
+							Target: "adapter",
+						},
+					},
+				},
+			},
+		}
+		result := policy.IntersectMatches(
+			[]*paddockv1alpha1.BrokerPolicy{pInteract, pShell},
+			paddockv1alpha1.RequireSpec{},
+		)
+		if !result.RunsInteract {
+			t.Errorf("RunsInteract = false, want true")
+		}
+		if result.Shell == nil {
+			t.Fatalf("Shell = nil, want non-nil")
+		}
+		if result.Shell.Target != "adapter" {
+			t.Errorf("Shell.Target = %q, want %q", result.Shell.Target, "adapter")
+		}
+	})
+
+	t.Run("most permissive shell target wins (agent beats adapter)", func(t *testing.T) {
+		pAdapter := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "adapter-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Shell: &paddockv1alpha1.ShellCapability{
+							Target: "adapter",
+						},
+					},
+				},
+			},
+		}
+		pAgent := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "agent-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Shell: &paddockv1alpha1.ShellCapability{
+							Target: "agent",
+						},
+					},
+				},
+			},
+		}
+		result := policy.IntersectMatches(
+			[]*paddockv1alpha1.BrokerPolicy{pAdapter, pAgent},
+			paddockv1alpha1.RequireSpec{},
+		)
+		if result.Shell == nil {
+			t.Fatalf("Shell = nil, want non-nil")
+		}
+		if result.Shell.Target != "agent" {
+			t.Errorf("Shell.Target = %q, want %q", result.Shell.Target, "agent")
+		}
+	})
+
+	t.Run("allowedPhases empty wins over narrow", func(t *testing.T) {
+		pNarrow := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "narrow-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Shell: &paddockv1alpha1.ShellCapability{
+							Target:        "adapter",
+							AllowedPhases: []paddockv1alpha1.HarnessRunPhase{"Running", "Idle"},
+						},
+					},
+				},
+			},
+		}
+		pAny := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "any-phase-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Shell: &paddockv1alpha1.ShellCapability{
+							Target:        "adapter",
+							AllowedPhases: nil, // empty = "any phase"
+						},
+					},
+				},
+			},
+		}
+		result := policy.IntersectMatches(
+			[]*paddockv1alpha1.BrokerPolicy{pNarrow, pAny},
+			paddockv1alpha1.RequireSpec{},
+		)
+		if result.Shell == nil {
+			t.Fatalf("Shell = nil, want non-nil")
+		}
+		if result.Shell.AllowedPhases != nil {
+			t.Errorf("AllowedPhases = %v, want nil (any phase wins)", result.Shell.AllowedPhases)
+		}
+	})
+
+	t.Run("recordTranscript any-true wins", func(t *testing.T) {
+		pFalse := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "no-transcript-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Shell: &paddockv1alpha1.ShellCapability{
+							Target:           "adapter",
+							RecordTranscript: false,
+						},
+					},
+				},
+			},
+		}
+		pTrue := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "transcript-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Shell: &paddockv1alpha1.ShellCapability{
+							Target:           "adapter",
+							RecordTranscript: true,
+						},
+					},
+				},
+			},
+		}
+		result := policy.IntersectMatches(
+			[]*paddockv1alpha1.BrokerPolicy{pFalse, pTrue},
+			paddockv1alpha1.RequireSpec{},
+		)
+		if result.Shell == nil {
+			t.Fatalf("Shell = nil, want non-nil")
+		}
+		if !result.Shell.RecordTranscript {
+			t.Errorf("RecordTranscript = false, want true (any-true wins)")
+		}
+	})
+
+	t.Run("allowedPhases dedup union", func(t *testing.T) {
+		pA := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "phases-a-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Shell: &paddockv1alpha1.ShellCapability{
+							Target:        "adapter",
+							AllowedPhases: []paddockv1alpha1.HarnessRunPhase{"Running", "Idle"},
+						},
+					},
+				},
+			},
+		}
+		pB := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "phases-b-policy", Namespace: "ns"},
+			Spec: paddockv1alpha1.BrokerPolicySpec{
+				AppliesToTemplates: []string{"*"},
+				Grants: paddockv1alpha1.BrokerPolicyGrants{
+					Runs: &paddockv1alpha1.GrantRunsCapabilities{
+						Shell: &paddockv1alpha1.ShellCapability{
+							Target:        "adapter",
+							AllowedPhases: []paddockv1alpha1.HarnessRunPhase{"Idle", "Failed"},
+						},
+					},
+				},
+			},
+		}
+		result := policy.IntersectMatches(
+			[]*paddockv1alpha1.BrokerPolicy{pA, pB},
+			paddockv1alpha1.RequireSpec{},
+		)
+		if result.Shell == nil {
+			t.Fatalf("Shell = nil, want non-nil")
+		}
+		want := map[paddockv1alpha1.HarnessRunPhase]struct{}{
+			"Running": {},
+			"Idle":    {},
+			"Failed":  {},
+		}
+		got := make(map[paddockv1alpha1.HarnessRunPhase]struct{}, len(result.Shell.AllowedPhases))
+		for _, ph := range result.Shell.AllowedPhases {
+			got[ph] = struct{}{}
+		}
+		if len(got) != len(want) {
+			t.Errorf("AllowedPhases = %v, want {Running, Idle, Failed}", result.Shell.AllowedPhases)
+		}
+		for ph := range want {
+			if _, ok := got[ph]; !ok {
+				t.Errorf("AllowedPhases missing %q; got %v", ph, result.Shell.AllowedPhases)
+			}
+		}
+	})
+}
+
 func TestDescribeShortfall_NoPolicies(t *testing.T) {
 	res := &policy.IntersectionResult{
 		Admitted:           false,

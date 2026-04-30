@@ -282,6 +282,67 @@ spec:
                       - repo
                       type: object
                     type: array
+                  runs:
+                    description: |-
+                      Runs declares run-time interaction capabilities (interactive prompt
+                      submission, shell open). Independent of Credentials, Egress,
+                      GitRepos.
+                    properties:
+                      interact:
+                        description: |-
+                          Interact enables prompt submission and event streaming for runs
+                          matching this policy. Default false. Required for spec.mode:
+                          Interactive admission.
+                        type: boolean
+                      shell:
+                        description: |-
+                          Shell, when non-nil, enables shell-session open against runs
+                          matching this policy. Nil means denied.
+                        properties:
+                          allowedPhases:
+                            description: |-
+                              AllowedPhases restricts which run phases can host a shell session.
+                              Default (when empty): all phases that have a pod (Running, Idle,
+                              Succeeded, Failed, Cancelled).
+                            items:
+                              description: HarnessRunPhase is the lifecycle phase
+                                of a HarnessRun.
+                              enum:
+                              - Pending
+                              - Running
+                              - Idle
+                              - Succeeded
+                              - Failed
+                              - Cancelled
+                              type: string
+                            type: array
+                          command:
+                            description: |-
+                              Command overrides the default shell-discovery (try /bin/bash, fall
+                              back to /bin/sh). When set, the broker forwards Command verbatim
+                              to the container's exec; missing binaries surface as a failed
+                              shell session (the session opens, exec returns immediately with
+                              the kubelet's error) rather than as an admission rejection.
+                            items:
+                              type: string
+                            type: array
+                          recordTranscript:
+                            description: |-
+                              RecordTranscript captures the WebSocket bytestream to
+                              <workspace>/.paddock/shell/<session-id>.log when true. Default
+                              false — recording doubles disk I/O and stores potentially-sensitive
+                              output.
+                            type: boolean
+                          target:
+                            default: agent
+                            description: Target is which container the broker exec's
+                              into.
+                            enum:
+                            - agent
+                            - adapter
+                            type: string
+                        type: object
+                    type: object
                 type: object
               interception:
                 description: |-
