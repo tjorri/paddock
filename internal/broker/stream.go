@@ -18,16 +18,27 @@ package broker
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/auditing"
 	brokerapi "paddock.dev/paddock/internal/broker/api"
 )
 
@@ -36,6 +47,43 @@ import (
 // versioned subprotocol means future incompatible changes can negotiate
 // a v2 alongside v1 without breaking older clients.
 const streamSubprotocol = "paddock.stream.v1"
+
+// shellSubprotocol is the WebSocket subprotocol the broker negotiates
+// with the /shell client. Independent from streamSubprotocol so a
+// future v2 of either can land without coupling.
+const shellSubprotocol = "paddock.shell.v1"
+
+// Container names mirror those baked in by the controller's pod spec
+// (see internal/controller/pod_spec.go: agentContainerName = "agent",
+// adapterContainerName = "adapter"). Duplicated here as local
+// constants to avoid an internal/broker -> internal/controller import
+// cycle. Keep in sync if the controller ever renames either.
+const (
+	shellContainerAgent   = "agent"
+	shellContainerAdapter = "adapter"
+)
+
+// runPodLabelKey is the label the controller stamps on every Pod it
+// creates for a HarnessRun (see internal/controller/pod_spec.go's
+// runLabels: "paddock.dev/run" -> run.Name).
+const runPodLabelKey = "paddock.dev/run"
+
+// errPodNotReady signals resolveRunPod found no pod backing the run.
+// Used by handleShell to map onto a 404 response.
+var errPodNotReady = errors.New("no ready pod")
+
+// phasesWithPod is the default set of phases shellPhaseAllowed accepts
+// when ShellCapability.AllowedPhases is empty: every phase that has a
+// pod backing the run. Pending and pre-Pending have no pod yet;
+// Running/Idle have one; Succeeded/Failed/Cancelled may still have one
+// for post-mortem inspection.
+var phasesWithPod = map[paddockv1alpha1.HarnessRunPhase]struct{}{
+	paddockv1alpha1.HarnessRunPhaseRunning:   {},
+	paddockv1alpha1.HarnessRunPhaseIdle:      {},
+	paddockv1alpha1.HarnessRunPhaseSucceeded: {},
+	paddockv1alpha1.HarnessRunPhaseFailed:    {},
+	paddockv1alpha1.HarnessRunPhaseCancelled: {},
+}
 
 // handleStream is a WebSocket reverse proxy: it accepts the client
 // connection, dials the adapter sidecar's loopback /stream endpoint,
@@ -189,4 +237,266 @@ func (s *Server) patchAttachStatus(ctx context.Context, ns, runName string, atta
 			logger.V(1).Info("patchAttachStatus: status update", "ns", ns, "run", runName, "err", uErr.Error())
 		}
 	}
+}
+
+// handleShell tunnels a kubectl-exec-style session into the run's pod
+// over a WebSocket. Admission is gated by the runs.shell BrokerPolicy
+// capability; phase is gated by the capability's AllowedPhases (or the
+// default phasesWithPod set). Per-frame stdin/stdout are merged onto a
+// single binary stream — stderr is multiplexed into stdout to keep the
+// wire shape simple for v1.
+func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := log.FromContext(ctx)
+
+	caller, err := s.authenticate(ctx, r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, brokerapi.CodeUnauthorized, err.Error())
+		return
+	}
+	ns, runName, err := pathRunIdentity(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, brokerapi.CodeBadRequest, err.Error())
+		return
+	}
+	if !caller.IsController && caller.Namespace != ns {
+		writeError(w, http.StatusForbidden, brokerapi.CodeForbidden, "namespace mismatch")
+		return
+	}
+
+	var run paddockv1alpha1.HarnessRun
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: runName, Namespace: ns}, &run); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, brokerapi.CodeRunNotFound, "run not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, brokerapi.CodeProviderFailure, err.Error())
+		return
+	}
+
+	shellCap := s.allowShell(ctx, &run)
+	if shellCap == nil {
+		writeError(w, http.StatusForbidden, brokerapi.CodeForbidden,
+			"no BrokerPolicy grants runs.shell for this run's template")
+		return
+	}
+	if !shellPhaseAllowed(shellCap, run.Status.Phase) {
+		writeError(w, http.StatusBadRequest, brokerapi.CodeBadRequest,
+			fmt.Sprintf("shell not allowed in phase %s", run.Status.Phase))
+		return
+	}
+
+	// Invariant: cmd/broker wires RestConfig in production; nil here
+	// means a malformed test setup or an incomplete bootstrap. Mirrors
+	// the Router-nil pattern from /stream.
+	if s.RestConfig == nil {
+		writeError(w, http.StatusServiceUnavailable, brokerapi.CodeNotConfigured, "broker rest config not configured")
+		return
+	}
+
+	podName, err := s.resolveRunPod(ctx, ns, runName)
+	if err != nil {
+		writeError(w, http.StatusNotFound, brokerapi.CodeRunNotFound, err.Error())
+		return
+	}
+
+	containerName := shellContainerAgent
+	if shellCap.Target == "adapter" {
+		containerName = shellContainerAdapter
+	}
+	// TODO(shell-fallback): the spec calls for trying /bin/bash and
+	// falling back to /bin/sh when bash isn't installed. v1 hard-codes
+	// the default to /bin/bash; operators needing /bin/sh override via
+	// ShellCapability.Command.
+	cmd := shellCap.Command
+	if len(cmd) == 0 {
+		cmd = []string{"/bin/bash"}
+	}
+
+	sessionID := uuid.NewString()
+	// Set the session-id header BEFORE the WS upgrade so clients can
+	// observe it on the handshake response.
+	w.Header().Set(brokerapi.HeaderShellSessionID, sessionID)
+
+	// Audit emission is best-effort: a write failure is logged but
+	// must not block the upgrade. Mirrors /end and /stream — the WS
+	// has already started the handshake and there's no clean 503 path
+	// after Accept.
+	if s.Audit != nil {
+		ae := auditing.NewShellSessionOpened(auditing.ShellOpenedInput{
+			RunName:     runName,
+			Namespace:   ns,
+			SessionID:   sessionID,
+			SubmitterSA: caller.ServiceAccount,
+			Target:      shellCap.Target,
+			Command:     cmd,
+			When:        time.Now().UTC(),
+		})
+		if wErr := s.Audit.Write(ctx, ae); wErr != nil {
+			logger.Error(wErr, "writing shell-session-opened audit", "run", runName, "session", sessionID)
+		}
+	}
+
+	startedAt := time.Now()
+	var byteCount atomic.Int64
+
+	clientConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		Subprotocols: []string{shellSubprotocol},
+	})
+	if err != nil {
+		// Accept already wrote a response; nothing more to do.
+		return
+	}
+	defer func() { _ = clientConn.CloseNow() }()
+
+	// Close-audit must always run, even when the request context was
+	// already cancelled by the client. Use a fresh background context
+	// so the audit Write isn't dropped on the floor.
+	defer func() {
+		if s.Audit == nil {
+			return
+		}
+		bgCtx, bgCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer bgCancel()
+		ae := auditing.NewShellSessionClosed(auditing.ShellClosedInput{
+			RunName:    runName,
+			Namespace:  ns,
+			SessionID:  sessionID,
+			DurationMs: time.Since(startedAt).Milliseconds(),
+			ByteCount:  byteCount.Load(),
+			When:       time.Now().UTC(),
+		})
+		if wErr := s.Audit.Write(bgCtx, ae); wErr != nil {
+			logger.Error(wErr, "writing shell-session-closed audit", "run", runName, "session", sessionID)
+		}
+	}()
+
+	cs, err := kubernetes.NewForConfig(s.RestConfig)
+	if err != nil {
+		_ = clientConn.Close(websocket.StatusInternalError, "client config")
+		return
+	}
+	req := cs.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Namespace(ns).
+		Name(podName).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: containerName,
+			Command:   cmd,
+			Stdin:     true,
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       true,
+		}, scheme.ParameterCodec)
+	exec, err := remotecommand.NewSPDYExecutor(s.RestConfig, "POST", req.URL())
+	if err != nil {
+		_ = clientConn.Close(websocket.StatusInternalError, "spdy: "+err.Error())
+		return
+	}
+
+	// Pipes: client frames -> stdinW -> exec stdin; exec stdout -> stdoutW -> client frames.
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+
+	// Derive a cancellable child context. When either copy goroutine
+	// exits, we cancel — both copies wake, and the deferred CloseNow
+	// runs without racing an in-flight read or write. Same shape as
+	// handleStream and dac849b's StreamHandler.
+	shellCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	done := make(chan struct{}, 2)
+
+	// client -> stdin: read frames from the client and forward bytes
+	// into the exec session's stdin pipe.
+	go func() {
+		defer func() { done <- struct{}{} }()
+		defer func() { _ = stdinW.Close() }()
+		for {
+			_, msg, rErr := clientConn.Read(shellCtx)
+			if rErr != nil {
+				return
+			}
+			byteCount.Add(int64(len(msg)))
+			if _, wErr := stdinW.Write(msg); wErr != nil {
+				return
+			}
+		}
+	}()
+
+	// stdout -> client: read bytes from the exec session's stdout
+	// pipe and emit them as binary frames to the client. Stderr is
+	// merged into stdout (single channel) — see StreamOptions below.
+	go func() {
+		defer func() { done <- struct{}{} }()
+		buf := make([]byte, 4<<10)
+		for {
+			n, rErr := stdoutR.Read(buf)
+			if n > 0 {
+				byteCount.Add(int64(n))
+				if wErr := clientConn.Write(shellCtx, websocket.MessageBinary, buf[:n]); wErr != nil {
+					return
+				}
+			}
+			if rErr != nil {
+				return
+			}
+		}
+	}()
+
+	// Run exec. Stderr is merged into stdoutW so the WS surface stays
+	// single-channel for v1. StreamWithContext blocks until the remote
+	// process exits or ctx is cancelled.
+	streamErr := exec.StreamWithContext(shellCtx, remotecommand.StreamOptions{
+		Stdin:  stdinR,
+		Stdout: stdoutW,
+		Stderr: stdoutW,
+		Tty:    true,
+	})
+	if streamErr != nil {
+		logger.V(1).Info("shell exec stream returned", "ns", ns, "run", runName, "session", sessionID, "err", streamErr.Error())
+	}
+	// Closing the pipe writers wakes the stdout goroutine; cancelling
+	// the context wakes the stdin goroutine on its next Read.
+	_ = stdoutW.Close()
+	_ = stdinR.Close()
+
+	<-done
+	cancel()
+	<-done
+}
+
+// shellPhaseAllowed reports whether the run's phase is in the
+// capability's AllowedPhases (or, when AllowedPhases is unset, in the
+// default phasesWithPod set).
+func shellPhaseAllowed(shellCap *paddockv1alpha1.ShellCapability, phase paddockv1alpha1.HarnessRunPhase) bool {
+	if len(shellCap.AllowedPhases) == 0 {
+		_, ok := phasesWithPod[phase]
+		return ok
+	}
+	for _, p := range shellCap.AllowedPhases {
+		if p == phase {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveRunPod lists pods labeled paddock.dev/run=<runName> in the
+// namespace and returns the name of the first non-terminating one.
+// Returns an error wrapping errPodNotReady when none qualify, so the
+// handler can map to 404. The exec call itself surfaces a clearer
+// runtime error if the named pod isn't actually ready.
+func (s *Server) resolveRunPod(ctx context.Context, ns, runName string) (string, error) {
+	var pods corev1.PodList
+	if err := s.Client.List(ctx, &pods, client.InNamespace(ns), client.MatchingLabels{runPodLabelKey: runName}); err != nil {
+		return "", fmt.Errorf("list pods: %w", err)
+	}
+	for _, p := range pods.Items {
+		if p.Name != "" && p.DeletionTimestamp == nil {
+			return p.Name, nil
+		}
+	}
+	return "", fmt.Errorf("no pod for run %s/%s: %w", ns, runName, errPodNotReady)
 }

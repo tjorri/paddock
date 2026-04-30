@@ -18,6 +18,7 @@ package broker_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -292,5 +293,135 @@ func TestStream_RejectedWithoutInteractGrant(t *testing.T) {
 	// Defensive: nothing should have attached since admission failed.
 	if got := f.srv.Router.AttachedCount("team-a", "r1"); got != 0 {
 		t.Fatalf("AttachedCount = %d, want 0", got)
+	}
+}
+
+// shellFixture wires a Server suitable for the pre-upgrade /shell
+// admission tests. Both tests dial and assert HTTP status; neither
+// reaches the SPDY exec call (a happy-path test is deferred to e2e in
+// Task 18). The fixture does not wire RestConfig — both tests refuse
+// before the Accept boundary.
+type shellFixture struct {
+	srv    *broker.Server
+	broker *httptest.Server
+}
+
+func newShellFixture(t *testing.T, grantShell bool, phase paddockv1alpha1.HarnessRunPhase) *shellFixture {
+	t.Helper()
+	const ns = "team-a"
+
+	tpl := &paddockv1alpha1.HarnessTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessTemplateSpec{
+			Harness: "echo",
+			Image:   "paddock-echo:v1",
+			Command: []string{"/bin/echo"},
+		},
+	}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Mode:        paddockv1alpha1.HarnessRunModeInteractive,
+		},
+		Status: paddockv1alpha1.HarnessRunStatus{Phase: phase},
+	}
+	bp := &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "shell", Namespace: ns},
+		Spec: paddockv1alpha1.BrokerPolicySpec{
+			AppliesToTemplates: []string{"echo"},
+			Grants:             paddockv1alpha1.BrokerPolicyGrants{Runs: &paddockv1alpha1.GrantRunsCapabilities{}},
+		},
+	}
+	if grantShell {
+		// Empty AllowedPhases so the default phasesWithPod set applies —
+		// the phase-gate test depends on this default.
+		bp.Spec.Grants.Runs.Shell = &paddockv1alpha1.ShellCapability{Target: "agent"}
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(buildScheme(t)).
+		WithObjects(tpl, run, bp).
+		WithStatusSubresource(&paddockv1alpha1.HarnessRun{}).
+		Build()
+
+	registry, err := providers.NewRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+
+	srv := &broker.Server{
+		Client:    c,
+		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "alice"}},
+		Providers: registry,
+	}
+	mux := http.NewServeMux()
+	srv.Register(mux)
+	bs := httptest.NewServer(mux)
+	t.Cleanup(bs.Close)
+
+	return &shellFixture{srv: srv, broker: bs}
+}
+
+// readErrBody drains the response body for assertion. Best-effort: a
+// closed/empty body returns "".
+func readErrBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	if resp == nil || resp.Body == nil {
+		return ""
+	}
+	b, _ := io.ReadAll(resp.Body)
+	return string(b)
+}
+
+func TestShell_RejectedWithoutGrant(t *testing.T) {
+	t.Parallel()
+	f := newShellFixture(t, false, paddockv1alpha1.HarnessRunPhaseRunning)
+
+	wsURL := "ws" + strings.TrimPrefix(f.broker.URL, "http") + "/v1/runs/team-a/r1/shell"
+	dialCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, resp, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
+		Subprotocols: []string{"paddock.shell.v1"},
+		HTTPHeader:   http.Header{"Authorization": []string{"Bearer test-token"}},
+	})
+	if err == nil {
+		t.Fatalf("dial succeeded; expected 403")
+	}
+	if resp == nil {
+		t.Fatalf("dial err=%v but response was nil", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (err=%v)", resp.StatusCode, err)
+	}
+	if body := readErrBody(t, resp); !strings.Contains(body, "runs.shell") {
+		t.Fatalf("body = %q, want substring %q", body, "runs.shell")
+	}
+}
+
+func TestShell_PhaseGateRejectsPending(t *testing.T) {
+	t.Parallel()
+	f := newShellFixture(t, true, paddockv1alpha1.HarnessRunPhasePending)
+
+	wsURL := "ws" + strings.TrimPrefix(f.broker.URL, "http") + "/v1/runs/team-a/r1/shell"
+	dialCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, resp, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
+		Subprotocols: []string{"paddock.shell.v1"},
+		HTTPHeader:   http.Header{"Authorization": []string{"Bearer test-token"}},
+	})
+	if err == nil {
+		t.Fatalf("dial succeeded; expected 400")
+	}
+	if resp == nil {
+		t.Fatalf("dial err=%v but response was nil", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (err=%v)", resp.StatusCode, err)
+	}
+	if body := readErrBody(t, resp); !strings.Contains(body, "phase Pending") {
+		t.Fatalf("body = %q, want substring %q", body, "phase Pending")
 	}
 }

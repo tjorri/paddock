@@ -32,6 +32,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -79,6 +80,12 @@ type Server struct {
 	// Renewer drives lazy credential renewal during /prompts. May be nil
 	// in tests; the prompts handler skips renewal when unset.
 	Renewer *RenewalWalker
+
+	// RestConfig is the rest.Config the broker initialised at startup.
+	// Used by the /shell handler to dial the K8s pods/exec subresource
+	// via SPDY. May be nil in tests that don't exercise /shell;
+	// handleShell returns 503 NotConfigured when nil.
+	RestConfig *rest.Config
 }
 
 // Register installs the broker's handlers on the given mux.
@@ -100,6 +107,11 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// /stream. Not wrapped in limitBody — WebSocket needs the raw body
 	// for the upgrade handshake.
 	mux.HandleFunc("GET /v1/runs/{ns}/{name}/stream", s.handleStream)
+
+	// Shell endpoint: WebSocket-tunneled kubectl exec into the run pod.
+	// Gated by runs.shell in BrokerPolicy. Not wrapped in limitBody for
+	// the same reason as /stream.
+	mux.HandleFunc("GET /v1/runs/{ns}/{name}/shell", s.handleShell)
 }
 
 // handleIssue is the core endpoint. It authenticates the caller, looks

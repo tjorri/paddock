@@ -327,9 +327,7 @@ func (s *Server) allowInteract(ctx context.Context, run *paddockv1alpha1.Harness
 
 // allowShell returns the merged ShellCapability granted by matching
 // BrokerPolicies, or nil when no policy declares one. Errors are
-// logged and treated as deny. Wired by Task 13's /shell handler.
-//
-//nolint:unused // shell handler is the next task in this feature line
+// logged and treated as deny. Wired by handleShell.
 func (s *Server) allowShell(ctx context.Context, run *paddockv1alpha1.HarnessRun) *paddockv1alpha1.ShellCapability {
 	logger := log.FromContext(ctx)
 	tpl, _, err := policy.ResolveTemplate(ctx, s.Client, run.Namespace, run.Spec.TemplateRef)
