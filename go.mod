@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	github.com/cert-manager/cert-manager v1.20.2
+	github.com/coder/websocket v1.8.14
 	github.com/go-logr/logr v1.4.3
 	github.com/onsi/ginkgo/v2 v2.28.2
 	github.com/onsi/gomega v1.39.1
@@ -17,7 +18,6 @@ require (
 	k8s.io/client-go v0.35.4
 	k8s.io/pod-security-admission v0.35.4
 	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5
-	nhooyr.io/websocket v1.8.17
 	sigs.k8s.io/controller-runtime v0.23.3
 	sigs.k8s.io/yaml v1.6.0
 )

@@ -31,7 +31,7 @@ import (
 	"syscall"
 	"time"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // fanoutChanBuffer is the per-subscriber outbound channel depth. Slow
@@ -292,7 +292,7 @@ func (d *persistentDriver) StreamHandler() http.Handler {
 			d.logger.Printf("websocket accept: %v", err)
 			return
 		}
-		defer c.Close(websocket.StatusInternalError, "exit")
+		defer func() { _ = c.Close(websocket.StatusInternalError, "exit") }()
 
 		ch := d.fanout.subscribe()
 		defer d.fanout.unsubscribe(ch)
