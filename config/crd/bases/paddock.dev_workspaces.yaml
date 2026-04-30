@@ -258,6 +258,16 @@ spec:
                   by future archive-on-idle logic.
                 format: date-time
                 type: string
+              lastCountedRun:
+                description: |-
+                  LastCountedRun is the name of the most recently counted
+                  HarnessRun for TotalRuns. Used by the binding logic to keep the
+                  TotalRuns increment idempotent across cache-staleness re-
+                  reconciles: a re-bind of the same run name is recognised here
+                  and skips the increment that the (ActiveRunRef==run.Name) guard
+                  can't catch when the controller-runtime informer cache hasn't
+                  yet propagated the previous binding update. See bindWorkspace.
+                type: string
               observedGeneration:
                 description: ObservedGeneration is the spec generation last reconciled.
                 format: int64

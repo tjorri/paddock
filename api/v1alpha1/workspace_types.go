@@ -183,6 +183,16 @@ type WorkspaceStatus struct {
 	// +optional
 	TotalRuns int32 `json:"totalRuns,omitempty"`
 
+	// LastCountedRun is the name of the most recently counted
+	// HarnessRun for TotalRuns. Used by the binding logic to keep the
+	// TotalRuns increment idempotent across cache-staleness re-
+	// reconciles: a re-bind of the same run name is recognised here
+	// and skips the increment that the (ActiveRunRef==run.Name) guard
+	// can't catch when the controller-runtime informer cache hasn't
+	// yet propagated the previous binding update. See bindWorkspace.
+	// +optional
+	LastCountedRun string `json:"lastCountedRun,omitempty"`
+
 	// LastActivity is the time of the most recent run's last event. Used
 	// by future archive-on-idle logic.
 	// +optional
