@@ -38,6 +38,15 @@ namespace where it appears below.
 kubectl create namespace claude-code-demo
 ```
 
+## One-time `claude /login`
+
+As of Paddock vX.Y, every agent's `$HOME` lives on the workspace PVC.
+That means a `claude /login` you run inside an interactive session
+persists in `~/.claude/` on the workspace and survives across runs —
+no `UserSuppliedSecret` plumbing required for repeat use. Use the
+`UserSuppliedSecret` path below only for first-run automation or for
+non-interactive Batch chains where you can't drop into a TUI shell.
+
 ## Step 1 — Stash the OAuth token in a `Secret`
 
 Place the token in a Kubernetes `Secret`. The key is `token` here; the
