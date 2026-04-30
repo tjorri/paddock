@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -57,10 +58,11 @@ type Options struct {
 type Client struct {
 	opts    Options
 	kube    kubernetes.Interface
-	httpCli *http.Client //nolint:unused // populated by portforward.go (Task 18)
+	httpCli *http.Client //nolint:unused // populated by auth.go (Task 19)
 	tlsCfg  *tls.Config
 	auth    *tokenCache //nolint:unused // populated by auth.go (Task 19)
 	pf      *forwarder
+	baseURL string // https://127.0.0.1:<local-port>; set by New after port-forward is ready
 }
 
 // New initialises a Client. Returns an error if Options are
@@ -85,12 +87,23 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{
-		opts:   opts,
-		kube:   kc,
-		tlsCfg: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+	// Use a 10-second sub-context for Pod resolution and tunnel ready
+	// so a missing or unready broker Pod surfaces as a fast error
+	// rather than hanging New() indefinitely.
+	pfCtx, pfCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer pfCancel()
+	pf, err := startForwarder(pfCtx, kc, opts.Source, opts.Namespace, opts.Service, opts.Port)
+	if err != nil {
+		return nil, err
 	}
-	// Subsequent tasks fill in auth, pf, httpCli.
+	c := &Client{
+		opts:    opts,
+		kube:    kc,
+		tlsCfg:  &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+		pf:      pf,
+		baseURL: "https://127.0.0.1:" + fmt.Sprintf("%d", pf.Local()),
+	}
+	// Subsequent tasks fill in auth, httpCli.
 	return c, nil
 }
 
@@ -102,10 +115,5 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// forwarder is the port-forward handle; defined in portforward.go.
-type forwarder struct{}
-
-func (f *forwarder) Close() error { return nil }
-
 // tokenCache is defined in auth.go.
-type tokenCache struct{} //nolint:unused // expanded by auth.go (Task 18)
+type tokenCache struct{} //nolint:unused // expanded by auth.go (Task 19)
