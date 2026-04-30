@@ -212,11 +212,22 @@ func handleSidebarFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return openNewSessionModal(m, templateNames(m.availableTemplates)),
 			loadTemplatesCmd(m.Client, m.Namespace)
 	case key.Type == tea.KeyRunes && string(key.Runes) == "e":
-		if m.Focused == "" {
+		if m.Focused == "" || m.Focused == NewSessionSentinel {
 			m.ErrBanner = errNoSessionFocused
 			return m, nil
 		}
 		return openEndSessionModal(m, m.Focused), nil
+	case key.Type == tea.KeyEnter:
+		// Enter on the [+ new session] sentinel row opens the new-session
+		// modal — same behaviour as pressing 'n', so a user who arrowed
+		// down to the sticky row at the bottom of the sidebar doesn't
+		// also have to learn a separate keybinding. Enter on a real
+		// session is a no-op for now (selection already focuses).
+		if m.Focused == NewSessionSentinel {
+			return openNewSessionModal(m, templateNames(m.availableTemplates)),
+				loadTemplatesCmd(m.Client, m.Namespace)
+		}
+		return m, nil
 	case key.Type == tea.KeyTab:
 		m.FocusArea = FocusPrompt
 		return m, nil

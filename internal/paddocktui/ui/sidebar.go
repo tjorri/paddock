@@ -28,17 +28,36 @@ import (
 
 // SidebarView renders the sidebar from the given model. Returns the
 // styled string suitable for placement at the left of a JoinHorizontal.
+//
+// The "[+ new session]" row is the last entry in visibleNames (the
+// app.NewSessionSentinel value). Rendering it inside the loop — rather
+// than as a separately-appended static row — lets it pick up
+// selection styling when the user arrows down onto it.
 func SidebarView(m app.Model) string {
 	rows := make([]string, 0, len(m.SessionOrder)+3)
 	rows = append(rows, StyleHeader.Render(fmt.Sprintf("Sessions (%d)", len(m.SessionOrder))))
 	for _, name := range visibleNames(m) {
+		if name == app.NewSessionSentinel {
+			rows = append(rows, renderNewSessionRow(name == m.Focused))
+			continue
+		}
 		s := m.Sessions[name]
 		row := renderSidebarRow(name, s, name == m.Focused)
 		rows = append(rows, row)
 	}
-	rows = append(rows, "  [+ new session]")
 	rows = append(rows, StyleStatusBar.Render(fmt.Sprintf("Active: %d", countActive(m))))
 	return StyleSidebarFrame.Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
+}
+
+// renderNewSessionRow renders the sticky "[+ new session]" entry.
+// Indented to match renderSidebarRow's two-space glyph + name shape so
+// the column lines up.
+func renderNewSessionRow(focused bool) string {
+	style := StyleSidebarRowNormal
+	if focused {
+		style = StyleSidebarRowFocused
+	}
+	return style.Render("  [+ new session]")
 }
 
 func renderSidebarRow(name string, s *app.SessionState, focused bool) string {
@@ -73,18 +92,21 @@ func countActive(m app.Model) int {
 	return n
 }
 
+// visibleNames mirrors app.visibleSessions (the sidebar reducer's view
+// of the navigable list) so the rendered rows match what arrow keys
+// will move through. Always ends with app.NewSessionSentinel.
 func visibleNames(m app.Model) []string {
-	if m.Filter == "" {
-		out := make([]string, len(m.SessionOrder))
-		copy(out, m.SessionOrder)
-		return out
-	}
-	needle := strings.ToLower(m.Filter)
 	out := []string{}
-	for _, n := range m.SessionOrder {
-		if strings.Contains(strings.ToLower(n), needle) {
-			out = append(out, n)
+	if m.Filter == "" {
+		out = append(out, m.SessionOrder...)
+	} else {
+		needle := strings.ToLower(m.Filter)
+		for _, n := range m.SessionOrder {
+			if strings.Contains(strings.ToLower(n), needle) {
+				out = append(out, n)
+			}
 		}
 	}
+	out = append(out, app.NewSessionSentinel)
 	return out
 }

@@ -62,20 +62,31 @@ func moveSelection(m Model, delta int) Model {
 	return m
 }
 
+// NewSessionSentinel is a synthetic entry placed at the end of the
+// visible sidebar list, representing the "[+ new session]" row. It's
+// a valid value of m.Focused — pressing Enter on it opens the
+// new-session modal. The string is deliberately unrepresentable as a
+// Workspace name (Workspace names are DNS labels: lowercase
+// alphanumerics and hyphens) so it can never collide with a real
+// session.
+const NewSessionSentinel = "__paddock_tui_new_session__"
+
 // visibleSessions returns the SessionOrder names filtered by m.Filter
-// (substring match, case-insensitive).
+// (substring match, case-insensitive), with NewSessionSentinel
+// appended as the last navigable entry so the user can arrow down to
+// the "[+ new session]" row and press Enter to open the modal.
 func visibleSessions(m Model) []string {
-	if m.Filter == "" {
-		out := make([]string, len(m.SessionOrder))
-		copy(out, m.SessionOrder)
-		return out
-	}
-	needle := strings.ToLower(m.Filter)
 	out := []string{}
-	for _, n := range m.SessionOrder {
-		if strings.Contains(strings.ToLower(n), needle) {
-			out = append(out, n)
+	if m.Filter == "" {
+		out = append(out, m.SessionOrder...)
+	} else {
+		needle := strings.ToLower(m.Filter)
+		for _, n := range m.SessionOrder {
+			if strings.Contains(strings.ToLower(n), needle) {
+				out = append(out, n)
+			}
 		}
 	}
+	out = append(out, NewSessionSentinel)
 	return out
 }

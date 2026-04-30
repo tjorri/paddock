@@ -34,9 +34,22 @@ func TestSidebar_MoveSelection(t *testing.T) {
 		t.Errorf("expected bravo focused, got %q", m.Focused)
 	}
 	m = handleSidebarKey(m, tea.KeyMsg{Type: tea.KeyDown})
-	m = handleSidebarKey(m, tea.KeyMsg{Type: tea.KeyDown}) // bounded — no wrap
 	if m.Focused != "charlie" {
 		t.Errorf("expected charlie focused, got %q", m.Focused)
+	}
+	m = handleSidebarKey(m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.Focused != NewSessionSentinel {
+		t.Errorf("expected sentinel focused after stepping past last session, got %q", m.Focused)
+	}
+	// One more Down clamps to the sentinel — the sentinel is the last
+	// row by design.
+	m = handleSidebarKey(m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.Focused != NewSessionSentinel {
+		t.Errorf("expected sentinel to be the bounded last row, got %q", m.Focused)
+	}
+	m = handleSidebarKey(m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.Focused != "charlie" {
+		t.Errorf("expected to step back from sentinel to charlie, got %q", m.Focused)
 	}
 }
 
@@ -47,7 +60,19 @@ func TestSidebar_Filter(t *testing.T) {
 		Filter:       "bravo",
 	}
 	got := visibleSessions(m)
-	if len(got) != 2 || got[0] != "bravo-2" || got[1] != "bravo-3" {
+	// Sentinel is always appended to the end of visible regardless of filter.
+	if len(got) != 3 || got[0] != "bravo-2" || got[1] != "bravo-3" || got[2] != NewSessionSentinel {
 		t.Errorf("filter wrong: %v", got)
+	}
+}
+
+func TestSidebar_SentinelAlwaysPresent(t *testing.T) {
+	// Even with no real sessions, the sentinel anchors the visible
+	// list so the user can arrow down to "[+ new session]" and press
+	// Enter to create their first session.
+	m := Model{}
+	got := visibleSessions(m)
+	if len(got) != 1 || got[0] != NewSessionSentinel {
+		t.Errorf("expected just the sentinel on empty list, got %v", got)
 	}
 }

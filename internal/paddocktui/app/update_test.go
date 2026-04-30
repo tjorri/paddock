@@ -279,6 +279,34 @@ func TestUpdate_CtrlCQuitsFromAnywhere(t *testing.T) {
 	}
 }
 
+func TestUpdate_EnterOnNewSessionSentinelOpensModal(t *testing.T) {
+	m := newTestModel(t)
+	m.FocusArea = FocusSidebar
+	m.Focused = NewSessionSentinel
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := next.(Model)
+	if nm.Modal != ModalNew {
+		t.Errorf("expected ModalNew after Enter on sentinel, got Modal=%v", nm.Modal)
+	}
+	if nm.ModalNew == nil {
+		t.Errorf("expected ModalNew state to be allocated")
+	}
+}
+
+func TestUpdate_EOnSentinelSetsErrBanner(t *testing.T) {
+	m := newTestModel(t)
+	m.FocusArea = FocusSidebar
+	m.Focused = NewSessionSentinel
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	nm := next.(Model)
+	if nm.Modal == ModalEnd {
+		t.Errorf("e on sentinel must not open the end-session modal")
+	}
+	if nm.ErrBanner == "" {
+		t.Errorf("expected ErrBanner when pressing e on the new-session sentinel")
+	}
+}
+
 func TestUpdate_PromptInputAcceptsSpaces(t *testing.T) {
 	m := newTestModel(t)
 	m.FocusArea = FocusPrompt

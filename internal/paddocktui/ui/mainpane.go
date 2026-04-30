@@ -32,6 +32,9 @@ func MainPaneView(m app.Model, width int) string {
 	if m.Focused == "" {
 		return StyleHeader.Render("(no session selected — pick one in the sidebar or press n to create)")
 	}
+	if m.Focused == app.NewSessionSentinel {
+		return StyleHeader.Render("(press Enter or n to create a new session)")
+	}
 	s := m.Sessions[m.Focused]
 	if s == nil {
 		return StyleHeader.Render("(session not loaded)")
