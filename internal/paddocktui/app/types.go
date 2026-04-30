@@ -45,6 +45,25 @@ const (
 	ModalQueue
 )
 
+// SessionMode is the high-level state of a TUI session.
+type SessionMode int
+
+const (
+	SessionBatch SessionMode = iota
+	SessionArmed
+	SessionBound
+)
+
+// InteractiveBinding holds the TUI's view of an Interactive HarnessRun
+// the focused session is bound to. CurrentTurnSeq mirrors
+// HarnessRun.status.interactive.currentTurnSeq — non-nil means a turn
+// is in flight; nil means the run is between prompts.
+type InteractiveBinding struct {
+	RunName        string
+	CurrentTurnSeq *int32
+	LastFrameAt    time.Time
+}
+
 // SessionState bundles the runtime state for one session held in TUI
 // memory.
 type SessionState struct {
@@ -61,6 +80,26 @@ type SessionState struct {
 
 	// Queue of prompts pending while a run is in flight.
 	Queue Queue
+
+	// Armed is true when the user has run the `interactive` palette
+	// command but hasn't yet typed the kick-off prompt.
+	Armed bool
+
+	// Interactive holds the bound interactive run, when the session is
+	// in SessionBound. Nil otherwise.
+	Interactive *InteractiveBinding
+}
+
+// Mode reports the session's current high-level state, derived from
+// SessionState fields.
+func (s *SessionState) Mode() SessionMode {
+	if s.Interactive != nil {
+		return SessionBound
+	}
+	if s.Armed {
+		return SessionArmed
+	}
+	return SessionBatch
 }
 
 // RunSummary is a TUI-shaped projection of a HarnessRun.
