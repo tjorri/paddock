@@ -121,6 +121,14 @@ func (r *InteractiveRouter) ForgetRun(namespace, runName string) {
 	delete(r.state, namespace+"/"+runName)
 }
 
+// ResolveAdapter returns the adapter sidecar's loopback address
+// (host:port, no scheme) for the given run. Exposed so the broker's
+// WebSocket handlers (which can't go through forward) can dial the
+// adapter directly while keeping the resolver field private.
+func (r *InteractiveRouter) ResolveAdapter(ctx context.Context, namespace, runName string) (string, error) {
+	return r.resolve(ctx, namespace, runName)
+}
+
 // ForwardPrompt reverse-proxies a POST /prompts request to the adapter.
 func (r *InteractiveRouter) ForwardPrompt(ctx context.Context, w http.ResponseWriter, req *http.Request, namespace, runName string) {
 	r.forward(ctx, w, req, namespace, runName, "/prompts", nil)

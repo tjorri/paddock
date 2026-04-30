@@ -95,6 +95,11 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runs/{ns}/{name}/prompts", s.handlePrompts)
 	mux.HandleFunc("POST /v1/runs/{ns}/{name}/interrupt", s.handleInterrupt)
 	mux.HandleFunc("POST /v1/runs/{ns}/{name}/end", s.handleEnd)
+
+	// Streaming endpoint: WebSocket reverse proxy onto the adapter's
+	// /stream. Not wrapped in limitBody — WebSocket needs the raw body
+	// for the upgrade handshake.
+	mux.HandleFunc("GET /v1/runs/{ns}/{name}/stream", s.handleStream)
 }
 
 // handleIssue is the core endpoint. It authenticates the caller, looks
