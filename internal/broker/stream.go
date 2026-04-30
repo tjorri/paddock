@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -318,10 +319,21 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 	// observe it on the handshake response.
 	w.Header().Set(brokerapi.HeaderShellSessionID, sessionID)
 
+	clientConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		Subprotocols: []string{shellSubprotocol},
+	})
+	if err != nil {
+		// Accept already wrote a response; no audit emitted because
+		// the caller never observed a session.
+		return
+	}
+	defer func() { _ = clientConn.CloseNow() }()
+
 	// Audit emission is best-effort: a write failure is logged but
-	// must not block the upgrade. Mirrors /end and /stream — the WS
-	// has already started the handshake and there's no clean 503 path
-	// after Accept.
+	// must not block the session. Emitted AFTER Accept succeeds so
+	// every "opened" event has a matching "closed" event from the
+	// deferred Close-audit below — no asymmetric audit trail when
+	// Accept rarely fails (bad headers / hijack failure).
 	if s.Audit != nil {
 		ae := auditing.NewShellSessionOpened(auditing.ShellOpenedInput{
 			RunName:     runName,
@@ -339,15 +351,6 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 
 	startedAt := time.Now()
 	var byteCount atomic.Int64
-
-	clientConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		Subprotocols: []string{shellSubprotocol},
-	})
-	if err != nil {
-		// Accept already wrote a response; nothing more to do.
-		return
-	}
-	defer func() { _ = clientConn.CloseNow() }()
 
 	// Close-audit must always run, even when the request context was
 	// already cancelled by the client. Use a fresh background context
@@ -484,19 +487,38 @@ func shellPhaseAllowed(shellCap *paddockv1alpha1.ShellCapability, phase paddockv
 }
 
 // resolveRunPod lists pods labeled paddock.dev/run=<runName> in the
-// namespace and returns the name of the first non-terminating one.
-// Returns an error wrapping errPodNotReady when none qualify, so the
-// handler can map to 404. The exec call itself surfaces a clearer
-// runtime error if the named pod isn't actually ready.
+// namespace and returns the name of the best candidate. Selection
+// contract: prefers a Running pod; ties broken by most-recent
+// CreationTimestamp. Terminating pods are skipped. Readiness
+// verification is delegated to the SPDY exec call — operators see
+// the K8s exec error directly when the chosen pod isn't actually
+// ready. Returns an error wrapping errPodNotReady when no candidate
+// qualifies, so the handler can map to 404.
 func (s *Server) resolveRunPod(ctx context.Context, ns, runName string) (string, error) {
 	var pods corev1.PodList
 	if err := s.Client.List(ctx, &pods, client.InNamespace(ns), client.MatchingLabels{runPodLabelKey: runName}); err != nil {
 		return "", fmt.Errorf("list pods: %w", err)
 	}
+	// Filter out terminating pods, then sort: Running phase first,
+	// then most-recent CreationTimestamp. Stable selection across
+	// List re-orderings during a rollout (terminating old pod + new).
+	candidates := make([]corev1.Pod, 0, len(pods.Items))
 	for _, p := range pods.Items {
-		if p.Name != "" && p.DeletionTimestamp == nil {
-			return p.Name, nil
+		if p.Name == "" || p.DeletionTimestamp != nil {
+			continue
 		}
+		candidates = append(candidates, p)
 	}
-	return "", fmt.Errorf("no pod for run %s/%s: %w", ns, runName, errPodNotReady)
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no pod for run %s/%s: %w", ns, runName, errPodNotReady)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		ri := candidates[i].Status.Phase == corev1.PodRunning
+		rj := candidates[j].Status.Phase == corev1.PodRunning
+		if ri != rj {
+			return ri // Running first
+		}
+		return candidates[i].CreationTimestamp.After(candidates[j].CreationTimestamp.Time)
+	})
+	return candidates[0].Name, nil
 }
