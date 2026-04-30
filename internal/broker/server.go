@@ -70,6 +70,15 @@ type Server struct {
 	// against per-(namespace, run) token buckets. Tests may leave this
 	// nil to bypass rate limiting; production wires it via cmd/broker.
 	RunLimiter *RunLimiterRegistry
+
+	// Router is required for /prompts, /interrupt, /end. May be nil at
+	// construction time and wired by cmd/broker once the resolver is
+	// available; handlers reject with 503 when nil.
+	Router *InteractiveRouter
+
+	// Renewer drives lazy credential renewal during /prompts. May be nil
+	// in tests; the prompts handler skips renewal when unset.
+	Renewer *RenewalWalker
 }
 
 // Register installs the broker's handlers on the given mux.
@@ -78,6 +87,11 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc(brokerapi.PathRevoke, limitBody(s.handleRevoke))
 	mux.HandleFunc(brokerapi.PathValidateEgress, limitBody(s.handleValidateEgress))
 	mux.HandleFunc(brokerapi.PathSubstituteAuth, limitBody(s.handleSubstituteAuth))
+
+	// Interactive endpoints — gated by runs.interact in BrokerPolicy.
+	mux.HandleFunc("POST /v1/runs/{ns}/{name}/prompts", limitBody(s.handlePrompts))
+	mux.HandleFunc("POST /v1/runs/{ns}/{name}/interrupt", limitBody(s.handleInterrupt))
+	mux.HandleFunc("POST /v1/runs/{ns}/{name}/end", limitBody(s.handleEnd))
 }
 
 // handleIssue is the core endpoint. It authenticates the caller, looks

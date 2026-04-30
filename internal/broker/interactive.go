@@ -1,0 +1,370 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package broker
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	"paddock.dev/paddock/internal/auditing"
+	brokerapi "paddock.dev/paddock/internal/broker/api"
+	"paddock.dev/paddock/internal/policy"
+)
+
+// handlePrompts authenticates the caller, validates the run is in
+// Interactive mode with a runs.interact grant, allocates a turn
+// sequence, walks lazy renewals, emits prompt-submitted, then
+// reverse-proxies the prompt to the adapter sidecar.
+func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := log.FromContext(ctx)
+
+	caller, err := s.authenticate(ctx, r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, brokerapi.CodeUnauthorized, err.Error())
+		return
+	}
+	ns, name, err := pathRunIdentity(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, brokerapi.CodeBadRequest, err.Error())
+		return
+	}
+	if !caller.IsController && caller.Namespace != ns {
+		writeError(w, http.StatusForbidden, brokerapi.CodeForbidden, "namespace mismatch")
+		return
+	}
+
+	var run paddockv1alpha1.HarnessRun
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &run); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, brokerapi.CodeRunNotFound, "run not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, brokerapi.CodeProviderFailure, err.Error())
+		return
+	}
+
+	if run.Spec.Mode != paddockv1alpha1.HarnessRunModeInteractive {
+		writeError(w, http.StatusBadRequest, brokerapi.CodeBadRequest, "run is not Interactive mode")
+		return
+	}
+	if !s.allowInteract(ctx, &run) {
+		writeError(w, http.StatusForbidden, brokerapi.CodeForbidden,
+			"no BrokerPolicy grants runs.interact for this run's template")
+		return
+	}
+	if run.Status.Phase == paddockv1alpha1.HarnessRunPhaseRunning {
+		writeError(w, http.StatusConflict, "Conflict", "a prompt is already in flight")
+		return
+	}
+
+	var body brokerapi.PromptRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, brokerapi.CodeBadRequest, fmt.Sprintf("decoding body: %v", err))
+		return
+	}
+	if len(body.Text) == 0 || len(body.Text) > paddockv1alpha1.MaxInlinePromptBytes {
+		writeError(w, http.StatusBadRequest, brokerapi.CodeBadRequest, "prompt empty or too large")
+		return
+	}
+
+	if s.Renewer != nil {
+		updated, rErr := s.Renewer.WalkAndRenew(ctx, ns, name, run.Status.IssuedLeases)
+		if rErr != nil {
+			logger.Error(rErr, "renewal walk failed", "run", name)
+		} else if !equalLeases(updated, run.Status.IssuedLeases) {
+			if pErr := s.patchIssuedLeases(ctx, &run, updated); pErr != nil {
+				logger.Error(pErr, "patching issuedLeases", "run", name)
+			}
+		}
+	}
+
+	if s.Router == nil {
+		writeError(w, http.StatusServiceUnavailable, brokerapi.CodeProviderFailure, "interactive router not configured")
+		return
+	}
+	seq := s.Router.NextTurnSeq(ns, name)
+
+	sum := sha256.Sum256([]byte(body.Text))
+	hash := "sha256:" + hex.EncodeToString(sum[:])
+
+	if s.Audit != nil {
+		ae := auditing.NewPromptSubmitted(auditing.PromptAuditInput{
+			RunName:      name,
+			Namespace:    ns,
+			SubmitterSA:  caller.ServiceAccount,
+			PromptHash:   hash,
+			PromptLength: len(body.Text),
+			TurnSeq:      seq,
+			When:         time.Now().UTC(),
+		})
+		if wErr := s.Audit.Write(ctx, ae); wErr != nil {
+			logger.Error(wErr, "writing prompt-submitted audit", "run", name)
+			writeError(w, http.StatusServiceUnavailable, brokerapi.CodeAuditUnavailable,
+				"paddock-broker: audit unavailable, please retry")
+			return
+		}
+	}
+
+	fwd := struct {
+		Text      string `json:"text"`
+		Seq       int32  `json:"seq"`
+		Submitter string `json:"submitter"`
+	}{Text: body.Text, Seq: seq, Submitter: caller.ServiceAccount}
+	fwdBody, err := json.Marshal(fwd)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, brokerapi.CodeProviderFailure, err.Error())
+		return
+	}
+	r.Body = newReadCloser(fwdBody)
+	r.ContentLength = int64(len(fwdBody))
+
+	s.Router.ForwardPrompt(ctx, w, r, ns, name)
+
+	now := nowMeta()
+	if run.Status.Interactive == nil {
+		run.Status.Interactive = &paddockv1alpha1.InteractiveStatus{}
+	}
+	run.Status.Interactive.PromptCount++
+	run.Status.Interactive.LastPromptAt = &now
+	seqCopy := seq
+	run.Status.Interactive.CurrentTurnSeq = &seqCopy
+	run.Status.Interactive.IdleSince = nil
+	if uErr := s.Client.Status().Update(ctx, &run); uErr != nil {
+		logger.Error(uErr, "patching interactive status", "run", name)
+	}
+}
+
+// handleInterrupt forwards a POST /interrupt to the adapter after the
+// same admission checks as /prompts, minus the body parse, renewal,
+// turn-allocation, and audit emission.
+func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	caller, err := s.authenticate(ctx, r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, brokerapi.CodeUnauthorized, err.Error())
+		return
+	}
+	ns, name, err := pathRunIdentity(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, brokerapi.CodeBadRequest, err.Error())
+		return
+	}
+	if !caller.IsController && caller.Namespace != ns {
+		writeError(w, http.StatusForbidden, brokerapi.CodeForbidden, "namespace mismatch")
+		return
+	}
+
+	var run paddockv1alpha1.HarnessRun
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &run); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, brokerapi.CodeRunNotFound, "run not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, brokerapi.CodeProviderFailure, err.Error())
+		return
+	}
+	if !s.allowInteract(ctx, &run) {
+		writeError(w, http.StatusForbidden, brokerapi.CodeForbidden,
+			"no BrokerPolicy grants runs.interact for this run's template")
+		return
+	}
+	if s.Router == nil {
+		writeError(w, http.StatusServiceUnavailable, brokerapi.CodeProviderFailure, "interactive router not configured")
+		return
+	}
+	s.Router.ForwardInterrupt(ctx, w, r, ns, name)
+}
+
+// handleEnd forwards a POST /end to the adapter and emits an
+// interactive-run-terminated audit event with the supplied (or default)
+// reason.
+func (s *Server) handleEnd(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := log.FromContext(ctx)
+
+	caller, err := s.authenticate(ctx, r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, brokerapi.CodeUnauthorized, err.Error())
+		return
+	}
+	ns, name, err := pathRunIdentity(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, brokerapi.CodeBadRequest, err.Error())
+		return
+	}
+	if !caller.IsController && caller.Namespace != ns {
+		writeError(w, http.StatusForbidden, brokerapi.CodeForbidden, "namespace mismatch")
+		return
+	}
+
+	var run paddockv1alpha1.HarnessRun
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &run); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, brokerapi.CodeRunNotFound, "run not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, brokerapi.CodeProviderFailure, err.Error())
+		return
+	}
+	if !s.allowInteract(ctx, &run) {
+		writeError(w, http.StatusForbidden, brokerapi.CodeForbidden,
+			"no BrokerPolicy grants runs.interact for this run's template")
+		return
+	}
+
+	reason := "explicit"
+	// /end's body is optional; ignore decode errors so an empty body
+	// still terminates with the default reason.
+	var body brokerapi.EndRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	if body.Reason != "" {
+		reason = body.Reason
+	}
+
+	if s.Router == nil {
+		writeError(w, http.StatusServiceUnavailable, brokerapi.CodeProviderFailure, "interactive router not configured")
+		return
+	}
+	s.Router.ForwardEnd(ctx, w, r, ns, name)
+
+	if s.Audit != nil {
+		ae := auditing.NewInteractiveRunTerminated(auditing.InteractiveRunTerminatedInput{
+			RunName:   name,
+			Namespace: ns,
+			Reason:    reason,
+			Decision:  paddockv1alpha1.AuditDecisionGranted,
+			When:      time.Now().UTC(),
+		})
+		if wErr := s.Audit.Write(ctx, ae); wErr != nil {
+			logger.Error(wErr, "writing interactive-run-terminated audit", "run", name)
+		}
+	}
+}
+
+// pathRunIdentity extracts (ns, name) from the ServeMux 1.22+ path
+// values. Empty values surface as a 400.
+func pathRunIdentity(r *http.Request) (string, string, error) {
+	ns := r.PathValue("ns")
+	name := r.PathValue("name")
+	if ns == "" || name == "" {
+		return "", "", fmt.Errorf("path namespace/name required")
+	}
+	return ns, name, nil
+}
+
+// allowInteract reports whether any matching BrokerPolicy grants
+// runs.interact for the run's template. Errors are logged and treated
+// as deny — fail-closed when policy resolution misbehaves.
+func (s *Server) allowInteract(ctx context.Context, run *paddockv1alpha1.HarnessRun) bool {
+	logger := log.FromContext(ctx)
+	tpl, _, err := policy.ResolveTemplate(ctx, s.Client, run.Namespace, run.Spec.TemplateRef)
+	if err != nil {
+		logger.Error(err, "resolving template for runs.interact check", "run", run.Name)
+		return false
+	}
+	matching, err := policy.ListMatchingPolicies(ctx, s.Client, run.Namespace, run.Spec.TemplateRef.Name)
+	if err != nil {
+		logger.Error(err, "listing BrokerPolicies for runs.interact check", "run", run.Name)
+		return false
+	}
+	result := policy.IntersectMatches(matching, tpl.Requires)
+	return result.RunsInteract
+}
+
+// allowShell returns the merged ShellCapability granted by matching
+// BrokerPolicies, or nil when no policy declares one. Errors are
+// logged and treated as deny. Wired by Task 13's /shell handler.
+//
+//nolint:unused // shell handler is the next task in this feature line
+func (s *Server) allowShell(ctx context.Context, run *paddockv1alpha1.HarnessRun) *paddockv1alpha1.ShellCapability {
+	logger := log.FromContext(ctx)
+	tpl, _, err := policy.ResolveTemplate(ctx, s.Client, run.Namespace, run.Spec.TemplateRef)
+	if err != nil {
+		logger.Error(err, "resolving template for runs.shell check", "run", run.Name)
+		return nil
+	}
+	matching, err := policy.ListMatchingPolicies(ctx, s.Client, run.Namespace, run.Spec.TemplateRef.Name)
+	if err != nil {
+		logger.Error(err, "listing BrokerPolicies for runs.shell check", "run", run.Name)
+		return nil
+	}
+	return policy.IntersectMatches(matching, tpl.Requires).Shell
+}
+
+// equalLeases reports whether two slices share the same Provider,
+// LeaseID, and ExpiresAt for every entry in order. Used to decide
+// whether the renewal walk produced a status-relevant change.
+func equalLeases(a, b []paddockv1alpha1.IssuedLease) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Provider != b[i].Provider || a[i].LeaseID != b[i].LeaseID {
+			return false
+		}
+		ax, bx := a[i].ExpiresAt, b[i].ExpiresAt
+		switch {
+		case ax == nil && bx == nil:
+			// equal
+		case ax == nil || bx == nil:
+			return false
+		default:
+			if !ax.Equal(bx) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// patchIssuedLeases updates run.Status.IssuedLeases via a merge patch.
+// Falls back to Status().Update if the apiserver rejects the patch
+// (e.g. fake clients without merge-patch support).
+func (s *Server) patchIssuedLeases(ctx context.Context, run *paddockv1alpha1.HarnessRun, updated []paddockv1alpha1.IssuedLease) error {
+	patch := client.MergeFrom(run.DeepCopy())
+	run.Status.IssuedLeases = updated
+	if err := s.Client.Status().Patch(ctx, run, patch); err != nil {
+		return s.Client.Status().Update(ctx, run)
+	}
+	return nil
+}
+
+func nowMeta() metav1.Time {
+	return metav1.NewTime(time.Now().UTC())
+}
+
+func newReadCloser(b []byte) io.ReadCloser {
+	return io.NopCloser(bytes.NewReader(b))
+}
