@@ -828,6 +828,18 @@ func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in po
 		corev1.EnvVar{Name: "PADDOCK_MODEL", Value: effectiveModel(run, template)},
 	)
 
+	// PADDOCK_INTERACTIVE_MODE on the agent container so the harness
+	// entrypoint can branch on interactive vs batch (e.g. stay alive
+	// after the initial event flush instead of exiting). Same value as
+	// the adapter container's env — single source of truth.
+	if run.Spec.Mode == paddockv1alpha1.HarnessRunModeInteractive &&
+		template.Spec.Interactive != nil && template.Spec.Interactive.Mode != "" {
+		env = append(env, corev1.EnvVar{
+			Name:  "PADDOCK_INTERACTIVE_MODE",
+			Value: template.Spec.Interactive.Mode,
+		})
+	}
+
 	if proxyEnabled(in) {
 		// Cooperative mode needs HTTPS_PROXY to steer the agent.
 		// Transparent mode deliberately omits it — the iptables
