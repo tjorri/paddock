@@ -642,3 +642,53 @@ func TestNavigation_UpAtZeroStaysAtZero(t *testing.T) {
 		t.Errorf("Up at index 0 should stay at 0; got %d", next.(Model).RunCursor)
 	}
 }
+
+func TestPalette_InteractiveArmsSession(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+	}
+	m.SessionOrder = []string{testSessionName}
+	m.Focused = testSessionName
+
+	nm, _ := dispatchPalette(m, PaletteInteractive, "")
+	s := nm.(Model).Sessions[testSessionName]
+	if !s.Armed {
+		t.Error("session should be Armed after interactive palette command")
+	}
+	if s.Interactive != nil {
+		t.Error("Armed sessions must not yet have an Interactive binding")
+	}
+	if nm.(Model).ErrBanner != "" {
+		t.Errorf("expected no ErrBanner; got %q", nm.(Model).ErrBanner)
+	}
+}
+
+func TestPalette_InteractiveRefusesIfAlreadyBound(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: "alpha-running"},
+	}
+	m.SessionOrder = []string{testSessionName}
+	m.Focused = testSessionName
+
+	nm, _ := dispatchPalette(m, PaletteInteractive, "")
+	s := nm.(Model).Sessions[testSessionName]
+	if s.Armed {
+		t.Error("session must not be re-armed when already bound")
+	}
+	if nm.(Model).ErrBanner == "" {
+		t.Error("expected ErrBanner explaining the session is already bound")
+	}
+}
+
+func TestPalette_InteractiveNoSessionShowsBanner(t *testing.T) {
+	m := newTestModel(t)
+	m.Focused = ""
+
+	nm, _ := dispatchPalette(m, PaletteInteractive, "")
+	if nm.(Model).ErrBanner != errNoSessionFocused {
+		t.Errorf("expected errNoSessionFocused banner; got %q", nm.(Model).ErrBanner)
+	}
+}
