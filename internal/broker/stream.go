@@ -458,7 +458,11 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 		Tty:    true,
 	})
 	if streamErr != nil {
-		logger.V(1).Info("shell exec stream returned", "ns", ns, "run", runName, "session", sessionID, "err", streamErr.Error())
+		logger.Error(streamErr, "shell exec stream returned with error",
+			"ns", ns, "run", runName, "session", sessionID, "container", containerName)
+	} else {
+		logger.Info("shell exec stream completed",
+			"ns", ns, "run", runName, "session", sessionID, "container", containerName)
 	}
 	// Closing the pipe writers wakes the stdout goroutine; cancelling
 	// the context wakes the stdin goroutine on its next Read.

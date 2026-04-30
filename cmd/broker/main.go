@@ -145,7 +145,9 @@ func main() {
 		os.Exit(1)
 	}
 	brokerReady.Store(true)
-	_ = directClient // reserved for future direct-Secret reads if we move off the cached client
+	// directClient is the broker's uncached client — used by the
+	// adapter resolver below where the cached client's lazy-sync
+	// would race a freshly created pod.
 
 	kclient, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
@@ -180,12 +182,21 @@ func main() {
 		RestConfig: cfg,
 	}
 
-	// Interactive wiring (Tasks 10-16): InteractiveRouter with a
-	// controller-runtime cache-backed adapter pod-IP resolver, and a
-	// RenewalWalker driving lazy credential renewal during /prompts.
+	// Interactive wiring (Tasks 10-16): InteractiveRouter with an
+	// uncached adapter pod-IP resolver, and a RenewalWalker driving
+	// lazy credential renewal during /prompts.
+	//
+	// The resolver uses directClient (not cachedClient) on purpose:
+	// controller-runtime's cache lazy-starts an informer on the first
+	// List call, and the initial sync can take seconds — long enough
+	// that a /prompts arriving right after Phase=Running fails with
+	// "no ready pod" because the cache hasn't observed it yet. Pod
+	// resolution is low-frequency (one List per /prompts /interrupt
+	// /end /stream /shell call), so the apiserver round-trip is a
+	// fine trade for accuracy.
 	adapterResolver := func(ctx context.Context, ns, runName string) (string, error) {
 		var pods corev1.PodList
-		if err := cachedClient.List(ctx, &pods, client.InNamespace(ns), client.MatchingLabels{"paddock.dev/run": runName}); err != nil {
+		if err := directClient.List(ctx, &pods, client.InNamespace(ns), client.MatchingLabels{"paddock.dev/run": runName}); err != nil {
 			return "", fmt.Errorf("list pods: %w", err)
 		}
 		// Prefer Running pods with a non-empty PodIP and no

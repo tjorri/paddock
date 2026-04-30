@@ -317,17 +317,20 @@ func TestHandlePrompts_TooLarge(t *testing.T) {
 	}
 }
 
-func TestHandlePrompts_PhaseRunning(t *testing.T) {
+func TestHandlePrompts_TurnInFlight(t *testing.T) {
 	t.Parallel()
 	f := newInteractiveFixture(t, true, paddockv1alpha1.HarnessRunModeInteractive)
 	f.srv.Audit = broker.NewAuditWriter(&recordingAuditSink{})
 
-	// Push the run into Phase=Running.
+	// Mark a turn as in-flight by setting CurrentTurnSeq. The handler's
+	// in-flight guard rejects subsequent /prompts with 409 until the
+	// adapter clears CurrentTurnSeq on turn completion.
 	var run paddockv1alpha1.HarnessRun
 	if err := f.c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "r1"}, &run); err != nil {
 		t.Fatalf("get run: %v", err)
 	}
-	run.Status.Phase = paddockv1alpha1.HarnessRunPhaseRunning
+	seq := int32(1)
+	run.Status.Interactive = &paddockv1alpha1.InteractiveStatus{CurrentTurnSeq: &seq}
 	if err := f.c.Status().Update(context.Background(), &run); err != nil {
 		t.Fatalf("status update: %v", err)
 	}

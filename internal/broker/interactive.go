@@ -86,7 +86,14 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 			"no BrokerPolicy grants runs.interact for this run's template")
 		return
 	}
-	if run.Status.Phase == paddockv1alpha1.HarnessRunPhaseRunning {
+	// In-flight guard: a non-nil CurrentTurnSeq is the authoritative
+	// signal that a prompt is currently being processed by the adapter.
+	// We previously gated on Phase==Running, but until the controller's
+	// Idle-transition logic lands (separate task), Interactive runs sit
+	// in Running constantly — that gate would block every prompt. The
+	// turn-seq pointer is set by handlePrompts on forward and cleared by
+	// the adapter (per ADR contract) when the turn completes.
+	if run.Status.Interactive != nil && run.Status.Interactive.CurrentTurnSeq != nil {
 		writeError(w, http.StatusConflict, brokerapi.CodeConflict, "a prompt is already in flight")
 		return
 	}
@@ -160,7 +167,17 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.Router.ForwardPromptWithBody(ctx, w, r, ns, name, fwdBody)
+	// Wrap the writer so we can observe the upstream status code; we
+	// only patch Status.Interactive when the forward actually succeeded.
+	// Otherwise a 502 (no ready pod) or 5xx from the adapter would
+	// strand CurrentTurnSeq=<seq> and the next /prompts would 409 on
+	// the in-flight guard with no way for the caller to recover.
+	rec := &statusRecorder{ResponseWriter: w}
+	s.Router.ForwardPromptWithBody(ctx, rec, r, ns, name, fwdBody)
+
+	if rec.status < 200 || rec.status >= 300 {
+		return
+	}
 
 	now := nowMeta()
 	if run.Status.Interactive == nil {
@@ -175,6 +192,29 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	if uErr := s.Client.Status().Update(ctx, &run); uErr != nil {
 		logger.Error(uErr, "patching interactive status", "run", name)
 	}
+}
+
+// statusRecorder is a tiny http.ResponseWriter wrapper that captures
+// the first status code seen, so handlers can decide whether the
+// upstream forward actually succeeded before mutating run state.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+// Write tolerates handlers that call Write without WriteHeader first.
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
 }
 
 // handleInterrupt forwards a POST /interrupt to the adapter after the
