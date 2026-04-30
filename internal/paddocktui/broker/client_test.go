@@ -21,6 +21,15 @@ import (
 	"testing"
 )
 
+func TestSANamespace_DefaultsToNamespace(t *testing.T) {
+	if got := saNamespace(Options{Namespace: "paddock-system"}); got != "paddock-system" {
+		t.Errorf("empty ServiceAccountNamespace should default to Namespace; got %q", got)
+	}
+	if got := saNamespace(Options{Namespace: "paddock-system", ServiceAccountNamespace: "team-a"}); got != "team-a" {
+		t.Errorf("explicit ServiceAccountNamespace should win; got %q", got)
+	}
+}
+
 func TestNew_ValidatesOpts(t *testing.T) {
 	cases := []Options{
 		{},

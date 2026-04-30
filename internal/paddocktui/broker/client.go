@@ -41,6 +41,12 @@ type Options struct {
 	Namespace      string
 	Port           int
 	ServiceAccount string
+	// ServiceAccountNamespace is the namespace of ServiceAccount. When
+	// empty, defaults to Namespace (covers the common case where the
+	// TUI's SA lives alongside the broker). Decoupling lets a TUI run
+	// from a SA in any namespace — useful for e2e suites that create
+	// per-test SAs without polluting paddock-system.
+	ServiceAccountNamespace string
 
 	// Source is the rest.Config used for port-forward + TokenRequest.
 	Source *rest.Config
@@ -104,7 +110,7 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 		httpCli: &http.Client{
 			Transport: &http.Transport{TLSClientConfig: tlsCfg},
 		},
-		auth:    newTokenCache(kc, opts.Namespace, opts.ServiceAccount, time.Hour),
+		auth:    newTokenCache(kc, saNamespace(opts), opts.ServiceAccount, time.Hour),
 		pf:      pf,
 		baseURL: "https://" + pf.Address(),
 	}
@@ -117,4 +123,13 @@ func (c *Client) Close() error {
 		return c.pf.Close()
 	}
 	return nil
+}
+
+// saNamespace returns the namespace the broker SA lives in, defaulting
+// to opts.Namespace when ServiceAccountNamespace is unset.
+func saNamespace(opts Options) string {
+	if opts.ServiceAccountNamespace != "" {
+		return opts.ServiceAccountNamespace
+	}
+	return opts.Namespace
 }

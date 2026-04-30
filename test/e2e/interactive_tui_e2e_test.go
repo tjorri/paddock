@@ -211,13 +211,14 @@ spec:
 		// time for pod resolution + tunnel ready before giving up.
 		bCtx, bCancel := context.WithTimeout(ctx, 30*time.Second)
 		bc, err := paddockbroker.New(bCtx, paddockbroker.Options{
-			Service:           "paddock-broker",
-			Namespace:         tuiE2ENS,
-			Port:              8443,
-			ServiceAccount:    tuiE2ESA,
-			Source:            restCfg,
-			CASecretName:      "broker-serving-cert",
-			CASecretNamespace: "paddock-system",
+			Service:                 "paddock-broker",
+			Namespace:               "paddock-system",
+			Port:                    8443,
+			ServiceAccount:          tuiE2ESA,
+			ServiceAccountNamespace: tuiE2ENS,
+			Source:                  restCfg,
+			CASecretName:            "broker-serving-cert",
+			CASecretNamespace:       "paddock-system",
 		})
 		bCancel()
 		Expect(err).NotTo(HaveOccurred(), "paddockbroker.New")
