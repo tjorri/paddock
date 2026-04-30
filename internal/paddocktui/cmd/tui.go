@@ -17,6 +17,7 @@ limitations under the License.
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -25,8 +26,30 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
 	pdkapp "paddock.dev/paddock/internal/paddocktui/app"
+	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
 	pdkui "paddock.dev/paddock/internal/paddocktui/ui"
 )
+
+// brokerOpts collects the broker-connectivity flags. Populated from
+// cobra flag bindings and passed to runTUI.
+type brokerOpts struct {
+	service   string
+	namespace string
+	port      int
+	sa        string
+	caSecret  string
+}
+
+// addBrokerFlags registers the broker-connectivity flags on cmd and
+// binds them into opts. Call this for every cobra.Command whose RunE
+// invokes runTUI.
+func addBrokerFlags(cmd *cobra.Command, opts *brokerOpts) {
+	cmd.Flags().StringVar(&opts.service, "broker-service", "paddock-broker", "broker Service name")
+	cmd.Flags().StringVar(&opts.namespace, "broker-namespace", "paddock-system", "broker Service namespace")
+	cmd.Flags().IntVar(&opts.port, "broker-port", 8443, "broker Service port")
+	cmd.Flags().StringVar(&opts.sa, "broker-sa", "default", "ServiceAccount whose token authenticates to the broker (mints audience=paddock-broker tokens)")
+	cmd.Flags().StringVar(&opts.caSecret, "broker-ca-secret", "broker-serving-cert", "Secret in --broker-namespace holding the broker's serving CA under key ca.crt")
+}
 
 // teaModel adapts pdkapp.Model to Bubble Tea's tea.Model by wiring the
 // View method to ui.View. We do this here (in the cmd package, which
@@ -56,22 +79,51 @@ func (t teaModel) View() string {
 }
 
 func newTUICmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {
-	return &cobra.Command{
+	var bo brokerOpts
+	c := &cobra.Command{
 		Use:    "tui",
 		Short:  "Launch the interactive TUI (default action when no subcommand)",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runTUI(cfg)
+			return runTUI(cfg, bo)
 		},
 	}
+	addBrokerFlags(c, &bo)
+	return c
 }
 
-func runTUI(cfg *genericclioptions.ConfigFlags) error {
+func runTUI(cfg *genericclioptions.ConfigFlags, bo brokerOpts) error {
 	c, ns, err := newClient(cfg)
 	if err != nil {
 		return err
 	}
-	tm := teaModel{Model: pdkapp.NewModel(c, ns)}
+
+	restCfg, err := cfg.ToRESTConfig()
+	if err != nil {
+		return fmt.Errorf("loading kubeconfig for broker: %w", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	brokerClient, err := paddockbroker.New(ctx, paddockbroker.Options{
+		Service:           bo.service,
+		Namespace:         bo.namespace,
+		Port:              bo.port,
+		ServiceAccount:    bo.sa,
+		Source:            restCfg,
+		CASecretName:      bo.caSecret,
+		CASecretNamespace: bo.namespace,
+	})
+	if err != nil {
+		return fmt.Errorf("connect to broker: %w", err)
+	}
+	defer brokerClient.Close() //nolint:errcheck
+
+	model := pdkapp.NewModel(c, ns)
+	model.BrokerClient = brokerClient
+
+	tm := teaModel{Model: model}
 	prog := tea.NewProgram(tm, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	final, err := prog.Run()
 	if err != nil {
