@@ -613,3 +613,32 @@ func TestNavigation_ArrowsMoveRunCursorWhenMainPaneFocused(t *testing.T) {
 		t.Errorf("Down should advance RunCursor; got %d", next.(Model).RunCursor)
 	}
 }
+
+func TestNavigation_RunCursorClampedOnRunDeletion(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+		Runs:    []RunSummary{{Name: "r1"}, {Name: "r2"}, {Name: "r3"}},
+	}
+	m.Focused = testSessionName
+	m.FocusArea = FocusMainPane
+	m.RunCursor = 2
+	nm := removeRun(m, runDeletedMsg{WorkspaceRef: testSessionName, Name: "r3"})
+	if nm.RunCursor != 1 {
+		t.Errorf("RunCursor should clamp to len(Runs)-1=1 after deletion; got %d", nm.RunCursor)
+	}
+}
+
+func TestNavigation_UpAtZeroStaysAtZero(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+		Runs:    []RunSummary{{Name: "r1"}, {Name: "r2"}},
+	}
+	m.Focused = testSessionName
+	m.FocusArea = FocusMainPane
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if next.(Model).RunCursor != 0 {
+		t.Errorf("Up at index 0 should stay at 0; got %d", next.(Model).RunCursor)
+	}
+}

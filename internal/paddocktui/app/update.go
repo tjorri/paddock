@@ -699,6 +699,9 @@ func removeRun(m Model, msg runDeletedMsg) Model {
 		}
 	}
 	state.Runs = out
+	if msg.WorkspaceRef == m.Focused && m.RunCursor >= len(state.Runs) && len(state.Runs) > 0 {
+		m.RunCursor = len(state.Runs) - 1
+	}
 	return m
 }
 
