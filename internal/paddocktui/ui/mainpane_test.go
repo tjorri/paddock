@@ -104,7 +104,7 @@ func TestRenderRun_PrefixesMultiLineEventBody(t *testing.T) {
 	events := []paddockv1alpha1.PaddockEvent{
 		{SchemaVersion: "1", Timestamp: metav1.NewTime(startTs.Add(time.Second)), Type: "Message", Summary: "Once upon a time\nthere was a goroutine\nthat never returned."},
 	}
-	got := renderRun(r, events)
+	got := renderRun(r, events, false)
 	for _, line := range strings.Split(got, "\n") {
 		// Header and footer use ╭/╰; every other line is a body line
 		// that must start with │ to keep the box vertical bar.
@@ -135,7 +135,7 @@ func TestRenderRun_FiltersResultEvent(t *testing.T) {
 		{SchemaVersion: "1", Timestamp: metav1.NewTime(startTs.Add(time.Second)), Type: "Message", Summary: "Hello there."},
 		{SchemaVersion: "1", Timestamp: metav1.NewTime(startTs.Add(2 * time.Second)), Type: "Result", Summary: "Hello there."},
 	}
-	got := renderRun(r, events)
+	got := renderRun(r, events, false)
 	if c := strings.Count(got, "Hello there."); c != 1 {
 		t.Errorf("expected the message summary to render exactly once, got %d:\n%s", c, got)
 	}

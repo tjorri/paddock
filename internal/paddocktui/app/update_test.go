@@ -580,3 +580,36 @@ func TestPalette_CancelBatchTriggersControllerCancel(t *testing.T) {
 		t.Fatal("expected cancelRunCmd, got nil")
 	}
 }
+
+func TestNavigation_TabCyclesFocus(t *testing.T) {
+	m := newTestModel(t)
+	if m.FocusArea != FocusPrompt {
+		t.Fatalf("default focus = %v, want FocusPrompt", m.FocusArea)
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if next.(Model).FocusArea != FocusSidebar {
+		t.Errorf("after one Tab, focus = %v, want FocusSidebar", next.(Model).FocusArea)
+	}
+	next, _ = next.(Model).Update(tea.KeyMsg{Type: tea.KeyTab})
+	if next.(Model).FocusArea != FocusMainPane {
+		t.Errorf("after two Tabs, focus = %v, want FocusMainPane", next.(Model).FocusArea)
+	}
+	next, _ = next.(Model).Update(tea.KeyMsg{Type: tea.KeyTab})
+	if next.(Model).FocusArea != FocusPrompt {
+		t.Errorf("after three Tabs, focus should wrap to FocusPrompt; got %v", next.(Model).FocusArea)
+	}
+}
+
+func TestNavigation_ArrowsMoveRunCursorWhenMainPaneFocused(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+		Runs:    []RunSummary{{Name: "r1"}, {Name: "r2"}, {Name: "r3"}},
+	}
+	m.Focused = testSessionName
+	m.FocusArea = FocusMainPane
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if next.(Model).RunCursor != 1 {
+		t.Errorf("Down should advance RunCursor; got %d", next.(Model).RunCursor)
+	}
+}

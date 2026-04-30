@@ -29,9 +29,9 @@ import (
 type FocusArea int
 
 const (
-	FocusSidebar FocusArea = iota
-	FocusPrompt
-	FocusMainScroll
+	FocusPrompt FocusArea = iota
+	FocusSidebar
+	FocusMainPane
 )
 
 // ModalKind names which modal (if any) is open.

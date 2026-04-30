@@ -86,6 +86,10 @@ type Model struct {
 	// most recent run is fully visible). PgUp/PgDown adjust this in
 	// the reducer; the View slices the rendered content accordingly.
 	MainScrollFromBottom int
+
+	// RunCursor indexes into the focused session's Runs slice for
+	// keyboard navigation. Only meaningful when FocusArea == FocusMainPane.
+	RunCursor int
 }
 
 // NewModel constructs a Model with the supplied cluster wiring.

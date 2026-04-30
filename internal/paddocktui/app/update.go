@@ -231,6 +231,34 @@ func handleKeyMsg(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// Global Tab cycle: Prompt → Sidebar → MainPane → Prompt.
+	if key.Type == tea.KeyTab {
+		switch m.FocusArea {
+		case FocusPrompt:
+			m.FocusArea = FocusSidebar
+		case FocusSidebar:
+			m.FocusArea = FocusMainPane
+		case FocusMainPane:
+			m.FocusArea = FocusPrompt
+		}
+		return m, nil
+	}
+	// Arrow-key run navigation when MainPane holds focus.
+	if m.FocusArea == FocusMainPane {
+		state := m.Sessions[m.Focused]
+		if state == nil {
+			return m, nil
+		}
+		if key.Type == tea.KeyDown && m.RunCursor+1 < len(state.Runs) {
+			m.RunCursor++
+			return m, nil
+		}
+		if key.Type == tea.KeyUp && m.RunCursor > 0 {
+			m.RunCursor--
+			return m, nil
+		}
+		return m, nil
+	}
 	switch m.FocusArea {
 	case FocusSidebar:
 		return handleSidebarFocusKey(m, key)
@@ -313,9 +341,6 @@ func handleSidebarFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.FocusArea = FocusPrompt
 		}
 		return m, nil
-	case key.Type == tea.KeyTab:
-		m.FocusArea = FocusPrompt
-		return m, nil
 	case key.Type == tea.KeyRunes && string(key.Runes) == "?":
 		return openHelpModal(m), nil
 	}
@@ -328,9 +353,6 @@ func handleSidebarFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 func handlePromptFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.Type {
 	case tea.KeyEsc:
-		m.FocusArea = FocusSidebar
-		return m, nil
-	case tea.KeyTab:
 		m.FocusArea = FocusSidebar
 		return m, nil
 	case tea.KeyEnter:

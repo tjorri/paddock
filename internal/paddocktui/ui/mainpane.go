@@ -85,15 +85,20 @@ func mainPaneContent(m app.Model) string {
 	// the prompt is the user's anchor at the bottom of the screen so
 	// the latest run reads adjacent to where they're typing.
 	for i := range s.Runs {
-		sections = append(sections, renderRun(s.Runs[i], s.Events[s.Runs[i].Name]))
+		cursor := m.FocusArea == app.FocusMainPane && i == m.RunCursor
+		sections = append(sections, renderRun(s.Runs[i], s.Events[s.Runs[i].Name], cursor))
 	}
 	prompt := renderPromptArea(m)
 	sections = append(sections, prompt)
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
-func renderRun(r app.RunSummary, events []paddockv1alpha1.PaddockEvent) string {
-	header := StyleRunHeader.Render(fmt.Sprintf("╭─ %s · %s ─%s", r.Name, r.StartTime.Format("15:04:05"), strings.Repeat("─", 8)))
+func renderRun(r app.RunSummary, events []paddockv1alpha1.PaddockEvent, cursor bool) string {
+	headerStyle := StyleRunHeader
+	if cursor {
+		headerStyle = StyleRunCursor
+	}
+	header := headerStyle.Render(fmt.Sprintf("╭─ %s · %s ─%s", r.Name, r.StartTime.Format("15:04:05"), strings.Repeat("─", 8)))
 	body := make([]string, 0, len(events))
 	for _, ev := range events {
 		if skipInBody(ev) {
