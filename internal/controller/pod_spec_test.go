@@ -1330,3 +1330,25 @@ func TestBuildEnv_HomeFollowsCustomMount(t *testing.T) {
 		t.Errorf("HOME env = %q, want %q", got, "/repo/.home")
 	}
 }
+
+func TestBuildHomeInitContainer(t *testing.T) {
+	tmpl := &resolvedTemplate{}
+	in := podSpecInputs{homeInitImage: "busybox:1.36"}
+	c := buildHomeInitContainer(tmpl, in)
+
+	if c.Name != paddockHomeInitContainerName {
+		t.Errorf("Name = %q, want %q", c.Name, paddockHomeInitContainerName)
+	}
+	if c.Image != "busybox:1.36" {
+		t.Errorf("Image = %q, want busybox:1.36", c.Image)
+	}
+	if want := "/workspace"; len(c.VolumeMounts) == 0 || c.VolumeMounts[0].MountPath != want {
+		t.Errorf("workspace volume not mounted at %q; got %+v", want, c.VolumeMounts)
+	}
+	if !strings.Contains(strings.Join(c.Command, " ")+" "+strings.Join(c.Args, " "), "/workspace/.home") {
+		t.Errorf("init command does not reference /workspace/.home; got %v %v", c.Command, c.Args)
+	}
+	if c.SecurityContext == nil || c.SecurityContext.RunAsUser == nil || *c.SecurityContext.RunAsUser != 0 {
+		t.Errorf("init container must run as root for chmod; got SC=%+v", c.SecurityContext)
+	}
+}

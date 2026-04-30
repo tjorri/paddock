@@ -56,12 +56,13 @@ const (
 	// with seedManifestRelPath in workspace_seed.go.
 	reposManifestRelPath = ".paddock/repos.json"
 
-	agentContainerName        = "agent"
-	adapterContainerName      = "adapter"
-	collectorContainerName    = "collector"
-	proxyContainerName        = "proxy"
-	iptablesInitContainerName = "iptables-init"
-	defaultGracePeriodSecs    = 60
+	agentContainerName           = "agent"
+	adapterContainerName         = "adapter"
+	collectorContainerName       = "collector"
+	proxyContainerName           = "proxy"
+	iptablesInitContainerName    = "iptables-init"
+	paddockHomeInitContainerName = "paddock-home-init"
+	defaultGracePeriodSecs       = 60
 	// interactiveGracePeriodSecs is the default
 	// terminationGracePeriodSeconds applied to Interactive runs (when the
 	// template's Defaults.TerminationGracePeriodSeconds is not set). 300s
@@ -171,6 +172,11 @@ const DefaultProxyImage = "paddock-proxy:dev"
 // when the resolved interception mode is transparent.
 const DefaultIPTablesInitImage = "paddock-iptables-init:dev"
 
+// DefaultHomeInitImage is overridable via --home-init-image. Kept
+// tag-pinned so a controller image upgrade doesn't silently shift
+// the init image.
+const DefaultHomeInitImage = "busybox:1.36"
+
 // podSpecInputs bundles the per-run resolution results the PodSpec
 // builder needs. Keeps buildJob from growing a long positional
 // argument list as M7+ bolts on more knobs.
@@ -205,6 +211,10 @@ type podSpecInputs struct {
 	// iptablesInitImage is the init-container image used for transparent
 	// mode. Ignored when interceptionMode != transparent.
 	iptablesInitImage string
+
+	// homeInitImage is the image used for the paddock-home-init init
+	// container. Empty falls back to DefaultHomeInitImage.
+	homeInitImage string
 
 	// brokerEndpoint, when non-empty, triggers the proxy sidecar to
 	// route egress decisions + SubstituteAuth through the broker
@@ -797,6 +807,37 @@ func buildIPTablesInitContainer(in podSpecInputs) corev1.Container {
 }
 
 func ptrBool(v bool) *bool { return &v }
+
+// buildHomeInitContainer returns the one-shot init container that
+// ensures HOME exists on the workspace PVC before the agent starts.
+// Idempotent (mkdir -p) so repeat runs are no-ops; runs as root only
+// because the volume's existing ownership may not match the agent's
+// runtime UID. FSGroup on the pod (gid 65532) handles cross-container
+// group writability — see the comment on buildPodSpec's SecurityContext.
+func buildHomeInitContainer(template *resolvedTemplate, in podSpecInputs) corev1.Container {
+	img := in.homeInitImage
+	if img == "" {
+		img = DefaultHomeInitImage
+	}
+	home := effectiveHomePath(template)
+	return corev1.Container{
+		Name:    paddockHomeInitContainerName,
+		Image:   img,
+		Command: []string{"/bin/sh", "-c"},
+		Args:    []string{fmt.Sprintf("mkdir -p %q && chmod 0775 %q", home, home)},
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:                ptr.To(int64(0)),
+			AllowPrivilegeEscalation: ptr.To(false),
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			SeccompProfile: &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
+			},
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: workspaceVolumeName, MountPath: effectiveWorkspaceMount(template)},
+		},
+	}
+}
 
 // buildEnv assembles the agent container's env: the PADDOCK_* standard
 // set, optional proxy wiring (HTTPS_PROXY + CA-trust envs; ADR-0013
