@@ -651,8 +651,11 @@ func dispatchPalette(m Model, cmd PaletteCmd, arg string) (tea.Model, tea.Cmd) {
 		focused.Armed = true
 		return m, nil
 	case PaletteReattach:
-		// Filled by Task 31.
-		return m, nil
+		if m.Focused == "" {
+			m.ErrBanner = errNoSessionFocused
+			return m, nil
+		}
+		return m, detectBoundRunCmd(m.Client, m.Namespace, m.Focused)
 	}
 	return m, nil
 }

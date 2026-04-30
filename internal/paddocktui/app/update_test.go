@@ -1153,3 +1153,30 @@ func TestFocusChange_AlreadyBoundDoesNotRefire(t *testing.T) {
 	}
 	_ = cmd // cmd may be non-nil due to ensureRunWatch; that's fine
 }
+
+func TestPalette_ReattachIssuesDetectCmd(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+	}
+	m.SessionOrder = []string{testSessionName}
+	m.Focused = testSessionName
+
+	_, cmd := dispatchPalette(m, PaletteReattach, "")
+	if cmd == nil {
+		t.Fatal("reattach should fire detectBoundRunCmd; got nil")
+	}
+}
+
+func TestPalette_ReattachWithoutFocusShowsBanner(t *testing.T) {
+	m := newTestModel(t)
+	m.Focused = ""
+
+	next, cmd := dispatchPalette(m, PaletteReattach, "")
+	if cmd != nil {
+		t.Error("reattach without focus must not fire any cmd")
+	}
+	if next.(Model).ErrBanner != errNoSessionFocused {
+		t.Errorf("expected errNoSessionFocused banner; got %q", next.(Model).ErrBanner)
+	}
+}
