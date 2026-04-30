@@ -19,6 +19,7 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +29,30 @@ import (
 	"paddock.dev/paddock/internal/paddocktui/app"
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
+
+func TestRenderRun_FiltersResultEvent(t *testing.T) {
+	// Result events duplicate the last Message for narrative harnesses
+	// (claude-code in particular). They must be omitted from the body
+	// render — the footer's terminal phase + duration already conveys
+	// "run completed, here's how it ended". Structured outcome data
+	// lives in HarnessRun.status.outputs, not in the events ring.
+	startTs := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	r := app.RunSummary{
+		Name:           "hr-1",
+		Phase:          paddockv1alpha1.HarnessRunPhaseSucceeded,
+		Prompt:         "say hi",
+		StartTime:      startTs,
+		CompletionTime: startTs.Add(2 * time.Second),
+	}
+	events := []paddockv1alpha1.PaddockEvent{
+		{SchemaVersion: "1", Timestamp: metav1.NewTime(startTs.Add(time.Second)), Type: "Message", Summary: "Hello there."},
+		{SchemaVersion: "1", Timestamp: metav1.NewTime(startTs.Add(2 * time.Second)), Type: "Result", Summary: "Hello there."},
+	}
+	got := renderRun(r, events)
+	if c := strings.Count(got, "Hello there."); c != 1 {
+		t.Errorf("expected the message summary to render exactly once, got %d:\n%s", c, got)
+	}
+}
 
 func TestMainPaneView_RunSucceeded(t *testing.T) {
 	startTs := time.Date(2026, 4, 29, 14, 22, 11, 0, time.UTC)

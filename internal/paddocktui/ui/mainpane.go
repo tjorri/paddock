@@ -53,6 +53,9 @@ func renderRun(r app.RunSummary, events []paddockv1alpha1.PaddockEvent) string {
 	header := StyleRunHeader.Render(fmt.Sprintf("╭─ %s · %s ─%s", r.Name, r.StartTime.Format("15:04:05"), strings.Repeat("─", 8)))
 	body := make([]string, 0, len(events))
 	for _, ev := range events {
+		if skipInBody(ev) {
+			continue
+		}
 		body = append(body, "│ "+renderEvent(ev))
 	}
 	footer := StyleRunFooter.Render(fmt.Sprintf("╰─ %s · %s ", phaseLabel(r), durationLabel(r)))
@@ -63,6 +66,16 @@ func renderRun(r app.RunSummary, events []paddockv1alpha1.PaddockEvent) string {
 	out = append(out, body...)
 	out = append(out, footer)
 	return strings.Join(out, "\n")
+}
+
+// skipInBody reports whether an event should be omitted from the run's
+// body rendering. Result events are filtered: their summary mirrors
+// the last Message for narrative-style harnesses (notably claude-code)
+// and the run's terminal phase + duration in the footer already
+// conveys "the run finished, here's how it ended". Structured outcome
+// data lives in HarnessRun.status.outputs, not in the events ring.
+func skipInBody(ev paddockv1alpha1.PaddockEvent) bool {
+	return ev.Type == "Result"
 }
 
 func renderEvent(ev paddockv1alpha1.PaddockEvent) string {
