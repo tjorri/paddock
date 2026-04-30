@@ -805,7 +805,7 @@ func ptrBool(v bool) *bool { return &v }
 // agent reads them from env vars the broker populates via the proxy
 // sidecar (see M3+ for the wiring).
 func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in podSpecInputs) []corev1.EnvVar {
-	const paddockStdEnvCount = 8
+	const paddockStdEnvCount = 9
 	env := make([]corev1.EnvVar, 0, paddockStdEnvCount+7+len(run.Spec.ExtraEnv))
 
 	// F-39 defense in depth: tenant extraEnv goes FIRST so any
