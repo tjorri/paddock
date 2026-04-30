@@ -81,7 +81,10 @@ func mainPaneContent(m app.Model) string {
 	}
 	var sections []string
 	sections = append(sections, StyleHeader.Render(fmt.Sprintf("%s · %s", s.Session.Name, s.Session.LastTemplate)))
-	for i := len(s.Runs) - 1; i >= 0; i-- {
+	// Render oldest at the top, newest just above the prompt input —
+	// the prompt is the user's anchor at the bottom of the screen so
+	// the latest run reads adjacent to where they're typing.
+	for i := range s.Runs {
 		sections = append(sections, renderRun(s.Runs[i], s.Events[s.Runs[i].Name]))
 	}
 	prompt := renderPromptArea(m)
