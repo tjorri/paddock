@@ -81,7 +81,7 @@ func footerHints(m app.Model) string {
 	case app.FocusSidebar:
 		return "↑↓ select · Enter type · n new · e end · / search · q/Ctrl-C quit · ? help"
 	case app.FocusPrompt:
-		return "Enter submit · Esc unfocus · Ctrl-X cancel run · Ctrl-C quit · :help"
+		return "Enter submit · Esc unfocus · Ctrl-X cancel run · Ctrl-C quit · Ctrl-K palette"
 	}
 	return ""
 }

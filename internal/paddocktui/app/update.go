@@ -469,7 +469,7 @@ func dispatchPalette(m Model, cmd PaletteCmd, arg string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case PaletteTemplate:
 		if arg == "" {
-			m.ErrBanner = ":template requires a template name"
+			m.ErrBanner = "template requires a template name"
 			return m, nil
 		}
 		if m.Focused == "" {

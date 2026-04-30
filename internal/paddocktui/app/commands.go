@@ -195,7 +195,7 @@ func endSessionCmd(c client.Client, ns, name string) tea.Cmd { //nolint:unused /
 }
 
 // patchLastTemplateCmd updates the LastTemplateAnnotation on a session
-// Workspace. Used by the :template slash command so the override
+// Workspace. Used by the `template` palette command so the override
 // persists across reattach.
 func patchLastTemplateCmd(c client.Client, ns, name, template string) tea.Cmd { //nolint:unused // wired in Task 19
 	return func() tea.Msg {
