@@ -167,6 +167,41 @@ func TestNextDeadline_MaxLifetimeFires(t *testing.T) {
 	}
 }
 
+func TestNextDeadline_ZeroOverrideUsesTemplateDefault(t *testing.T) {
+	t.Parallel()
+
+	// IdleSince 5m ago. Template idle = 30m → not yet fired. The 0s
+	// override must be ignored (treated as unset) so we fall back to
+	// the template's 30m, leaving the watchdog dormant.
+	idle := fixedNow.Add(-5 * time.Minute)
+	run := interactiveRun(time.Hour, 1, &idle, nil)
+	run.Spec.InteractiveOverrides = &paddockv1alpha1.InteractiveOverrides{
+		IdleTimeout: dur(0),
+	}
+	tpl := interactiveTpl(30*time.Minute, 15*time.Minute, 5*time.Minute, 24*time.Hour)
+
+	got, _ := nextDeadline(fixedNow, run, tpl)
+	if got != watchdogActionNone {
+		t.Errorf("action = %v, want watchdogActionNone (zero override should fall back, not fire)", got)
+	}
+}
+
+func TestNextDeadline_ZeroTemplateIdleUsesBuiltinDefault(t *testing.T) {
+	t.Parallel()
+
+	// IdleSince 5m ago. Template idle = 0s (operator typo). With the
+	// non-positive guard the 0s value is ignored and the built-in 30m
+	// default kicks in, leaving the watchdog dormant.
+	idle := fixedNow.Add(-5 * time.Minute)
+	run := interactiveRun(time.Hour, 1, &idle, nil)
+	tpl := interactiveTpl(0, 15*time.Minute, 5*time.Minute, 24*time.Hour)
+
+	got, _ := nextDeadline(fixedNow, run, tpl)
+	if got != watchdogActionNone {
+		t.Errorf("action = %v, want watchdogActionNone (zero template idle should fall back to builtin)", got)
+	}
+}
+
 func TestNextDeadline_RequeueAtSmallestRemaining(t *testing.T) {
 	t.Parallel()
 

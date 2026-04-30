@@ -36,9 +36,12 @@ const (
 	watchdogActionCancelMaxLifetime
 )
 
-// Reason returns the canonical reason token for an action. Used both as
-// the AuditEvent reason field and as the suffix of the
-// HarnessRunConditionCompleted Reason ("InteractiveTerminated:<reason>").
+// Reason returns the canonical lowercase reason token for an action. Used
+// as the AuditEvent reason field and embedded in the user-facing condition
+// Message ("interactive run terminated by watchdog: idle"). For the
+// machine-consumed HarnessRunConditionCompleted Reason use
+// ConditionReason() instead — that has to stay PascalCase to match the
+// existing Reason convention in this package.
 func (a watchdogAction) Reason() string {
 	switch a {
 	case watchdogActionCancelIdle:
@@ -47,6 +50,23 @@ func (a watchdogAction) Reason() string {
 		return "detach"
 	case watchdogActionCancelMaxLifetime:
 		return "max-lifetime"
+	}
+	return ""
+}
+
+// ConditionReason returns the PascalCase single-token reason for the
+// HarnessRunConditionCompleted Reason field. Kept distinct from Reason()
+// because the existing condition-reason convention in this controller is
+// PascalCase (TemplateResolved, BrokerCAPending, WorkspaceBusy, …) while
+// audit-event reasons are lowercase free-form tokens.
+func (a watchdogAction) ConditionReason() string {
+	switch a {
+	case watchdogActionCancelIdle:
+		return "InteractiveTerminatedIdle"
+	case watchdogActionCancelDetach:
+		return "InteractiveTerminatedDetach"
+	case watchdogActionCancelMaxLifetime:
+		return "InteractiveTerminatedMaxLifetime"
 	}
 	return ""
 }
@@ -75,8 +95,11 @@ func nextDeadline(now time.Time, run *paddockv1alpha1.HarnessRun, tpl *resolvedT
 		istat = &paddockv1alpha1.InteractiveStatus{}
 	}
 
+	// Treat non-positive durations as "unset" so an admission-passing typo
+	// (e.g. idleTimeout: 0s) doesn't make the watchdog fire instantly. Use
+	// the template/built-in fallback instead.
 	bound := func(d *metav1.Duration, fallback time.Duration) time.Duration {
-		if d == nil {
+		if d == nil || d.Duration <= 0 {
 			return fallback
 		}
 		return d.Duration
@@ -87,16 +110,18 @@ func nextDeadline(now time.Time, run *paddockv1alpha1.HarnessRun, tpl *resolvedT
 	maxLifetime := bound(tpl.Spec.Interactive.MaxLifetime, 24*time.Hour)
 
 	if ov := run.Spec.InteractiveOverrides; ov != nil {
-		if ov.IdleTimeout != nil {
+		// Same non-positive guard as `bound`: a 0s override is silently
+		// ignored in favour of the template/built-in value.
+		if ov.IdleTimeout != nil && ov.IdleTimeout.Duration > 0 {
 			idleTimeout = ov.IdleTimeout.Duration
 		}
-		if ov.DetachIdleTimeout != nil {
+		if ov.DetachIdleTimeout != nil && ov.DetachIdleTimeout.Duration > 0 {
 			detachIdleTimeout = ov.DetachIdleTimeout.Duration
 		}
-		if ov.DetachTimeout != nil {
+		if ov.DetachTimeout != nil && ov.DetachTimeout.Duration > 0 {
 			detachTimeout = ov.DetachTimeout.Duration
 		}
-		if ov.MaxLifetime != nil {
+		if ov.MaxLifetime != nil && ov.MaxLifetime.Duration > 0 {
 			maxLifetime = ov.MaxLifetime.Duration
 		}
 	}

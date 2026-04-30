@@ -631,6 +631,35 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			newPhase == paddockv1alpha1.HarnessRunPhaseRunning) {
 		action, after := nextDeadline(time.Now(), &run, tpl)
 		if action != watchdogActionNone {
+			// Delete the Job BEFORE committing Phase=Cancelled. If the
+			// Delete returns a non-NotFound error we bail out without
+			// touching the status: the run stays Idle/Running, the next
+			// reconcile re-evaluates, sees the watchdog still wants to
+			// fire, and retries. The previous order (commit Cancelled →
+			// then Delete) leaked the Job behind a terminal status —
+			// the watchdog branch is gated on Idle||Running and would
+			// skip the retry entirely.
+			jName := run.Status.JobName
+			if jName == "" {
+				jName = jobName(&run)
+			}
+			var job batchv1.Job
+			jobKey := client.ObjectKey{Namespace: run.Namespace, Name: jName}
+			gErr := r.Get(ctx, jobKey, &job)
+			switch {
+			case apierrors.IsNotFound(gErr):
+				// Already gone — proceed.
+			case gErr != nil:
+				return ctrl.Result{}, gErr
+			default:
+				if job.DeletionTimestamp.IsZero() {
+					bg := metav1.DeletePropagationBackground
+					if dErr := r.Delete(ctx, &job, &client.DeleteOptions{PropagationPolicy: &bg}); dErr != nil && !apierrors.IsNotFound(dErr) {
+						return ctrl.Result{}, dErr
+					}
+				}
+			}
+
 			newPhase = paddockv1alpha1.HarnessRunPhaseCancelled
 			run.Status.Phase = newPhase
 			if run.Status.CompletionTime == nil {
@@ -640,7 +669,7 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			setCondition(&run.Status.Conditions, metav1.Condition{
 				Type:               paddockv1alpha1.HarnessRunConditionCompleted,
 				Status:             metav1.ConditionTrue,
-				Reason:             "InteractiveTerminated:" + action.Reason(),
+				Reason:             action.ConditionReason(),
 				Message:            "interactive run terminated by watchdog: " + action.Reason(),
 				ObservedGeneration: run.Generation,
 			})
@@ -670,26 +699,8 @@ func (r *HarnessRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		// Companion audit alongside the run-completed{warned} that
 		// commitStatus → emitTerminalAudit just emitted. Specific
 		// kind so operators can filter "watchdog killed me" cleanly.
+		// Job has already been deleted above (or was already gone).
 		r.Audit.EmitInteractiveRunTerminated(ctx, run.Name, run.Namespace, watchdogReason)
-		// Best-effort Job deletion. Background propagation matches the
-		// reconcileDelete path; the kubelet drives Pod SIGTERM via the
-		// PodSpec's terminationGracePeriodSeconds. Already-gone is fine.
-		jName := run.Status.JobName
-		if jName == "" {
-			jName = jobName(&run)
-		}
-		var job batchv1.Job
-		jobKey := client.ObjectKey{Namespace: run.Namespace, Name: jName}
-		if err := r.Get(ctx, jobKey, &job); err == nil {
-			if job.DeletionTimestamp.IsZero() {
-				bg := metav1.DeletePropagationBackground
-				if err := r.Delete(ctx, &job, &client.DeleteOptions{PropagationPolicy: &bg}); err != nil && !apierrors.IsNotFound(err) {
-					return ctrl.Result{}, err
-				}
-			}
-		} else if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
-		}
 		return ctrl.Result{}, nil
 	}
 
