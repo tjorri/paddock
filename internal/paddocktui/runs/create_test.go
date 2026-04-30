@@ -64,5 +64,29 @@ func TestCreate_PopulatesSpecAndPrefix(t *testing.T) {
 		// Labels on the run aren't part of MVP; only flagging if someone added one accidentally.
 		t.Logf("note: HarnessRun was labeled with %s=%s", "paddock.dev/session", hr.Labels["paddock.dev/session"])
 	}
+	if hr.Spec.Mode != "" {
+		t.Errorf("default Mode should stay empty (Batch); got %q", hr.Spec.Mode)
+	}
 	_ = metav1.Now() // imports keep
+}
+
+func TestCreate_InteractiveModePropagates(t *testing.T) {
+	cli := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
+	name, err := Create(context.Background(), cli, CreateOptions{
+		Namespace:    "ns",
+		WorkspaceRef: "ws",
+		Template:     "t",
+		Prompt:       "hi",
+		Mode:         paddockv1alpha1.HarnessRunModeInteractive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got paddockv1alpha1.HarnessRun
+	if err := cli.Get(context.Background(), types.NamespacedName{Namespace: "ns", Name: name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.Mode != paddockv1alpha1.HarnessRunModeInteractive {
+		t.Errorf("Mode = %q, want Interactive", got.Spec.Mode)
+	}
 }
