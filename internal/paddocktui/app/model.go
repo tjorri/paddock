@@ -60,6 +60,10 @@ type Model struct {
 	Filter      string
 	ErrBanner   string
 
+	// Palette tracks the command palette overlay's open/closed state and
+	// in-progress input. See palette.go.
+	Palette PaletteState
+
 	// Modal-specific state, set when Modal != ModalNone.
 	ModalNew   *NewSessionModalState
 	ModalEnd   *EndSessionModalState

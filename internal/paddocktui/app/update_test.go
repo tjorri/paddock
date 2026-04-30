@@ -451,3 +451,54 @@ func TestUpdate_QuitOnQ(t *testing.T) {
 		t.Errorf("expected QuitMsg, got %T", msg)
 	}
 }
+
+func TestUpdate_ColonOpensPalette(t *testing.T) {
+	m := newTestModel(t)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	nm := next.(Model)
+	if !nm.Palette.Open() {
+		t.Fatal(": on empty prompt should open palette")
+	}
+	if nm.PromptInput != "" {
+		t.Errorf("prompt input should not have received the colon; got %q", nm.PromptInput)
+	}
+}
+
+func TestUpdate_ColonInsidePromptIsLiteral(t *testing.T) {
+	m := newTestModel(t)
+	m.PromptInput = "hello"
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	nm := next.(Model)
+	if nm.Palette.Open() {
+		t.Fatal(": with non-empty prompt should be literal, not open palette")
+	}
+	if nm.PromptInput != "hello:" {
+		t.Errorf("PromptInput = %q, want %q", nm.PromptInput, "hello:")
+	}
+}
+
+func TestUpdate_CtrlKOpensPaletteRegardlessOfPrompt(t *testing.T) {
+	m := newTestModel(t)
+	m.PromptInput = "halfway typed"
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	nm := next.(Model)
+	if !nm.Palette.Open() {
+		t.Fatal("Ctrl-K should open the palette unconditionally")
+	}
+	if nm.PromptInput != "halfway typed" {
+		t.Errorf("Ctrl-K must not consume prompt input; got %q", nm.PromptInput)
+	}
+}
+
+func TestUpdate_EscClosesPalette(t *testing.T) {
+	m := newTestModel(t)
+	m.Palette = m.Palette.WithOpen(true).WithInput("can")
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	nm := next.(Model)
+	if nm.Palette.Open() {
+		t.Fatal("Esc should close the palette")
+	}
+	if nm.Palette.Input() != "" {
+		t.Errorf("closed palette must have empty input; got %q", nm.Palette.Input())
+	}
+}

@@ -19,6 +19,7 @@ package app
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -207,6 +208,24 @@ func handleKeyMsg(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.MainScrollFromBottom = 0
 		return m, nil
 	}
+	// Palette key handling — palette claims keys when open; from
+	// closed it can be opened by ":" (only on an empty prompt) or
+	// Ctrl-K (anywhere).
+	if m.Palette.Open() {
+		return handlePaletteKey(m, key)
+	}
+	if key.Type == tea.KeyCtrlK {
+		m.Palette = m.Palette.WithOpen(true)
+		return m, nil
+	}
+	if key.Type == tea.KeyRunes && len(key.Runes) == 1 && key.Runes[0] == ':' {
+		if m.PromptInput == "" {
+			m.Palette = m.Palette.WithOpen(true)
+		} else {
+			m.PromptInput += ":"
+		}
+		return m, nil
+	}
 	if m.Modal != ModalNone {
 		return handleModalKey(m, key)
 	}
@@ -381,6 +400,72 @@ func handleModalKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if key.Type == tea.KeyEsc || (key.Type == tea.KeyRunes && string(key.Runes) == "?") {
 			return closeModal(m), nil
 		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// handlePaletteKey routes keystrokes while the palette is open: Esc
+// closes; Enter executes the parsed command; Backspace edits;
+// printable runes append to the input. Tab autocompletes the unique
+// matching command name when exactly one matches.
+func handlePaletteKey(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.Palette = m.Palette.WithOpen(false)
+		return m, nil
+	case tea.KeyEnter:
+		cmd, arg := ParsePalette(m.Palette.Input())
+		m.Palette = m.Palette.WithOpen(false)
+		return dispatchPalette(m, cmd, arg)
+	case tea.KeyBackspace:
+		in := m.Palette.Input()
+		if len(in) > 0 {
+			m.Palette = m.Palette.WithInput(in[:len(in)-1])
+		}
+		return m, nil
+	case tea.KeyTab:
+		m.Palette = m.Palette.WithInput(autocompletePalette(m.Palette.Input()))
+		return m, nil
+	case tea.KeySpace:
+		m.Palette = m.Palette.WithInput(m.Palette.Input() + " ")
+		return m, nil
+	case tea.KeyRunes:
+		m.Palette = m.Palette.WithInput(m.Palette.Input() + string(msg.Runes))
+		return m, nil
+	}
+	return m, nil
+}
+
+// autocompletePalette returns the unique prefix-matching command
+// name when exactly one candidate matches; otherwise returns input
+// unchanged.
+func autocompletePalette(input string) string {
+	var match string
+	n := 0
+	for _, c := range []string{"cancel", "end", "interactive", "template ", "reattach", "status", "edit", "help"} {
+		if strings.HasPrefix(c, input) {
+			match = c
+			n++
+		}
+	}
+	if n == 1 {
+		return match
+	}
+	return input
+}
+
+// dispatchPalette routes a parsed palette command. Each branch is
+// filled in by subsequent tasks; for now they're stubs returning the
+// model unchanged so the palette open/close key wiring can be tested
+// in isolation.
+func dispatchPalette(m Model, cmd PaletteCmd, arg string) (tea.Model, tea.Cmd) {
+	_ = arg
+	switch cmd {
+	case PaletteEmpty, PaletteUnknown,
+		PaletteCancel, PaletteEnd, PaletteInteractive,
+		PaletteTemplate, PaletteReattach,
+		PaletteStatus, PaletteEdit, PaletteHelp:
 		return m, nil
 	}
 	return m, nil
