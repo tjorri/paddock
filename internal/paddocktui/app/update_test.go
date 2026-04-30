@@ -568,3 +568,15 @@ func TestPalette_TemplateUpdatesLastTemplate(t *testing.T) {
 		t.Errorf("LastTemplate = %q, want %q", got, "new")
 	}
 }
+
+func TestPalette_CancelBatchTriggersControllerCancel(t *testing.T) {
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName, ActiveRunRef: "hr-running"},
+	}
+	m.Focused = testSessionName
+	_, cmd := dispatchPalette(m, PaletteCancel, "")
+	if cmd == nil {
+		t.Fatal("expected cancelRunCmd, got nil")
+	}
+}

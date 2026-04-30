@@ -483,8 +483,19 @@ func dispatchPalette(m Model, cmd PaletteCmd, arg string) (tea.Model, tea.Cmd) {
 		}
 		focused.Session.LastTemplate = arg
 		return m, patchLastTemplateCmd(m.Client, m.Namespace, m.Focused, arg)
-	case PaletteCancel, PaletteEnd, PaletteInteractive, PaletteReattach:
-		// Filled by later phase tasks (12, 19, 22, 23, 26).
+	case PaletteCancel:
+		focused := m.Sessions[m.Focused]
+		if focused == nil {
+			m.ErrBanner = errNoSessionFocused
+			return m, nil
+		}
+		if focused.Session.ActiveRunRef == "" {
+			m.ErrBanner = "nothing to cancel"
+			return m, nil
+		}
+		return m, cancelRunCmd(m.Client, m.Namespace, focused.Session.ActiveRunRef)
+	case PaletteEnd, PaletteInteractive, PaletteReattach:
+		// Filled by later phase tasks (19, 23, 26).
 		return m, nil
 	}
 	return m, nil
