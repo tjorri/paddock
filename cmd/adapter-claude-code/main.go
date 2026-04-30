@@ -36,6 +36,54 @@ import (
 	"time"
 )
 
+// newPerPromptDriver constructs a Driver for "per-prompt-process" mode.
+// Implemented in Task 9.
+func newPerPromptDriver(_ *log.Logger) Driver { panic("Task 9: implement") }
+
+// newPersistentDriver constructs a Driver for "persistent-process" mode.
+// Implemented in Task 14.
+func newPersistentDriver(_ *log.Logger) Driver { panic("Task 14: implement") }
+
+// runInteractive starts the loopback HTTP server for interactive mode and
+// blocks until SIGTERM or SIGINT is received.
+func runInteractive(mode string) {
+	logger := log.New(os.Stderr, "adapter-claude-code: ", log.LstdFlags)
+
+	var drv Driver
+	switch mode {
+	case "per-prompt-process":
+		drv = newPerPromptDriver(logger)
+	case "persistent-process":
+		drv = newPersistentDriver(logger)
+	default:
+		logger.Fatalf("unknown PADDOCK_INTERACTIVE_MODE %q", mode)
+	}
+
+	srv := NewServer(Config{Mode: mode, Driver: drv})
+
+	ln, err := srv.Listen("127.0.0.1:8431")
+	if err != nil {
+		logger.Fatalf("listen: %v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutCtx); err != nil {
+			logger.Printf("shutdown: %v", err)
+		}
+	}()
+
+	logger.Printf("interactive mode %q listening on %s", mode, ln.Addr())
+	if err := srv.Serve(ln); err != nil {
+		logger.Fatalf("serve: %v", err)
+	}
+}
+
 const defaultPoll = 200 * time.Millisecond
 
 func main() {
@@ -43,6 +91,11 @@ func main() {
 	eventsPath := flag.String("events", envOr("PADDOCK_EVENTS_PATH", "/paddock/events/events.jsonl"), "Path to PaddockEvents output JSONL.")
 	poll := flag.Duration("poll", defaultPoll, "Poll interval while tailing input.")
 	flag.Parse()
+
+	if mode := os.Getenv("PADDOCK_INTERACTIVE_MODE"); mode != "" {
+		runInteractive(mode)
+		return
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
