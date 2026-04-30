@@ -324,10 +324,9 @@ func buildPodSpec(
 	initContainers := make([]corev1.Container, 0, 5)
 
 	// paddock-home-init runs FIRST. mkdir is filesystem-only — no
-	// dependency on iptables/proxy/sidecar lifecycle — and the agent's
-	// PADDOCK_WORKSPACE-side cwd may already be HOME on first
-	// execution, so the dir must exist before any other init/sidecar
-	// runs.
+	// dependency on iptables/proxy/sidecar lifecycle — and HOME points
+	// into the workspace PVC, so the dir must exist before any
+	// container that reads $HOME starts.
 	initContainers = append(initContainers, buildHomeInitContainer(template, in))
 
 	// iptables-init runs next — it must complete before the proxy
