@@ -95,17 +95,28 @@ func TestBuildPodSpec_EchoShape(t *testing.T) {
 		t.Errorf("main container name = %q, want %q", ps.Containers[0].Name, agentContainerName)
 	}
 
-	// Two native sidecars: adapter then collector, both restartPolicy=Always.
-	if len(ps.InitContainers) != 2 {
-		t.Fatalf("initContainers = %d, want 2 (adapter + collector)", len(ps.InitContainers))
+	// Three init containers: paddock-home-init (plain), then adapter and
+	// collector (native sidecars with restartPolicy=Always).
+	if len(ps.InitContainers) != 3 {
+		t.Fatalf("initContainers = %d, want 3 (home-init + adapter + collector)", len(ps.InitContainers))
 	}
-	if ps.InitContainers[0].Name != adapterContainerName {
-		t.Errorf("initContainers[0] = %q, want %q", ps.InitContainers[0].Name, adapterContainerName)
+	if ps.InitContainers[0].Name != paddockHomeInitContainerName {
+		t.Errorf("initContainers[0] = %q, want %q", ps.InitContainers[0].Name, paddockHomeInitContainerName)
 	}
-	if ps.InitContainers[1].Name != collectorContainerName {
-		t.Errorf("initContainers[1] = %q, want %q", ps.InitContainers[1].Name, collectorContainerName)
+	if ps.InitContainers[1].Name != adapterContainerName {
+		t.Errorf("initContainers[1] = %q, want %q", ps.InitContainers[1].Name, adapterContainerName)
+	}
+	if ps.InitContainers[2].Name != collectorContainerName {
+		t.Errorf("initContainers[2] = %q, want %q", ps.InitContainers[2].Name, collectorContainerName)
 	}
 	for _, c := range ps.InitContainers {
+		// paddock-home-init is a plain init container — no restartPolicy.
+		if c.Name == paddockHomeInitContainerName {
+			if c.RestartPolicy != nil {
+				t.Errorf("%s restartPolicy = %v, want nil — plain init container", c.Name, c.RestartPolicy)
+			}
+			continue
+		}
 		if c.RestartPolicy == nil || *c.RestartPolicy != corev1.ContainerRestartPolicyAlways {
 			t.Errorf("%s restartPolicy = %v, want Always — native sidecar contract violated",
 				c.Name, c.RestartPolicy)
@@ -164,7 +175,7 @@ func TestBuildPodSpec_MountsPerContainer(t *testing.T) {
 		t.Errorf("agent mounts = %v, want %v", agentMounts, wantAgent)
 	}
 
-	adapterMounts := mountSet(ps.InitContainers[0].VolumeMounts)
+	adapterMounts := mountSet(ps.InitContainers[1].VolumeMounts)
 	wantAdapter := map[string]bool{
 		sharedVolumeName:    true,
 		paddockSAVolumeName: true, // F-38: sidecars get explicit SA token; agent does not
@@ -173,7 +184,7 @@ func TestBuildPodSpec_MountsPerContainer(t *testing.T) {
 		t.Errorf("adapter mounts = %v, want %v — adapter must not see workspace", adapterMounts, wantAdapter)
 	}
 
-	collectorMounts := mountSet(ps.InitContainers[1].VolumeMounts)
+	collectorMounts := mountSet(ps.InitContainers[2].VolumeMounts)
 	wantCollector := map[string]bool{
 		sharedVolumeName:    true,
 		workspaceVolumeName: true,
@@ -211,7 +222,7 @@ func TestBuildPodSpec_CollectorEnvContract(t *testing.T) {
 	tpl := echoTemplateFixture()
 	ps := buildPodSpec(run, tpl, defaultInputs())
 
-	col := ps.InitContainers[1]
+	col := ps.InitContainers[2]
 	env := envToMap(col.Env)
 	cases := []struct{ key, want string }{
 		{"PADDOCK_RAW_PATH", "/paddock/raw/out"},
@@ -250,11 +261,11 @@ func TestBuildPodSpec_OmitsAdapterWhenUnset(t *testing.T) {
 	tpl.Spec.EventAdapter = nil
 
 	ps := buildPodSpec(run, tpl, defaultInputs())
-	if len(ps.InitContainers) != 1 {
-		t.Fatalf("expected only collector as sidecar when EventAdapter is nil; got %d init containers", len(ps.InitContainers))
+	if len(ps.InitContainers) != 2 {
+		t.Fatalf("expected home-init + collector when EventAdapter is nil; got %d init containers", len(ps.InitContainers))
 	}
-	if ps.InitContainers[0].Name != collectorContainerName {
-		t.Errorf("sole sidecar should be collector; got %q", ps.InitContainers[0].Name)
+	if ps.InitContainers[1].Name != collectorContainerName {
+		t.Errorf("second init container should be collector; got %q", ps.InitContainers[1].Name)
 	}
 }
 
@@ -266,7 +277,7 @@ func TestBuildPodSpec_DefaultCollectorImageWhenEmpty(t *testing.T) {
 	in.collectorImage = ""
 	ps := buildPodSpec(run, tpl, in)
 
-	col := ps.InitContainers[1]
+	col := ps.InitContainers[2]
 	if col.Image != DefaultCollectorImage {
 		t.Errorf("collector image = %q, want fallback %q", col.Image, DefaultCollectorImage)
 	}
@@ -287,13 +298,13 @@ func TestBuildPodSpec_ProxySidecar(t *testing.T) {
 
 	ps := buildPodSpec(run, tpl, in)
 
-	// Native sidecars: adapter, collector, proxy (in that order).
-	if len(ps.InitContainers) != 3 {
-		t.Fatalf("initContainers = %d, want 3 (adapter + collector + proxy)", len(ps.InitContainers))
+	// Init containers: home-init, then adapter, collector, proxy (native sidecars).
+	if len(ps.InitContainers) != 4 {
+		t.Fatalf("initContainers = %d, want 4 (home-init + adapter + collector + proxy)", len(ps.InitContainers))
 	}
-	proxy := ps.InitContainers[2]
+	proxy := ps.InitContainers[3]
 	if proxy.Name != proxyContainerName {
-		t.Errorf("initContainers[2] = %q, want %q", proxy.Name, proxyContainerName)
+		t.Errorf("initContainers[3] = %q, want %q", proxy.Name, proxyContainerName)
 	}
 	if proxy.Image != testProxyImage {
 		t.Errorf("proxy image = %q, want %q", proxy.Image, testProxyImage)
@@ -391,15 +402,18 @@ func TestBuildPodSpec_TransparentMode(t *testing.T) {
 
 	ps := buildPodSpec(run, tpl, in)
 
-	// Init containers: iptables-init (real init, no restartPolicy), then
+	// Init containers: home-init, iptables-init (both plain inits), then
 	// adapter, collector, proxy (all native sidecars).
-	if len(ps.InitContainers) != 4 {
-		t.Fatalf("initContainers = %d, want 4 (iptables-init + adapter + collector + proxy)", len(ps.InitContainers))
+	if len(ps.InitContainers) != 5 {
+		t.Fatalf("initContainers = %d, want 5 (home-init + iptables-init + adapter + collector + proxy)", len(ps.InitContainers))
 	}
-	if ps.InitContainers[0].Name != iptablesInitContainerName {
-		t.Errorf("initContainers[0] = %q, want %q (must run first)", ps.InitContainers[0].Name, iptablesInitContainerName)
+	if ps.InitContainers[0].Name != paddockHomeInitContainerName {
+		t.Errorf("initContainers[0] = %q, want %q (must run first)", ps.InitContainers[0].Name, paddockHomeInitContainerName)
 	}
-	ipt := ps.InitContainers[0]
+	if ps.InitContainers[1].Name != iptablesInitContainerName {
+		t.Errorf("initContainers[1] = %q, want %q (must run second)", ps.InitContainers[1].Name, iptablesInitContainerName)
+	}
+	ipt := ps.InitContainers[1]
 	if ipt.RestartPolicy != nil {
 		t.Errorf("iptables-init must be a plain init container, not a native sidecar (restartPolicy=%v)", ipt.RestartPolicy)
 	}
@@ -417,9 +431,9 @@ func TestBuildPodSpec_TransparentMode(t *testing.T) {
 	}
 
 	// Proxy has --mode=transparent and runs as UID 1337.
-	proxy := ps.InitContainers[3]
+	proxy := ps.InitContainers[4]
 	if proxy.Name != proxyContainerName {
-		t.Fatalf("initContainers[3] = %q, want %q", proxy.Name, proxyContainerName)
+		t.Fatalf("initContainers[4] = %q, want %q", proxy.Name, proxyContainerName)
 	}
 	var hasTransparentMode, hasExternalListen bool
 	for _, a := range proxy.Args {
@@ -538,8 +552,8 @@ func TestBuildPodSpec_NoProxyWhenDisabled(t *testing.T) {
 	tpl := echoTemplateFixture()
 	ps := buildPodSpec(run, tpl, defaultInputs())
 
-	if len(ps.InitContainers) != 2 {
-		t.Fatalf("expected 2 init containers without proxy; got %d", len(ps.InitContainers))
+	if len(ps.InitContainers) != 3 {
+		t.Fatalf("expected 3 init containers without proxy; got %d", len(ps.InitContainers))
 	}
 	for _, v := range ps.Volumes {
 		if v.Name == proxyCAVolumeName {
@@ -1361,5 +1375,23 @@ func TestBuildHomeInitContainer_DefaultImageWhenEmpty(t *testing.T) {
 	c := buildHomeInitContainer(tmpl, podSpecInputs{}) // empty homeInitImage
 	if c.Image != DefaultHomeInitImage {
 		t.Errorf("Image = %q, want %q (DefaultHomeInitImage fallback)", c.Image, DefaultHomeInitImage)
+	}
+}
+
+func TestBuildPodSpec_HomeInitFirst(t *testing.T) {
+	run := &paddockv1alpha1.HarnessRun{}
+	run.Name = "hr-1"
+	tmpl := &resolvedTemplate{}
+	tmpl.Spec.Image = "alpine:latest"
+	spec := buildPodSpec(run, tmpl, podSpecInputs{
+		homeInitImage:  "busybox:1.36",
+		serviceAccount: "default",
+	})
+	if len(spec.InitContainers) == 0 || spec.InitContainers[0].Name != paddockHomeInitContainerName {
+		names := make([]string, 0, len(spec.InitContainers))
+		for _, c := range spec.InitContainers {
+			names = append(names, c.Name)
+		}
+		t.Fatalf("paddock-home-init must be the first init container; got order: %v", names)
 	}
 }

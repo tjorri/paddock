@@ -321,9 +321,16 @@ func buildPodSpec(
 		collectorImage = DefaultCollectorImage
 	}
 
-	initContainers := make([]corev1.Container, 0, 4)
+	initContainers := make([]corev1.Container, 0, 5)
 
-	// iptables-init runs first — it must complete before the proxy
+	// paddock-home-init runs FIRST. mkdir is filesystem-only — no
+	// dependency on iptables/proxy/sidecar lifecycle — and the agent's
+	// PADDOCK_WORKSPACE-side cwd may already be HOME on first
+	// execution, so the dir must exist before any other init/sidecar
+	// runs.
+	initContainers = append(initContainers, buildHomeInitContainer(template, in))
+
+	// iptables-init runs next — it must complete before the proxy
 	// sidecar starts so the agent's TCP traffic is caught by the
 	// REDIRECT chain from the first packet.
 	if proxyEnabled(in) && in.interceptionMode == paddockv1alpha1.InterceptionModeTransparent {

@@ -68,7 +68,7 @@ var _ = Describe("HarnessRun output pipeline", func() {
 			}
 			Expect(k8sClient.Create(ctx, run)).To(Succeed())
 
-			By("the Job pod spec has agent + 2 native sidecars")
+			By("the Job pod spec has agent + home-init + 2 native sidecars")
 			job := &batchv1.Job{}
 			Eventually(func(g Gomega) {
 				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "run-out-1", Namespace: ns}, job)).To(Succeed())
@@ -76,10 +76,17 @@ var _ = Describe("HarnessRun output pipeline", func() {
 
 			Expect(job.Spec.Template.Spec.Containers).To(HaveLen(1))
 			Expect(job.Spec.Template.Spec.Containers[0].Name).To(Equal(agentContainerName))
-			Expect(job.Spec.Template.Spec.InitContainers).To(HaveLen(2))
-			Expect(job.Spec.Template.Spec.InitContainers[0].Name).To(Equal(adapterContainerName))
-			Expect(job.Spec.Template.Spec.InitContainers[1].Name).To(Equal(collectorContainerName))
+			Expect(job.Spec.Template.Spec.InitContainers).To(HaveLen(3))
+			Expect(job.Spec.Template.Spec.InitContainers[0].Name).To(Equal(paddockHomeInitContainerName))
+			Expect(job.Spec.Template.Spec.InitContainers[1].Name).To(Equal(adapterContainerName))
+			Expect(job.Spec.Template.Spec.InitContainers[2].Name).To(Equal(collectorContainerName))
 			for _, c := range job.Spec.Template.Spec.InitContainers {
+				// paddock-home-init is a plain init container — no restartPolicy.
+				if c.Name == paddockHomeInitContainerName {
+					Expect(c.RestartPolicy).To(BeNil(),
+						"%s must be a plain init container, not a native sidecar", c.Name)
+					continue
+				}
 				Expect(c.RestartPolicy).NotTo(BeNil())
 				Expect(*c.RestartPolicy).To(Equal(corev1.ContainerRestartPolicyAlways),
 					"%s must declare restartPolicy=Always to be a native sidecar", c.Name)
