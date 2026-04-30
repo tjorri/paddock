@@ -134,9 +134,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case runCreatedMsg:
-		// Open a long-lived event tail for this new run; the
-		// workspace-runs watch will pick up the run object itself.
-		return m, openEventTailCmd(m.ctx, m.Client, m.Namespace, msg.RunName)
+		// No tail opened here. The runs watch will fire runUpdatedMsg
+		// for the new run within one poll interval, and ensureEventTail
+		// in that path opens the tail. Opening here too races with
+		// runUpdatedMsg (the eventTailOpenedMsg registration is async)
+		// and produces duplicate tails — every event was being emitted
+		// twice.
+		return m, nil
 
 	case runCancelledMsg:
 		return m, nil
@@ -459,20 +463,40 @@ func isTerminalPhase(p paddockv1alpha1.HarnessRunPhase) bool {
 }
 
 // upsertRun inserts or updates the RunSummary for the run carried in
-// msg under the workspace it belongs to.
+// msg under the workspace it belongs to. Also seeds the SessionState
+// Events map from Status.RecentEvents (deduped) so that:
+//
+//   - On reattach, terminal runs render their full body without
+//     requiring a fresh tail (which ensureEventTail correctly skips).
+//   - In-flight runs whose tail hasn't started yet still show events
+//     captured in the ring buffer.
+//
+// Events arriving via the live tail (eventReceivedMsg) go through the
+// same dedupe so a tail and an upsert seeing the same event from the
+// ring buffer don't duplicate.
 func upsertRun(m Model, msg runUpdatedMsg) Model {
 	state := m.Sessions[msg.WorkspaceRef]
 	if state == nil {
 		return m
 	}
 	summary := runSummaryFromCR(msg.Run)
+	found := false
 	for i := range state.Runs {
 		if state.Runs[i].Name == summary.Name {
 			state.Runs[i] = summary
-			return m
+			found = true
+			break
 		}
 	}
-	state.Runs = append(state.Runs, summary)
+	if !found {
+		state.Runs = append(state.Runs, summary)
+	}
+	if state.Events == nil {
+		state.Events = map[string][]paddockv1alpha1.PaddockEvent{}
+	}
+	for _, ev := range msg.Run.Status.RecentEvents {
+		state.Events[msg.Run.Name] = appendEventDedup(state.Events[msg.Run.Name], ev)
+	}
 	return m
 }
 
@@ -494,7 +518,8 @@ func removeRun(m Model, msg runDeletedMsg) Model {
 
 // appendEvent appends an event to the focused session's Events map.
 // Only the focused session is tailed, so unfocused sessions are a
-// no-op.
+// no-op. Goes through appendEventDedup so an event already captured
+// via Status.RecentEvents on a prior runUpdatedMsg isn't duplicated.
 func appendEvent(m Model, msg eventReceivedMsg) Model {
 	if m.Focused == "" {
 		return m
@@ -506,8 +531,44 @@ func appendEvent(m Model, msg eventReceivedMsg) Model {
 	if state.Events == nil {
 		state.Events = map[string][]paddockv1alpha1.PaddockEvent{}
 	}
-	state.Events[msg.RunName] = append(state.Events[msg.RunName], msg.Event)
+	state.Events[msg.RunName] = appendEventDedup(state.Events[msg.RunName], msg.Event)
 	return m
+}
+
+// appendEventDedup appends ev to existing only if no event with the
+// same identity is already present. Identity is (timestamp, type,
+// summary, fields) — the same key shape events.Dedupe uses, but
+// inlined to avoid plumbing per-run Dedupe state through SessionState.
+func appendEventDedup(existing []paddockv1alpha1.PaddockEvent, ev paddockv1alpha1.PaddockEvent) []paddockv1alpha1.PaddockEvent {
+	for i := range existing {
+		if eventsEqual(existing[i], ev) {
+			return existing
+		}
+	}
+	return append(existing, ev)
+}
+
+// eventsEqual reports whether two PaddockEvents represent the same
+// occurrence: identical timestamp, type, summary, and fields. Used
+// only by appendEventDedup; does not need to be cryptographically
+// strong because the inputs come from a single trusted source (the
+// HarnessRun.status.recentEvents ring).
+func eventsEqual(a, b paddockv1alpha1.PaddockEvent) bool {
+	if !a.Timestamp.Equal(&b.Timestamp) {
+		return false
+	}
+	if a.Type != b.Type || a.Summary != b.Summary {
+		return false
+	}
+	if len(a.Fields) != len(b.Fields) {
+		return false
+	}
+	for k, av := range a.Fields {
+		if bv, ok := b.Fields[k]; !ok || bv != av {
+			return false
+		}
+	}
+	return true
 }
 
 // templateNames extracts the Name field of each TemplateInfo. The

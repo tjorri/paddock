@@ -22,6 +22,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
@@ -137,6 +138,73 @@ func TestUpdate_OpensEventTailForRunningRunOnReattach(t *testing.T) {
 	_, cmd := m.Update(runUpdatedMsg{WorkspaceRef: testSessionName, Run: hr})
 	if cmd == nil {
 		t.Fatal("expected a batched cmd including openEventTailCmd, got nil")
+	}
+}
+
+func TestUpdate_RunCreatedDoesNotOpenTailDirectly(t *testing.T) {
+	// Regression: runCreatedMsg used to open a tail eagerly. The runs
+	// watch then fired runUpdatedMsg, ensureEventTail saw no entry in
+	// m.eventTails (the OpenedMsg from the first call was still in
+	// flight) and opened a SECOND tail. Result: every event emitted
+	// twice. The fix is to let ensureEventTail be the sole opener.
+	m := newTestModel(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+	_, cmd := m.Update(runCreatedMsg{WorkspaceRef: testSessionName, RunName: "hr-fresh"})
+	if cmd != nil {
+		t.Errorf("runCreatedMsg should not open a tail; got cmd=%T", cmd)
+	}
+}
+
+func TestUpdate_UpsertRunSeedsEventsFromRecentEvents(t *testing.T) {
+	// Regression: on reattach, terminal runs rendered an empty body
+	// because upsertRun only projected the RunSummary and never copied
+	// Status.RecentEvents into the Events map (and ensureEventTail
+	// correctly skipped opening a tail for terminal phases).
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+	}
+	m.SessionOrder = []string{testSessionName}
+
+	hr := paddockv1alpha1.HarnessRun{}
+	hr.Name = "hr-done"
+	hr.Spec.WorkspaceRef = testSessionName
+	hr.Status.Phase = paddockv1alpha1.HarnessRunPhaseSucceeded
+	hr.Status.RecentEvents = []paddockv1alpha1.PaddockEvent{
+		{Timestamp: metav1.NewTime(time.Now()), Type: "Message", Summary: "first reply"},
+		{Timestamp: metav1.NewTime(time.Now().Add(time.Second)), Type: "Message", Summary: "second reply"},
+	}
+	next, _ := m.Update(runUpdatedMsg{WorkspaceRef: testSessionName, Run: hr})
+	got := next.(Model).Sessions[testSessionName].Events["hr-done"]
+	if len(got) != 2 {
+		t.Fatalf("expected 2 events copied from recentEvents, got %d", len(got))
+	}
+	if got[0].Summary != "first reply" || got[1].Summary != "second reply" {
+		t.Errorf("events copied in wrong order: %+v", got)
+	}
+}
+
+func TestAppendEventDedup(t *testing.T) {
+	// Two events with the same identity should collapse; different
+	// timestamps remain distinct. Locks the dedupe behaviour shared by
+	// upsertRun (RecentEvents → Events) and appendEvent (live tail →
+	// Events) so a tail and a ring-buffer copy don't double-emit.
+	ts := metav1.NewTime(time.Now())
+	a := paddockv1alpha1.PaddockEvent{Timestamp: ts, Type: "Message", Summary: "hi"}
+	dup := paddockv1alpha1.PaddockEvent{Timestamp: ts, Type: "Message", Summary: "hi"}
+	other := paddockv1alpha1.PaddockEvent{
+		Timestamp: metav1.NewTime(ts.Add(time.Second)), Type: "Message", Summary: "hi",
+	}
+	got := appendEventDedup(nil, a)
+	got = appendEventDedup(got, dup)
+	if len(got) != 1 {
+		t.Errorf("expected dedupe to collapse identical event, got %d", len(got))
+	}
+	got = appendEventDedup(got, other)
+	if len(got) != 2 {
+		t.Errorf("expected different timestamp to be kept, got %d", len(got))
 	}
 }
 
