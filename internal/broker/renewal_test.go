@@ -180,3 +180,40 @@ func TestRenewalWalker_SkipsNonRenewable(t *testing.T) {
 		t.Fatalf("ExpiresAt changed for non-renewable: got %v, want %v", out[0].ExpiresAt.Time, originalExpiry)
 	}
 }
+
+// TestRenewalWalker_NoAuditOnZeroExpiresAt asserts that when a
+// RenewableProvider returns an IssueResult with a zero ExpiresAt
+// (a no-op renewal), the walker neither updates the lease nor emits
+// a credential-renewed audit. Auditing a "renewal" that didn't move
+// the expiry would mislead operators reading the audit log.
+func TestRenewalWalker_NoAuditOnZeroExpiresAt(t *testing.T) {
+	t.Parallel()
+
+	// renewedAt nil → fakeRenewable returns IssueResult{ExpiresAt: time.Time{}}
+	p := &fakeRenewable{name: "GitHubApp"}
+	registry := map[string]providers.Provider{"GitHubApp": p}
+	rec := &recordingAuditSink{}
+	walker := broker.NewRenewalWalker(registry, 5*time.Minute, broker.NewAuditWriter(rec))
+
+	originalExpiry := time.Now().Add(2 * time.Minute)
+	exp := metav1.NewTime(originalExpiry)
+	lease := paddockv1alpha1.IssuedLease{
+		Provider:       "GitHubApp",
+		LeaseID:        "lease-noop",
+		CredentialName: "cred",
+		ExpiresAt:      &exp,
+	}
+	out, err := walker.WalkAndRenew(context.Background(), "ns", "run-noop", []paddockv1alpha1.IssuedLease{lease})
+	if err != nil {
+		t.Fatalf("WalkAndRenew returned error: %v", err)
+	}
+	if !out[0].ExpiresAt.Time.Equal(originalExpiry) {
+		t.Fatalf("ExpiresAt changed on no-op renewal: got %v, want %v", out[0].ExpiresAt.Time, originalExpiry)
+	}
+
+	for _, e := range rec.events() {
+		if e.Spec.Kind == paddockv1alpha1.AuditKindCredentialRenewed {
+			t.Fatalf("unexpected credential-renewed audit on no-op renewal: %+v", e)
+		}
+	}
+}

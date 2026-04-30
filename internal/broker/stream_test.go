@@ -425,3 +425,79 @@ func TestShell_PhaseGateRejectsPending(t *testing.T) {
 		t.Fatalf("body = %q, want substring %q", body, "phase Pending")
 	}
 }
+
+// TestStream_AdmitsControllerCrossNamespace pins the IsController
+// bypass: a token with IsController=true and a Namespace different
+// from the run's must still pass the namespace gate so the controller
+// can attach to runs in other namespaces. Without this branch a
+// cluster-scoped controller can't observe interactive run streams.
+func TestStream_AdmitsControllerCrossNamespace(t *testing.T) {
+	t.Parallel()
+	f := newStreamFixture(t, true, fakeAdapterStream(t))
+	// Override the auth identity to a controller token from a different namespace.
+	f.srv.Auth = stubAuth{identity: broker.CallerIdentity{
+		Namespace:      "paddock-system",
+		ServiceAccount: "paddock-controller",
+		IsController:   true,
+	}}
+
+	wsURL := "ws" + strings.TrimPrefix(f.broker.URL, "http") + "/v1/runs/team-a/r1/stream"
+	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{ //nolint:bodyclose // upgrade response body is hijacked by the WS conn
+		Subprotocols: []string{"paddock.stream.v1"},
+		HTTPHeader:   http.Header{"Authorization": []string{"Bearer controller-token"}},
+	})
+	if err != nil {
+		t.Fatalf("dial: cross-namespace controller should be admitted: %v", err)
+	}
+	defer c.Close(websocket.StatusNormalClosure, "bye") //nolint:errcheck
+
+	// Confirm the stream actually wired up — fakeAdapterStream sends
+	// "hello-from-adapter" first.
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRead()
+	_, msg, err := c.Read(readCtx)
+	if err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+	if string(msg) != "hello-from-adapter" {
+		t.Fatalf("recv = %q, want %q", msg, "hello-from-adapter")
+	}
+}
+
+// TestShell_AdmitsControllerCrossNamespace pins the IsController
+// bypass for /shell. The fixture has no RestConfig so the handler
+// returns 503 once it passes the namespace + grant gates — that 503
+// (not 403) is the signal that the cross-namespace controller was
+// admitted. A non-controller cross-namespace caller would 403 before
+// reaching the RestConfig check.
+func TestShell_AdmitsControllerCrossNamespace(t *testing.T) {
+	t.Parallel()
+	f := newShellFixture(t, true, paddockv1alpha1.HarnessRunPhaseRunning)
+	f.srv.Auth = stubAuth{identity: broker.CallerIdentity{
+		Namespace:      "paddock-system",
+		ServiceAccount: "paddock-controller",
+		IsController:   true,
+	}}
+
+	wsURL := "ws" + strings.TrimPrefix(f.broker.URL, "http") + "/v1/runs/team-a/r1/shell"
+	dialCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, resp, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
+		Subprotocols: []string{"paddock.shell.v1"},
+		HTTPHeader:   http.Header{"Authorization": []string{"Bearer controller-token"}},
+	})
+	if err == nil {
+		t.Fatalf("dial succeeded; expected 503 (no RestConfig)")
+	}
+	if resp == nil {
+		t.Fatalf("dial err=%v but response was nil", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	// 503 means we reached the RestConfig nil-check, i.e. the namespace
+	// gate let us through. A 403 here would mean the bypass didn't fire.
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (controller cross-namespace must be admitted past the namespace gate; err=%v)", resp.StatusCode, err)
+	}
+}

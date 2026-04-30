@@ -25,11 +25,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
+	"unicode"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -43,6 +46,35 @@ import (
 // bodies. Both are tiny (InterruptRequest is empty, EndRequest is just
 // a short reason string); 1 KiB is a defensive cap against junk POSTs.
 const interactiveSmallBodyCap = 1 << 10
+
+// maxReasonBytes caps the sanitized /end reason persisted to the
+// AuditEvent detail. Keeps the field bounded for downstream log
+// parsers regardless of the 1 KiB body cap above.
+const maxReasonBytes = 256
+
+// sanitizeReason normalizes a caller-supplied /end reason: trims,
+// replaces control characters with a single space, and truncates to
+// maxReasonBytes (rune-safe — never splits a UTF-8 rune mid-encoding).
+// Returns "" when the input is whitespace-only.
+func sanitizeReason(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if b.Len() >= maxReasonBytes {
+			break
+		}
+		if unicode.IsControl(r) {
+			b.WriteRune(' ')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
+}
 
 // handlePrompts authenticates the caller, validates the run is in
 // Interactive mode with a runs.interact grant, allocates a turn
@@ -180,17 +212,29 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := nowMeta()
-	if run.Status.Interactive == nil {
-		run.Status.Interactive = &paddockv1alpha1.InteractiveStatus{}
-	}
-	run.Status.Interactive.PromptCount++
-	run.Status.Interactive.LastPromptAt = &now
 	seqCopy := seq
-	run.Status.Interactive.CurrentTurnSeq = &seqCopy
-	run.Status.Interactive.IdleSince = nil
-	// Best-effort: a lost write here just means the controller's next reconcile will see slightly stale Interactive counters. The run's authoritative state is the prompt-submitted AuditEvent we already persisted.
-	if uErr := s.Client.Status().Update(ctx, &run); uErr != nil {
-		logger.Error(uErr, "patching interactive status", "run", name)
+	// Patch under retry-on-conflict: re-Get inside the loop so each
+	// attempt's MergeFrom base reflects the latest ResourceVersion.
+	// Plain Update() lost the race when the renewal walker (or another
+	// /prompts on a different replica) patched IssuedLeases between our
+	// initial Get and the write — leaving CurrentTurnSeq unset and
+	// breaking the in-flight 409 guard for subsequent prompts.
+	if pErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh paddockv1alpha1.HarnessRun
+		if gErr := s.Client.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &fresh); gErr != nil {
+			return gErr
+		}
+		base := fresh.DeepCopy()
+		if fresh.Status.Interactive == nil {
+			fresh.Status.Interactive = &paddockv1alpha1.InteractiveStatus{}
+		}
+		fresh.Status.Interactive.PromptCount++
+		fresh.Status.Interactive.LastPromptAt = &now
+		fresh.Status.Interactive.CurrentTurnSeq = &seqCopy
+		fresh.Status.Interactive.IdleSince = nil
+		return s.Client.Status().Patch(ctx, &fresh, client.MergeFrom(base))
+	}); pErr != nil {
+		logger.Error(pErr, "patching interactive status", "run", name)
 	}
 }
 
@@ -310,8 +354,8 @@ func (s *Server) handleEnd(w http.ResponseWriter, r *http.Request) {
 			logger.V(1).Info("ignoring /end body decode error", "err", dErr.Error(), "ns", ns, "run", name)
 		}
 	}
-	if body.Reason != "" {
-		reason = body.Reason
+	if cleaned := sanitizeReason(body.Reason); cleaned != "" {
+		reason = cleaned
 	}
 
 	// Invariant: cmd/broker wires Router in production; nil here means a malformed test setup or an incomplete bootstrap.
@@ -319,7 +363,17 @@ func (s *Server) handleEnd(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, brokerapi.CodeNotConfigured, "interactive router not configured")
 		return
 	}
-	s.Router.ForwardEnd(ctx, w, r, ns, name)
+	// Wrap the writer so we can observe the upstream status code; we
+	// only emit interactive-run-terminated when the forward actually
+	// succeeded. Mirrors the pattern in handlePrompts: a 502 from the
+	// adapter must not produce a "terminated" audit when no End signal
+	// reached the run.
+	rec := &statusRecorder{ResponseWriter: w}
+	s.Router.ForwardEnd(ctx, rec, r, ns, name)
+
+	if rec.status < 200 || rec.status >= 300 {
+		return
+	}
 
 	if s.Audit != nil {
 		ae := auditing.NewInteractiveRunTerminated(auditing.InteractiveRunTerminatedInput{

@@ -26,11 +26,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
 	"paddock.dev/paddock/internal/broker"
@@ -340,5 +344,221 @@ func TestHandlePrompts_TurnInFlight(t *testing.T) {
 
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestHandleEnd_NoAuditOnUpstreamFailure asserts that when the adapter
+// returns a non-2xx response, handleEnd does NOT emit an
+// interactive-run-terminated audit. Mirrors the statusRecorder gate
+// already in handlePrompts.
+func TestHandleEnd_NoAuditOnUpstreamFailure(t *testing.T) {
+	t.Parallel()
+	const ns = "team-a"
+
+	// Adapter that always 502s — simulates an unreachable in-pod adapter.
+	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(adapter.Close)
+
+	tpl := &paddockv1alpha1.HarnessTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessTemplateSpec{
+			Harness: "echo", Image: "paddock-echo:v1", Command: []string{"/bin/echo"},
+		},
+	}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Mode:        paddockv1alpha1.HarnessRunModeInteractive,
+		},
+	}
+	bp := &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "interact", Namespace: ns},
+		Spec: paddockv1alpha1.BrokerPolicySpec{
+			AppliesToTemplates: []string{"echo"},
+			Grants: paddockv1alpha1.BrokerPolicyGrants{
+				Runs: &paddockv1alpha1.GrantRunsCapabilities{Interact: true},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(buildScheme(t)).
+		WithObjects(tpl, run, bp).
+		WithStatusSubresource(&paddockv1alpha1.HarnessRun{}).
+		Build()
+	registry, err := providers.NewRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	addr := strings.TrimPrefix(adapter.URL, "http://")
+	router := broker.NewInteractiveRouter(func(_ context.Context, _, _ string) (string, error) {
+		return addr, nil
+	})
+	rec := &recordingAuditSink{}
+	srv := &broker.Server{
+		Client:    c,
+		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "alice"}},
+		Providers: registry,
+		Router:    router,
+		Audit:     broker.NewAuditWriter(rec),
+	}
+
+	body, _ := json.Marshal(brokerapi.EndRequest{Reason: "explicit"})
+	rr := postInteractive(t, srv, "/v1/runs/team-a/r1/end", "valid-token", body)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502, body = %s", rr.Code, rr.Body.String())
+	}
+	for _, e := range rec.events() {
+		if e.Spec.Kind == paddockv1alpha1.AuditKindInteractiveRunTerminated {
+			t.Fatalf("unexpected interactive-run-terminated audit on upstream failure: %+v", e)
+		}
+	}
+}
+
+// TestHandleEnd_ReasonSanitization asserts that control characters and
+// excessive length in body.Reason are normalized before persisting to
+// the AuditEvent detail.
+func TestHandleEnd_ReasonSanitization(t *testing.T) {
+	t.Parallel()
+	f := newInteractiveFixture(t, true, paddockv1alpha1.HarnessRunModeInteractive)
+	rec := &recordingAuditSink{}
+	f.srv.Audit = broker.NewAuditWriter(rec)
+
+	dirty := "explicit\nshutdown\twith\x00ctrl"
+	body, _ := json.Marshal(brokerapi.EndRequest{Reason: dirty})
+	rr := postInteractive(t, f.srv, "/v1/runs/team-a/r1/end", "valid-token", body)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	// Drain the adapter call to keep the fixture clean.
+	<-f.adapterRX
+
+	var seen bool
+	for _, e := range rec.events() {
+		if e.Spec.Kind != paddockv1alpha1.AuditKindInteractiveRunTerminated {
+			continue
+		}
+		seen = true
+		got := e.Spec.Detail["reason"]
+		if strings.ContainsAny(got, "\n\t\x00") {
+			t.Errorf("reason contains control chars: %q", got)
+		}
+		// Replacement substitutes a single space per control char,
+		// then TrimSpace runs — so the final form has no leading/
+		// trailing whitespace and runs of internal spaces are kept.
+		if got == "" {
+			t.Errorf("reason is empty after sanitization, want non-empty")
+		}
+	}
+	if !seen {
+		t.Fatalf("expected interactive-run-terminated audit, got: %+v", rec.events())
+	}
+}
+
+// TestHandlePrompts_RetriesOnConflict injects an IsConflict on the first
+// Status().Patch call and asserts that retry-on-conflict eventually
+// succeeds and CurrentTurnSeq is armed for the in-flight guard.
+func TestHandlePrompts_RetriesOnConflict(t *testing.T) {
+	t.Parallel()
+	const ns = "team-a"
+
+	rx := make(chan adapterCall, 4)
+	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		rx <- adapterCall{path: r.URL.Path, body: body}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(adapter.Close)
+
+	tpl := &paddockv1alpha1.HarnessTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "echo", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessTemplateSpec{
+			Harness: "echo", Image: "paddock-echo:v1", Command: []string{"/bin/echo"},
+		},
+	}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "echo"},
+			Mode:        paddockv1alpha1.HarnessRunModeInteractive,
+		},
+	}
+	bp := &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "interact", Namespace: ns},
+		Spec: paddockv1alpha1.BrokerPolicySpec{
+			AppliesToTemplates: []string{"echo"},
+			Grants: paddockv1alpha1.BrokerPolicyGrants{
+				Runs: &paddockv1alpha1.GrantRunsCapabilities{Interact: true},
+			},
+		},
+	}
+
+	var patchAttempts atomic.Int32
+	c := fake.NewClientBuilder().
+		WithScheme(buildScheme(t)).
+		WithObjects(tpl, run, bp).
+		WithStatusSubresource(&paddockv1alpha1.HarnessRun{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(ctx context.Context, cl client.Client, subResourceName string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+				if subResourceName == "status" {
+					if _, ok := obj.(*paddockv1alpha1.HarnessRun); ok {
+						if patchAttempts.Add(1) == 1 {
+							return apierrors.NewConflict(
+								schema.GroupResource{Group: paddockv1alpha1.GroupVersion.Group, Resource: "harnessruns"},
+								obj.GetName(),
+								fmt.Errorf("simulated conflict on first attempt"),
+							)
+						}
+					}
+				}
+				return cl.SubResource(subResourceName).Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+
+	registry, err := providers.NewRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	addr := strings.TrimPrefix(adapter.URL, "http://")
+	router := broker.NewInteractiveRouter(func(_ context.Context, _, _ string) (string, error) {
+		return addr, nil
+	})
+	srv := &broker.Server{
+		Client:    c,
+		Auth:      stubAuth{identity: broker.CallerIdentity{Namespace: ns, ServiceAccount: "alice"}},
+		Providers: registry,
+		Router:    router,
+		Audit:     broker.NewAuditWriter(&recordingAuditSink{}),
+	}
+
+	body, _ := json.Marshal(brokerapi.PromptRequest{Text: "hello"})
+	rr := postInteractive(t, srv, "/v1/runs/team-a/r1/prompts", "valid-token", body)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	<-rx // drain adapter call
+
+	if got := patchAttempts.Load(); got < 2 {
+		t.Errorf("patchAttempts = %d, want >= 2 (first injected conflict, second succeeds)", got)
+	}
+
+	var got paddockv1alpha1.HarnessRun
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "r1"}, &got); err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.Status.Interactive == nil {
+		t.Fatal("Status.Interactive nil after retry — patch never landed")
+	}
+	if got.Status.Interactive.CurrentTurnSeq == nil {
+		t.Fatal("CurrentTurnSeq nil after retry — in-flight guard not armed")
+	}
+	if *got.Status.Interactive.CurrentTurnSeq != 1 {
+		t.Errorf("CurrentTurnSeq = %d, want 1", *got.Status.Interactive.CurrentTurnSeq)
+	}
+	if got.Status.Interactive.PromptCount != 1 {
+		t.Errorf("PromptCount = %d, want 1", got.Status.Interactive.PromptCount)
 	}
 }

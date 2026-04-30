@@ -97,16 +97,19 @@ func (w *RenewalWalker) WalkAndRenew(ctx context.Context, namespace, runName str
 			}
 			continue
 		}
-		if !newRes.ExpiresAt.IsZero() {
-			t := metav1.NewTime(newRes.ExpiresAt)
-			out[i].ExpiresAt = &t
+		// Only emit credential-renewed when the provider actually
+		// reported a new expiry. A no-op renewal (Renew returned ok
+		// but with a zero ExpiresAt) leaves out[i].ExpiresAt unchanged
+		// and produces no audit event — auditing a "renewal" that
+		// didn't move the expiry would be misleading for operators
+		// reading the audit log.
+		if newRes.ExpiresAt.IsZero() {
+			continue
 		}
+		t := metav1.NewTime(newRes.ExpiresAt)
+		out[i].ExpiresAt = &t
 		if w.audit != nil {
-			var expT time.Time
-			if out[i].ExpiresAt != nil {
-				expT = out[i].ExpiresAt.Time
-			}
-			w.audit.CredentialRenewed(ctx, namespace, runName, lease.Provider, lease.LeaseID, expT)
+			w.audit.CredentialRenewed(ctx, namespace, runName, lease.Provider, lease.LeaseID, newRes.ExpiresAt)
 		}
 	}
 	return out, nil

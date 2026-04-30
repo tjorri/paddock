@@ -95,8 +95,10 @@ type ShellCapability struct {
 	Target string `json:"target,omitempty"`
 
 	// Command overrides the default shell-discovery (try /bin/bash, fall
-	// back to /bin/sh). When set, broker requires this exact path to
-	// exist in the target container; otherwise the open is rejected.
+	// back to /bin/sh). When set, the broker forwards Command verbatim
+	// to the container's exec; missing binaries surface as a failed
+	// shell session (the session opens, exec returns immediately with
+	// the kubelet's error) rather than as an admission rejection.
 	// +optional
 	Command []string `json:"command,omitempty"`
 
