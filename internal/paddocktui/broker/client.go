@@ -101,7 +101,7 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 		kube:    kc,
 		tlsCfg:  &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
 		pf:      pf,
-		baseURL: "https://127.0.0.1:" + fmt.Sprintf("%d", pf.Local()),
+		baseURL: "https://" + pf.Address(),
 	}
 	// Subsequent tasks fill in auth, httpCli.
 	return c, nil

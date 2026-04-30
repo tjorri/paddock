@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -36,10 +37,9 @@ import (
 // The real spdy round-trip is exercised by the e2e suite (Task 30);
 // unit tests assert surface shape only.
 type forwarder struct {
-	fwd     *portforward.PortForwarder
-	stopCh  chan struct{}
-	readyCh chan struct{}
-	local   int
+	fwd    *portforward.PortForwarder //nolint:unused // retained for future Close-time diagnostics
+	stopCh chan struct{}
+	local  int
 }
 
 // startForwarder resolves a healthy paddock-broker Pod, opens a SPDY
@@ -68,7 +68,7 @@ func startForwarder(ctx context.Context, kc kubernetes.Interface, cfg *rest.Conf
 	var podName string
 	for i := range pods.Items {
 		p := pods.Items[i]
-		if p.Status.Phase == "Running" {
+		if p.Status.Phase == corev1.PodRunning {
 			podName = p.Name
 			break
 		}
@@ -87,7 +87,7 @@ func startForwarder(ctx context.Context, kc kubernetes.Interface, cfg *rest.Conf
 			fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/portforward", ns, podName),
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("broker: parse portforward URL: %w", err)
 	}
 	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, serverURL)
 
@@ -122,7 +122,7 @@ func startForwarder(ctx context.Context, kc kubernetes.Interface, cfg *rest.Conf
 		close(stopCh)
 		return nil, fmt.Errorf("broker: portforward returned no ports; stderr=%s", errOut.String())
 	}
-	return &forwarder{fwd: fwd, stopCh: stopCh, readyCh: readyCh, local: int(ports[0].Local)}, nil
+	return &forwarder{fwd: fwd, stopCh: stopCh, local: int(ports[0].Local)}, nil
 }
 
 // Local returns the ephemeral local port bound by the port-forward.
