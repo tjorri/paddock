@@ -826,7 +826,20 @@ func (r *HarnessRunReconciler) bindWorkspace(
 		return false, nil
 	}
 	ws.Status.ActiveRunRef = run.Name
-	ws.Status.TotalRuns = ws.Status.TotalRuns + 1
+	// TotalRuns must be idempotent for re-binds of the same run name.
+	// The controller-runtime informer cache can briefly show
+	// ActiveRunRef=="" after we've already bound this run (the watch
+	// event for our prior Status().Update hasn't propagated yet), and
+	// because the controller does Owns(&Workspace{}) every successful
+	// bind self-enqueues another reconcile that may also see the
+	// stale view. Without this guard TotalRuns climbs unbounded for a
+	// single, never-restarted HarnessRun. LastCountedRun records the
+	// most recently counted run name; a re-bind matches and skips the
+	// increment.
+	if ws.Status.LastCountedRun != run.Name {
+		ws.Status.TotalRuns = ws.Status.TotalRuns + 1
+		ws.Status.LastCountedRun = run.Name
+	}
 	now := metav1.Now()
 	ws.Status.LastActivity = &now
 	if err := r.Status().Update(ctx, ws); err != nil {

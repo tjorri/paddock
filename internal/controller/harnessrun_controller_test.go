@@ -141,6 +141,58 @@ var _ = Describe("HarnessRun controller", func() {
 			Expect(boundWS.Status.TotalRuns).To(BeNumerically(">=", 1))
 		})
 
+		It("bindWorkspace's TotalRuns increment is idempotent for re-binds of the same run", func() {
+			// Regression: the controller does Owns(&Workspace{}), so
+			// every Workspace status write self-enqueues another
+			// reconcile of the HarnessRun. Combined with the
+			// controller-runtime informer cache briefly returning the
+			// pre-bind view (ActiveRunRef==""), bindWorkspace would
+			// re-enter past the (ActiveRunRef==run.Name) guard and
+			// re-increment TotalRuns. Over hours, a single never-
+			// restarted run accumulated 100K+ phantom counts. The fix
+			// records LastCountedRun and gates the increment on it.
+			ns := newTestNamespace()
+			ws := &paddockv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{Name: "ws-bind-idem", Namespace: ns},
+				Spec: paddockv1alpha1.WorkspaceSpec{
+					Storage: paddockv1alpha1.WorkspaceStorage{Size: resource.MustParse("1Gi")},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+			waitWorkspaceActive("ws-bind-idem", ns)
+			// Refresh to pick up status from the workspace controller.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "ws-bind-idem", Namespace: ns}, ws)).To(Succeed())
+
+			r := &HarnessRunReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			run := &paddockv1alpha1.HarnessRun{ObjectMeta: metav1.ObjectMeta{Name: "run-bind-idem", Namespace: ns}}
+
+			// First bind: counts.
+			bound, err := r.bindWorkspace(ctx, ws, run)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(bound).To(BeTrue())
+			Expect(ws.Status.TotalRuns).To(Equal(int32(1)))
+			Expect(ws.Status.LastCountedRun).To(Equal("run-bind-idem"))
+
+			// Simulate a stale-cache view where ActiveRunRef hasn't
+			// propagated. bindWorkspace re-enters because the first
+			// guard sees ActiveRunRef!=run.Name.
+			ws.Status.ActiveRunRef = ""
+			bound, err = r.bindWorkspace(ctx, ws, run)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(bound).To(BeTrue())
+			Expect(ws.Status.TotalRuns).To(Equal(int32(1)), "same-run rebind must not re-increment")
+
+			// A genuinely different run binding to a freed workspace
+			// still counts.
+			ws.Status.ActiveRunRef = ""
+			run2 := &paddockv1alpha1.HarnessRun{ObjectMeta: metav1.ObjectMeta{Name: "run-bind-idem-2", Namespace: ns}}
+			bound, err = r.bindWorkspace(ctx, ws, run2)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(bound).To(BeTrue())
+			Expect(ws.Status.TotalRuns).To(Equal(int32(2)))
+			Expect(ws.Status.LastCountedRun).To(Equal("run-bind-idem-2"))
+		})
+
 		It("serialises concurrent runs — the second stays Pending until the first releases", func() {
 			ns := newTestNamespace()
 
