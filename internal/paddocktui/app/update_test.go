@@ -186,6 +186,44 @@ func TestUpdate_UpsertRunSeedsEventsFromRecentEvents(t *testing.T) {
 	}
 }
 
+func TestUpsertRun_SortsByCreationTime(t *testing.T) {
+	// Regression: HarnessRun watch events arrive in k8s list order
+	// (essentially arbitrary across reattach), but the main pane walks
+	// SessionState.Runs backwards expecting chronological order. Without
+	// an explicit sort, two runs created seconds apart could render
+	// newer-then-older. upsertRun must keep Runs ordered by
+	// CreationTime so the rendering invariant holds.
+	m := newTestModel(t)
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName},
+	}
+	m.SessionOrder = []string{testSessionName}
+
+	t0 := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	older := paddockv1alpha1.HarnessRun{}
+	older.Name = "hr-older"
+	older.CreationTimestamp = metav1.NewTime(t0)
+	older.Spec.WorkspaceRef = testSessionName
+
+	newer := paddockv1alpha1.HarnessRun{}
+	newer.Name = "hr-newer"
+	newer.CreationTimestamp = metav1.NewTime(t0.Add(2 * time.Minute))
+	newer.Spec.WorkspaceRef = testSessionName
+
+	// Deliver in REVERSE chronological order (the watch is free to do
+	// this on initial list).
+	next, _ := m.Update(runUpdatedMsg{WorkspaceRef: testSessionName, Run: newer})
+	next, _ = next.(Model).Update(runUpdatedMsg{WorkspaceRef: testSessionName, Run: older})
+
+	runs := next.(Model).Sessions[testSessionName].Runs
+	if len(runs) != 2 {
+		t.Fatalf("expected 2 runs, got %d", len(runs))
+	}
+	if runs[0].Name != "hr-older" || runs[1].Name != "hr-newer" {
+		t.Errorf("runs not sorted by CreationTime ascending: got %s, %s", runs[0].Name, runs[1].Name)
+	}
+}
+
 func TestAppendEventDedup(t *testing.T) {
 	// Two events with the same identity should collapse; different
 	// timestamps remain distinct. Locks the dedupe behaviour shared by

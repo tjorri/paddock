@@ -50,7 +50,10 @@ const (
 type SessionState struct {
 	Session pdksession.Session
 
-	// Runs is the list of HarnessRuns for this session, newest first.
+	// Runs is the list of HarnessRuns for this session, sorted by
+	// CreationTime ascending (oldest first, newest at the end). The
+	// main pane renders backwards from the end so the newest run is at
+	// the top.
 	Runs []RunSummary
 
 	// Events keyed by run name. Only populated for the focused session.
@@ -62,7 +65,13 @@ type SessionState struct {
 
 // RunSummary is a TUI-shaped projection of a HarnessRun.
 type RunSummary struct {
-	Name           string
+	Name string
+	// CreationTime mirrors HarnessRun.metadata.creationTimestamp.
+	// Used to sort SessionState.Runs chronologically. StartTime alone
+	// is insufficient because it stays zero until the harness pod
+	// starts, so freshly-created runs would otherwise sort ahead of
+	// older in-progress ones.
+	CreationTime   time.Time
 	Phase          paddockv1alpha1.HarnessRunPhase
 	Prompt         string
 	StartTime      time.Time

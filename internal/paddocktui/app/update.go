@@ -566,6 +566,7 @@ func upsertRun(m Model, msg runUpdatedMsg) Model {
 	if !found {
 		state.Runs = append(state.Runs, summary)
 	}
+	sortRuns(state.Runs)
 	if state.Events == nil {
 		state.Events = map[string][]paddockv1alpha1.PaddockEvent{}
 	}
@@ -573,6 +574,22 @@ func upsertRun(m Model, msg runUpdatedMsg) Model {
 		state.Events[msg.Run.Name] = appendEventDedup(state.Events[msg.Run.Name], ev)
 	}
 	return m
+}
+
+// sortRuns orders runs chronologically by CreationTime, with the run
+// Name as the tiebreaker so the order is deterministic when two runs
+// share a CreationTimestamp (which can happen at one-second
+// granularity). Watches list runs in arbitrary order — without an
+// explicit sort the slice would reflect arrival order, which causes
+// the main pane (rendering newest at the top by walking the slice
+// backwards) to show runs out of chronological order on reattach.
+func sortRuns(runs []RunSummary) {
+	sort.SliceStable(runs, func(i, j int) bool {
+		if !runs[i].CreationTime.Equal(runs[j].CreationTime) {
+			return runs[i].CreationTime.Before(runs[j].CreationTime)
+		}
+		return runs[i].Name < runs[j].Name
+	})
 }
 
 // removeRun drops the named run from its workspace's Runs slice.
@@ -678,10 +695,11 @@ func parseQuantity(s string) (resource.Quantity, error) {
 // RunSummary used by the View layer.
 func runSummaryFromCR(hr paddockv1alpha1.HarnessRun) RunSummary {
 	r := RunSummary{
-		Name:     hr.Name,
-		Phase:    hr.Status.Phase,
-		Prompt:   hr.Spec.Prompt,
-		Template: hr.Spec.TemplateRef.Name,
+		Name:         hr.Name,
+		CreationTime: hr.CreationTimestamp.Time,
+		Phase:        hr.Status.Phase,
+		Prompt:       hr.Spec.Prompt,
+		Template:     hr.Spec.TemplateRef.Name,
 	}
 	if hr.Status.StartTime != nil {
 		r.StartTime = hr.Status.StartTime.Time
