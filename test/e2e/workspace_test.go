@@ -163,16 +163,16 @@ var _ = Describe("workspace persistence", Ordered, func() {
 	// namespace. AfterAll drains tenant state while the controller is
 	// still alive (same teardown pattern as e2e_test.go).
 
-	BeforeAll(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	BeforeAll(func(ctx SpecContext) {
+		cleanCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
 		// Clean slate in case a prior interrupted run left debris.
-		_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+		_, _ = utils.Run(exec.CommandContext(cleanCtx, "kubectl",
 			"delete", "ns", homePersistNS,
 			"--ignore-not-found", "--wait=true", "--timeout=60s"))
 
-		mustCreateNamespace(homePersistNS)
+		framework.CreateTenantNamespace(ctx, homePersistNS)
 
 		// Namespaced HarnessTemplate. The command overrides paddock-echo's
 		// entrypoint with a shell script that reads E2E_HOME_PHASE and
