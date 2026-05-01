@@ -102,7 +102,17 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	tlsCfg := &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	// Pin ServerName to the broker's Service DNS name (matches the
+	// cert-manager-issued cert's SANs in config/broker/certificate.yaml)
+	// so TLS verification works against the in-cluster cert even when
+	// we dial via the port-forward at 127.0.0.1. Without this, Go's
+	// TLS library would validate against 127.0.0.1 and reject the
+	// handshake with "tls: bad certificate".
+	tlsCfg := &tls.Config{
+		RootCAs:    pool,
+		MinVersion: tls.VersionTLS12,
+		ServerName: fmt.Sprintf("%s.%s.svc", opts.Service, opts.Namespace),
+	}
 	c := &Client{
 		opts:   opts,
 		kube:   kc,
