@@ -39,6 +39,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"paddock.dev/paddock/test/e2e/framework"
 	"paddock.dev/paddock/test/utils"
 )
 
@@ -111,7 +112,7 @@ var _ = Describe("Phase 2a P0 hotfix validation (hostile harness)", Ordered, fun
 
 		// 1. Kick every namespace's reconcile-delete chain in parallel.
 		for _, ns := range hostileNamespaces {
-			runWithTimeout(10*time.Second, "kubectl", "delete", "ns", ns,
+			framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "ns", ns,
 				"--wait=false", "--ignore-not-found=true")
 		}
 
@@ -130,8 +131,8 @@ var _ = Describe("Phase 2a P0 hotfix validation (hostile harness)", Ordered, fun
 		}
 
 		// 3. Cluster-scoped templates this Describe owns.
-		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", "evil-echo-tg2", "--ignore-not-found=true")
-		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", "evil-echo-tg7", "--ignore-not-found=true")
+		framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", "evil-echo-tg2", "--ignore-not-found=true")
+		framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", "evil-echo-tg7", "--ignore-not-found=true")
 	})
 
 	Context("F-19: per-run NetworkPolicy denies cooperative-mode bypass to in-cluster IPs", func() {

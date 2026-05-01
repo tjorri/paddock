@@ -30,6 +30,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"paddock.dev/paddock/test/e2e/framework"
 	"paddock.dev/paddock/test/utils"
 )
 
@@ -171,7 +172,7 @@ var _ = AfterSuite(func() {
 // have no inter-finalizer dependencies — order among them is for
 // reading-order clarity only.
 //
-// Per-CR --timeout=60s + outer runWithTimeout=90s means a single
+// Per-CR --timeout=60s + outer RunCmdWithTimeout=90s means a single
 // stuck finalizer caps drain cost rather than dragging the whole
 // AfterSuite past Ginkgo's deadline. Force-clear fallback fires per
 // surviving CR with a loud warning so a regression in a finalizer
@@ -196,7 +197,7 @@ func drainPaddockResources() {
 		if t.namespaced {
 			args = append(args, "-A")
 		}
-		runWithTimeout(90*time.Second, "kubectl", args...)
+		framework.RunCmdWithTimeout(90*time.Second, "kubectl", args...)
 	}
 
 	// Belt-and-braces: any namespaced CR still present after the
@@ -231,7 +232,7 @@ func forceClearSurvivingPaddockCRs() {
 			_, _ = fmt.Fprintf(GinkgoWriter,
 				"WARNING: %s %s/%s survived AfterSuite drain — force-clearing finalizers; "+
 					"investigate the controller's reconcile-delete loop\n", kind, ns, name)
-			runWithTimeout(10*time.Second, "kubectl", "-n", ns, "patch", kind, name,
+			framework.RunCmdWithTimeout(10*time.Second, "kubectl", "-n", ns, "patch", kind, name,
 				"--type=merge", "-p", `{"metadata":{"finalizers":null}}`)
 		}
 	}

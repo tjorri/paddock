@@ -22,17 +22,16 @@ package e2e
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"paddock.dev/paddock/test/e2e/framework"
 	"paddock.dev/paddock/test/utils"
 )
 
@@ -146,7 +145,7 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		// namespace-delete cascade, leftover HarnessRun/Workspace
 		// objects keep their finalizers forever → namespace pins in
 		// Terminating → CRD delete in `kustomize delete` blocks →
-		// undeploy hangs until its runWithTimeout fires.
+		// undeploy hangs until its RunCmdWithTimeout fires.
 		//
 		// Fix: drain tenant state first (namespaces must fully
 		// disappear while the controller is still alive), THEN
@@ -163,7 +162,7 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		//    parallel. --wait=false so we can drive our own wait
 		//    loop below and keep the parallelism.
 		for _, ns := range testNamespaces {
-			runWithTimeout(10*time.Second, "kubectl", "delete", "ns", ns,
+			framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "ns", ns,
 				"--wait=false", "--ignore-not-found=true")
 		}
 
@@ -188,9 +187,9 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		}
 
 		// 3. Non-finalizer cluster-scoped resources.
-		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", clusterTemplateName, "--ignore-not-found=true")
-		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3EgressTemplate, "--ignore-not-found=true")
-		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3BrokerDownTemplate, "--ignore-not-found=true")
+		framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", clusterTemplateName, "--ignore-not-found=true")
+		framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3EgressTemplate, "--ignore-not-found=true")
+		framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3BrokerDownTemplate, "--ignore-not-found=true")
 
 		// Suite-level AfterSuite handles `make undeploy` + `make
 		// uninstall` after every Describe finishes — the controller
@@ -934,7 +933,7 @@ func isRetriableApplyErr(err error) bool {
 // waitForNamespaceGone polls `kubectl get ns <ns>` until the API
 // server returns NotFound or the budget expires. Returns true on
 // disappearance, false on timeout. Each poll call is bounded by
-// runWithTimeout so a totally unresponsive apiserver can't stall
+// RunCmdWithTimeout so a totally unresponsive apiserver can't stall
 // AfterAll past its own deadline.
 //
 // Used by the teardown sequence to wait for the controller's
@@ -975,46 +974,9 @@ func forceClearFinalizers(ns string) {
 			continue
 		}
 		for _, name := range strings.Fields(strings.TrimSpace(out)) {
-			runWithTimeout(10*time.Second, "kubectl", "-n", ns, "patch", kind, name,
+			framework.RunCmdWithTimeout(10*time.Second, "kubectl", "-n", ns, "patch", kind, name,
 				"--type=merge", "-p", `{"metadata":{"finalizers":null}}`)
 		}
 	}
 }
 
-// runWithTimeout runs a command via utils.Run under a context with
-// the given deadline. On timeout the ENTIRE process group gets
-// SIGKILL, and pipe I/O is force-closed within WaitDelay. A one-line
-// note lands on GinkgoWriter. Output is discarded — callers who need
-// it should use utils.Run directly. Intended for best-effort teardown
-// steps that must not block the suite.
-//
-// Why the process-group gymnastics: `exec.CommandContext`'s default
-// cancel signals only the top-level process. When we call `make
-// undeploy`, `make` spawns `kustomize build | kubectl delete`, and
-// those children inherit stdout/stderr fds. SIGKILL on `make` leaves
-// them running with the pipes open, and `os/exec.(*Cmd).Wait()`
-// blocks forever in `awaitGoroutines` draining the pipe readers.
-// CI run 24880620880 hung AfterAll on exactly this and hit Ginkgo's
-// 11-min suite timeout. Setpgid + pgid-SIGKILL kills the whole tree;
-// WaitDelay caps the pipe-drain wait as a belt-and-suspenders so Wait
-// can never block past `timeout + WaitDelay`.
-func runWithTimeout(timeout time.Duration, name string, args ...string) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
-		}
-		// Negative pid signals the process group created by Setpgid,
-		// not just the leader — kills make + every inherited child.
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	cmd.WaitDelay = 5 * time.Second
-	_, err := utils.Run(cmd)
-	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		fmt.Fprintf(GinkgoWriter, "teardown timed out after %s: %s %s\n",
-			timeout, name, strings.Join(args, " "))
-	}
-}
