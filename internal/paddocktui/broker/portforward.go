@@ -27,6 +27,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/portforward"
@@ -56,11 +57,22 @@ type forwarder struct {
 //     dial failure (which closes errChan / blocks readyCh) does not
 //     deadlock New().
 func startForwarder(ctx context.Context, kc kubernetes.Interface, cfg *rest.Config, ns, svc string, targetPort int) (*forwarder, error) {
-	// 1. Resolve a Running broker Pod. The context carries a deadline so
-	//    a cluster that has no Ready Pods returns a clear error quickly
+	// 1. Resolve a Running broker Pod. We read the Service's
+	//    spec.selector instead of assuming a specific label scheme — the
+	//    chart labels Pods with app.kubernetes.io/name=paddock and
+	//    app.kubernetes.io/component=broker, which a "name=paddock-broker"
+	//    selector misses entirely. The context carries a deadline so a
+	//    cluster that has no Ready Pods returns a clear error quickly
 	//    rather than hanging the port-forward dial indefinitely.
+	service, err := kc.CoreV1().Services(ns).Get(ctx, svc, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("broker: get service %s/%s: %w", ns, svc, err)
+	}
+	if len(service.Spec.Selector) == 0 {
+		return nil, fmt.Errorf("broker: service %s/%s has no Pod selector", ns, svc)
+	}
 	pods, err := kc.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
-		LabelSelector: "app.kubernetes.io/name=" + svc,
+		LabelSelector: labels.SelectorFromSet(service.Spec.Selector).String(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("broker: list pods for service %s: %w", svc, err)
