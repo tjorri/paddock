@@ -52,7 +52,7 @@ var _ = Describe("broker resource lifecycle", func() {
 		ns := framework.CreateTenantNamespace(ctxT, patPoolRevokeNS)
 
 		By("creating pool Secret, HarnessTemplate, and BrokerPolicy")
-		mustApplyManifest(framework.PATPoolFixtureManifest(ns, "t2-revoke", 2))
+		framework.ApplyYAML(framework.PATPoolFixtureManifest(ns, "t2-revoke", 2))
 
 		By("submitting a HarnessRun that acquires a PATPool lease")
 		runName := "revoke-test"
@@ -62,10 +62,10 @@ var _ = Describe("broker resource lifecycle", func() {
 		// real signal instead of a bare Eventually-timed-out line.
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
-				dumpRunDiagnostics(ctxT, ns, runName)
+				framework.DumpRunDiagnostics(ctxT, ns, runName)
 			}
 		})
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -114,7 +114,7 @@ spec:
 		// regression surfaces with diagnostic context.
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
-				dumpBrokerDiagnostics(ctxT)
+				framework.DumpBrokerDiagnostics(ctxT)
 			}
 		})
 
@@ -140,7 +140,7 @@ spec:
 		const localTLSPort = "19443"
 		pfCtx, pfCancel := context.WithCancel(ctxT)
 		defer pfCancel()
-		pfCmd := exec.CommandContext(pfCtx, "kubectl", "-n", controlPlaneNamespace,
+		pfCmd := exec.CommandContext(pfCtx, "kubectl", "-n", framework.BrokerNamespace,
 			"port-forward", "pod/"+pod, localTLSPort+":8443")
 		Expect(pfCmd.Start()).To(Succeed(), "starting port-forward to broker :8443")
 		time.Sleep(500 * time.Millisecond)

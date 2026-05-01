@@ -29,6 +29,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"paddock.dev/paddock/test/e2e/framework"
 	"paddock.dev/paddock/test/utils"
 )
 
@@ -68,9 +69,9 @@ var _ = Describe("proxy MITM substitution", Ordered, func() {
 
 		_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
 			"delete", "ns", subNS, "--ignore-not-found", "--wait=true", "--timeout=60s"))
-		mustCreateNamespace(subNS)
+		framework.CreateNamespace(ctx, subNS)
 
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: v1
 kind: Secret
 metadata:
@@ -79,7 +80,7 @@ metadata:
 stringData:
   token: %q`, subNS, sentinel))
 
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
 metadata:
@@ -101,7 +102,7 @@ spec:
       - host: %q
         ports: [443]`, subNS, subTemplateName, listenerHost, listenerHost))
 
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: ClusterHarnessTemplate
 metadata:
@@ -141,7 +142,7 @@ spec:
 		defer cancel()
 
 		runName := "substitute-probe"
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -155,12 +156,12 @@ spec:
 
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
-				dumpRunDiagnostics(ctx, subNS, runName)
+				framework.DumpRunDiagnostics(ctx, subNS, runName)
 			}
 		})
 
 		Eventually(func() string {
-			return runPhase(ctx, subNS, runName)
+			return framework.RunPhase(ctx, subNS, runName)
 		}, 4*time.Minute, 5*time.Second).Should(Equal("Succeeded"))
 
 		// httpbin.org/anything echoes the request as JSON in the response
@@ -173,7 +174,7 @@ spec:
 		// is robust to header-key casing and to httpbin's response-shape
 		// drift; the per-run random sentinel makes false positives
 		// effectively impossible.
-		out := readRunOutput(ctx, subNS, runName)
+		out := framework.ReadRunOutput(ctx, subNS, runName)
 		want := "Bearer " + sentinel
 		Expect(out).To(ContainSubstring(want),
 			"agent stdout should contain the substituted real-secret sentinel (httpbin echoes the request); proxy may not have MITMed.\nexpected: %q\nagent stdout:\n%s",

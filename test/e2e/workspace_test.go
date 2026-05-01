@@ -188,7 +188,7 @@ var _ = Describe("workspace persistence", Ordered, func() {
 		//
 		// Single-quoted heredoc avoids any variable expansion in the YAML
 		// string literal; the variables are evaluated inside the container.
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessTemplate
 metadata:
@@ -237,7 +237,7 @@ spec:
 
 		// Explicit named Workspace so both runs share the same PVC and
 		// therefore the same $HOME directory.
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: Workspace
 metadata:
@@ -286,7 +286,7 @@ spec:
 		defer cancel()
 
 		By("submitting the write HarnessRun")
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -305,7 +305,7 @@ spec:
 
 		By("waiting for the write run to reach Succeeded")
 		Eventually(func() string {
-			return runPhase(ctx, homePersistNS, homePersistRunWrite)
+			return framework.RunPhase(ctx, homePersistNS, homePersistRunWrite)
 		}, 2*time.Minute, 2*time.Second).Should(Equal("Succeeded"))
 	})
 
@@ -314,7 +314,7 @@ spec:
 		defer cancel()
 
 		By("submitting the read HarnessRun against the same workspace")
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -333,7 +333,7 @@ spec:
 
 		By("waiting for the read run to reach Succeeded")
 		Eventually(func() string {
-			return runPhase(ctx, homePersistNS, homePersistRunRead)
+			return framework.RunPhase(ctx, homePersistNS, homePersistRunRead)
 		}, 2*time.Minute, 2*time.Second).Should(Equal("Succeeded"))
 
 		By("verifying the read run's output summary contains the written sentinel")

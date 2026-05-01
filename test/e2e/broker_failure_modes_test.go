@@ -113,7 +113,7 @@ spec:
 		// reconciler's first Issue RPC can't slip through against a
 		// terminating pod.
 		Eventually(func(g Gomega) {
-			pods, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
+			pods, err := utils.Run(exec.Command("kubectl", "-n", framework.BrokerNamespace,
 				"get", "pods", "-l", "app.kubernetes.io/component=broker",
 				"-o", "jsonpath={.items[*].metadata.name}"))
 			g.Expect(err).NotTo(HaveOccurred())
@@ -208,7 +208,7 @@ spec:
               accepted: true
               reason: "TG-19 adversarial fixture; tests broker fail-closed semantics"
 `, ns)
-		mustApplyManifest(tg19Policy)
+		framework.ApplyYAML(tg19Policy)
 
 		By("creating the upstream Secret the policy references")
 		tg19Secret := fmt.Sprintf(`
@@ -220,7 +220,7 @@ metadata:
 stringData:
   token: super-secret
 `, ns)
-		mustApplyManifest(tg19Secret)
+		framework.ApplyYAML(tg19Secret)
 
 		By("creating a HarnessTemplate that requires DEMO_TOKEN")
 		templateManifest := fmt.Sprintf(`
@@ -249,7 +249,7 @@ spec:
         cpu: 50m
         memory: 64Mi
 `, ns)
-		mustApplyManifest(templateManifest)
+		framework.ApplyYAML(templateManifest)
 
 		By("patching the broker ClusterRole to remove auditevents:create")
 		// Restoration is symmetric: a JSON-patch add appends the
@@ -287,7 +287,7 @@ spec:
     name: tg19-template
   prompt: "tg-19 audit-fail probe"
 `, runName, ns)
-		mustApplyManifest(runManifest)
+		framework.ApplyYAML(runManifest)
 
 		By("giving the controller time to attempt issuance against the audit-broken broker")
 		// The broker returns 503 AuditUnavailable on every Issue
@@ -303,12 +303,12 @@ spec:
 		// enough to confirm the run cannot transition to Succeeded
 		// while the audit-write is broken.
 		Consistently(func() string {
-			return runPhase(ctxT, ns, runName)
+			return framework.RunPhase(ctxT, ns, runName)
 		}, 30*time.Second, 5*time.Second).ShouldNot(Equal("Succeeded"),
 			"run must not reach Succeeded while broker's audit-write is failing")
 
 		By("dumping run state for diagnostic context")
-		dumpRunDiagnostics(ctxT, ns, runName)
+		framework.DumpRunDiagnostics(ctxT, ns, runName)
 
 		By("asserting no credential leaked into <run>-broker-creds")
 		// Two acceptable outcomes:
@@ -356,7 +356,7 @@ spec:
 		framework.GetBroker(ctxT).RestoreOnTeardown()
 
 		By("creating pool Secret, HarnessTemplate, and BrokerPolicy (2-slot pool)")
-		mustApplyManifest(framework.PATPoolFixtureManifest(ns, "t2-restart", 2))
+		framework.ApplyYAML(framework.PATPoolFixtureManifest(ns, "t2-restart", 2))
 
 		runA := "restart-a"
 		runB := "restart-b"
@@ -368,8 +368,8 @@ spec:
 		// can still fail.
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
-				dumpRunDiagnostics(ctxT, ns, runA)
-				dumpRunDiagnostics(ctxT, ns, runB)
+				framework.DumpRunDiagnostics(ctxT, ns, runA)
+				framework.DumpRunDiagnostics(ctxT, ns, runB)
 			}
 		})
 
@@ -382,7 +382,7 @@ spec:
 		// other, so prefer the more robust sequential setup.
 
 		By("starting run-a and waiting for it to acquire a lease")
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -401,12 +401,12 @@ spec:
 		runAOK = true
 		DeferCleanup(func() {
 			if !runAOK {
-				dumpRunDiagnostics(ctxT, ns, runA)
+				framework.DumpRunDiagnostics(ctxT, ns, runA)
 			}
 		})
 
 		By("starting run-b and waiting for it to acquire a lease")
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -423,8 +423,8 @@ spec:
 			// describe + events + controller + broker logs for both
 			// runs so the next CI flake gives us real signal.
 			if !runBOK {
-				dumpRunDiagnostics(ctxT, ns, runA)
-				dumpRunDiagnostics(ctxT, ns, runB)
+				framework.DumpRunDiagnostics(ctxT, ns, runA)
+				framework.DumpRunDiagnostics(ctxT, ns, runB)
 			}
 		})
 		Eventually(func() int {
@@ -466,7 +466,7 @@ spec:
 		framework.GetBroker(ctxT).RestoreOnTeardown()
 
 		By("creating pool Secret, HarnessTemplate, and BrokerPolicy")
-		mustApplyManifest(framework.PATPoolFixtureManifest(ns, "t2-forceclear", 1))
+		framework.ApplyYAML(framework.PATPoolFixtureManifest(ns, "t2-forceclear", 1))
 
 		By("submitting a HarnessRun and waiting for it to acquire a lease")
 		runName := "force-clear"
@@ -478,10 +478,10 @@ spec:
 		// already exhausted from prior-spec leftover state.
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
-				dumpRunDiagnostics(ctxT, ns, runName)
+				framework.DumpRunDiagnostics(ctxT, ns, runName)
 			}
 		})
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -501,7 +501,7 @@ spec:
 		By("scaling the broker Deployment to 0")
 		framework.GetBroker(ctxT).ScaleTo(ctxT, 0)
 		Eventually(func(g Gomega) {
-			pods, err := utils.Run(exec.CommandContext(ctxT, "kubectl", "-n", controlPlaneNamespace,
+			pods, err := utils.Run(exec.CommandContext(ctxT, "kubectl", "-n", framework.BrokerNamespace,
 				"get", "pods", "-l", "app.kubernetes.io/component=broker",
 				"-o", "jsonpath={.items[*].metadata.name}"))
 			g.Expect(err).NotTo(HaveOccurred())
@@ -538,7 +538,7 @@ spec:
 		// never returns 200) surfaces with diagnostic context.
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
-				dumpBrokerDiagnostics(ctxT)
+				framework.DumpBrokerDiagnostics(ctxT)
 			}
 		})
 

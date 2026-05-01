@@ -5,6 +5,7 @@ package framework
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -67,4 +68,39 @@ func isRetriableApplyErr(output string) bool {
 		strings.Contains(o, "no endpoints available") ||
 		strings.Contains(o, "context deadline exceeded") ||
 		strings.Contains(o, "failed to call webhook")
+}
+
+// ApplyManifestFile applies the YAML file at path using `kubectl apply -f
+// <path>`. The command runs from the project root (so relative paths such as
+// "config/samples/…" resolve correctly). Fails the spec on error.
+func ApplyManifestFile(path string) {
+	ginkgo.GinkgoHelper()
+	cmd := exec.Command("kubectl", "apply", "-f", path)
+	cmd.Dir = projectDir()
+	out, err := cmd.CombinedOutput()
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(),
+		"kubectl apply -f %s: %s", path, out)
+}
+
+// ApplyManifestFileToNamespace applies the YAML file at path into the given
+// namespace using `kubectl -n <ns> apply -f <path>`. Runs from the project
+// root. Fails the spec on error.
+func ApplyManifestFileToNamespace(path, ns string) {
+	ginkgo.GinkgoHelper()
+	cmd := exec.Command("kubectl", "-n", ns, "apply", "-f", path)
+	cmd.Dir = projectDir()
+	out, err := cmd.CombinedOutput()
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(),
+		"kubectl -n %s apply -f %s: %s", ns, path, out)
+}
+
+// projectDir returns the repository root so file-path based kubectl commands
+// resolve relative paths correctly regardless of which directory the test
+// binary was launched from.
+func projectDir() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return strings.ReplaceAll(wd, "/test/e2e", "")
 }

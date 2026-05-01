@@ -28,6 +28,58 @@ import (
 	"github.com/onsi/ginkgo/v2"
 )
 
+// DumpRunDiagnostics emits to GinkgoWriter the current state of the named
+// HarnessRun, its associated Pods, and the controller-manager and broker logs.
+// Call before output-shape assertions so a failure surfaces diagnostic context
+// without requiring a re-run.
+func DumpRunDiagnostics(ctx context.Context, namespace, runName string) {
+	dump := func(title string, args ...string) {
+		out, err := exec.CommandContext(ctx, "kubectl", args...).CombinedOutput()
+		if err == nil && strings.TrimSpace(string(out)) != "" {
+			fmt.Fprintf(ginkgo.GinkgoWriter, "--- %s ---\n%s\n", title, string(out))
+		}
+	}
+	dump("harnessrun describe",
+		"-n", namespace, "describe", "harnessrun", runName)
+	dump("harnessrun yaml",
+		"-n", namespace, "get", "harnessrun", runName, "-o", "yaml")
+	dump("pods in run namespace",
+		"-n", namespace, "get", "pods", "-o", "wide")
+	dump("pod descriptions",
+		"-n", namespace, "describe", "pods")
+	dump("events in run namespace",
+		"-n", namespace, "get", "events", "--sort-by=.lastTimestamp")
+	dump("controller-manager logs",
+		"-n", BrokerNamespace, "logs", "-l", "control-plane=controller-manager", "--tail=200")
+	dump("broker logs",
+		"-n", BrokerNamespace, "logs", "-l", "app.kubernetes.io/component=broker", "--tail=200")
+}
+
+// DumpBrokerDiagnostics emits to GinkgoWriter the current broker pod state,
+// controller-manager logs, and broker logs. Use in specs that do not own a
+// single HarnessRun (e.g. cold-start, oversize-body smoke) where
+// DumpRunDiagnostics is not applicable.
+func DumpBrokerDiagnostics(ctx context.Context) {
+	dump := func(title string, args ...string) {
+		out, err := exec.CommandContext(ctx, "kubectl", args...).CombinedOutput()
+		if err == nil && strings.TrimSpace(string(out)) != "" {
+			fmt.Fprintf(ginkgo.GinkgoWriter, "--- %s ---\n%s\n", title, string(out))
+		}
+	}
+	dump("broker deployment",
+		"-n", BrokerNamespace, "describe", "deploy", BrokerDeployName)
+	dump("broker pods",
+		"-n", BrokerNamespace, "get", "pods", "-l", "app.kubernetes.io/component=broker", "-o", "wide")
+	dump("broker pod descriptions",
+		"-n", BrokerNamespace, "describe", "pods", "-l", "app.kubernetes.io/component=broker")
+	dump("broker endpoints",
+		"-n", BrokerNamespace, "get", "endpoints", BrokerDeployName)
+	dump("controller-manager logs",
+		"-n", BrokerNamespace, "logs", "-l", "control-plane=controller-manager", "--tail=200")
+	dump("broker logs",
+		"-n", BrokerNamespace, "logs", "-l", "app.kubernetes.io/component=broker", "--tail=300")
+}
+
 // RegisterDiagnosticDump wires a single AfterEach into the suite that
 // emits a comprehensive post-mortem on spec failure: controller logs,
 // broker logs, broker pod state, namespace events, pod descriptions,
@@ -56,8 +108,7 @@ func RegisterDiagnosticDump() {
 }
 
 // dumpControlPlane emits the controller-manager and broker logs plus
-// broker deployment/pod/endpoint state. Mirrors dumpBrokerDiagnostics
-// in hostile_test.go.
+// broker deployment/pod/endpoint state.
 func dumpControlPlane(ctx context.Context) {
 	dump := func(title string, args ...string) {
 		out, err := exec.CommandContext(ctx, "kubectl", args...).CombinedOutput()
@@ -101,8 +152,6 @@ func listPaddockTenantNamespaces(ctx context.Context) []string {
 // dumpNamespace emits diagnostics for a single tenant namespace: events,
 // pod list, pod descriptions, HarnessRun YAML, per-container logs
 // (proxy, iptables-init, agent, adapter, collector), and AuditEvents.
-// Covers everything that dumpRunDiagnostics in hostile_test.go emits
-// (minus the single-run scoping, which is unnecessary at suite level).
 func dumpNamespace(ctx context.Context, ns string) {
 	dump := func(title string, args ...string) {
 		out, err := exec.CommandContext(ctx, "kubectl", args...).CombinedOutput()

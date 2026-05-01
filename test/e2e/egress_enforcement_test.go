@@ -259,14 +259,14 @@ spec:
 		ns := framework.CreateTenantNamespace(ctx, cooperativeBypassNS)
 
 		By("applying the evil-echo ClusterHarnessTemplates")
-		mustApply("config/samples/paddock_v1alpha1_clusterharnesstemplate_evil_echo.yaml")
+		framework.ApplyManifestFile("config/samples/paddock_v1alpha1_clusterharnesstemplate_evil_echo.yaml")
 		DeferCleanup(func() {
 			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete",
 				"clusterharnesstemplate", "evil-echo-tg2", "--ignore-not-found=true")
 		})
 
 		By("creating a dedicated namespace + BrokerPolicy")
-		mustApplyToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", ns)
+		framework.ApplyManifestFileToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", ns)
 
 		By("submitting a HarnessRun that attempts cooperative-mode bypass (args baked into evil-echo-tg2 template)")
 		runName := "tg2-cooperative-bypass"
@@ -282,18 +282,18 @@ spec:
     kind: ClusterHarnessTemplate
   prompt: "tg-2 hostile probe"
 `, runName, ns)
-		mustApplyManifest(runManifest)
+		framework.ApplyYAML(runManifest)
 
 		By("waiting for terminal phase")
 		Eventually(func() string {
-			return runPhase(ctx, ns, runName)
+			return framework.RunPhase(ctx, ns, runName)
 		}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
 
 		By("dumping run state for diagnostic context")
-		dumpRunDiagnostics(ctx, ns, runName)
+		framework.DumpRunDiagnostics(ctx, ns, runName)
 
 		By("reading harness JSON output and asserting connect-raw-tcp was denied")
-		output := readRunOutput(ctx, ns, runName)
+		output := framework.ReadRunOutput(ctx, ns, runName)
 		events := framework.ParseHostileEvents(output)
 		Expect(events).ToNot(BeEmpty(), "expected at least one hostile-event JSON line in run output; got: %s", output)
 
@@ -316,13 +316,13 @@ spec:
 
 		ns := framework.CreateTenantNamespace(ctx, smugglingNS)
 
-		mustApply("config/samples/paddock_v1alpha1_clusterharnesstemplate_evil_echo.yaml")
+		framework.ApplyManifestFile("config/samples/paddock_v1alpha1_clusterharnesstemplate_evil_echo.yaml")
 		DeferCleanup(func() {
 			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete",
 				"clusterharnesstemplate", "evil-echo-tg10a", "--ignore-not-found=true")
 		})
 
-		mustApplyToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", ns)
+		framework.ApplyManifestFileToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", ns)
 
 		runName := "tg10a-smuggle"
 		runManifest := fmt.Sprintf(`
@@ -337,13 +337,13 @@ spec:
     kind: ClusterHarnessTemplate
   prompt: "tg-10a smuggle headers"
 `, runName, ns)
-		mustApplyManifest(runManifest)
+		framework.ApplyYAML(runManifest)
 
 		Eventually(func() string {
-			return runPhase(ctx, ns, runName)
+			return framework.RunPhase(ctx, ns, runName)
 		}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
 
-		output := readRunOutput(ctx, ns, runName)
+		output := framework.ReadRunOutput(ctx, ns, runName)
 		events := framework.ParseHostileEvents(output)
 		Expect(events).ToNot(BeEmpty(), "expected hostile-event JSON; got: %s", output)
 
@@ -367,13 +367,13 @@ spec:
 
 		ns := framework.CreateTenantNamespace(ctx, substituteHostNS)
 
-		mustApply("config/samples/paddock_v1alpha1_clusterharnesstemplate_evil_echo.yaml")
+		framework.ApplyManifestFile("config/samples/paddock_v1alpha1_clusterharnesstemplate_evil_echo.yaml")
 		DeferCleanup(func() {
 			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete",
 				"clusterharnesstemplate", "evil-echo-tg13a", "--ignore-not-found=true")
 		})
 
-		mustApplyToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", ns)
+		framework.ApplyManifestFileToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", ns)
 
 		runName := "tg13a-host-not-allowed"
 		runManifest := fmt.Sprintf(`
@@ -388,13 +388,13 @@ spec:
     kind: ClusterHarnessTemplate
   prompt: "tg-13a host-not-allowed probe"
 `, runName, ns)
-		mustApplyManifest(runManifest)
+		framework.ApplyYAML(runManifest)
 
 		Eventually(func() string {
-			return runPhase(ctx, ns, runName)
+			return framework.RunPhase(ctx, ns, runName)
 		}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
 
-		output := readRunOutput(ctx, ns, runName)
+		output := framework.ReadRunOutput(ctx, ns, runName)
 		events := framework.ParseHostileEvents(output)
 		Expect(events).ToNot(BeEmpty(), "expected hostile-event JSON; got: %s", output)
 
@@ -426,13 +426,13 @@ spec:
 
 		ns := framework.CreateTenantNamespace(ctx, idleTimeoutNS)
 
-		mustApply("config/samples/paddock_v1alpha1_clusterharnesstemplate_evil_echo.yaml")
+		framework.ApplyManifestFile("config/samples/paddock_v1alpha1_clusterharnesstemplate_evil_echo.yaml")
 		DeferCleanup(func() {
 			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete",
 				"clusterharnesstemplate", "evil-echo-tg25a", "--ignore-not-found=true")
 		})
 
-		mustApplyToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", ns)
+		framework.ApplyManifestFileToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", ns)
 
 		runName := "tg25a-smoke"
 		runManifest := fmt.Sprintf(`
@@ -447,10 +447,10 @@ spec:
     kind: ClusterHarnessTemplate
   prompt: "tg-25a phase-2g smoke"
 `, runName, ns)
-		mustApplyManifest(runManifest)
+		framework.ApplyYAML(runManifest)
 
 		Eventually(func() string {
-			return runPhase(ctx, ns, runName)
+			return framework.RunPhase(ctx, ns, runName)
 		}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
 
 		// Smoke: the run reached a terminal phase. The load-bearing F-25
@@ -465,14 +465,14 @@ spec:
 		ns := framework.CreateTenantNamespace(ctx, saTokenNS)
 
 		By("applying the evil-echo ClusterHarnessTemplates")
-		mustApply("config/samples/paddock_v1alpha1_clusterharnesstemplate_evil_echo.yaml")
+		framework.ApplyManifestFile("config/samples/paddock_v1alpha1_clusterharnesstemplate_evil_echo.yaml")
 		DeferCleanup(func() {
 			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete",
 				"clusterharnesstemplate", "evil-echo-tg7", "--ignore-not-found=true")
 		})
 
 		By("ensuring the namespace + policy are in place")
-		mustApplyToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", ns)
+		framework.ApplyManifestFileToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", ns)
 
 		By("submitting a HarnessRun that probes for SA tokens and the broker (args baked into evil-echo-tg7 template)")
 		runName := "tg7-sa-token-forgery"
@@ -488,15 +488,15 @@ spec:
     kind: ClusterHarnessTemplate
   prompt: "tg-7 sa-token forgery probe"
 `, runName, ns)
-		mustApplyManifest(runManifest)
+		framework.ApplyYAML(runManifest)
 
 		By("waiting for terminal phase")
 		Eventually(func() string {
-			return runPhase(ctx, ns, runName)
+			return framework.RunPhase(ctx, ns, runName)
 		}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
 
 		By("reading harness output")
-		output := readRunOutput(ctx, ns, runName)
+		output := framework.ReadRunOutput(ctx, ns, runName)
 		events := framework.ParseHostileEvents(output)
 		Expect(events).ToNot(BeEmpty(), "expected hostile-event JSON; got: %s", output)
 
@@ -589,7 +589,7 @@ spec:
               - 192.168.0.0/16
               - 169.254.0.0/16
 `, workspaceName, seedNamespace, workspaceName, workspaceName)
-		mustApplyManifest(npManifest)
+		framework.ApplyYAML(npManifest)
 
 		By("creating a Job whose pod carries the paddock.dev/workspace label")
 		jobManifest := fmt.Sprintf(`
@@ -615,7 +615,7 @@ spec:
             - "--connect-raw-tcp"
             - "10.96.0.1:443"
 `, workspaceName, seedNamespace, workspaceName)
-		mustApplyManifest(jobManifest)
+		framework.ApplyYAML(jobManifest)
 
 		By("waiting for the Job to complete or fail")
 		Eventually(func() string {
