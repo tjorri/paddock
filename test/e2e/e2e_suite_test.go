@@ -129,8 +129,8 @@ var _ = BeforeSuite(func() {
 	// webhook is reachable — the Endpoints object is populated
 	// before kube-proxy finishes programming the ClusterIP rules,
 	// so the first ~hundreds of milliseconds of "Ready" still fail
-	// webhook calls with "connection refused". applyFromYAML in the
-	// suite's Describes handles that race with a targeted retry loop.
+	// webhook calls with "connection refused". framework.ApplyYAML in
+	// the suite's Describes handles that race with a targeted retry loop.
 })
 
 var _ = AfterSuite(func() {

@@ -254,7 +254,7 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("applying the echo ClusterHarnessTemplate")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: ClusterHarnessTemplate
 metadata:
@@ -273,7 +273,7 @@ spec:
 `, clusterTemplateName, echoImage, adapterEchoImage))
 
 			By("submitting a HarnessRun (ephemeral workspace, inline prompt)")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -357,7 +357,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			By("creating a Workspace with two public repos")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: Workspace
 metadata:
@@ -393,7 +393,7 @@ spec:
 			Expect(strings.Fields(strings.TrimSpace(initNames))).To(ConsistOf("repo-0", "repo-1"))
 
 			By("launching a debug Pod that mounts the PVC and prints the layout")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: v1
 kind: Pod
 metadata:
@@ -501,7 +501,7 @@ spec:
 			// Empty requires means every namespace admits the template
 			// without a matching BrokerPolicy; admission is a fast path,
 			// enforcement is at the proxy.
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: ClusterHarnessTemplate
 metadata:
@@ -520,7 +520,7 @@ spec:
 `, v3EgressTemplate, e2eEgressImage, adapterEchoImage))
 
 			By("submitting a HarnessRun whose probe target is evil.com")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -575,7 +575,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			By("registering a template that requires a broker-issued credential")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: ClusterHarnessTemplate
 metadata:
@@ -597,7 +597,7 @@ spec:
 `, v3BrokerDownTemplate, echoImage, adapterEchoImage))
 
 			By("applying a BrokerPolicy granting DEMO_TOKEN via UserSuppliedSecret (in-container delivery)")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
 metadata:
@@ -646,7 +646,7 @@ spec:
 			DeferCleanup(restoreBroker)
 
 			By("submitting a HarnessRun and expecting Pending/BrokerUnavailable")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -711,7 +711,7 @@ spec:
 			// Server-side structural validation rejects the object
 			// pre-webhook if the key is absent, so supply an empty
 			// credentials array to satisfy the schema.
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
 metadata:
@@ -724,7 +724,7 @@ spec:
 `, v3PolicyDelPolicyName, v3PolicyDelNamespace, v3EgressTemplate))
 
 			By("submitting a HarnessRun that loop-probes evil.com while holding the Pod for 45s")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -867,67 +867,6 @@ func requireBrokerHealthy() {
 		g.Expect(strings.TrimSpace(addrs)).NotTo(BeEmpty(),
 			"broker Endpoints empty — did Scenario B's restoreBroker misfire?")
 	}, 30*time.Second, 2*time.Second).Should(Succeed())
-}
-
-// applyFromYAML pipes the given YAML into `kubectl apply -f -`,
-// retrying on transient webhook/apiserver errors for up to applyRetryBudget.
-//
-// Why retry: a freshly-rolled controller races with kube-proxy's
-// Service→Pod rule programming. The Deployment's rollout-status
-// returns Ready and the Endpoints object gets populated before
-// kube-proxy has actually programmed the ClusterIP forwarding, which
-// opens a ~hundreds-of-milliseconds window where the apiserver's
-// webhook call to paddock-webhook-service:443 gets "connection
-// refused". Retries close the window without swallowing real
-// validation failures — see isRetriableApplyErr.
-func applyFromYAML(yaml string) {
-	const applyRetryBudget = 30 * time.Second
-	deadline := time.Now().Add(applyRetryBudget)
-	var lastErr error
-	attempt := 0
-	for {
-		attempt++
-		cmd := exec.Command("kubectl", "apply", "-f", "-")
-		cmd.Stdin = strings.NewReader(yaml)
-		_, err := utils.Run(cmd)
-		if err == nil {
-			return
-		}
-		lastErr = err
-		// Eager diagnostic: print the kubectl stderr + the YAML body
-		// to GinkgoWriter BEFORE we decide whether to retry. If Go's
-		// test-timeout kills the process later (as it did on CI run
-		// 24875514481), the Ginkgo spec-failure summary never lands in
-		// the log — but streamed `-v` output does. Without this, a
-		// mid-teardown kill leaves operators with no cause.
-		fmt.Fprintf(GinkgoWriter,
-			"kubectl apply attempt %d failed (retriable=%t): %v\nYAML:\n%s\n",
-			attempt, isRetriableApplyErr(err), err, yaml)
-		if !isRetriableApplyErr(err) || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	ExpectWithOffset(1, lastErr).NotTo(HaveOccurred(), "kubectl apply failed for:\n%s", yaml)
-}
-
-// isRetriableApplyErr returns true only for transient webhook/apiserver
-// conditions that typically resolve within a few seconds of a fresh
-// deploy. Deliberately does NOT match the generic "Internal error
-// occurred: failed calling webhook" prefix, which also fires for
-// permanent failures (cert issues, webhook-returned errors) that
-// retries can't fix.
-func isRetriableApplyErr(err error) bool {
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "connection refused"):
-		return true
-	case strings.Contains(msg, "no endpoints available for service"):
-		return true
-	case strings.Contains(msg, "context deadline exceeded"):
-		return true
-	}
-	return false
 }
 
 // waitForNamespaceGone polls `kubectl get ns <ns>` until the API

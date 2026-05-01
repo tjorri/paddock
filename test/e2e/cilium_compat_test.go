@@ -29,6 +29,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"paddock.dev/paddock/test/e2e/framework"
 	"paddock.dev/paddock/test/utils"
 )
 
@@ -96,7 +97,7 @@ var _ = Describe("paddock cilium compat (Issue #79)", Ordered, func() {
 		// requires.egress (example.com:443) just gives the controller
 		// something to render into the per-run policy without taking a
 		// dependency on a real public destination.
-		applyFromYAML(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: ClusterHarnessTemplate
 metadata:
@@ -121,7 +122,7 @@ spec:
 `, templateName, echoImage, adapterEchoImage))
 
 		By("applying a BrokerPolicy granting the credential + egress")
-		applyFromYAML(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
 metadata:
@@ -147,7 +148,7 @@ spec:
 `, brokerPolicyName, ns, templateName, credSecretName))
 
 		By("submitting the HarnessRun")
-		applyFromYAML(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
