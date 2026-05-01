@@ -488,7 +488,7 @@ spec:
 			}, 3*time.Minute, 3*time.Second).Should(Succeed())
 
 			By("confirming an egress-block AuditEvent landed for evil.com:443")
-			events := listAuditEvents(v3EgressNamespace)
+			events := framework.ListAuditEvents(context.Background(), v3EgressNamespace)
 			var blocked *framework.AuditEvent
 			for i := range events {
 				e := events[i]
@@ -610,7 +610,7 @@ spec:
 				g.Expect(json.Unmarshal([]byte(out), &status)).To(Succeed())
 				g.Expect(status.Phase).To(Equal("Pending"),
 					"want Pending while broker is scaled to zero; got %q", status.Phase)
-				ready := findCondition(status.Conditions, "BrokerReady")
+				ready := framework.FindCondition(status.Conditions, "BrokerReady")
 				g.Expect(ready).NotTo(BeNil())
 				g.Expect(ready.Status).To(Equal("False"))
 				g.Expect(ready.Reason).To(Equal("BrokerUnavailable"),
@@ -688,7 +688,7 @@ spec:
 
 			By("waiting for at least one egress-block AuditEvent (pre-delete baseline)")
 			Eventually(func(g Gomega) {
-				events := listAuditEvents(v3PolicyDelNamespace)
+				events := framework.ListAuditEvents(context.Background(), v3PolicyDelNamespace)
 				var count int
 				for _, e := range events {
 					if e.Spec.Kind == "egress-block" {
@@ -710,7 +710,7 @@ spec:
 			// absorb kubelet scheduling + loop cadence + kubectl
 			// round-trips without being flaky.
 			Eventually(func(g Gomega) {
-				events := listAuditEvents(v3PolicyDelNamespace)
+				events := framework.ListAuditEvents(context.Background(), v3PolicyDelNamespace)
 				var freshest time.Time
 				for _, e := range events {
 					if e.Spec.Kind != "egress-block" {
@@ -741,30 +741,6 @@ spec:
 		})
 	})
 })
-
-// listAuditEvents returns the AuditEvents currently present in the
-// namespace, decoded from `kubectl get -o json`. Unconditional Expect
-// on failure keeps the assertion stacks short in scenario code.
-func listAuditEvents(ns string) []framework.AuditEvent {
-	out, err := utils.Run(exec.Command("kubectl", "-n", ns, "get", "auditevents", "-o", "json"))
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "listing auditevents in %s", ns)
-	var list framework.AuditEventList
-	ExpectWithOffset(1, json.Unmarshal([]byte(out), &list)).To(Succeed(),
-		"decoding auditevents list in %s", ns)
-	return list.Items
-}
-
-// findCondition returns a pointer to the first condition of the given
-// type, or nil if none is present. Used by the broker-down scenario to
-// inspect BrokerReady.
-func findCondition(conds []framework.HarnessRunCondition, conditionType string) *framework.HarnessRunCondition {
-	for i := range conds {
-		if conds[i].Type == conditionType {
-			return &conds[i]
-		}
-	}
-	return nil
-}
 
 // restoreBroker re-scales the paddock-broker Deployment to 1, waits
 // for the rollout, and probes its Endpoints until it's actually

@@ -50,10 +50,11 @@ type AuditEvent struct {
 		CreationTimestamp string `json:"creationTimestamp"`
 	} `json:"metadata"`
 	Spec struct {
-		Decision  string `json:"decision"`
-		Kind      string `json:"kind"`
-		Timestamp string `json:"timestamp"`
-		Reason    string `json:"reason"`
+		Decision  string            `json:"decision"`
+		Kind      string            `json:"kind"`
+		Timestamp string            `json:"timestamp"`
+		Reason    string            `json:"reason"`
+		Detail    map[string]string `json:"detail,omitempty"`
 		RunRef    *struct {
 			Name string `json:"name"`
 		} `json:"runRef,omitempty"`

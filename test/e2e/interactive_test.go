@@ -52,6 +52,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"paddock.dev/paddock/test/e2e/framework"
 	"paddock.dev/paddock/test/utils"
 )
 
@@ -231,8 +232,8 @@ spec:
 
 		By("asserting an interactive-run-terminated audit event with reason=max-lifetime")
 		Eventually(func() bool {
-			return findAuditEvent(ctx, interactiveNS, interactiveRunLifecycle,
-				"interactive-run-terminated", "max-lifetime")
+			return framework.FindAuditEvent(ctx, interactiveNS, interactiveRunLifecycle,
+				"interactive-run-terminated", "max-lifetime") != nil
 		}, 60*time.Second, 2*time.Second).Should(BeTrue())
 	})
 
@@ -418,24 +419,4 @@ func readBody(r *http.Response) string {
 	}
 	b, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
 	return string(b)
-}
-
-// findAuditEvent reports whether any AuditEvent in `namespace` matches
-// (kind, runRef.name, detail.reason). jsonpath emits one record per
-// AuditEvent; missing fields render as empty strings, so the check
-// requires every component to be non-empty AND match.
-func findAuditEvent(ctx context.Context, namespace, runName, kind, reason string) bool {
-	out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace,
-		"get", "auditevents.paddock.dev",
-		"-o", `jsonpath={range .items[*]}{.spec.kind}|{.spec.runRef.name}|{.spec.detail.reason}{"\n"}{end}`))
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		parts := strings.Split(line, "|")
-		if len(parts) >= 3 && parts[0] == kind && parts[1] == runName && parts[2] == reason {
-			return true
-		}
-	}
-	return false
 }
