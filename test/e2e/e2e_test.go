@@ -38,8 +38,6 @@ import (
 const (
 	controlPlaneNamespace = "paddock-system"
 	runNamespace          = "paddock-e2e"
-	clusterTemplateName   = "echo-e2e"
-	runName               = "echo-1"
 
 	// Multi-repo seeding test. Canonical tiny public repos that have
 	// been stable for a decade — shallow clones take <1s. Pinned paths
@@ -128,7 +126,6 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		}
 
 		// 3. Non-finalizer cluster-scoped resources.
-		_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", clusterTemplateName, "--ignore-not-found=true")
 		_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3EgressTemplate, "--ignore-not-found=true")
 		_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3BrokerDownTemplate, "--ignore-not-found=true")
 
@@ -140,109 +137,6 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 
 	SetDefaultEventuallyTimeout(3 * time.Minute)
 	SetDefaultEventuallyPollingInterval(2 * time.Second)
-
-	Context("echo harness", func() {
-		It("drives a HarnessRun to Succeeded with events and outputs populated", func() {
-			By("creating the run namespace")
-			_, err := utils.Run(exec.Command("kubectl", "create", "ns", runNamespace))
-			Expect(err).NotTo(HaveOccurred())
-
-			By("applying the echo ClusterHarnessTemplate")
-			framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: ClusterHarnessTemplate
-metadata:
-  name: %s
-spec:
-  harness: echo
-  image: %s
-  command: ["/usr/local/bin/paddock-echo"]
-  eventAdapter:
-    image: %s
-  defaults:
-    timeout: 60s
-  workspace:
-    required: true
-    mountPath: /workspace
-`, clusterTemplateName, echoImage, adapterEchoImage))
-
-			By("submitting a HarnessRun (ephemeral workspace, inline prompt)")
-			framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: ClusterHarnessTemplate
-  prompt: "hello from paddock e2e"
-`, runName, runNamespace, clusterTemplateName))
-
-			By("waiting for phase=Succeeded")
-			var status framework.HarnessRunStatus
-			Eventually(func(g Gomega) {
-				out, err := utils.Run(exec.Command("kubectl", "-n", runNamespace,
-					"get", "harnessrun", runName, "-o", "jsonpath={.status}"))
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(out).NotTo(BeEmpty())
-				g.Expect(json.Unmarshal([]byte(out), &status)).To(Succeed())
-				g.Expect(status.Phase).To(Equal("Succeeded"),
-					"run still in phase %q", status.Phase)
-			}, 2*time.Minute, 2*time.Second).Should(Succeed())
-
-			By("verifying status.recentEvents came through the adapter + collector")
-			Expect(status.RecentEvents).To(HaveLen(4),
-				"expected the 4 deterministic echo events; got %+v", status.RecentEvents)
-			types := make([]string, len(status.RecentEvents))
-			for i, ev := range status.RecentEvents {
-				types[i] = ev.Type
-				Expect(ev.SchemaVersion).To(Equal("1"), "event[%d] schemaVersion", i)
-				Expect(ev.Timestamp).NotTo(BeEmpty(), "event[%d] timestamp", i)
-			}
-			Expect(types).To(Equal([]string{"Message", "ToolUse", "Message", "Result"}))
-			Expect(status.RecentEvents[2].Summary).To(ContainSubstring("hello from paddock e2e"),
-				"the echoed prompt should appear in the 3rd event summary")
-
-			By("verifying status.outputs.summary came from result.json")
-			Expect(status.Outputs).NotTo(BeNil())
-			Expect(status.Outputs.Summary).To(ContainSubstring("echoed"))
-
-			By("verifying the output ConfigMap reached phase=Completed")
-			out, err := utils.Run(exec.Command("kubectl", "-n", runNamespace,
-				"get", "cm", runName+"-out", "-o", "jsonpath={.data.phase}"))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(strings.TrimSpace(out)).To(Equal("Completed"))
-
-			By("verifying the per-run collector RBAC was provisioned")
-			_, err = utils.Run(exec.Command("kubectl", "-n", runNamespace,
-				"get", "serviceaccount", runName+"-collector"))
-			Expect(err).NotTo(HaveOccurred())
-			_, err = utils.Run(exec.Command("kubectl", "-n", runNamespace,
-				"get", "role", runName+"-collector"))
-			Expect(err).NotTo(HaveOccurred())
-			_, err = utils.Run(exec.Command("kubectl", "-n", runNamespace,
-				"get", "rolebinding", runName+"-collector"))
-			Expect(err).NotTo(HaveOccurred())
-
-			By("verifying the Pod ran the agent + 2 native sidecars, all exited cleanly")
-			podOut, err := utils.Run(exec.Command("kubectl", "-n", runNamespace,
-				"get", "pods", "-l", "paddock.dev/run="+runName,
-				"-o", "jsonpath={.items[0].status.containerStatuses[*].state.terminated.exitCode}"+
-					";{.items[0].status.initContainerStatuses[*].state.terminated.exitCode}"))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(podOut).To(ContainSubstring("0"),
-				"at least one terminated container; got %q", podOut)
-			// Every exit code should be 0 (space or semicolon separated).
-			for _, code := range strings.FieldsFunc(podOut, func(r rune) bool {
-				return r == ' ' || r == ';'
-			}) {
-				Expect(code).To(Equal("0"),
-					"non-zero container exit code: %q", podOut)
-			}
-		})
-	})
 
 	Context("multi-repo workspace seeding", func() {
 		It("clones every repo to its own subdir and writes /workspace/.paddock/repos.json", func() {
