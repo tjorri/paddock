@@ -79,9 +79,15 @@ metadata:
   namespace: %s`, tuiE2ESA, tuiE2ENS))
 
 		// HarnessTemplate with per-prompt-process interactive mode.
-		// Matches the interactive-stub template shape from interactive_test.go
-		// but lives in a dedicated namespace. maxLifetime is generous so
-		// the watchdog doesn't fire before the test's End() call.
+		//
+		// Timing rationale (mirrors interactive_test.go's stub template):
+		// the echo adapter's /end is a no-op stub — it can't kill the
+		// agent container's `sleep infinity` across PID namespaces — so
+		// the controller-side watchdog is the only thing that drives the
+		// run to a terminal phase. Setting maxLifetime: 60s ensures the
+		// max-lifetime watchdog fires within the test's 180s terminal
+		// wait. The 50s idle/detach values keep the webhook invariants
+		// idleTimeout<=maxLifetime + detachTimeout<=maxLifetime satisfied.
 		mustApplyManifest(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessTemplate
@@ -96,12 +102,12 @@ spec:
     image: %s
   interactive:
     mode: per-prompt-process
-    idleTimeout: 3m
-    detachIdleTimeout: 3m
-    detachTimeout: 3m
-    maxLifetime: 10m
+    idleTimeout: 50s
+    detachIdleTimeout: 50s
+    detachTimeout: 50s
+    maxLifetime: 60s
   defaults:
-    timeout: 15m
+    timeout: 5m
   workspace:
     required: true
     mountPath: /workspace`, tuiE2ETpl, tuiE2ENS, echoImage, adapterEchoImage))
@@ -177,6 +183,8 @@ spec:
 		})
 
 		By("submitting an Interactive HarnessRun")
+		// No interactiveOverrides — the template's 60s maxLifetime is the
+		// load-bearing knob for this test (see template comment above).
 		mustApplyManifest(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
@@ -189,9 +197,7 @@ spec:
     kind: HarnessTemplate
   workspaceRef: %s
   mode: Interactive
-  prompt: "hello-tui-e2e"
-  interactiveOverrides:
-    maxLifetime: 10m`, tuiE2ERun, tuiE2ENS, tuiE2ETpl, tuiE2EWorkspace))
+  prompt: "hello-tui-e2e"`, tuiE2ERun, tuiE2ENS, tuiE2ETpl, tuiE2EWorkspace))
 
 		By("waiting for Phase=Running")
 		Eventually(func() string { return runPhase(ctx, tuiE2ENS, tuiE2ERun) },
@@ -249,6 +255,17 @@ spec:
 		Expect(bc.End(endCtx, tuiE2ENS, tuiE2ERun, "test-complete")).To(Succeed(), "broker.End")
 
 		By("waiting for the run to reach a terminal phase (Cancelled or Succeeded)")
+		// Termination chain for an echo-adapter Interactive run:
+		//
+		//   bc.End → broker /end (audit + forward) → adapter /end (no-op
+		//   stub) → harness keeps sleeping → 60s max-lifetime watchdog
+		//   fires → controller deletes Job → run reaches Cancelled.
+		//
+		// The echo adapter's /end can't kill the harness across PID
+		// namespaces, so the watchdog is the actual termination
+		// mechanism. The 3-minute deadline gives the watchdog (60s
+		// max-lifetime + Job teardown + reconcile) generous head room
+		// over the budget interactive_test.go already proves works.
 		Eventually(func() string { return runPhase(ctx, tuiE2ENS, tuiE2ERun) },
 			3*time.Minute, 3*time.Second).Should(
 			Or(Equal("Cancelled"), Equal("Succeeded")),
