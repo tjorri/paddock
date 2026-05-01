@@ -68,64 +68,6 @@ const (
 	v3PolicyDelRunName     = "policy-delete-1"
 )
 
-// paddockEvent mirrors the serialised PaddockEvent — the e2e package
-// stays decoupled from the api module's typed client to keep the
-// build surface small.
-type paddockEvent struct {
-	SchemaVersion string            `json:"schemaVersion"`
-	Timestamp     string            `json:"ts"`
-	Type          string            `json:"type"`
-	Summary       string            `json:"summary,omitempty"`
-	Fields        map[string]string `json:"fields,omitempty"`
-}
-
-type harnessRunStatus struct {
-	Phase        string                `json:"phase"`
-	JobName      string                `json:"jobName"`
-	WorkspaceRef string                `json:"workspaceRef"`
-	RecentEvents []paddockEvent        `json:"recentEvents"`
-	Conditions   []harnessRunCondition `json:"conditions"`
-	Outputs      *struct {
-		Summary      string `json:"summary"`
-		FilesChanged int    `json:"filesChanged"`
-	} `json:"outputs"`
-}
-
-type harnessRunCondition struct {
-	Type    string `json:"type"`
-	Status  string `json:"status"`
-	Reason  string `json:"reason"`
-	Message string `json:"message"`
-}
-
-// auditEvent mirrors the trimmed subset of the AuditEvent CRD the v0.3
-// scenarios care about. Parsed from `kubectl get auditevents -o json`
-// output so the e2e package doesn't need a typed client.
-type auditEventList struct {
-	Items []auditEvent `json:"items"`
-}
-
-type auditEvent struct {
-	Metadata struct {
-		Name              string `json:"name"`
-		Namespace         string `json:"namespace"`
-		CreationTimestamp string `json:"creationTimestamp"`
-	} `json:"metadata"`
-	Spec struct {
-		Decision  string `json:"decision"`
-		Kind      string `json:"kind"`
-		Timestamp string `json:"timestamp"`
-		Reason    string `json:"reason"`
-		RunRef    *struct {
-			Name string `json:"name"`
-		} `json:"runRef,omitempty"`
-		Destination *struct {
-			Host string `json:"host"`
-			Port int    `json:"port"`
-		} `json:"destination,omitempty"`
-	} `json:"spec"`
-}
-
 var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 	// The suite-level BeforeSuite installs CRDs + deploys the
 	// controller-manager; this Describe does not redeploy. Per-Describe
@@ -287,7 +229,7 @@ spec:
 `, runName, runNamespace, clusterTemplateName))
 
 			By("waiting for phase=Succeeded")
-			var status harnessRunStatus
+			var status framework.HarnessRunStatus
 			Eventually(func(g Gomega) {
 				out, err := utils.Run(exec.Command("kubectl", "-n", runNamespace,
 					"get", "harnessrun", runName, "-o", "jsonpath={.status}"))
@@ -547,7 +489,7 @@ spec:
 
 			By("confirming an egress-block AuditEvent landed for evil.com:443")
 			events := listAuditEvents(v3EgressNamespace)
-			var blocked *auditEvent
+			var blocked *framework.AuditEvent
 			for i := range events {
 				e := events[i]
 				if e.Spec.Kind == "egress-block" && e.Spec.Destination != nil &&
@@ -660,7 +602,7 @@ spec:
 `, v3BrokerDownRunName, v3BrokerDownNamespace, v3BrokerDownTemplate))
 
 			Eventually(func(g Gomega) {
-				var status harnessRunStatus
+				var status framework.HarnessRunStatus
 				out, err := utils.Run(exec.Command("kubectl", "-n", v3BrokerDownNamespace,
 					"get", "harnessrun", v3BrokerDownRunName, "-o", "jsonpath={.status}"))
 				g.Expect(err).NotTo(HaveOccurred())
@@ -803,10 +745,10 @@ spec:
 // listAuditEvents returns the AuditEvents currently present in the
 // namespace, decoded from `kubectl get -o json`. Unconditional Expect
 // on failure keeps the assertion stacks short in scenario code.
-func listAuditEvents(ns string) []auditEvent {
+func listAuditEvents(ns string) []framework.AuditEvent {
 	out, err := utils.Run(exec.Command("kubectl", "-n", ns, "get", "auditevents", "-o", "json"))
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "listing auditevents in %s", ns)
-	var list auditEventList
+	var list framework.AuditEventList
 	ExpectWithOffset(1, json.Unmarshal([]byte(out), &list)).To(Succeed(),
 		"decoding auditevents list in %s", ns)
 	return list.Items
@@ -815,7 +757,7 @@ func listAuditEvents(ns string) []auditEvent {
 // findCondition returns a pointer to the first condition of the given
 // type, or nil if none is present. Used by the broker-down scenario to
 // inspect BrokerReady.
-func findCondition(conds []harnessRunCondition, conditionType string) *harnessRunCondition {
+func findCondition(conds []framework.HarnessRunCondition, conditionType string) *framework.HarnessRunCondition {
 	for i := range conds {
 		if conds[i].Type == conditionType {
 			return &conds[i]

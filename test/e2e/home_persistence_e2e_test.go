@@ -250,7 +250,7 @@ spec:
 		// output ConfigMap (<run>-out) under key "phase"="Completed" and
 		// the run's status.outputs.summary field. Poll status.outputs
 		// rather than the ConfigMap — same poll we'd use for events.
-		var runStatus harnessRunStatus
+		var runStatus framework.HarnessRunStatus
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", homePersistNS,
 				"get", "harnessrun", homePersistRunRead, "-o", "jsonpath={.status}"))

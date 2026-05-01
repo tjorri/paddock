@@ -162,7 +162,7 @@ spec:
 `, runName, ns, templateName))
 
 		By("waiting for phase=Succeeded")
-		var status harnessRunStatus
+		var status framework.HarnessRunStatus
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.Command("kubectl", "-n", ns,
 				"get", "harnessrun", runName, "-o", "jsonpath={.status}"))
