@@ -55,7 +55,6 @@ const (
 	// v0.3 broker/proxy scenarios (spec 0002 §15.5-7). Each lives in
 	// its own namespace so the AuditEvent queries don't cross-contaminate
 	// and the scenarios can run independently.
-	v3BrokerDeploy         = "paddock-broker"
 	v3EgressNamespace      = "paddock-v3-egress-e2e"
 	v3EgressTemplate       = "e2e-egress"
 	v3EgressRunName        = "egress-1"

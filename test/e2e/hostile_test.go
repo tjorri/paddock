@@ -997,9 +997,7 @@ spec:
 				"run did not acquire a lease before broker scale-down")
 
 			By("scaling the broker Deployment to 0")
-			_, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", controlPlaneNamespace,
-				"scale", "deploy", v3BrokerDeploy, "--replicas=0"))
-			Expect(err).NotTo(HaveOccurred())
+			framework.GetBroker(ctx).ScaleTo(ctx, 0)
 			Eventually(func(g Gomega) {
 				pods, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", controlPlaneNamespace,
 					"get", "pods", "-l", "app.kubernetes.io/component=broker",
@@ -1010,7 +1008,7 @@ spec:
 			}, 60*time.Second, 2*time.Second).Should(Succeed())
 
 			By("deleting the run — expecting removal within 60s despite broker being down")
-			_, err = utils.Run(exec.CommandContext(ctx, "kubectl", "-n", t2Namespace,
+			_, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", t2Namespace,
 				"delete", "harnessrun", runName, "--wait=false"))
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1446,13 +1444,13 @@ func dumpBrokerDiagnostics(ctx context.Context) {
 		GinkgoWriter.Printf("--- %s ---\n%s\n", title, out)
 	}
 	dump("broker deployment",
-		"-n", "paddock-system", "describe", "deploy", v3BrokerDeploy)
+		"-n", "paddock-system", "describe", "deploy", framework.BrokerDeployName)
 	dump("broker pods",
 		"-n", "paddock-system", "get", "pods", "-l", "app.kubernetes.io/component=broker", "-o", "wide")
 	dump("broker pod descriptions",
 		"-n", "paddock-system", "describe", "pods", "-l", "app.kubernetes.io/component=broker")
 	dump("broker endpoints",
-		"-n", "paddock-system", "get", "endpoints", v3BrokerDeploy)
+		"-n", "paddock-system", "get", "endpoints", framework.BrokerDeployName)
 	dump("controller-manager logs",
 		"-n", "paddock-system", "logs", "-l", "control-plane=controller-manager", "--tail=200")
 	dump("broker logs",
