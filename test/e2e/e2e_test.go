@@ -162,7 +162,7 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		//    parallel. --wait=false so we can drive our own wait
 		//    loop below and keep the parallelism.
 		for _, ns := range testNamespaces {
-			framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "ns", ns,
+			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "ns", ns,
 				"--wait=false", "--ignore-not-found=true")
 		}
 
@@ -187,9 +187,9 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		}
 
 		// 3. Non-finalizer cluster-scoped resources.
-		framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", clusterTemplateName, "--ignore-not-found=true")
-		framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3EgressTemplate, "--ignore-not-found=true")
-		framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3BrokerDownTemplate, "--ignore-not-found=true")
+		_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", clusterTemplateName, "--ignore-not-found=true")
+		_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3EgressTemplate, "--ignore-not-found=true")
+		_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3BrokerDownTemplate, "--ignore-not-found=true")
 
 		// Suite-level AfterSuite handles `make undeploy` + `make
 		// uninstall` after every Describe finishes — the controller
@@ -974,9 +974,8 @@ func forceClearFinalizers(ns string) {
 			continue
 		}
 		for _, name := range strings.Fields(strings.TrimSpace(out)) {
-			framework.RunCmdWithTimeout(10*time.Second, "kubectl", "-n", ns, "patch", kind, name,
+			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "-n", ns, "patch", kind, name,
 				"--type=merge", "-p", `{"metadata":{"finalizers":null}}`)
 		}
 	}
 }
-

@@ -197,7 +197,7 @@ func drainPaddockResources() {
 		if t.namespaced {
 			args = append(args, "-A")
 		}
-		framework.RunCmdWithTimeout(90*time.Second, "kubectl", args...)
+		_, _ = framework.RunCmdWithTimeout(90*time.Second, "kubectl", args...)
 	}
 
 	// Belt-and-braces: any namespaced CR still present after the
@@ -232,7 +232,7 @@ func forceClearSurvivingPaddockCRs() {
 			_, _ = fmt.Fprintf(GinkgoWriter,
 				"WARNING: %s %s/%s survived AfterSuite drain — force-clearing finalizers; "+
 					"investigate the controller's reconcile-delete loop\n", kind, ns, name)
-			framework.RunCmdWithTimeout(10*time.Second, "kubectl", "-n", ns, "patch", kind, name,
+			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "-n", ns, "patch", kind, name,
 				"--type=merge", "-p", `{"metadata":{"finalizers":null}}`)
 		}
 	}

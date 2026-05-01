@@ -26,7 +26,7 @@ import (
 	"syscall"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
+	"github.com/onsi/ginkgo/v2"
 )
 
 // RunCmd executes a command with no enforced timeout (use the parent
@@ -54,7 +54,7 @@ func RunCmdWithTimeout(timeout time.Duration, name string, args ...string) (stri
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		_, _ = fmt.Fprintf(GinkgoWriter,
+		_, _ = fmt.Fprintf(ginkgo.GinkgoWriter,
 			"WARNING: %s %v exceeded %s; SIGKILL sent to process group\n",
 			name, args, timeout)
 		return string(out), fmt.Errorf("%s %v: timeout after %s", name, args, timeout)
