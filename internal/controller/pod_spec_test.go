@@ -1359,8 +1359,19 @@ func TestBuildHomeInitContainer(t *testing.T) {
 	if want := "/workspace"; len(c.VolumeMounts) == 0 || c.VolumeMounts[0].MountPath != want {
 		t.Errorf("workspace volume not mounted at %q; got %+v", want, c.VolumeMounts)
 	}
-	if !strings.Contains(strings.Join(c.Command, " ")+" "+strings.Join(c.Args, " "), "/workspace/.home") {
+	cmdline := strings.Join(c.Command, " ") + " " + strings.Join(c.Args, " ")
+	if !strings.Contains(cmdline, "/workspace/.home") {
 		t.Errorf("init command does not reference /workspace/.home; got %v %v", c.Command, c.Args)
+	}
+	// F-20 invariant: the HOME dir must be group-writable for the
+	// agent's GID 65532 supplementary group, otherwise an agent that
+	// runs at the image-default UID (e.g. 65532 for harness-echo /
+	// distroless:nonroot) cannot write into its own HOME on first run.
+	if !strings.Contains(cmdline, "chgrp 65532") {
+		t.Errorf("init command must chgrp the HOME dir to 65532; got %s", cmdline)
+	}
+	if !strings.Contains(cmdline, "chmod 02775") {
+		t.Errorf("init command must chmod 02775 (group rwx + setgid) on the HOME dir; got %s", cmdline)
 	}
 	if c.SecurityContext == nil || c.SecurityContext.RunAsUser == nil || *c.SecurityContext.RunAsUser != 0 {
 		t.Errorf("init container must run as root for chmod; got SC=%+v", c.SecurityContext)

@@ -820,6 +820,13 @@ func ptrBool(v bool) *bool { return &v }
 // because the volume's existing ownership may not match the agent's
 // runtime UID. FSGroup on the pod (gid 65532) handles cross-container
 // group writability — see the comment on buildPodSpec's SecurityContext.
+//
+// The chgrp + chmod g+rwx pair is the same F-20 pattern the sidecars
+// use: agents run with the image-default UID (65532 for distroless
+// nonroot / alpine harness) and have GID 65532 as a supplementary
+// group via FSGroup; an explicit chgrp here makes the HOME dir
+// group-writable for the agent regardless of how the kubelet's
+// FSGroup recursion timing interacts with newly-created dirs.
 func buildHomeInitContainer(template *resolvedTemplate, in podSpecInputs) corev1.Container {
 	img := in.homeInitImage
 	if img == "" {
@@ -830,7 +837,10 @@ func buildHomeInitContainer(template *resolvedTemplate, in podSpecInputs) corev1
 		Name:    paddockHomeInitContainerName,
 		Image:   img,
 		Command: []string{"/bin/sh", "-c"},
-		Args:    []string{fmt.Sprintf("mkdir -p %q && chmod 0775 %q", home, home)},
+		Args: []string{fmt.Sprintf(
+			"mkdir -p %q && chgrp 65532 %q && chmod 02775 %q",
+			home, home, home,
+		)},
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser:                ptr.To(int64(0)),
 			AllowPrivilegeEscalation: ptr.To(false),
