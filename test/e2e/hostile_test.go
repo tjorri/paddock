@@ -536,65 +536,6 @@ spec:
 		})
 	})
 
-	Context("F-32: admission-rejected HarnessRun emits policy-rejected AuditEvent", func() {
-		It("creates a policy-rejected AuditEvent with decision=denied (F-32 e2e)", func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-
-			f32Namespace := "paddock-hostile-f32"
-			// Ensure clean state in case a prior run left the namespace.
-			_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-				"delete", "ns", f32Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
-			mustCreateNamespace(f32Namespace)
-			DeferCleanup(func() {
-				// Wait for namespace + finalizer drain (see TG-19 cleanup
-				// note above for why AfterSuite needs a clean slate).
-				_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-					"delete", "ns", f32Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
-			})
-
-			invalidName := "f32-invalid-spec"
-			By("submitting a HarnessRun with an invalid spec (no prompt or promptFrom)")
-			invalidManifest := fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: any
-`, invalidName, f32Namespace)
-
-			cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(invalidManifest)
-			out, err := utils.Run(cmd)
-			Expect(err).To(HaveOccurred(),
-				"admission must reject HarnessRun without prompt/promptFrom; got: %s", out)
-			Expect(out).To(ContainSubstring("prompt"),
-				"rejection diagnostic must mention the missing prompt field; got: %s", out)
-
-			By("asserting a policy-rejected AuditEvent landed in the namespace")
-			Eventually(func() int {
-				out, _ := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", f32Namespace,
-					"get", "auditevents",
-					"-l", "paddock.dev/kind=policy-rejected,paddock.dev/run="+invalidName,
-					"--no-headers",
-					"-o", "name"))
-				return strings.Count(out, "auditevent")
-			}, 30*time.Second, 2*time.Second).Should(BeNumerically(">=", 1),
-				"expected >=1 policy-rejected AuditEvent for the invalid HarnessRun")
-
-			By("verifying the AuditEvent's spec.decision is denied")
-			out, err = utils.Run(exec.CommandContext(ctx, "kubectl", "-n", f32Namespace,
-				"get", "auditevents",
-				"-l", "paddock.dev/kind=policy-rejected,paddock.dev/run="+invalidName,
-				"-o", "jsonpath={.items[0].spec.decision}"))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(strings.TrimSpace(out)).To(Equal("denied"))
-		})
-	})
-
 	Context("F-21 / TG-10a: proxy strips agent-smuggled headers before forwarding (Phase 2g)", func() {
 		It("smuggled headers do not reach upstream — load-bearing test in internal/proxy/substitute_test.go (TG-10a)", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

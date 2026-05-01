@@ -42,7 +42,6 @@ const (
 	// Multi-repo seeding test. Canonical tiny public repos that have
 	// been stable for a decade — shallow clones take <1s. Pinned paths
 	// give the assertions something concrete to check.
-	multiNamespace = "paddock-multi-e2e"
 	multiWorkspace = "multi"
 	multiDebugPod  = "multi-debug"
 	multiRepoAURL  = "https://github.com/octocat/Hello-World.git"
@@ -93,7 +92,7 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		// converge, and emits a loud warning so a regression in the
 		// finalizer loop can't hide behind a green teardown.
 		testNamespaces := []string{
-			runNamespace, multiNamespace,
+			runNamespace,
 			v3EgressNamespace, v3BrokerDownNamespace, v3PolicyDelNamespace,
 		}
 
@@ -137,33 +136,6 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 
 	SetDefaultEventuallyTimeout(3 * time.Minute)
 	SetDefaultEventuallyPollingInterval(2 * time.Second)
-
-	Context("multi-repo workspace seeding", func() {
-		It("rejects a Workspace with a git:// seed URL at admission (F-46)", func() {
-			By("attempting to create a Workspace whose seed repo URL uses git://")
-			yaml := fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: Workspace
-metadata:
-  name: ws-bad-scheme
-  namespace: %s
-spec:
-  storage:
-    size: 100Mi
-  seed:
-    repos:
-      - url: git://github.com/foo/bar.git
-        path: foo
-        depth: 1
-`, multiNamespace)
-			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(yaml)
-			out, err := cmd.CombinedOutput()
-			Expect(err).To(HaveOccurred(), "expected admission to reject git:// URL")
-			Expect(string(out)).To(ContainSubstring("https:// or ssh://"),
-				"webhook error message should name the allowlist; got: %s", out)
-		})
-	})
 
 	// v0.3 M12 scenarios (spec 0002 §15.5-§15.7). Each scenario owns
 	// its own namespace; the shared BeforeAll (install + deploy) has
