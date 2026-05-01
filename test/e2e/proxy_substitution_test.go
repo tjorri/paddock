@@ -47,7 +47,7 @@ import (
 // #83 to ship undetected. A future fully-hermetic regression requires
 // replicating the upstream-CA bundle into per-run namespaces; deferred
 // to a follow-up.
-var _ = Describe("proxy MITM substitution (public-host probe)", Ordered, func() {
+var _ = Describe("proxy MITM substitution", Ordered, func() {
 	const (
 		subNS           = "paddock-test-substitution"
 		subTemplateName = "probe-curl"
@@ -136,7 +136,7 @@ spec:
 			"delete", "clusterharnesstemplate", subTemplateName, "--ignore-not-found"))
 	})
 
-	It("substitutes the surrogate bearer for the real secret value at the proxy", func() {
+	It("substitutes a credential into requests addressed to a public host", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 

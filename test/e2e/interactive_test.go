@@ -63,7 +63,7 @@ const (
 	interactiveRunShell     = "stub-run-shell"
 )
 
-var _ = Describe("Interactive HarnessRun lifecycle", Ordered, func() {
+var _ = Describe("interactive run lifecycle", Ordered, func() {
 	var (
 		token       string
 		brokerPort  int
@@ -159,7 +159,7 @@ spec:
 			"delete", "ns", interactiveNS, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 	})
 
-	It("reaches Running, accepts a prompt via /v1/runs/.../prompts, and is cancelled by the max-lifetime watchdog", func() {
+	It("cancels a Bound run when its max-lifetime elapses", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
@@ -236,7 +236,7 @@ spec:
 		}, 60*time.Second, 2*time.Second).Should(BeTrue())
 	})
 
-	It("opens a shell over /v1/runs/.../shell and runs echo hello", func() {
+	It("/v1/runs/.../shell streams a working agent container", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
 

@@ -57,7 +57,7 @@ const (
 	tuiE2ERun       = "tui-int-run"
 )
 
-var _ = Describe("TUI broker client drives an Interactive run", Ordered, func() {
+var _ = Describe("interactive run via TUI client", Ordered, func() {
 	BeforeAll(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
@@ -167,7 +167,7 @@ spec:
 		framework.WaitForNamespaceGone(context.Background(), tuiE2ENS, 20*time.Second)
 	})
 
-	It("opens the broker stream, receives a frame, and ends the run cleanly", func() {
+	It("TUI broker client drives a Bound interactive run end-to-end", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 		defer cancel()
 
