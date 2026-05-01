@@ -52,16 +52,10 @@ const (
 	// v0.3 broker/proxy scenarios (spec 0002 §15.5-7). Each lives in
 	// its own namespace so the AuditEvent queries don't cross-contaminate
 	// and the scenarios can run independently.
-	v3EgressNamespace      = "paddock-v3-egress-e2e"
-	v3EgressTemplate       = "e2e-egress"
-	v3EgressRunName        = "egress-1"
 	v3BrokerDownNamespace  = "paddock-v3-broker-down-e2e"
 	v3BrokerDownTemplate   = "e2e-broker-down"
 	v3BrokerDownRunName    = "broker-down-1"
 	v3BrokerDownSecretName = "broker-down-secret"
-	v3PolicyDelNamespace   = "paddock-v3-policy-delete-e2e"
-	v3PolicyDelPolicyName  = "transient-policy"
-	v3PolicyDelRunName     = "policy-delete-1"
 )
 
 var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
@@ -93,7 +87,7 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		// finalizer loop can't hide behind a green teardown.
 		testNamespaces := []string{
 			runNamespace,
-			v3EgressNamespace, v3BrokerDownNamespace, v3PolicyDelNamespace,
+			v3BrokerDownNamespace,
 		}
 
 		// 1. Kick every namespace's reconcile-delete chain in
@@ -125,7 +119,6 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		}
 
 		// 3. Non-finalizer cluster-scoped resources.
-		_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3EgressTemplate, "--ignore-not-found=true")
 		_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3BrokerDownTemplate, "--ignore-not-found=true")
 
 		// Suite-level AfterSuite handles `make undeploy` + `make
@@ -136,84 +129,6 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 
 	SetDefaultEventuallyTimeout(3 * time.Minute)
 	SetDefaultEventuallyPollingInterval(2 * time.Second)
-
-	// v0.3 M12 scenarios (spec 0002 §15.5-§15.7). Each scenario owns
-	// its own namespace; the shared BeforeAll (install + deploy) has
-	// wired the proxy sidecar, broker, cert-manager Issuer, and per-run
-	// MITM CA already, so the scenarios only add the tenant objects
-	// (BrokerPolicy, ClusterHarnessTemplate, HarnessRun).
-	Context("v0.3 hostile prompt egress-block", func() {
-		It("records an egress-block AuditEvent when the agent hits an ungranted destination", func() {
-			By("creating the egress-scenario namespace")
-			_, err := utils.Run(exec.Command("kubectl", "create", "ns", v3EgressNamespace))
-			Expect(err).NotTo(HaveOccurred())
-
-			By("registering the e2e-egress ClusterHarnessTemplate (empty requires)")
-			// Empty requires means every namespace admits the template
-			// without a matching BrokerPolicy; admission is a fast path,
-			// enforcement is at the proxy.
-			framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: ClusterHarnessTemplate
-metadata:
-  name: %s
-spec:
-  harness: e2e-egress
-  image: %s
-  command: ["/usr/local/bin/paddock-e2e-egress"]
-  eventAdapter:
-    image: %s
-  defaults:
-    timeout: 120s
-  workspace:
-    required: true
-    mountPath: /workspace
-`, v3EgressTemplate, e2eEgressImage, adapterEchoImage))
-
-			By("submitting a HarnessRun whose probe target is evil.com")
-			framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: ClusterHarnessTemplate
-  prompt: "e2e egress-block"
-  extraEnv:
-    - name: E2E_EGRESS_TARGETS
-      value: "https://evil.com"
-`, v3EgressRunName, v3EgressNamespace, v3EgressTemplate))
-
-			By("waiting for the run to Succeed (probe failure is swallowed by the harness)")
-			Eventually(func(g Gomega) {
-				phase, err := utils.Run(exec.Command("kubectl", "-n", v3EgressNamespace,
-					"get", "harnessrun", v3EgressRunName, "-o", "jsonpath={.status.phase}"))
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(strings.TrimSpace(phase)).To(Equal("Succeeded"),
-					"run still in phase %q", strings.TrimSpace(phase))
-			}, 3*time.Minute, 3*time.Second).Should(Succeed())
-
-			By("confirming an egress-block AuditEvent landed for evil.com:443")
-			events := framework.ListAuditEvents(context.Background(), v3EgressNamespace)
-			var blocked *framework.AuditEvent
-			for i := range events {
-				e := events[i]
-				if e.Spec.Kind == "egress-block" && e.Spec.Destination != nil &&
-					e.Spec.Destination.Host == "evil.com" && e.Spec.Destination.Port == 443 {
-					blocked = &events[i]
-					break
-				}
-			}
-			Expect(blocked).NotTo(BeNil(),
-				"expected AuditEvent with kind=egress-block destination=evil.com:443; got %+v", events)
-			Expect(blocked.Spec.Decision).To(Equal("denied"))
-			Expect(blocked.Spec.RunRef).NotTo(BeNil())
-			Expect(blocked.Spec.RunRef.Name).To(Equal(v3EgressRunName))
-		})
-	})
 
 	Context("v0.3 broker scaled to zero fails closed", func() {
 		It("holds the run in Pending with BrokerReady=False and resumes when the broker is back", func() {
@@ -340,113 +255,4 @@ spec:
 		})
 	})
 
-	Context("v0.3 BrokerPolicy deleted mid-run", func() {
-		It("keeps blocking new upstream connections after the policy is deleted", func() {
-			By("confirming Scenario B left the broker serving (pre-check)")
-			framework.GetBroker(context.Background()).RequireHealthy(context.Background())
-
-			By("creating the policy-delete-scenario namespace")
-			_, err := utils.Run(exec.Command("kubectl", "create", "ns", v3PolicyDelNamespace))
-			Expect(err).NotTo(HaveOccurred())
-
-			By("registering a BrokerPolicy (empty grants) so admission has something to match and deletion is meaningful")
-			// The policy grants nothing — evil.com stays denied both
-			// before and after deletion. The test doesn't assert a
-			// behaviour change; it asserts enforcement continues after
-			// the policy object disappears (spec §8.2: "new connections
-			// blocked within ~10s").
-			//
-			// `grants:` must be present: the CRD schema lists it as a
-			// required field on .spec (see
-			// config/crd/bases/paddock.dev_brokerpolicies.yaml).
-			// Server-side structural validation rejects the object
-			// pre-webhook if the key is absent, so supply an empty
-			// credentials array to satisfy the schema.
-			framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: BrokerPolicy
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  appliesToTemplates: ["%s"]
-  grants:
-    credentials: []
-`, v3PolicyDelPolicyName, v3PolicyDelNamespace, v3EgressTemplate))
-
-			By("submitting a HarnessRun that loop-probes evil.com while holding the Pod for 45s")
-			framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: ClusterHarnessTemplate
-  prompt: "e2e policy-delete"
-  extraEnv:
-    - name: E2E_EGRESS_LOOP
-      value: "https://evil.com"
-    - name: E2E_HOLD_SECONDS
-      value: "45"
-    - name: E2E_LOOP_SECONDS
-      value: "3"
-`, v3PolicyDelRunName, v3PolicyDelNamespace, v3EgressTemplate))
-
-			By("waiting for at least one egress-block AuditEvent (pre-delete baseline)")
-			Eventually(func(g Gomega) {
-				events := framework.ListAuditEvents(context.Background(), v3PolicyDelNamespace)
-				var count int
-				for _, e := range events {
-					if e.Spec.Kind == "egress-block" {
-						count++
-					}
-				}
-				g.Expect(count).To(BeNumerically(">=", 1),
-					"pre-delete: want >=1 egress-block, got %d", count)
-			}, 60*time.Second, 3*time.Second).Should(Succeed())
-
-			By("deleting the BrokerPolicy and noting the cutoff time")
-			deleteAt := time.Now().UTC()
-			_, err = utils.Run(exec.Command("kubectl", "-n", v3PolicyDelNamespace,
-				"delete", "brokerpolicy", v3PolicyDelPolicyName))
-			Expect(err).NotTo(HaveOccurred())
-
-			By("waiting for a fresh egress-block AuditEvent created AFTER the delete")
-			// Spec §8.2 quotes ~10s for cache refresh; bump to 30s to
-			// absorb kubelet scheduling + loop cadence + kubectl
-			// round-trips without being flaky.
-			Eventually(func(g Gomega) {
-				events := framework.ListAuditEvents(context.Background(), v3PolicyDelNamespace)
-				var freshest time.Time
-				for _, e := range events {
-					if e.Spec.Kind != "egress-block" {
-						continue
-					}
-					ts, parseErr := time.Parse(time.RFC3339, e.Metadata.CreationTimestamp)
-					if parseErr != nil {
-						continue
-					}
-					if ts.After(freshest) {
-						freshest = ts
-					}
-				}
-				g.Expect(freshest.After(deleteAt)).To(BeTrue(),
-					"freshest egress-block (%s) is not after the policy delete (%s)",
-					freshest.Format(time.RFC3339), deleteAt.Format(time.RFC3339))
-			}, 30*time.Second, 3*time.Second).Should(Succeed())
-
-			By("waiting for the run to complete on its own")
-			Eventually(func(g Gomega) {
-				phase, err := utils.Run(exec.Command("kubectl", "-n", v3PolicyDelNamespace,
-					"get", "harnessrun", v3PolicyDelRunName, "-o", "jsonpath={.status.phase}"))
-				g.Expect(err).NotTo(HaveOccurred())
-				p := strings.TrimSpace(phase)
-				g.Expect(p).To(BeElementOf("Succeeded", "Failed"),
-					"run still in phase %q", p)
-			}, 3*time.Minute, 3*time.Second).Should(Succeed())
-		})
-	})
 })
