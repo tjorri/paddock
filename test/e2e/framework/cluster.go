@@ -175,14 +175,17 @@ func CreateTenantNamespace(ctx context.Context, base string) string {
 
 	ginkgo.DeferCleanup(func(ctx ginkgo.SpecContext) {
 		// Best-effort delete; finalizers reconciled while controller
-		// is still alive. 90s budget covers HarnessRun Job cleanup +
-		// Workspace PVC cascade with slack.
+		// is still alive. The 10s timeout bounds the kubectl API
+		// request (the namespace deletion proceeds asynchronously
+		// because of --wait=false); the 120s WaitForNamespaceGone
+		// budget below covers HarnessRun Job cleanup + Workspace
+		// PVC cascade with slack.
 		_, _ = RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "ns", ns,
 			"--wait=false", "--ignore-not-found=true")
 		if WaitForNamespaceGone(ctx, ns, 120*time.Second) {
 			return
 		}
-		fmt.Fprintf(ginkgo.GinkgoWriter,
+		_, _ = fmt.Fprintf(ginkgo.GinkgoWriter,
 			"WARNING: namespace %s stuck in Terminating after 120s; "+
 				"controller-side finalizer drain likely broken — force-clearing\n", ns)
 		ForceClearFinalizers(ctx, ns)

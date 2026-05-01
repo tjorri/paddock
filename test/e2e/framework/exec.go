@@ -45,6 +45,11 @@ func RunCmd(ctx context.Context, name string, args ...string) (string, error) {
 // load-bearing: kubectl-port-forward etc. spawn child processes that
 // would survive a plain SIGTERM and pin the test against a stale
 // connection.
+//
+// The parent caller's context is intentionally NOT honoured —
+// RunCmdWithTimeout creates its own root context so cleanup paths
+// complete even when callers (e.g. AfterAll/AfterSuite) bail. Use
+// RunCmd(ctx, ...) when caller-side cancellation is required.
 func RunCmdWithTimeout(timeout time.Duration, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
