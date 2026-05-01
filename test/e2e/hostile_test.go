@@ -30,7 +30,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
@@ -40,35 +39,6 @@ import (
 	"paddock.dev/paddock/test/e2e/framework"
 	"paddock.dev/paddock/test/utils"
 )
-
-// hostileEvent is a single JSON line emitted by evil-echo on stdout.
-// Mirrors the Output struct in images/evil-echo/main.go.
-type hostileEvent struct {
-	Flag   string         `json:"flag"`
-	Target string         `json:"target,omitempty"`
-	Result string         `json:"result"`
-	Error  string         `json:"error,omitempty"`
-	Detail map[string]any `json:"detail,omitempty"`
-}
-
-// parseHostileEvents parses lines of evil-echo JSON output. Tolerates
-// non-JSON lines (e.g., the harness's stderr leaking into the output
-// ConfigMap if collector misroutes).
-func parseHostileEvents(text string) []hostileEvent {
-	var events []hostileEvent
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || !strings.HasPrefix(line, "{") {
-			continue
-		}
-		var e hostileEvent
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			continue
-		}
-		events = append(events, e)
-	}
-	return events
-}
 
 var _ = Describe("Phase 2a P0 hotfix validation (hostile harness)", Ordered, func() {
 	var hostileNamespace string
@@ -168,10 +138,10 @@ spec:
 
 			By("reading harness JSON output and asserting connect-raw-tcp was denied")
 			output := readRunOutput(ctx, hostileNamespace, runName)
-			events := parseHostileEvents(output)
+			events := framework.ParseHostileEvents(output)
 			Expect(events).ToNot(BeEmpty(), "expected at least one hostile-event JSON line in run output; got: %s", output)
 
-			var connectEvent *hostileEvent
+			var connectEvent *framework.HostileEvent
 			for i := range events {
 				if events[i].Flag == "--connect-raw-tcp" {
 					connectEvent = &events[i]
@@ -217,11 +187,11 @@ spec:
 
 			By("reading harness output")
 			output := readRunOutput(ctx, hostileNamespace, runName)
-			events := parseHostileEvents(output)
+			events := framework.ParseHostileEvents(output)
 			Expect(events).ToNot(BeEmpty(), "expected hostile-event JSON; got: %s", output)
 
 			By("asserting --read-secret-files found no matches (no SA token mount)")
-			var readEvent *hostileEvent
+			var readEvent *framework.HostileEvent
 			for i := range events {
 				if events[i].Flag == "--read-secret-files" {
 					readEvent = &events[i]
@@ -233,7 +203,7 @@ spec:
 				"agent container should have no SA-token mount (F-38); got %+v", readEvent)
 
 			By("asserting --probe-broker was network-denied (cooperative proxy intercepts; broker host not in egress allowlist)")
-			var probeEvent *hostileEvent
+			var probeEvent *framework.HostileEvent
 			for i := range events {
 				if events[i].Flag == "--probe-broker" {
 					probeEvent = &events[i]
@@ -373,10 +343,10 @@ spec:
 			logs, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", seedNamespace, "logs", podName))
 			Expect(err).ToNot(HaveOccurred(), "kubectl logs %s/%s: %s", seedNamespace, podName, logs)
 
-			events := parseHostileEvents(logs)
+			events := framework.ParseHostileEvents(logs)
 			Expect(events).ToNot(BeEmpty(), "expected hostile-event JSON in pod logs; got: %s", logs)
 
-			var connectEvent *hostileEvent
+			var connectEvent *framework.HostileEvent
 			for i := range events {
 				if events[i].Flag == "--connect-raw-tcp" {
 					connectEvent = &events[i]
@@ -663,10 +633,10 @@ spec:
 			}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
 
 			output := readRunOutput(ctx, tgNamespace, runName)
-			events := parseHostileEvents(output)
+			events := framework.ParseHostileEvents(output)
 			Expect(events).ToNot(BeEmpty(), "expected hostile-event JSON; got: %s", output)
 
-			var smugEvent *hostileEvent
+			var smugEvent *framework.HostileEvent
 			for i := range events {
 				if events[i].Flag == "--smuggle-headers" {
 					smugEvent = &events[i]
@@ -719,10 +689,10 @@ spec:
 			}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
 
 			output := readRunOutput(ctx, tgNamespace, runName)
-			events := parseHostileEvents(output)
+			events := framework.ParseHostileEvents(output)
 			Expect(events).ToNot(BeEmpty(), "expected hostile-event JSON; got: %s", output)
 
-			var probeEvent *hostileEvent
+			var probeEvent *framework.HostileEvent
 			for i := range events {
 				if events[i].Flag == "--probe-provider-substitution-host" {
 					probeEvent = &events[i]
@@ -764,7 +734,7 @@ spec:
 			})
 
 			By("creating pool Secret, HarnessTemplate, and BrokerPolicy")
-			mustApplyManifest(patPoolFixtureManifest(t2Namespace, "t2-revoke", 2))
+			mustApplyManifest(framework.PATPoolFixtureManifest(t2Namespace, "t2-revoke", 2))
 
 			By("submitting a HarnessRun that acquires a PATPool lease")
 			runName := "revoke-test"
@@ -791,7 +761,7 @@ spec:
 
 			By("waiting for at least one IssuedLease to appear on the run")
 			Eventually(func() int {
-				return issuedLeaseCount(ctx, t2Namespace, runName)
+				return framework.IssuedLeaseCount(ctx, t2Namespace, runName)
 			}, 90*time.Second, 2*time.Second).Should(BeNumerically(">=", 1))
 
 			By("recording the current PATPool leased count from broker metrics")
@@ -847,7 +817,7 @@ spec:
 			framework.GetBroker(ctx).RestoreOnTeardown()
 
 			By("creating pool Secret, HarnessTemplate, and BrokerPolicy (2-slot pool)")
-			mustApplyManifest(patPoolFixtureManifest(t2Namespace, "t2-restart", 2))
+			mustApplyManifest(framework.PATPoolFixtureManifest(t2Namespace, "t2-restart", 2))
 
 			runA := "restart-a"
 			runB := "restart-b"
@@ -886,7 +856,7 @@ spec:
 `, runA, t2Namespace))
 			runAOK := false
 			Eventually(func() int {
-				return issuedLeaseCount(ctx, t2Namespace, runA)
+				return framework.IssuedLeaseCount(ctx, t2Namespace, runA)
 			}, 180*time.Second, 2*time.Second).Should(BeNumerically(">=", 1),
 				"run %s did not acquire a lease", runA)
 			runAOK = true
@@ -919,13 +889,13 @@ spec:
 				}
 			})
 			Eventually(func() int {
-				return issuedLeaseCount(ctx, t2Namespace, runB)
+				return framework.IssuedLeaseCount(ctx, t2Namespace, runB)
 			}, 180*time.Second, 2*time.Second).Should(BeNumerically(">=", 1),
 				"run %s did not acquire a lease", runB)
 			runBOK = true
 
-			slotA1 := poolSlotIndex(ctx, t2Namespace, runA)
-			slotB1 := poolSlotIndex(ctx, t2Namespace, runB)
+			slotA1 := framework.PoolSlotIndex(ctx, t2Namespace, runA)
+			slotB1 := framework.PoolSlotIndex(ctx, t2Namespace, runB)
 			Expect(slotA1).NotTo(Equal(slotB1), "pre-restart: both runs hold the same slot — pool collision")
 
 			By("restarting the broker deployment")
@@ -937,8 +907,8 @@ spec:
 			By("asserting both runs still hold distinct slots after broker restart")
 			// The controller may reconcile and re-issue; give it time.
 			Eventually(func() bool {
-				a := poolSlotIndex(ctx, t2Namespace, runA)
-				b := poolSlotIndex(ctx, t2Namespace, runB)
+				a := framework.PoolSlotIndex(ctx, t2Namespace, runA)
+				b := framework.PoolSlotIndex(ctx, t2Namespace, runB)
 				// Both must have a lease and they must differ.
 				return a >= 0 && b >= 0 && a != b
 			}, 90*time.Second, 2*time.Second).Should(BeTrue(),
@@ -964,7 +934,7 @@ spec:
 			framework.GetBroker(ctx).RestoreOnTeardown()
 
 			By("creating pool Secret, HarnessTemplate, and BrokerPolicy")
-			mustApplyManifest(patPoolFixtureManifest(t2Namespace, "t2-forceclear", 1))
+			mustApplyManifest(framework.PATPoolFixtureManifest(t2Namespace, "t2-forceclear", 1))
 
 			By("submitting a HarnessRun and waiting for it to acquire a lease")
 			runName := "force-clear"
@@ -992,7 +962,7 @@ spec:
 `, runName, t2Namespace))
 
 			Eventually(func() int {
-				return issuedLeaseCount(ctx, t2Namespace, runName)
+				return framework.IssuedLeaseCount(ctx, t2Namespace, runName)
 			}, 90*time.Second, 2*time.Second).Should(BeNumerically(">=", 1),
 				"run did not acquire a lease before broker scale-down")
 
@@ -1020,7 +990,7 @@ spec:
 				"HarnessRun %s/%s not gone after 60s with broker down — force-clear path may be broken", t2Namespace, runName)
 
 			By("asserting a RevokeFailed Warning event was recorded against the run")
-			Expect(runHasWarningEvent(ctx, t2Namespace, runName, "RevokeFailed")).To(BeTrue(),
+			Expect(framework.RunHasWarningEvent(ctx, t2Namespace, runName, "RevokeFailed")).To(BeTrue(),
 				"expected a RevokeFailed Warning event for run %s/%s; controller may not be emitting it", t2Namespace, runName)
 		})
 	})
@@ -1190,160 +1160,6 @@ spec:
 		})
 	})
 })
-
-// ---------------------------------------------------------------------------
-// Theme 2 helper functions (F-11, F-14, F-16, F-17)
-// ---------------------------------------------------------------------------
-
-// patPoolFixtureManifest returns a multi-document YAML string that creates
-// the minimal set of objects for a PATPool e2e scenario in the given
-// namespace:
-//   - A Secret with `slots` fake PAT entries (one per line).
-//   - A HarnessTemplate named "t2-patpool-tmpl" that requires GITHUB_TOKEN.
-//   - A BrokerPolicy granting GITHUB_TOKEN via PATPool from the Secret.
-//
-// `prefix` is used to name the Secret so multiple specs in the same
-// namespace do not collide.
-func patPoolFixtureManifest(namespace, prefix string, slots int) string {
-	var lines strings.Builder
-	for i := 0; i < slots; i++ {
-		fmt.Fprintf(&lines, "ghp_fake_%s_%02d\n", prefix, i)
-	}
-	return fmt.Sprintf(`
-apiVersion: v1
-kind: Secret
-metadata:
-  name: %s-pool
-  namespace: %s
-type: Opaque
-stringData:
-  pool: |
-%s
----
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessTemplate
-metadata:
-  name: t2-patpool-tmpl
-  namespace: %s
-spec:
-  harness: echo
-  image: paddock-echo:dev
-  command: ["/usr/local/bin/paddock-echo"]
-  requires:
-    credentials:
-      - name: GITHUB_TOKEN
-  workspace:
-    required: true
-    mountPath: /workspace
-  defaults:
-    timeout: 60s
-    resources:
-      limits:
-        cpu: 200m
-        memory: 128Mi
-      requests:
-        cpu: 50m
-        memory: 64Mi
----
-apiVersion: paddock.dev/v1alpha1
-kind: BrokerPolicy
-metadata:
-  name: %s-policy
-  namespace: %s
-spec:
-  appliesToTemplates: ["t2-patpool-tmpl"]
-  grants:
-    credentials:
-      - name: GITHUB_TOKEN
-        provider:
-          kind: PATPool
-          secretRef:
-            name: %s-pool
-            key: pool
-          hosts:
-            - github.com
-            - api.github.com
-    egress:
-      - host: github.com
-        ports: [443]
-      - host: api.github.com
-        ports: [443]
-`, prefix, namespace, indentLines(lines.String(), "    "), namespace, prefix, namespace, prefix)
-}
-
-// indentLines prepends `indent` to every non-empty line.
-func indentLines(s, indent string) string {
-	var out strings.Builder
-	for _, line := range strings.Split(s, "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		out.WriteString(indent + line + "\n")
-	}
-	return out.String()
-}
-
-// issuedLeaseCount returns the number of IssuedLeases on the named
-// HarnessRun. Returns 0 on any error so callers can use it in Eventually.
-func issuedLeaseCount(ctx context.Context, namespace, runName string) int {
-	out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace,
-		"get", "harnessrun", runName,
-		"-o", "jsonpath={.status.issuedLeases}"))
-	if err != nil || strings.TrimSpace(out) == "" || strings.TrimSpace(out) == "null" {
-		return 0
-	}
-	// The jsonpath returns a JSON array literal; count "[" occurrences is
-	// fragile; parse properly.
-	var leases []json.RawMessage
-	if jsonErr := json.Unmarshal([]byte(strings.TrimSpace(out)), &leases); jsonErr != nil {
-		return 0
-	}
-	return len(leases)
-}
-
-// poolSlotIndex returns the slotIndex for the first PATPool IssuedLease on
-// the named run, or -1 if none is found.
-func poolSlotIndex(ctx context.Context, namespace, runName string) int {
-	out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace,
-		"get", "harnessrun", runName,
-		"-o", "jsonpath={.status.issuedLeases[0].poolRef.slotIndex}"))
-	if err != nil || strings.TrimSpace(out) == "" {
-		return -1
-	}
-	idx, parseErr := strconv.Atoi(strings.TrimSpace(out))
-	if parseErr != nil {
-		return -1
-	}
-	return idx
-}
-
-// runHasWarningEvent returns true if any Kubernetes Event in the namespace
-// references the given run name with the given reason. Intended for asserting
-// that the controller emitted a RevokeFailed event.
-//
-// Events may have been emitted before the run was deleted (involvedObject
-// would still name the run), so we scrape all events in the namespace and
-// search by reason — not by involvedObject.name — because the run object
-// is gone by the time we check.
-func runHasWarningEvent(ctx context.Context, namespace, runName, reason string) bool {
-	out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace,
-		"get", "events",
-		"-o", "jsonpath={range .items[*]}{.reason}|{.involvedObject.name}|{.type}{\"\\n\"}{end}"))
-	if err != nil {
-		GinkgoWriter.Printf("runHasWarningEvent: kubectl get events: %v\n", err)
-		return false
-	}
-	for _, line := range strings.Split(out, "\n") {
-		parts := strings.Split(line, "|")
-		if len(parts) != 3 {
-			continue
-		}
-		if parts[0] == reason && parts[1] == runName && parts[2] == "Warning" {
-			return true
-		}
-	}
-	return false
-}
 
 // mustApply applies a YAML file at the cluster scope. Fails the test on
 // error.
