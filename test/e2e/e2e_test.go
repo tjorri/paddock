@@ -138,53 +138,6 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		// reconciliation just works.
 	})
 
-	AfterEach(func() {
-		spec := CurrentSpecReport()
-		if !spec.Failed() {
-			return
-		}
-		// Collect evidence for post-mortem — keep the output tight so
-		// CI logs stay readable when something breaks.
-		By("dumping controller-manager logs")
-		if logs, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-			"logs", "-l", "control-plane=controller-manager", "--tail=200")); err == nil {
-			fmt.Fprintln(GinkgoWriter, "--- controller logs ---\n"+logs)
-		}
-		By("dumping broker logs")
-		if logs, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-			"logs", "-l", "app.kubernetes.io/component=broker", "--tail=200")); err == nil && strings.TrimSpace(logs) != "" {
-			fmt.Fprintln(GinkgoWriter, "--- broker logs ---\n"+logs)
-		}
-		// v0.3 per-run logs: proxy sidecar + iptables-init init container.
-		// Dumped from every v0.3 scenario namespace because a failure can
-		// occur in whichever scenario owns the current spec.
-		for _, ns := range []string{runNamespace, v3EgressNamespace, v3BrokerDownNamespace, v3PolicyDelNamespace} {
-			By("dumping run namespace events: " + ns)
-			if evts, err := utils.Run(exec.Command("kubectl", "-n", ns,
-				"get", "events", "--sort-by=.lastTimestamp")); err == nil && strings.TrimSpace(evts) != "" {
-				fmt.Fprintln(GinkgoWriter, "--- events ("+ns+") ---\n"+evts)
-			}
-			if pods, err := utils.Run(exec.Command("kubectl", "-n", ns, "get", "pods", "-o", "wide")); err == nil && strings.TrimSpace(pods) != "" {
-				fmt.Fprintln(GinkgoWriter, "--- pods ("+ns+") ---\n"+pods)
-			}
-			// Per-container logs — Ignore errors so namespaces not used
-			// by this spec silently skip.
-			for _, c := range []string{"proxy", "iptables-init", "agent", "adapter", "collector"} {
-				out, err := utils.Run(exec.Command("kubectl", "-n", ns,
-					"logs", "-l", "paddock.dev/run", "-c", c, "--tail=100"))
-				if err == nil && strings.TrimSpace(out) != "" {
-					fmt.Fprintln(GinkgoWriter, "--- "+c+" logs ("+ns+") ---\n"+out)
-				}
-			}
-			// AuditEvents aid v0.3 diagnosis: shows what the proxy
-			// decided about each connection.
-			if out, err := utils.Run(exec.Command("kubectl", "-n", ns,
-				"get", "auditevents", "--sort-by=.spec.timestamp")); err == nil && strings.TrimSpace(out) != "" {
-				fmt.Fprintln(GinkgoWriter, "--- auditevents ("+ns+") ---\n"+out)
-			}
-		}
-	})
-
 	SetDefaultEventuallyTimeout(3 * time.Minute)
 	SetDefaultEventuallyPollingInterval(2 * time.Second)
 

@@ -55,6 +55,14 @@ var (
 	isCertManagerAlreadyInstalled = false
 )
 
+// Top-level diagnostic dump: emits comprehensive post-mortem artifacts
+// on every spec failure. Wired once for the whole suite, replacing the
+// per-Describe AfterEach duplicate in the main pipeline Describe.
+var _ = func() bool {
+	framework.RegisterDiagnosticDump()
+	return true
+}()
+
 // TestE2E runs the end-to-end suite. Expects Kind installed and a
 // cluster named $KIND_CLUSTER (default "paddock-test-e2e") usable.
 // The Makefile's test-e2e target wires setup + teardown.
