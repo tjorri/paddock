@@ -48,6 +48,7 @@ func init() {
 // non-TUI command runs.
 func NewRootCmd() *cobra.Command {
 	cfg := genericclioptions.NewConfigFlags(true)
+	var bo brokerOpts
 
 	root := &cobra.Command{
 		Use:           "paddock-tui",
@@ -55,10 +56,11 @@ func NewRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runTUI(cfg)
+			return runTUI(cfg, bo)
 		},
 	}
 	cfg.AddFlags(root.PersistentFlags())
+	addBrokerFlags(root, &bo)
 
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newSessionCmd(cfg))

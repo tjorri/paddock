@@ -99,6 +99,7 @@ func main() {
 	var proxyCAClusterIssuer string
 	var proxyAllowList string
 	var iptablesInitImage string
+	var homeInitImage string
 	var networkPolicyEnforce string
 	var brokerCAName string
 	var brokerCANamespace string
@@ -138,6 +139,8 @@ func main() {
 	flag.StringVar(&iptablesInitImage, "iptables-init-image", "",
 		"Image for the transparent-mode NET_ADMIN init container (ADR-0013 §7.2). "+
 			"Empty disables transparent mode — every run resolves to cooperative.")
+	flag.StringVar(&homeInitImage, "home-init-image", controller.DefaultHomeInitImage,
+		"Image used for the paddock-home-init init container that creates HOME on the workspace PVC.")
 	flag.StringVar(&seedImage, "seed-image", "",
 		"Image used by the Workspace seed Job to clone repos. Empty falls back to the in-source default "+
 			"(digest-pinned alpine/git). Operators may override with a digest-pinned reference "+
@@ -368,6 +371,7 @@ func main() {
 		RingMaxEvents:     ringMaxEvents,
 		ProxyAllowList:    proxyAllowList,
 		IPTablesInitImage: iptablesInitImage,
+		HomeInitImage:     homeInitImage,
 		ProxyBrokerConfig: proxyBrokerCfg,
 		Audit: &controller.ControllerAudit{
 			Sink: &auditing.KubeSink{Client: mgr.GetClient(), Component: "controller"},

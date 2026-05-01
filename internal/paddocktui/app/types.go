@@ -29,9 +29,9 @@ import (
 type FocusArea int
 
 const (
-	FocusSidebar FocusArea = iota
-	FocusPrompt
-	FocusMainScroll
+	FocusPrompt FocusArea = iota
+	FocusSidebar
+	FocusMainPane
 )
 
 // ModalKind names which modal (if any) is open.
@@ -45,12 +45,34 @@ const (
 	ModalQueue
 )
 
+// SessionMode is the high-level state of a TUI session.
+type SessionMode int
+
+const (
+	SessionBatch SessionMode = iota
+	SessionArmed
+	SessionBound
+)
+
+// InteractiveBinding holds the TUI's view of an Interactive HarnessRun
+// the focused session is bound to. CurrentTurnSeq mirrors
+// HarnessRun.status.interactive.currentTurnSeq — non-nil means a turn
+// is in flight; nil means the run is between prompts.
+type InteractiveBinding struct {
+	RunName        string
+	CurrentTurnSeq *int32
+	LastFrameAt    time.Time
+}
+
 // SessionState bundles the runtime state for one session held in TUI
 // memory.
 type SessionState struct {
 	Session pdksession.Session
 
-	// Runs is the list of HarnessRuns for this session, newest first.
+	// Runs is the list of HarnessRuns for this session, sorted by
+	// CreationTime ascending (oldest first, newest at the end). The
+	// main pane renders backwards from the end so the newest run is at
+	// the top.
 	Runs []RunSummary
 
 	// Events keyed by run name. Only populated for the focused session.
@@ -58,11 +80,37 @@ type SessionState struct {
 
 	// Queue of prompts pending while a run is in flight.
 	Queue Queue
+
+	// Armed is true when the user has run the `interactive` palette
+	// command but hasn't yet typed the kick-off prompt.
+	Armed bool
+
+	// Interactive holds the bound interactive run, when the session is
+	// in SessionBound. Nil otherwise.
+	Interactive *InteractiveBinding
+}
+
+// Mode reports the session's current high-level state, derived from
+// SessionState fields.
+func (s *SessionState) Mode() SessionMode {
+	if s.Interactive != nil {
+		return SessionBound
+	}
+	if s.Armed {
+		return SessionArmed
+	}
+	return SessionBatch
 }
 
 // RunSummary is a TUI-shaped projection of a HarnessRun.
 type RunSummary struct {
-	Name           string
+	Name string
+	// CreationTime mirrors HarnessRun.metadata.creationTimestamp.
+	// Used to sort SessionState.Runs chronologically. StartTime alone
+	// is insufficient because it stays zero until the harness pod
+	// starts, so freshly-created runs would otherwise sort ahead of
+	// older in-progress ones.
+	CreationTime   time.Time
 	Phase          paddockv1alpha1.HarnessRunPhase
 	Prompt         string
 	StartTime      time.Time

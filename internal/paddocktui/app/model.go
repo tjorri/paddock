@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
 	pdkruns "paddock.dev/paddock/internal/paddocktui/runs"
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
@@ -35,6 +36,12 @@ type Model struct {
 	Client    client.Client
 	Namespace string
 
+	// BrokerClient is the authenticated HTTP+WebSocket client for the
+	// paddock-broker. Nil until Phase 5 wire-up populates it from the
+	// binary entry point. Unit tests that do not exercise the broker
+	// call leaf leave it nil.
+	BrokerClient *paddockbroker.Client
+
 	// Lifecycle context for long-lived watch goroutines. Cancel is
 	// called on tea.Quit/teardown so the polling goroutines spawned by
 	// session.Watch / runs.Watch / events.Tail exit cleanly.
@@ -44,9 +51,10 @@ type Model struct {
 	// Persistent watch channels. These are opened once per
 	// (workspace|run) and read one event at a time by the reducer so
 	// re-issuing nextXxxEventCmd does not spawn a fresh goroutine.
-	sessionWatchCh <-chan pdksession.Event
-	runWatches     map[string]<-chan pdkruns.Event                // keyed by workspaceRef
-	eventTails     map[string]<-chan paddockv1alpha1.PaddockEvent // keyed by runName
+	sessionWatchCh    <-chan pdksession.Event
+	runWatches        map[string]<-chan pdkruns.Event                // keyed by workspaceRef
+	eventTails        map[string]<-chan paddockv1alpha1.PaddockEvent // keyed by runName
+	interactiveFrames map[string]<-chan paddockbroker.StreamFrame    // keyed by runName
 
 	// Session list, keyed by Name. SessionOrder gives display order.
 	Sessions     map[string]*SessionState
@@ -58,7 +66,21 @@ type Model struct {
 	Modal       ModalKind
 	PromptInput string
 	Filter      string
-	ErrBanner   string
+	// ErrBanner surfaces transient error messages (red / high-attention).
+	ErrBanner string
+	// Banner surfaces informational context messages (e.g. run ended).
+	// Distinct from ErrBanner so render code can colour them differently.
+	Banner string
+
+	// PendingPrompt holds a single submitted prompt that's waiting for
+	// the broker to stop returning 409 (an in-flight turn on the bound
+	// interactive run). Submitting another prompt while non-empty
+	// replaces this one. The status footer surfaces a hint.
+	PendingPrompt string
+
+	// Palette tracks the command palette overlay's open/closed state and
+	// in-progress input. See palette.go.
+	Palette PaletteState
 
 	// Modal-specific state, set when Modal != ModalNone.
 	ModalNew   *NewSessionModalState
@@ -76,6 +98,10 @@ type Model struct {
 	// most recent run is fully visible). PgUp/PgDown adjust this in
 	// the reducer; the View slices the rendered content accordingly.
 	MainScrollFromBottom int
+
+	// RunCursor indexes into the focused session's Runs slice for
+	// keyboard navigation. Only meaningful when FocusArea == FocusMainPane.
+	RunCursor int
 }
 
 // NewModel constructs a Model with the supplied cluster wiring.

@@ -46,6 +46,10 @@ whether to use a vertical provider (Anthropic, GitHub App, PAT pool) or
 - [interactive-harnessruns.md](./interactive-harnessruns.md) — long-lived
   multi-prompt runs, the `runs.{interact,shell}` grants, lifecycle
   timeouts, and the prompt/stream/shell endpoints.
+- [interactive-tui.md](./interactive-tui.md) — driving interactive
+  runs from `paddock-tui`: arm, kickoff, cancel, end, detach, reattach.
+- [workspaces-and-home.md](./workspaces-and-home.md) — the
+  HOME-from-PVC default and how to think about workspace continuity.
 
 ## Related reading
 

@@ -17,14 +17,18 @@ limitations under the License.
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
 	pdkruns "paddock.dev/paddock/internal/paddocktui/runs"
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
@@ -49,10 +53,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.Focused == "" && len(m.SessionOrder) > 0 {
 			m.Focused = m.SessionOrder[0]
 		}
+		// Fire detect for every session so the TUI can reattach to any
+		// Interactive run that was started in a prior session. Each
+		// detectBoundRunCmd is independent — they land out of order and
+		// must be additive (boundRunDetectedMsg guards against
+		// double-binding the same run).
+		cmds := make([]tea.Cmd, 0, len(m.SessionOrder)+1)
 		if cmd := ensureRunWatch(&m, m.Focused); cmd != nil {
-			return m, cmd
+			cmds = append(cmds, cmd)
 		}
-		return m, nil
+		for _, name := range m.SessionOrder {
+			cmds = append(cmds, detectBoundRunCmd(m.Client, m.Namespace, name))
+		}
+		if len(cmds) == 0 {
+			return m, nil
+		}
+		return m, tea.Batch(cmds...)
 
 	case sessionWatchOpenedMsg:
 		m.sessionWatchCh = msg.Ch
@@ -100,6 +116,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case runUpdatedMsg:
 		m = upsertRun(m, msg)
+		// When the bound interactive run reaches a terminal phase, clear
+		// the binding and surface an informational banner. Only fires when
+		// this specific run is the one the session is bound to — Batch
+		// runs are never in state.Interactive and are unaffected.
+		if state := m.Sessions[msg.WorkspaceRef]; state != nil &&
+			state.Interactive != nil &&
+			state.Interactive.RunName == msg.Run.Name &&
+			isTerminalPhase(msg.Run.Status.Phase) {
+			reason := terminationReason(msg.Run)
+			state.Interactive = nil
+			delete(m.interactiveFrames, msg.Run.Name)
+			m.Banner = fmt.Sprintf("interactive run ended (%s) — next prompt creates a Batch run", reason)
+			if m.PendingPrompt != "" {
+				m.Banner += " · pending prompt cleared"
+				m.PendingPrompt = ""
+			}
+		}
 		ch := m.runWatches[msg.WorkspaceRef]
 		// On reattach, the TUI sees in-flight HarnessRuns it didn't
 		// create itself. Open an event tail for any non-terminal run
@@ -140,9 +173,73 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// runUpdatedMsg (the eventTailOpenedMsg registration is async)
 		// and produces duplicate tails — every event was being emitted
 		// twice.
-		return m, nil
+		//
+		// For Interactive runs we arm the session binding and open the
+		// WebSocket stream. The binding is set even when BrokerClient is
+		// nil (so Reattach in Task 28 can find it); stream opening is
+		// skipped and a banner is surfaced instead.
+		if msg.Mode != paddockv1alpha1.HarnessRunModeInteractive {
+			return m, nil
+		}
+		state := m.Sessions[msg.WorkspaceRef]
+		if state == nil {
+			// Session was deleted in the brief window between the run
+			// being created and this message arriving — don't crash.
+			return m, nil
+		}
+		state.Interactive = &InteractiveBinding{RunName: msg.RunName}
+		if m.BrokerClient == nil {
+			m.ErrBanner = "broker client not configured — cannot open interactive stream"
+			return m, nil
+		}
+		return m, openInteractiveStreamCmd(m.ctx, m.BrokerClient, m.Namespace, msg.RunName)
 
 	case runCancelledMsg:
+		return m, nil
+
+	case boundRunDetectedMsg:
+		state := m.Sessions[msg.WorkspaceRef]
+		if state == nil {
+			return m, nil
+		}
+		// Guard against double-binding the same run (race between detect
+		// and runCreatedMsg / a prior detect for the same workspace).
+		if state.Interactive != nil && state.Interactive.RunName == msg.Run.Name {
+			return m, nil
+		}
+		state.Interactive = &InteractiveBinding{RunName: msg.Run.Name}
+		if m.BrokerClient == nil {
+			m.ErrBanner = "broker client not configured — cannot open interactive stream"
+			return m, nil
+		}
+		return m, openInteractiveStreamCmd(m.ctx, m.BrokerClient, m.Namespace, msg.Run.Name)
+
+	case noBoundRunMsg:
+		// No non-terminal Interactive run found; session stays in Batch mode.
+		return m, nil
+
+	case interactiveStreamOpenedMsg:
+		if m.interactiveFrames == nil {
+			m.interactiveFrames = map[string]<-chan paddockbroker.StreamFrame{}
+		}
+		m.interactiveFrames[msg.RunName] = msg.Ch
+		return m, nextInteractiveFrameCmd(msg.RunName, msg.Ch)
+
+	case interactiveFrameMsg:
+		state := m.Sessions[m.Focused]
+		if state == nil || state.Interactive == nil || state.Interactive.RunName != msg.RunName {
+			return m, nil
+		}
+		ev := frameToEvent(msg.Frame)
+		if state.Events == nil {
+			state.Events = map[string][]paddockv1alpha1.PaddockEvent{}
+		}
+		state.Events[msg.RunName] = appendEventDedup(state.Events[msg.RunName], ev)
+		state.Interactive.LastFrameAt = time.Now()
+		return m, nextInteractiveFrameCmd(msg.RunName, m.interactiveFrames[msg.RunName])
+
+	case interactiveStreamClosedMsg:
+		delete(m.interactiveFrames, msg.RunName)
 		return m, nil
 
 	case errMsg:
@@ -207,8 +304,56 @@ func handleKeyMsg(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.MainScrollFromBottom = 0
 		return m, nil
 	}
+	// Palette claims all keys when already open (must run before the
+	// modal gate so Esc/Enter inside the palette aren't routed to a
+	// background modal).
+	if m.Palette.Open() {
+		return handlePaletteKey(m, key)
+	}
 	if m.Modal != ModalNone {
 		return handleModalKey(m, key)
+	}
+	// Palette opener triggers — only when no modal is up: ":" on an
+	// empty prompt or Ctrl-K anywhere.
+	if key.Type == tea.KeyCtrlK {
+		m.Palette = m.Palette.WithOpen(true)
+		return m, nil
+	}
+	if key.Type == tea.KeyRunes && len(key.Runes) == 1 && key.Runes[0] == ':' {
+		if m.PromptInput == "" {
+			m.Palette = m.Palette.WithOpen(true)
+		} else {
+			m.PromptInput += ":"
+		}
+		return m, nil
+	}
+	// Global Tab cycle: Prompt → Sidebar → MainPane → Prompt.
+	if key.Type == tea.KeyTab {
+		switch m.FocusArea {
+		case FocusPrompt:
+			m.FocusArea = FocusSidebar
+		case FocusSidebar:
+			m.FocusArea = FocusMainPane
+		case FocusMainPane:
+			m.FocusArea = FocusPrompt
+		}
+		return m, nil
+	}
+	// Arrow-key run navigation when MainPane holds focus.
+	if m.FocusArea == FocusMainPane {
+		state := m.Sessions[m.Focused]
+		if state == nil {
+			return m, nil
+		}
+		if key.Type == tea.KeyDown && m.RunCursor+1 < len(state.Runs) {
+			m.RunCursor++
+			return m, nil
+		}
+		if key.Type == tea.KeyUp && m.RunCursor > 0 {
+			m.RunCursor--
+			return m, nil
+		}
+		return m, nil
 	}
 	switch m.FocusArea {
 	case FocusSidebar:
@@ -292,15 +437,28 @@ func handleSidebarFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.FocusArea = FocusPrompt
 		}
 		return m, nil
-	case key.Type == tea.KeyTab:
-		m.FocusArea = FocusPrompt
-		return m, nil
 	case key.Type == tea.KeyRunes && string(key.Runes) == "?":
 		return openHelpModal(m), nil
 	}
+	prevFocused := m.Focused
 	m = handleSidebarKey(m, key)
-	cmd := ensureRunWatch(&m, m.Focused)
-	return m, cmd
+	var cmds []tea.Cmd
+	if cmd := ensureRunWatch(&m, m.Focused); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	// When focus moves to a real session that doesn't yet have an
+	// Interactive binding, fire detection so the TUI can reattach.
+	if m.Focused != prevFocused &&
+		m.Focused != "" &&
+		m.Focused != NewSessionSentinel {
+		if state := m.Sessions[m.Focused]; state != nil && state.Interactive == nil {
+			cmds = append(cmds, detectBoundRunCmd(m.Client, m.Namespace, m.Focused))
+		}
+	}
+	if len(cmds) == 0 {
+		return m, nil
+	}
+	return m, tea.Batch(cmds...)
 }
 
 // handlePromptFocusKey edits the prompt buffer and dispatches Enter.
@@ -309,24 +467,8 @@ func handlePromptFocusKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc:
 		m.FocusArea = FocusSidebar
 		return m, nil
-	case tea.KeyTab:
-		m.FocusArea = FocusSidebar
-		return m, nil
 	case tea.KeyEnter:
-		// Slash command? Dispatch.
-		cmd, arg, ok := ParseSlash(m.PromptInput)
-		if ok {
-			next, ext := dispatchSlash(m, cmd, arg)
-			next.PromptInput = ""
-			return next, ext
-		}
-		next, prompt := handlePromptSubmit(m)
-		if prompt == "" {
-			return next, nil
-		}
-		focused := next.Sessions[next.Focused]
-		template := focused.Session.LastTemplate
-		return next, submitRunCmd(next.Client, next.Namespace, next.Focused, template, prompt)
+		return handlePromptSubmit(m)
 	case tea.KeyRunes:
 		m.PromptInput += string(key.Runes)
 		return m, nil
@@ -386,28 +528,76 @@ func handleModalKey(m Model, key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// dispatchSlash maps recognised slash commands to side-effect commands
-// or in-Model state changes.
-func dispatchSlash(m Model, cmd SlashCmd, arg string) (Model, tea.Cmd) {
+// handlePaletteKey routes keystrokes while the palette is open: Esc
+// closes; Enter executes the parsed command; Backspace edits;
+// printable runes append to the input. Tab autocompletes the unique
+// matching command name when exactly one matches.
+func handlePaletteKey(m Model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.Palette = m.Palette.WithOpen(false)
+		return m, nil
+	case tea.KeyEnter:
+		cmd, arg := ParsePalette(m.Palette.Input())
+		m.Palette = m.Palette.WithOpen(false)
+		return dispatchPalette(m, cmd, arg)
+	case tea.KeyBackspace:
+		in := m.Palette.Input()
+		if len(in) > 0 {
+			m.Palette = m.Palette.WithInput(in[:len(in)-1])
+		}
+		return m, nil
+	case tea.KeyTab:
+		m.Palette = m.Palette.WithInput(autocompletePalette(m.Palette.Input()))
+		return m, nil
+	case tea.KeySpace:
+		m.Palette = m.Palette.WithInput(m.Palette.Input() + " ")
+		return m, nil
+	case tea.KeyRunes:
+		m.Palette = m.Palette.WithInput(m.Palette.Input() + string(msg.Runes))
+		return m, nil
+	}
+	return m, nil
+}
+
+// autocompletePalette returns the unique prefix-matching command
+// name when exactly one candidate matches; otherwise returns input
+// unchanged.
+func autocompletePalette(input string) string {
+	var match string
+	n := 0
+	for _, c := range []string{"cancel", "end", "interactive", "template ", "reattach", "status", "edit", "help"} {
+		if strings.HasPrefix(c, input) {
+			match = c
+			n++
+		}
+	}
+	if n == 1 {
+		return match
+	}
+	return input
+}
+
+// dispatchPalette routes a parsed palette command. Branches that
+// require interactive-mode plumbing (Cancel/End/Interactive/Reattach)
+// are placeholders here; later phase tasks fill them.
+func dispatchPalette(m Model, cmd PaletteCmd, arg string) (tea.Model, tea.Cmd) {
 	switch cmd {
-	case SlashCancel:
-		if m.Focused == "" {
-			m.ErrBanner = errNoSessionFocused
-			return m, nil
-		}
-		focused := m.Sessions[m.Focused]
-		if focused == nil {
-			m.ErrBanner = errNoSessionFocused
-			return m, nil
-		}
-		if focused.Session.ActiveRunRef != "" {
-			return m, cancelRunCmd(m.Client, m.Namespace, focused.Session.ActiveRunRef)
-		}
-	case SlashHelp:
+	case PaletteEmpty:
+		return m, nil
+	case PaletteUnknown:
+		m.ErrBanner = fmt.Sprintf("unknown command: %s", arg)
+		return m, nil
+	case PaletteHelp:
 		return openHelpModal(m), nil
-	case SlashTemplate:
+	case PaletteStatus, PaletteEdit:
+		// No-op today: the prior slash dispatcher had no body for
+		// these either; placeholders kept for parity until a future
+		// task fills them.
+		return m, nil
+	case PaletteTemplate:
 		if arg == "" {
-			m.ErrBanner = ":template requires a template name"
+			m.ErrBanner = "template requires a template name"
 			return m, nil
 		}
 		if m.Focused == "" {
@@ -420,11 +610,52 @@ func dispatchSlash(m Model, cmd SlashCmd, arg string) (Model, tea.Cmd) {
 			return m, nil
 		}
 		focused.Session.LastTemplate = arg
-		// Persist via annotation patch so reattach restores the
-		// override.
 		return m, patchLastTemplateCmd(m.Client, m.Namespace, m.Focused, arg)
-	case SlashInteractive:
-		m.ErrBanner = "interactive mode is not yet implemented"
+	case PaletteCancel:
+		focused := m.Sessions[m.Focused]
+		if focused == nil {
+			m.ErrBanner = errNoSessionFocused
+			return m, nil
+		}
+		if focused.Interactive != nil {
+			// Interactive mode: a "cancel" interrupts the in-flight turn
+			// via the broker rather than tearing down the bound run.
+			return m, interruptInteractiveCmd(m.BrokerClient, m.Namespace, focused.Interactive.RunName)
+		}
+		if focused.Session.ActiveRunRef == "" {
+			m.ErrBanner = "nothing to cancel"
+			return m, nil
+		}
+		return m, cancelRunCmd(m.Client, m.Namespace, focused.Session.ActiveRunRef)
+	case PaletteEnd:
+		focused := m.Sessions[m.Focused]
+		if focused == nil {
+			m.ErrBanner = errNoSessionFocused
+			return m, nil
+		}
+		if focused.Interactive == nil {
+			m.ErrBanner = "no interactive run bound to this session"
+			return m, nil
+		}
+		return m, endInteractiveCmd(m.BrokerClient, m.Namespace, focused.Interactive.RunName, "user-requested")
+	case PaletteInteractive:
+		focused := m.Sessions[m.Focused]
+		if focused == nil {
+			m.ErrBanner = errNoSessionFocused
+			return m, nil
+		}
+		if focused.Interactive != nil {
+			m.ErrBanner = "session already bound to an interactive run"
+			return m, nil
+		}
+		focused.Armed = true
+		return m, nil
+	case PaletteReattach:
+		if m.Focused == "" {
+			m.ErrBanner = errNoSessionFocused
+			return m, nil
+		}
+		return m, detectBoundRunCmd(m.Client, m.Namespace, m.Focused)
 	}
 	return m, nil
 }
@@ -501,7 +732,7 @@ func drainQueueIfFreed(m Model, name, prevActive, newActive string) (Model, tea.
 		return m, nil
 	}
 	template := state.Session.LastTemplate
-	return m, submitRunCmd(m.Client, m.Namespace, name, template, prompt)
+	return m, submitRunCmd(m.Client, m.Namespace, name, template, prompt, "")
 }
 
 // ensureEventTail opens a per-run event tail for hr if it's
@@ -537,6 +768,26 @@ func isTerminalPhase(p paddockv1alpha1.HarnessRunPhase) bool {
 	return false
 }
 
+// terminationReason extracts a human-readable reason from the run's
+// status conditions. It first looks for an "InteractiveRunTerminated"
+// condition (set when the controller or broker explicitly signals the
+// reason) and prefers its Message, then its Reason. When no such
+// condition is present it falls back to the raw phase string so the
+// banner always has a non-empty value.
+func terminationReason(hr paddockv1alpha1.HarnessRun) string {
+	for _, c := range hr.Status.Conditions {
+		if c.Type == "InteractiveRunTerminated" {
+			if c.Message != "" {
+				return c.Message
+			}
+			if c.Reason != "" {
+				return c.Reason
+			}
+		}
+	}
+	return string(hr.Status.Phase)
+}
+
 // upsertRun inserts or updates the RunSummary for the run carried in
 // msg under the workspace it belongs to. Also seeds the SessionState
 // Events map from Status.RecentEvents (deduped) so that:
@@ -566,6 +817,7 @@ func upsertRun(m Model, msg runUpdatedMsg) Model {
 	if !found {
 		state.Runs = append(state.Runs, summary)
 	}
+	sortRuns(state.Runs)
 	if state.Events == nil {
 		state.Events = map[string][]paddockv1alpha1.PaddockEvent{}
 	}
@@ -573,6 +825,22 @@ func upsertRun(m Model, msg runUpdatedMsg) Model {
 		state.Events[msg.Run.Name] = appendEventDedup(state.Events[msg.Run.Name], ev)
 	}
 	return m
+}
+
+// sortRuns orders runs chronologically by CreationTime, with the run
+// Name as the tiebreaker so the order is deterministic when two runs
+// share a CreationTimestamp (which can happen at one-second
+// granularity). Watches list runs in arbitrary order — without an
+// explicit sort the slice would reflect arrival order, which causes
+// the main pane (rendering newest at the top by walking the slice
+// backwards) to show runs out of chronological order on reattach.
+func sortRuns(runs []RunSummary) {
+	sort.SliceStable(runs, func(i, j int) bool {
+		if !runs[i].CreationTime.Equal(runs[j].CreationTime) {
+			return runs[i].CreationTime.Before(runs[j].CreationTime)
+		}
+		return runs[i].Name < runs[j].Name
+	})
 }
 
 // removeRun drops the named run from its workspace's Runs slice.
@@ -588,6 +856,9 @@ func removeRun(m Model, msg runDeletedMsg) Model {
 		}
 	}
 	state.Runs = out
+	if msg.WorkspaceRef == m.Focused && m.RunCursor >= len(state.Runs) && len(state.Runs) > 0 {
+		m.RunCursor = len(state.Runs) - 1
+	}
 	return m
 }
 
@@ -674,14 +945,44 @@ func parseQuantity(s string) (resource.Quantity, error) {
 	return resource.ParseQuantity(s)
 }
 
+// frameToEvent converts a StreamFrame into a PaddockEvent. The frame's
+// Type field becomes the event Type; the frame's Data is unmarshalled
+// into the remaining PaddockEvent fields (summary, ts, fields,
+// schemaVersion). Unknown keys in Data are silently ignored. If Data is
+// malformed the returned event carries only the Type and a zero timestamp
+// so the TUI can still display something rather than dropping the frame.
+func frameToEvent(frame paddockbroker.StreamFrame) paddockv1alpha1.PaddockEvent {
+	// frameData is the portion of a PaddockEvent that travels in
+	// StreamFrame.Data. We use a local struct with identical JSON tags so
+	// json.Unmarshal maps the wire fields without importing PaddockEvent's
+	// full validation machinery.
+	var fd struct {
+		SchemaVersion string            `json:"schemaVersion"`
+		Timestamp     metav1.Time       `json:"ts"`
+		Summary       string            `json:"summary,omitempty"`
+		Fields        map[string]string `json:"fields,omitempty"`
+	}
+	if len(frame.Data) > 0 {
+		_ = json.Unmarshal(frame.Data, &fd)
+	}
+	return paddockv1alpha1.PaddockEvent{
+		SchemaVersion: fd.SchemaVersion,
+		Timestamp:     fd.Timestamp,
+		Type:          frame.Type,
+		Summary:       fd.Summary,
+		Fields:        fd.Fields,
+	}
+}
+
 // runSummaryFromCR projects a HarnessRun into the TUI-shaped
 // RunSummary used by the View layer.
 func runSummaryFromCR(hr paddockv1alpha1.HarnessRun) RunSummary {
 	r := RunSummary{
-		Name:     hr.Name,
-		Phase:    hr.Status.Phase,
-		Prompt:   hr.Spec.Prompt,
-		Template: hr.Spec.TemplateRef.Name,
+		Name:         hr.Name,
+		CreationTime: hr.CreationTimestamp.Time,
+		Phase:        hr.Status.Phase,
+		Prompt:       hr.Spec.Prompt,
+		Template:     hr.Spec.TemplateRef.Name,
 	}
 	if hr.Status.StartTime != nil {
 		r.StartTime = hr.Status.StartTime.Time

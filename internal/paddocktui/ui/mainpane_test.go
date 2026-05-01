@@ -86,6 +86,37 @@ func TestMainPaneView_ClipsToHeight(t *testing.T) {
 	}
 }
 
+func TestRenderRun_PrefixesMultiLineEventBody(t *testing.T) {
+	// Regression: when a Message event summary contained embedded
+	// newlines (common for narrative harnesses returning prose), only
+	// the first line carried the "│ " box-side prefix and subsequent
+	// lines started flush against the terminal edge — the run's box
+	// shape visually broke at every newline. Every continuation line
+	// must keep the vertical bar.
+	startTs := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	r := app.RunSummary{
+		Name:           "hr-1",
+		Phase:          paddockv1alpha1.HarnessRunPhaseSucceeded,
+		Prompt:         "tell me a story\nin two parts",
+		StartTime:      startTs,
+		CompletionTime: startTs.Add(2 * time.Second),
+	}
+	events := []paddockv1alpha1.PaddockEvent{
+		{SchemaVersion: "1", Timestamp: metav1.NewTime(startTs.Add(time.Second)), Type: "Message", Summary: "Once upon a time\nthere was a goroutine\nthat never returned."},
+	}
+	got := renderRun(r, events, false, false)
+	for _, line := range strings.Split(got, "\n") {
+		// Header and footer use ╭/╰; every other line is a body line
+		// that must start with │ to keep the box vertical bar.
+		if line == "" || strings.HasPrefix(line, "╭") || strings.HasPrefix(line, "╰") {
+			continue
+		}
+		if !strings.HasPrefix(line, "│") {
+			t.Errorf("body line missing │ prefix: %q\nfull render:\n%s", line, got)
+		}
+	}
+}
+
 func TestRenderRun_FiltersResultEvent(t *testing.T) {
 	// Result events duplicate the last Message for narrative harnesses
 	// (claude-code in particular). They must be omitted from the body
@@ -104,9 +135,69 @@ func TestRenderRun_FiltersResultEvent(t *testing.T) {
 		{SchemaVersion: "1", Timestamp: metav1.NewTime(startTs.Add(time.Second)), Type: "Message", Summary: "Hello there."},
 		{SchemaVersion: "1", Timestamp: metav1.NewTime(startTs.Add(2 * time.Second)), Type: "Result", Summary: "Hello there."},
 	}
-	got := renderRun(r, events)
+	got := renderRun(r, events, false, false)
 	if c := strings.Count(got, "Hello there."); c != 1 {
 		t.Errorf("expected the message summary to render exactly once, got %d:\n%s", c, got)
+	}
+}
+
+func TestRenderRun_BoundRunUsesDoubleHorizontalMarker(t *testing.T) {
+	// Bound interactive runs must render with ╭═ / ═╮-style header so the
+	// user can visually distinguish "live interactive run" from batch runs.
+	// U+2550 BOX DRAWINGS DOUBLE HORIZONTAL (═) replaces U+2500 BOX
+	// DRAWINGS LIGHT HORIZONTAL (─) in the header corners.
+	startTs := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	r := app.RunSummary{
+		Name:      "hr-live",
+		Phase:     paddockv1alpha1.HarnessRunPhaseRunning,
+		StartTime: startTs,
+	}
+	events := []paddockv1alpha1.PaddockEvent{
+		{SchemaVersion: "1", Timestamp: metav1.NewTime(startTs.Add(time.Second)), Type: "Message", Summary: "first turn reply"},
+		{SchemaVersion: "1", Timestamp: metav1.NewTime(startTs.Add(2 * time.Second)), Type: "Message", Summary: "second turn reply"},
+	}
+	bound := renderRun(r, events, false, true)
+	if !strings.Contains(bound, "╭═") {
+		t.Errorf("bound run header must contain ╭═ (U+256D U+2550); got:\n%s", bound)
+	}
+	unbound := renderRun(r, events, false, false)
+	if !strings.Contains(unbound, "╭─") {
+		t.Errorf("unbound run header must contain ╭─ (U+256D U+2500); got:\n%s", unbound)
+	}
+	if strings.Contains(unbound, "╭═") {
+		t.Errorf("unbound run must NOT use double-horizontal marker; got:\n%s", unbound)
+	}
+}
+
+func TestMainPaneView_BoundRunRendersWithDoubleMarker(t *testing.T) {
+	startTs := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	m := app.Model{
+		Sessions: map[string]*app.SessionState{
+			"alpha": {
+				Session:     pdksession.Session{Name: "alpha", LastTemplate: "claude-interactive"},
+				Interactive: &app.InteractiveBinding{RunName: "hr-live"},
+				Runs: []app.RunSummary{{
+					Name:      "hr-live",
+					Phase:     paddockv1alpha1.HarnessRunPhaseRunning,
+					StartTime: startTs,
+				}},
+				Events: map[string][]paddockv1alpha1.PaddockEvent{
+					"hr-live": {
+						{SchemaVersion: "1", Timestamp: metav1.NewTime(startTs.Add(time.Second)), Type: "Message", Summary: "first turn reply"},
+						{SchemaVersion: "1", Timestamp: metav1.NewTime(startTs.Add(2 * time.Second)), Type: "Message", Summary: "second turn reply"},
+					},
+				},
+			},
+		},
+		Focused:      "alpha",
+		SessionOrder: []string{"alpha"},
+	}
+	out := MainPaneView(m, 80, 0)
+	if strings.Count(out, "╭═") != 1 {
+		t.Errorf("bound run must render with ONE ╭═ header; got %d in:\n%s", strings.Count(out, "╭═"), out)
+	}
+	if !strings.Contains(out, "first turn reply") || !strings.Contains(out, "second turn reply") {
+		t.Errorf("both turn replies must render inside the box; got:\n%s", out)
 	}
 }
 

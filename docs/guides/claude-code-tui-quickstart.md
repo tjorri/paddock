@@ -38,6 +38,15 @@ namespace where it appears below.
 kubectl create namespace claude-code-demo
 ```
 
+## One-time `claude /login`
+
+As of Paddock vX.Y, every agent's `$HOME` lives on the workspace PVC.
+That means a `claude /login` you run inside an interactive session
+persists in `~/.claude/` on the workspace and survives across runs —
+no `UserSuppliedSecret` plumbing required for repeat use. Use the
+`UserSuppliedSecret` path below only for first-run automation or for
+non-interactive Batch chains where you can't drop into a TUI shell.
+
 ## Step 1 — Stash the OAuth token in a `Secret`
 
 Place the token in a Kubernetes `Secret`. The key is `token` here; the
@@ -260,25 +269,41 @@ into the main pane. Each run is bracketed:
 While the run is in flight, you can keep typing prompts at the bottom —
 they queue locally and submit one-by-one as the active run completes.
 
-### Slash commands
+### Command palette
 
-The prompt input recognises a few `:`-prefixed commands. The most useful
-day-to-day:
+The prompt input is for prompt text only — control commands live in a
+small overlay called the **palette**. Open it two ways:
 
-- `:cancel` — cancel the in-flight run (also bound to `Ctrl-X`).
-- `:queue` — show queued prompts; cancel individual entries with `q`.
-- `:edit` — open `$EDITOR` for a longer multi-line prompt.
-- `:template <name>` — switch the session's default template for future
-  prompts; persisted as an annotation so reattach restores the override.
-- `:help` — full keybindings (`?` works too).
+- Press `:` while the prompt input is empty (`:` inside a non-empty
+  prompt is a literal character — type it as part of your sentence and
+  it stays).
+- Press `Ctrl-K` from anywhere in the TUI.
+
+Type to filter; `Tab` autocompletes a unique prefix; `Enter` executes;
+`Esc` dismisses. The most useful day-to-day commands:
+
+- `cancel` — cancel the in-flight Batch run, or interrupt the current
+  turn of a bound interactive run.
+- `edit` — open `$EDITOR` for a longer multi-line prompt.
+- `template <name>` — switch the session's default template for future
+  prompts; persisted as an annotation so reattach restores the
+  override.
+- `help` — full keybindings.
+
+For the interactive flow (`interactive` to arm, `end` to terminate,
+`reattach` to recover after a stream drop), see
+[interactive-tui.md](./interactive-tui.md).
 
 ### Detach and reattach
 
-Press `q` (outside the prompt) to quit. Your session, the Workspace, and
-any in-flight `HarnessRun` keep running on the cluster — only the local
-prompt queue is lost. Re-launch `paddock-tui` from any terminal and pick
-the same session from the sidebar; the TUI loads the existing run history
-and tails the latest in-flight run from where you left off.
+Press `Ctrl-C` (or `q` outside the prompt input) to quit. Your session,
+the Workspace, and any in-flight `HarnessRun` keep running on the
+cluster. Re-launch `paddock-tui` from any terminal and pick the same
+session from the sidebar; the TUI loads the existing run history and
+tails the latest in-flight run from where you left off. If the session
+is bound to a live interactive run, the TUI auto-reattaches the
+WebSocket on focus — see [interactive-tui.md](./interactive-tui.md) for
+the full reattach behaviour.
 
 ### Multi-session
 

@@ -79,7 +79,7 @@ func lastRunFailed(s *app.SessionState) bool {
 	if len(s.Runs) == 0 {
 		return false
 	}
-	return s.Runs[0].Phase == paddockv1alpha1.HarnessRunPhaseFailed
+	return s.Runs[len(s.Runs)-1].Phase == paddockv1alpha1.HarnessRunPhaseFailed
 }
 
 func countActive(m app.Model) int {

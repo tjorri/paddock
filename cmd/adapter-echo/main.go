@@ -38,7 +38,13 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/coder/websocket"
 )
+
+// streamSubprotocol is the WebSocket subprotocol the broker negotiates
+// on /stream — must match `internal/broker/stream.go`.
+const streamSubprotocol = "paddock.stream.v1"
 
 const (
 	defaultPoll = 200 * time.Millisecond
@@ -85,11 +91,11 @@ func main() {
 // blocks until ctx is cancelled (SIGTERM/SIGINT) or the server fails.
 //
 // It mirrors cmd/adapter-claude-code's runInteractive but for the echo
-// harness — no per-prompt subprocess and no WebSocket /stream (the e2e
-// MVP for the echo harness does not exercise streaming). Each handler
-// returns 202 Accepted; /prompts also appends a synthetic PaddockEvent
-// to events.jsonl so a tailing collector can observe that the prompt
-// arrived.
+// harness — no per-prompt subprocess. Each /prompts handler returns
+// 202 Accepted, appends a synthetic PaddockEvent to events.jsonl (so a
+// tailing collector observes the prompt), AND best-effort relays the
+// frame to any active /stream WebSocket subscriber so the TUI broker
+// client can exercise the live stream path end-to-end.
 func runInteractive(ctx context.Context, ln net.Listener, eventsPath string) error {
 	if err := os.MkdirAll(filepath.Dir(eventsPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir events dir: %w", err)
@@ -102,6 +108,12 @@ func runInteractive(ctx context.Context, ln net.Listener, eventsPath string) err
 
 	enc := json.NewEncoder(out)
 	var mu sync.Mutex // serialises events.jsonl writes
+
+	// streamFrames buffers frames pushed by /prompts for any active
+	// /stream subscriber. Buffered so /prompts never blocks if no
+	// subscriber is connected (best-effort relay). Single-subscriber
+	// only — sufficient for the broker's bridge.
+	streamFrames := make(chan []byte, 16)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/prompts", func(w http.ResponseWriter, r *http.Request) {
@@ -117,17 +129,69 @@ func runInteractive(ctx context.Context, ln net.Listener, eventsPath string) err
 			Seq  int32  `json:"seq"`
 		}
 		_ = json.NewDecoder(io.LimitReader(r.Body, 256*1024)).Decode(&body)
+		summary := fmt.Sprintf("interactive echo received prompt seq=%d", body.Seq)
 		mu.Lock()
 		_ = enc.Encode(map[string]any{
 			"schemaVersion": "1",
 			"ts":            time.Now().UTC().Format(time.RFC3339Nano),
 			"type":          "Message",
-			"summary":       fmt.Sprintf("interactive echo received prompt seq=%d", body.Seq),
+			"summary":       summary,
 			"fields":        map[string]string{"text": body.Text},
 		})
 		_ = out.Sync()
 		mu.Unlock()
+		// Best-effort relay to any active /stream subscriber. The TUI
+		// broker client expects {"type": "...", "data": {...}} per frame.
+		if frame, err := json.Marshal(map[string]any{
+			"type": "Message",
+			"data": map[string]any{
+				"schemaVersion": "1",
+				"ts":            time.Now().UTC().Format(time.RFC3339Nano),
+				"summary":       summary,
+				"fields":        map[string]string{"text": body.Text},
+			},
+		}); err == nil {
+			select {
+			case streamFrames <- frame:
+			default: // no subscriber or buffer full; drop
+			}
+		}
 		w.WriteHeader(http.StatusAccepted)
+	})
+	mux.HandleFunc("/stream", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			Subprotocols: []string{streamSubprotocol},
+		})
+		if err != nil {
+			// Accept already wrote a response.
+			return
+		}
+		defer conn.CloseNow() //nolint:errcheck
+
+		// Send an immediate ready frame so the broker → TUI bridge sees
+		// at least one frame even before any prompt arrives — exercises
+		// the dial + first-frame round-trip without depending on prompt
+		// timing in CI.
+		ready := []byte(`{"type":"echo.ready","data":{"summary":"echo adapter stream ready"}}`)
+		if err := conn.Write(r.Context(), websocket.MessageText, ready); err != nil {
+			return
+		}
+
+		// Pump prompt-relayed frames until the client disconnects or ctx
+		// expires. /prompts pushes onto streamFrames best-effort, so a
+		// subscriber connected at the moment of the push receives it.
+		for {
+			select {
+			case frame := <-streamFrames:
+				if err := conn.Write(r.Context(), websocket.MessageText, frame); err != nil {
+					return
+				}
+			case <-r.Context().Done():
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
 	})
 	mux.HandleFunc("/interrupt", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

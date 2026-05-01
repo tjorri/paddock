@@ -40,8 +40,8 @@ const (
 
 	// LastTemplateAnnotation records the last HarnessTemplate actually
 	// used by a HarnessRun in this session. The TUI updates this on
-	// every prompt submission and on `:template` slash command. Falls
-	// back to DefaultTemplate when missing.
+	// every prompt submission and on the `template` palette command.
+	// Falls back to DefaultTemplate when missing.
 	LastTemplateAnnotation = "paddock.dev/session-last-template"
 )
 

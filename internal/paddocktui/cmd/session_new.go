@@ -54,6 +54,7 @@ type sessionNewOpts struct {
 
 func newSessionNewCmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {
 	opts := sessionNewOpts{StorageSize: resource.MustParse("10Gi")}
+	var bo brokerOpts
 	c := &cobra.Command{
 		Use:   "new",
 		Short: "Create a new paddock-tui session",
@@ -67,7 +68,7 @@ func newSessionNewCmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {
 				return err
 			}
 			if !opts.NoTUI {
-				return runTUI(cfg)
+				return runTUI(cfg, bo)
 			}
 			return nil
 		},
@@ -79,6 +80,7 @@ func newSessionNewCmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {
 	c.Flags().BoolVar(&opts.NoTUI, "no-tui", false, "Don't launch the TUI after creation")
 	_ = c.MarkFlagRequired("name")
 	_ = c.MarkFlagRequired("template")
+	addBrokerFlags(c, &bo)
 	return c
 }
 

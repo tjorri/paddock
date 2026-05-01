@@ -1,49 +1,144 @@
 package app
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
 	pdksession "paddock.dev/paddock/internal/paddocktui/session"
 )
 
 func TestPromptSubmit_QueuesWhenRunInFlight(t *testing.T) {
 	state := &SessionState{
-		Session: pdksessionMockedActive("alpha", "hr-1"),
+		Session: pdksessionMockedActive(testSessionName, "hr-1"),
 		Runs:    []RunSummary{{Name: "hr-1", Phase: paddockv1alpha1.HarnessRunPhaseRunning}},
 	}
 	m := Model{
-		Sessions:     map[string]*SessionState{"alpha": state},
-		SessionOrder: []string{"alpha"},
-		Focused:      "alpha",
+		Sessions:     map[string]*SessionState{testSessionName: state},
+		SessionOrder: []string{testSessionName},
+		Focused:      testSessionName,
 		PromptInput:  "second prompt",
 	}
-	m, submit := handlePromptSubmit(m)
-	if submit != "" {
-		t.Errorf("expected no immediate submit, got %q", submit)
+	next, cmd := handlePromptSubmit(m)
+	if cmd != nil {
+		t.Errorf("expected no cmd (queued), got non-nil cmd")
 	}
 	if state.Queue.Len() != 1 || state.Queue.Peek() != "second prompt" {
 		t.Errorf("prompt not queued: %v", state.Queue.Items())
 	}
-	if m.PromptInput != "" {
-		t.Errorf("input not cleared after submit: %q", m.PromptInput)
+	if next.PromptInput != "" {
+		t.Errorf("input not cleared after submit: %q", next.PromptInput)
 	}
 }
 
 func TestPromptSubmit_FiresWhenIdle(t *testing.T) {
+	base := newTestModel(t)
 	state := &SessionState{
-		Session: pdksessionMockedIdle("alpha"),
+		Session: pdksessionMockedIdle(testSessionName),
+	}
+	base.Sessions[testSessionName] = state
+	base.SessionOrder = []string{testSessionName}
+	base.Focused = testSessionName
+	base.PromptInput = "first prompt"
+	_, cmd := handlePromptSubmit(base)
+	if cmd == nil {
+		t.Errorf("expected submitRunCmd, got nil")
+	}
+}
+
+func TestPromptSubmit_BuffersWhileTurnInFlight(t *testing.T) {
+	seq := int32(2)
+	state := &SessionState{
+		Session: pdksessionMockedIdle(testSessionName),
+		Interactive: &InteractiveBinding{
+			RunName:        "hr-int",
+			CurrentTurnSeq: &seq,
+		},
 	}
 	m := Model{
-		Sessions:     map[string]*SessionState{"alpha": state},
-		SessionOrder: []string{"alpha"},
-		Focused:      "alpha",
-		PromptInput:  "first prompt",
+		Sessions:     map[string]*SessionState{testSessionName: state},
+		SessionOrder: []string{testSessionName},
+		Focused:      testSessionName,
+		PromptInput:  "next idea",
 	}
-	_, submit := handlePromptSubmit(m)
-	if submit != "first prompt" {
-		t.Errorf("expected immediate submit, got %q", submit)
+	next, cmd := handlePromptSubmit(m)
+	if cmd != nil {
+		t.Errorf("expected nil cmd (buffered), got non-nil cmd")
+	}
+	if next.PendingPrompt != "next idea" {
+		t.Errorf("PendingPrompt = %q, want %q", next.PendingPrompt, "next idea")
+	}
+	if next.PromptInput != "" {
+		t.Errorf("PromptInput should clear after buffering; got %q", next.PromptInput)
+	}
+}
+
+func TestPrompt_ArmedSubmitCreatesInteractiveRun(t *testing.T) {
+	m := newTestModel(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+	m.Sessions[testSessionName] = &SessionState{
+		Session: pdksession.Session{Name: testSessionName, LastTemplate: "claude-interactive"},
+		Armed:   true,
+	}
+	m.Focused = testSessionName
+	m.FocusArea = FocusPrompt
+	m.PromptInput = "kick"
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected submitRunCmd cmd; got nil")
+	}
+	nm := next.(Model)
+	if nm.Sessions[testSessionName].Armed {
+		t.Error("Armed should clear once the kick-off prompt is submitted")
+	}
+}
+
+func TestPrompt_BoundSubmitCallsBrokerSubmit(t *testing.T) {
+	m := newTestModel(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+	// A non-nil zero-value Client is enough for this dispatch test —
+	// the returned cmd is never invoked, so no real broker call fires.
+	m.BrokerClient = &paddockbroker.Client{}
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: "hr-int"},
+	}
+	m.Focused = testSessionName
+	m.FocusArea = FocusPrompt
+	m.PromptInput = "next prompt"
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected submitInteractivePromptCmd; got nil")
+	}
+	if nm.(Model).ErrBanner != "" {
+		t.Errorf("expected no ErrBanner; got %q", nm.(Model).ErrBanner)
+	}
+}
+
+func TestPrompt_BoundSubmitWithoutBrokerShowsBanner(t *testing.T) {
+	m := newTestModel(t)
+	// BrokerClient is nil by default; verify the dispatch fails gracefully
+	// instead of nil-dereferencing inside submitInteractivePromptCmd.
+	m.Sessions[testSessionName] = &SessionState{
+		Session:     pdksession.Session{Name: testSessionName},
+		Interactive: &InteractiveBinding{RunName: "hr-int"},
+	}
+	m.Focused = testSessionName
+	m.FocusArea = FocusPrompt
+	m.PromptInput = "next prompt"
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Error("expected nil cmd when BrokerClient is unset")
+	}
+	if nm.(Model).ErrBanner == "" {
+		t.Error("expected ErrBanner when BrokerClient is unset")
 	}
 }
 

@@ -35,6 +35,9 @@ type CreateOptions struct {
 	WorkspaceRef string
 	Template     string
 	Prompt       string
+	// Mode selects between Batch (zero value) and Interactive. Defaults
+	// to Batch so existing callers stay green.
+	Mode paddockv1alpha1.HarnessRunMode
 }
 
 // Create creates a HarnessRun against an existing Workspace. The
@@ -56,6 +59,7 @@ func Create(ctx context.Context, c client.Client, opts CreateOptions) (string, e
 			TemplateRef:  paddockv1alpha1.TemplateRef{Name: opts.Template},
 			WorkspaceRef: opts.WorkspaceRef,
 			Prompt:       opts.Prompt,
+			Mode:         opts.Mode,
 		},
 	}
 	if err := c.Create(ctx, hr); err != nil {

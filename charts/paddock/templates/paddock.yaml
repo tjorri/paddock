@@ -792,6 +792,7 @@ spec:
             - --proxy-ca-cluster-issuer-name=paddock-proxy-ca-issuer
             - --proxy-allow={{ .Values.proxyAllowList | default "" }}
             - --iptables-init-image={{ if .Values.iptablesInitImage.repository }}{{ .Values.iptablesInitImage.repository }}:{{ .Values.iptablesInitImage.tag | default .Chart.AppVersion }}{{ end }}
+            - --home-init-image={{ .Values.homeInitImage | default "" }}
             - --networkpolicy-enforce={{ .Values.proxy.networkPolicy.enforce | default "auto" }}
             - --broker-ca-secret-name=broker-serving-cert
             - --broker-ca-secret-namespace=paddock-system

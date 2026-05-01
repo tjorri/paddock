@@ -18,6 +18,7 @@ package controller
 
 import (
 	"fmt"
+	"path"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -55,12 +56,13 @@ const (
 	// with seedManifestRelPath in workspace_seed.go.
 	reposManifestRelPath = ".paddock/repos.json"
 
-	agentContainerName        = "agent"
-	adapterContainerName      = "adapter"
-	collectorContainerName    = "collector"
-	proxyContainerName        = "proxy"
-	iptablesInitContainerName = "iptables-init"
-	defaultGracePeriodSecs    = 60
+	agentContainerName           = "agent"
+	adapterContainerName         = "adapter"
+	collectorContainerName       = "collector"
+	proxyContainerName           = "proxy"
+	iptablesInitContainerName    = "iptables-init"
+	paddockHomeInitContainerName = "paddock-home-init"
+	defaultGracePeriodSecs       = 60
 	// interactiveGracePeriodSecs is the default
 	// terminationGracePeriodSeconds applied to Interactive runs (when the
 	// template's Defaults.TerminationGracePeriodSeconds is not set). 300s
@@ -170,6 +172,11 @@ const DefaultProxyImage = "paddock-proxy:dev"
 // when the resolved interception mode is transparent.
 const DefaultIPTablesInitImage = "paddock-iptables-init:dev"
 
+// DefaultHomeInitImage is overridable via --home-init-image. Kept
+// tag-pinned so a controller image upgrade doesn't silently shift
+// the init image.
+const DefaultHomeInitImage = "busybox:1.36"
+
 // podSpecInputs bundles the per-run resolution results the PodSpec
 // builder needs. Keeps buildJob from growing a long positional
 // argument list as M7+ bolts on more knobs.
@@ -204,6 +211,10 @@ type podSpecInputs struct {
 	// iptablesInitImage is the init-container image used for transparent
 	// mode. Ignored when interceptionMode != transparent.
 	iptablesInitImage string
+
+	// homeInitImage is the image used for the paddock-home-init init
+	// container. Empty falls back to DefaultHomeInitImage.
+	homeInitImage string
 
 	// brokerEndpoint, when non-empty, triggers the proxy sidecar to
 	// route egress decisions + SubstituteAuth through the broker
@@ -310,9 +321,15 @@ func buildPodSpec(
 		collectorImage = DefaultCollectorImage
 	}
 
-	initContainers := make([]corev1.Container, 0, 4)
+	initContainers := make([]corev1.Container, 0, 5)
 
-	// iptables-init runs first — it must complete before the proxy
+	// paddock-home-init runs FIRST. mkdir is filesystem-only — no
+	// dependency on iptables/proxy/sidecar lifecycle — and HOME points
+	// into the workspace PVC, so the dir must exist before any
+	// container that reads $HOME starts.
+	initContainers = append(initContainers, buildHomeInitContainer(template, in))
+
+	// iptables-init runs next — it must complete before the proxy
 	// sidecar starts so the agent's TCP traffic is caught by the
 	// REDIRECT chain from the first packet.
 	if proxyEnabled(in) && in.interceptionMode == paddockv1alpha1.InterceptionModeTransparent {
@@ -797,6 +814,48 @@ func buildIPTablesInitContainer(in podSpecInputs) corev1.Container {
 
 func ptrBool(v bool) *bool { return &v }
 
+// buildHomeInitContainer returns the one-shot init container that
+// ensures HOME exists on the workspace PVC before the agent starts.
+// Idempotent (mkdir -p) so repeat runs are no-ops; runs as root only
+// because the volume's existing ownership may not match the agent's
+// runtime UID. FSGroup on the pod (gid 65532) handles cross-container
+// group writability — see the comment on buildPodSpec's SecurityContext.
+//
+// The chgrp + chmod g+rwx pair is the same F-20 pattern the sidecars
+// use: agents run with the image-default UID (65532 for distroless
+// nonroot / alpine harness) and have GID 65532 as a supplementary
+// group via FSGroup; an explicit chgrp here makes the HOME dir
+// group-writable for the agent regardless of how the kubelet's
+// FSGroup recursion timing interacts with newly-created dirs.
+func buildHomeInitContainer(template *resolvedTemplate, in podSpecInputs) corev1.Container {
+	img := in.homeInitImage
+	if img == "" {
+		img = DefaultHomeInitImage
+	}
+	home := effectiveHomePath(template)
+	return corev1.Container{
+		Name:    paddockHomeInitContainerName,
+		Image:   img,
+		Command: []string{"/bin/sh", "-c"},
+		Args: []string{fmt.Sprintf(
+			"mkdir -p %q && chgrp 65532 %q && chmod 02775 %q",
+			home, home, home,
+		)},
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:                ptr.To(int64(0)),
+			AllowPrivilegeEscalation: ptr.To(false),
+			ReadOnlyRootFilesystem:   ptr.To(true),
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			SeccompProfile: &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
+			},
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: workspaceVolumeName, MountPath: effectiveWorkspaceMount(template)},
+		},
+	}
+}
+
 // buildEnv assembles the agent container's env: the PADDOCK_* standard
 // set, optional proxy wiring (HTTPS_PROXY + CA-trust envs; ADR-0013
 // §7.3), and run-level extraEnv. v0.3 removed the template-credentials
@@ -804,7 +863,7 @@ func ptrBool(v bool) *bool { return &v }
 // agent reads them from env vars the broker populates via the proxy
 // sidecar (see M3+ for the wiring).
 func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in podSpecInputs) []corev1.EnvVar {
-	const paddockStdEnvCount = 8
+	const paddockStdEnvCount = 9
 	env := make([]corev1.EnvVar, 0, paddockStdEnvCount+7+len(run.Spec.ExtraEnv))
 
 	// F-39 defense in depth: tenant extraEnv goes FIRST so any
@@ -827,6 +886,17 @@ func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in po
 		corev1.EnvVar{Name: "PADDOCK_RUN_NAME", Value: run.Name},
 		corev1.EnvVar{Name: "PADDOCK_MODEL", Value: effectiveModel(run, template)},
 	)
+
+	// HOME-from-PVC default (spec 2026-04-30-paddock-tui-interactive
+	// §3 / Resolved Q3): the agent's HOME lives on the workspace PVC
+	// so tool installs and one-time logins (e.g. claude /login)
+	// persist across runs in the same workspace. Single shared HOME
+	// for every harness — partitioning was rejected because
+	// continuity across harness families is the desired behaviour.
+	env = append(env, corev1.EnvVar{
+		Name:  "HOME",
+		Value: effectiveHomePath(template),
+	})
 
 	// PADDOCK_INTERACTIVE_MODE on the agent container so the harness
 	// entrypoint can branch on interactive vs batch (e.g. stay alive
@@ -873,6 +943,20 @@ func effectiveWorkspaceMount(template *resolvedTemplate) string {
 		return template.Spec.Workspace.MountPath
 	}
 	return defaultWorkspaceMount
+}
+
+// homeSubdirRelPath is the relative path under the workspace mount
+// that hosts the agent's HOME. Spec: "single shared HOME at
+// <mount>/.home/" — partitioning to per-harness HOMEs was explicitly
+// rejected during brainstorming so tool installs and login state
+// carry across harness families.
+const homeSubdirRelPath = ".home"
+
+// effectiveHomePath returns the absolute HOME directory for the
+// agent container of any run using template. The path lives under
+// the same workspace mount the agent already sees as cwd.
+func effectiveHomePath(template *resolvedTemplate) string {
+	return path.Join(effectiveWorkspaceMount(template), homeSubdirRelPath)
 }
 
 func effectiveModel(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate) string {
