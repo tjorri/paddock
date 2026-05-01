@@ -120,14 +120,14 @@ var _ = Describe("Phase 2a P0 hotfix validation (hostile harness)", Ordered, fun
 		//    120s budget as the pipeline AfterAll — covers HarnessRun
 		//    Job teardown + Workspace finalizer requeue cadence.
 		for _, ns := range hostileNamespaces {
-			if waitForNamespaceGone(ns, 120*time.Second) {
+			if framework.WaitForNamespaceGone(context.Background(), ns, 120*time.Second) {
 				continue
 			}
 			fmt.Fprintf(GinkgoWriter,
 				"WARNING: namespace %s stuck in Terminating after 120s; "+
 					"controller-side finalizer drain likely broken — force-clearing\n", ns)
-			forceClearFinalizers(ns)
-			waitForNamespaceGone(ns, 20*time.Second)
+			framework.ForceClearFinalizers(context.Background(), ns)
+			framework.WaitForNamespaceGone(context.Background(), ns, 20*time.Second)
 		}
 
 		// 3. Cluster-scoped templates this Describe owns.

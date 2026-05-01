@@ -44,6 +44,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
+	"paddock.dev/paddock/test/e2e/framework"
 	"paddock.dev/paddock/test/utils"
 )
 
@@ -156,14 +157,14 @@ spec:
 		_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
 			"delete", "ns", tuiE2ENS,
 			"--wait=false", "--ignore-not-found=true"))
-		if waitForNamespaceGone(tuiE2ENS, 90*time.Second) {
+		if framework.WaitForNamespaceGone(context.Background(), tuiE2ENS, 90*time.Second) {
 			return
 		}
 		fmt.Fprintf(GinkgoWriter,
 			"WARNING: namespace %s stuck in Terminating after 90s — force-clearing finalizers\n",
 			tuiE2ENS)
-		forceClearFinalizers(tuiE2ENS)
-		waitForNamespaceGone(tuiE2ENS, 20*time.Second)
+		framework.ForceClearFinalizers(context.Background(), tuiE2ENS)
+		framework.WaitForNamespaceGone(context.Background(), tuiE2ENS, 20*time.Second)
 	})
 
 	It("opens the broker stream, receives a frame, and ends the run cleanly", func() {

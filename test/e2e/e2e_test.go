@@ -174,16 +174,16 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		//    45-60s of drain time); still well below Ginkgo's 11-min
 		//    suite timeout. Fallback on timeout → force-clear + warn.
 		for _, ns := range testNamespaces {
-			if waitForNamespaceGone(ns, 120*time.Second) {
+			if framework.WaitForNamespaceGone(context.Background(), ns, 120*time.Second) {
 				continue
 			}
 			fmt.Fprintf(GinkgoWriter,
 				"WARNING: namespace %s stuck in Terminating after 120s; "+
 					"controller-side finalizer drain likely broken — force-clearing\n", ns)
-			forceClearFinalizers(ns)
+			framework.ForceClearFinalizers(context.Background(), ns)
 			// One more short wait so subsequent steps aren't racing
 			// a half-gone namespace; fall through regardless.
-			waitForNamespaceGone(ns, 20*time.Second)
+			framework.WaitForNamespaceGone(context.Background(), ns, 20*time.Second)
 		}
 
 		// 3. Non-finalizer cluster-scoped resources.
@@ -867,54 +867,4 @@ func requireBrokerHealthy() {
 		g.Expect(strings.TrimSpace(addrs)).NotTo(BeEmpty(),
 			"broker Endpoints empty — did Scenario B's restoreBroker misfire?")
 	}, 30*time.Second, 2*time.Second).Should(Succeed())
-}
-
-// waitForNamespaceGone polls `kubectl get ns <ns>` until the API
-// server returns NotFound or the budget expires. Returns true on
-// disappearance, false on timeout. Each poll call is bounded by
-// RunCmdWithTimeout so a totally unresponsive apiserver can't stall
-// AfterAll past its own deadline.
-//
-// Used by the teardown sequence to wait for the controller's
-// finalizer drain to finish BEFORE `make undeploy` scales it to zero
-// — the alternative (kubectl delete ns --wait with one --timeout per
-// call) serialises the work; this keeps namespace deletions running
-// in parallel and just watches from the outside.
-func waitForNamespaceGone(ns string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := utils.Run(exec.CommandContext(ctx, "kubectl", "get", "ns", ns))
-		cancel()
-		if err != nil && strings.Contains(err.Error(), "not found") {
-			return true
-		}
-		time.Sleep(2 * time.Second)
-	}
-	return false
-}
-
-// forceClearFinalizers is the last-resort fallback for AfterAll —
-// fires only when waitForNamespaceGone times out, which means the
-// controller's reconcile-delete loop failed to converge. Null-patches
-// .metadata.finalizers on every HarnessRun and Workspace in ns so the
-// namespace terminator can finish. Safe in test teardown only — the
-// follow-on `kind delete cluster` reclaims any owned resources the
-// finalizer cleanup would have handled (Job, PVC, Secret).
-//
-// When this runs it's a signal that a controller-side change broke
-// finalizer convergence — the calling AfterAll branch emits a loud
-// warning so the regression doesn't hide behind a green teardown.
-func forceClearFinalizers(ns string) {
-	for _, kind := range []string{"harnessruns", "workspaces"} {
-		out, err := utils.Run(exec.Command("kubectl", "-n", ns, "get", kind,
-			"-o", "jsonpath={.items[*].metadata.name}", "--ignore-not-found"))
-		if err != nil {
-			continue
-		}
-		for _, name := range strings.Fields(strings.TrimSpace(out)) {
-			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "-n", ns, "patch", kind, name,
-				"--type=merge", "-p", `{"metadata":{"finalizers":null}}`)
-		}
-	}
 }
