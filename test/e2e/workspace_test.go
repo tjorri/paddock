@@ -38,6 +38,12 @@ import (
 const (
 	// Multi-repo workspace seeding constants
 	multiTenantNamespace = "paddock-multi-e2e"
+	multiWorkspace       = "multi"
+	multiDebugPod        = "multi-debug"
+	multiRepoAURL        = "https://github.com/octocat/Hello-World.git"
+	multiRepoBURL        = "https://github.com/octocat/Spoon-Knife.git"
+	multiRepoAPath       = "hello"
+	multiRepoBPath       = "spoon"
 
 	// HOME persistence constants
 	homePersistNS        = "paddock-home-persist-e2e"
