@@ -348,6 +348,8 @@ spec:
 		ctxT, cancel := context.WithTimeout(ctx, 8*time.Minute)
 		defer cancel()
 
+		_, _ = utils.Run(exec.CommandContext(ctxT, "kubectl",
+			"delete", "ns", rolloutRestartNS, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 		ns := framework.CreateTenantNamespace(ctxT, rolloutRestartNS)
 		// Always restore broker on exit so subsequent specs are not left
 		// in a degraded state.
@@ -457,6 +459,8 @@ spec:
 		ctxT, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
 
+		_, _ = utils.Run(exec.CommandContext(ctxT, "kubectl",
+			"delete", "ns", leakGuardNS, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 		ns := framework.CreateTenantNamespace(ctxT, leakGuardNS)
 		// Restore the broker regardless of test outcome.
 		framework.GetBroker(ctxT).RestoreOnTeardown()
