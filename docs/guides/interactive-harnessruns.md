@@ -2,8 +2,9 @@
 
 > **TUI integration.** `paddock-tui` drives Interactive runs end-to-end
 > via the broker endpoints described below. See
-> [claude-code-tui-quickstart.md](./claude-code-tui-quickstart.md) for
-> the operator walkthrough.
+> [interactive-tui.md](./interactive-tui.md) for the TUI walkthrough,
+> or [claude-code-tui-quickstart.md](./claude-code-tui-quickstart.md)
+> for the first-time-user setup.
 
 Interactive HarnessRuns keep the agent pod alive across multiple prompts
 instead of terminating after a single one-shot prompt (the Batch
