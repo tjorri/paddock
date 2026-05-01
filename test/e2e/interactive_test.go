@@ -142,7 +142,7 @@ spec:
 
 		// Broker SA-token + port-forward. Both shared by every It in
 		// this Describe.
-		token = createBrokerToken(ctx, interactiveNS, interactiveSA)
+		token = framework.CreateBrokerToken(ctx, interactiveNS, interactiveSA)
 		brokerPort, stopForward = framework.GetBroker(ctx).PortForward(ctx)
 	})
 
@@ -333,15 +333,3 @@ spec:
 		Fail(fmt.Sprintf("never received 'hello' from shell within budget; got: %q", string(got)))
 	})
 })
-
-// createBrokerToken issues a fresh SA token for `sa` in `namespace` with
-// audience=paddock-broker. The duration is 10m which comfortably covers
-// every It in this Describe.
-func createBrokerToken(ctx context.Context, namespace, sa string) string {
-	out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", namespace,
-		"create", "token", sa,
-		"--audience=paddock-broker",
-		"--duration=10m"))
-	Expect(err).NotTo(HaveOccurred(), "kubectl create token: %s", out)
-	return strings.TrimSpace(out)
-}
