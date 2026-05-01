@@ -22,10 +22,8 @@ You may obtain a copy of the License at
 package e2e
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -797,7 +795,7 @@ spec:
 			}, 90*time.Second, 2*time.Second).Should(BeNumerically(">=", 1))
 
 			By("recording the current PATPool leased count from broker metrics")
-			leasedBefore := brokerMetricGauge(ctx, "paddock_broker_patpool_leased")
+			leasedBefore := framework.GetBroker(ctx).Metric(ctx, "paddock_broker_patpool_leased")
 
 			By("deleting the HarnessRun")
 			_, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", t2Namespace,
@@ -814,7 +812,7 @@ spec:
 
 			By("asserting the PATPool slot was freed by Revoke")
 			Eventually(func() float64 {
-				return brokerMetricGauge(ctx, "paddock_broker_patpool_leased")
+				return framework.GetBroker(ctx).Metric(ctx, "paddock_broker_patpool_leased")
 			}, 30*time.Second, 2*time.Second).Should(BeNumerically("<", leasedBefore),
 				"PATPool leased count did not decrease after run delete; lease was not revoked")
 		})
@@ -846,7 +844,7 @@ spec:
 			})
 			// Always restore broker on exit so subsequent specs are not left
 			// in a degraded state.
-			DeferCleanup(restoreBroker)
+			framework.GetBroker(ctx).RestoreOnTeardown()
 
 			By("creating pool Secret, HarnessTemplate, and BrokerPolicy (2-slot pool)")
 			mustApplyManifest(patPoolFixtureManifest(t2Namespace, "t2-restart", 2))
@@ -931,10 +929,10 @@ spec:
 			Expect(slotA1).NotTo(Equal(slotB1), "pre-restart: both runs hold the same slot — pool collision")
 
 			By("restarting the broker deployment")
-			Expect(brokerRolloutRestart(ctx)).To(Succeed())
+			Expect(framework.GetBroker(ctx).RolloutRestart(ctx)).To(Succeed())
 
 			By("waiting for broker to be healthy again")
-			requireBrokerHealthy()
+			framework.GetBroker(ctx).RequireHealthy(ctx)
 
 			By("asserting both runs still hold distinct slots after broker restart")
 			// The controller may reconcile and re-issue; give it time.
@@ -963,7 +961,7 @@ spec:
 					"delete", "ns", t2Namespace, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 			})
 			// Restore the broker regardless of test outcome.
-			DeferCleanup(restoreBroker)
+			framework.GetBroker(ctx).RestoreOnTeardown()
 
 			By("creating pool Secret, HarnessTemplate, and BrokerPolicy")
 			mustApplyManifest(patPoolFixtureManifest(t2Namespace, "t2-forceclear", 1))
@@ -1059,7 +1057,7 @@ spec:
 			// test carries the direct assertion).
 
 			// port-forward the TLS API port from the broker pod.
-			pod := brokerPodName(ctx)
+			pod := framework.GetBroker(ctx).PodName(ctx)
 			Expect(pod).NotTo(BeEmpty(), "no broker pod found")
 
 			const localTLSPort = "19443"
@@ -1079,11 +1077,7 @@ spec:
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-Paddock-Run", "oversize-smoke")
 
-			//nolint:gosec // e2e-only: TLS is self-signed in Kind; skip verification.
-			transport := &http.Transport{
-				TLSClientConfig: tlsSkipVerify(),
-			}
-			httpClient := &http.Client{Transport: transport}
+			httpClient := framework.GetBroker(ctx).HTTPClient()
 			resp, doErr := httpClient.Do(req)
 			Expect(doErr).NotTo(HaveOccurred(),
 				"POST /v1/issue failed — broker may not be reachable via port-forward")
@@ -1112,7 +1106,7 @@ spec:
 			defer cancel()
 
 			// Always restore broker so subsequent specs are not broken.
-			DeferCleanup(restoreBroker)
+			framework.GetBroker(ctx).RestoreOnTeardown()
 
 			// On spec failure, dump broker pod state + logs so a
 			// readiness-probe regression (broker stuck in cold-start,
@@ -1124,13 +1118,13 @@ spec:
 			})
 
 			By("restarting the broker pod")
-			Expect(brokerRolloutRestart(ctx)).To(Succeed())
+			Expect(framework.GetBroker(ctx).RolloutRestart(ctx)).To(Succeed())
 
 			By("polling /readyz via port-forward and observing 503 → 200 transition")
 			saw503 := false
 			deadline := time.Now().Add(45 * time.Second)
 			for time.Now().Before(deadline) {
-				code, probeErr := probeBrokerReadyz(ctx)
+				code, probeErr := framework.GetBroker(ctx).Readyz(ctx)
 				if probeErr == nil && code == http.StatusServiceUnavailable {
 					saw503 = true
 				}
@@ -1145,7 +1139,7 @@ spec:
 			// came back to 200.
 			if !saw503 {
 				By("cold-start window was shorter than poll interval; verifying final /readyz is 200")
-				code, err := probeBrokerReadyz(ctx)
+				code, err := framework.GetBroker(ctx).Readyz(ctx)
 				Expect(err).NotTo(HaveOccurred(), "/readyz probe error after restart")
 				Expect(code).To(Equal(http.StatusOK),
 					"broker /readyz is not 200 after restart — broker may be stuck in cold-start")
@@ -1323,129 +1317,6 @@ func poolSlotIndex(ctx context.Context, namespace, runName string) int {
 		return -1
 	}
 	return idx
-}
-
-// brokerPodName returns the name of the first running broker pod, or ""
-// if none is found.
-func brokerPodName(ctx context.Context) string {
-	out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", controlPlaneNamespace,
-		"get", "pods", "-l", "app.kubernetes.io/component=broker",
-		"-o", "jsonpath={.items[0].metadata.name}"))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(out)
-}
-
-// brokerMetricGauge scrapes the broker's /metrics endpoint (plain HTTP on
-// the probe port :8081) via kubectl port-forward to the broker pod, and
-// returns the current sum of all time-series matching the given metric name.
-// Returns 0 on any error.
-//
-// The probe port (8081) is not exposed via a Kubernetes Service — only the
-// TLS API port (8443) is. We port-forward directly to the pod.
-func brokerMetricGauge(ctx context.Context, metricName string) float64 {
-	pod := brokerPodName(ctx)
-	if pod == "" {
-		GinkgoWriter.Printf("brokerMetricGauge: no broker pod found\n")
-		return 0
-	}
-
-	const localPort = "19081"
-
-	pfCtx, pfCancel := context.WithCancel(ctx)
-	defer pfCancel()
-
-	pfCmd := exec.CommandContext(pfCtx, "kubectl", "-n", controlPlaneNamespace,
-		"port-forward", "pod/"+pod, localPort+":8081")
-	if err := pfCmd.Start(); err != nil {
-		GinkgoWriter.Printf("brokerMetricGauge: port-forward start: %v\n", err)
-		return 0
-	}
-	// Give port-forward time to establish.
-	time.Sleep(500 * time.Millisecond)
-
-	resp, err := http.Get("http://127.0.0.1:" + localPort + "/metrics") //nolint:noctx
-	if err != nil {
-		GinkgoWriter.Printf("brokerMetricGauge: GET /metrics: %v\n", err)
-		return 0
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-
-	var total float64
-	scanner := bufio.NewScanner(bytes.NewReader(body))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
-		if !strings.HasPrefix(line, metricName) {
-			continue
-		}
-		// line: metricName{...} <value> [timestamp]
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
-			continue
-		}
-		val, parseErr := strconv.ParseFloat(parts[len(parts)-1], 64)
-		if parseErr != nil {
-			continue
-		}
-		total += val
-	}
-	return total
-}
-
-// probeBrokerReadyz port-forwards the broker probe port (:8081) on the
-// broker pod and GETs /readyz. Returns the HTTP status code and any
-// network/transport error.
-func probeBrokerReadyz(ctx context.Context) (int, error) {
-	pod := brokerPodName(ctx)
-	if pod == "" {
-		return 0, fmt.Errorf("no broker pod found")
-	}
-
-	const localPort = "19081"
-
-	pfCtx, pfCancel := context.WithCancel(ctx)
-	defer pfCancel()
-
-	pfCmd := exec.CommandContext(pfCtx, "kubectl", "-n", controlPlaneNamespace,
-		"port-forward", "pod/"+pod, localPort+":8081")
-	if err := pfCmd.Start(); err != nil {
-		return 0, fmt.Errorf("port-forward start: %w", err)
-	}
-	time.Sleep(300 * time.Millisecond)
-
-	resp, err := http.Get("http://127.0.0.1:" + localPort + "/readyz") //nolint:noctx
-	if err != nil {
-		return 0, err
-	}
-	_ = resp.Body.Close()
-	return resp.StatusCode, nil
-}
-
-// tlsSkipVerify returns a tls.Config that skips certificate verification.
-// For use in e2e only — the broker uses a cert-manager-issued cert that
-// is self-signed in the Kind cluster and not trusted by the test runner's
-// CA pool.
-func tlsSkipVerify() *tls.Config {
-	return &tls.Config{InsecureSkipVerify: true} //nolint:gosec
-}
-
-// brokerRolloutRestart issues `kubectl rollout restart` on the broker
-// Deployment and returns after the new pod is fully serving.
-func brokerRolloutRestart(ctx context.Context) error {
-	if _, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", controlPlaneNamespace,
-		"rollout", "restart", "deploy/"+v3BrokerDeploy)); err != nil {
-		return fmt.Errorf("rollout restart: %w", err)
-	}
-	if _, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", controlPlaneNamespace,
-		"rollout", "status", "deploy/"+v3BrokerDeploy, "--timeout=120s")); err != nil {
-		return fmt.Errorf("rollout status: %w", err)
-	}
-	return nil
 }
 
 // runHasWarningEvent returns true if any Kubernetes Event in the namespace

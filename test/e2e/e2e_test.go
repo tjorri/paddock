@@ -562,9 +562,8 @@ spec:
 `, v3BrokerDownNamespace, v3BrokerDownTemplate, v3BrokerDownSecretName))
 
 			By("scaling the broker Deployment to 0 before submitting the run")
-			_, err = utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-				"scale", "deploy", v3BrokerDeploy, "--replicas=0"))
-			Expect(err).NotTo(HaveOccurred())
+			broker := framework.GetBroker(context.Background())
+			broker.ScaleTo(context.Background(), 0)
 			// Wait until every broker Pod is gone — not just NotReady —
 			// so kube-proxy has pulled the Endpoints entries and the
 			// reconciler's first Issue RPC can't slip through against a
@@ -582,10 +581,10 @@ spec:
 			// DeferCleanup runs after the It completes (success, Fail,
 			// or panic) and integrates with Ginkgo's reporter, unlike
 			// defer which silently logs on a writer that a SIGKILL
-			// could truncate. restoreBroker asserts loudly — a visible
+			// could truncate. RestoreOnTeardown asserts loudly — a visible
 			// red here beats a broken broker cascading into Scenario C
 			// and being mis-attributed as a Scenario C flake.
-			DeferCleanup(restoreBroker)
+			broker.RestoreOnTeardown()
 
 			By("submitting a HarnessRun and expecting Pending/BrokerUnavailable")
 			framework.ApplyYAML(fmt.Sprintf(`
@@ -618,7 +617,8 @@ spec:
 			}, 90*time.Second, 3*time.Second).Should(Succeed())
 
 			By("re-scaling the broker to 1 and waiting for it to accept traffic")
-			restoreBroker()
+			broker.ScaleTo(context.Background(), 1)
+			broker.WaitReady(context.Background())
 
 			By("expecting the run to reach Succeeded once the broker is back")
 			Eventually(func(g Gomega) {
@@ -634,7 +634,7 @@ spec:
 	Context("v0.3 BrokerPolicy deleted mid-run", func() {
 		It("keeps blocking new upstream connections after the policy is deleted", func() {
 			By("confirming Scenario B left the broker serving (pre-check)")
-			requireBrokerHealthy()
+			framework.GetBroker(context.Background()).RequireHealthy(context.Background())
 
 			By("creating the policy-delete-scenario namespace")
 			_, err := utils.Run(exec.Command("kubectl", "create", "ns", v3PolicyDelNamespace))
@@ -741,48 +741,3 @@ spec:
 		})
 	})
 })
-
-// restoreBroker re-scales the paddock-broker Deployment to 1, waits
-// for the rollout, and probes its Endpoints until it's actually
-// serving traffic. Idempotent — safe to call from the scenario body
-// AND from DeferCleanup.
-//
-// All failures are reported with Ginkgo's Fail so restoration problems
-// surface as a clean red instead of silently poisoning the next
-// scenario (the Ordered Describe shares broker state across all specs).
-// The Endpoints probe is symmetric with the pre-check that waits for
-// the pods to disappear during scale-to-zero.
-func restoreBroker() {
-	if _, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-		"scale", "deploy", v3BrokerDeploy, "--replicas=1")); err != nil {
-		Fail(fmt.Sprintf("restoreBroker: scale --replicas=1 failed: %v", err))
-	}
-	if _, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-		"rollout", "status", "deploy/"+v3BrokerDeploy, "--timeout=120s")); err != nil {
-		Fail(fmt.Sprintf("restoreBroker: rollout status failed: %v", err))
-	}
-	Eventually(func(g Gomega) {
-		addrs, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-			"get", "endpoints", v3BrokerDeploy,
-			"-o", "jsonpath={.subsets[*].addresses[*].ip}"))
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(addrs)).NotTo(BeEmpty(),
-			"broker Endpoints has no ready addresses: %q", strings.TrimSpace(addrs))
-	}, 30*time.Second, 2*time.Second).Should(Succeed(),
-		"restoreBroker: broker Endpoints never populated after scale-up")
-}
-
-// requireBrokerHealthy is a cheap pre-check for scenarios that follow
-// Scenario B in the Ordered Describe — if Scenario B's restoreBroker
-// regressed, we want the failure attributed to this assertion rather
-// than masqueraded as a Scenario C flake.
-func requireBrokerHealthy() {
-	EventuallyWithOffset(1, func(g Gomega) {
-		addrs, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-			"get", "endpoints", v3BrokerDeploy,
-			"-o", "jsonpath={.subsets[*].addresses[*].ip}"))
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(addrs)).NotTo(BeEmpty(),
-			"broker Endpoints empty — did Scenario B's restoreBroker misfire?")
-	}, 30*time.Second, 2*time.Second).Should(Succeed())
-}

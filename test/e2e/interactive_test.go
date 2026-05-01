@@ -37,11 +37,9 @@ package e2e
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -145,7 +143,7 @@ spec:
 		// Broker SA-token + port-forward. Both shared by every It in
 		// this Describe.
 		token = createBrokerToken(ctx, interactiveNS, interactiveSA)
-		brokerPort, stopForward = startBrokerPortForward(ctx)
+		brokerPort, stopForward = framework.GetBroker(ctx).PortForward(ctx)
 	})
 
 	AfterAll(func() {
@@ -209,13 +207,14 @@ spec:
 			}
 			req.Header.Set("Authorization", "Bearer "+token)
 			req.Header.Set("Content-Type", "application/json")
-			resp, err := brokerHTTPClient().Do(req)
+			resp, err := framework.GetBroker(ctx).HTTPClient().Do(req)
 			if err != nil {
 				fmt.Fprintf(GinkgoWriter, "  [/prompts attempt %d] Do err: %v\n", attempt, err)
 				return 0
 			}
 			lastStatus = resp.StatusCode
-			lastBody = readBody(resp)
+			bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			lastBody = string(bodyBytes)
 			_ = resp.Body.Close()
 			fmt.Fprintf(GinkgoWriter, "  [/prompts attempt %d] status=%d body=%s\n",
 				attempt, lastStatus, lastBody)
@@ -302,7 +301,7 @@ spec:
 		defer cancelDial()
 		conn, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
 			Subprotocols: []string{"paddock.shell.v1"},
-			HTTPClient:   brokerHTTPClient(),
+			HTTPClient:   framework.GetBroker(ctx).HTTPClient(),
 			HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + token}},
 		})
 		Expect(err).NotTo(HaveOccurred(), "dial /shell")
@@ -345,78 +344,4 @@ func createBrokerToken(ctx context.Context, namespace, sa string) string {
 		"--duration=10m"))
 	Expect(err).NotTo(HaveOccurred(), "kubectl create token: %s", out)
 	return strings.TrimSpace(out)
-}
-
-// startBrokerPortForward opens `kubectl port-forward` from a random
-// local TCP port to the broker Service's :8443. Returns the local port
-// and a stop closure that kills the subprocess (idempotent).
-//
-// A small race exists between picking the port (Listen-then-Close) and
-// kubectl rebinding it; the readiness probe loop absorbs that under the
-// 30s budget. Stable enough for e2e — ports never collide with another
-// suite Describe because every Describe runs in series.
-func startBrokerPortForward(ctx context.Context) (int, func()) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	Expect(err).NotTo(HaveOccurred(), "pick free port")
-	port := ln.Addr().(*net.TCPAddr).Port
-	Expect(ln.Close()).To(Succeed())
-
-	// IMPORTANT: do NOT bind the kubectl subprocess to the caller's
-	// ctx — BeforeAll's `defer cancel()` would otherwise terminate
-	// port-forward as soon as BeforeAll returns, and subsequent Its
-	// would see "connection refused" on dial. The explicit stop()
-	// closure (registered via DeferCleanup in BeforeAll) is the
-	// authoritative lifecycle control.
-	cmd := exec.Command("kubectl", "-n", "paddock-system",
-		"port-forward", "svc/paddock-broker",
-		fmt.Sprintf("%d:8443", port))
-	cmd.Stdout = GinkgoWriter
-	cmd.Stderr = GinkgoWriter
-	Expect(cmd.Start()).To(Succeed(), "kubectl port-forward")
-
-	stop := func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		_ = cmd.Wait()
-	}
-
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		d := net.Dialer{Timeout: 500 * time.Millisecond}
-		c, dErr := d.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
-		if dErr == nil {
-			_ = c.Close()
-			return port, stop
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	stop()
-	Fail(fmt.Sprintf("kubectl port-forward never became reachable on 127.0.0.1:%d", port))
-	return 0, nil
-}
-
-// brokerHTTPClient returns an HTTP client that trusts the broker's
-// cert-manager-issued cert via InsecureSkipVerify. Strict TLS-chain
-// verification would require fetching the broker's CA out of the
-// in-cluster Secret and pinning it; for e2e application-logic coverage,
-// skipping verification is fine — this is a black-box probe of the
-// handler, not of the TLS chain.
-func brokerHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // see comment above
-		},
-	}
-}
-
-// readBody drains up to 4 KiB of an http.Response body for inclusion in
-// failure messages. Closing the body is the caller's responsibility.
-func readBody(r *http.Response) string {
-	if r == nil || r.Body == nil {
-		return ""
-	}
-	b, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
-	return string(b)
 }
