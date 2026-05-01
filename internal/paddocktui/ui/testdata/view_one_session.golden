@@ -1,0 +1,6 @@
+ paddock-tui                                                        ns: default          
+  Sessions (1)              │ alpha ·                                                    
+  · alpha                   │ > _                                                        
+   [+ new session]          │                                                            
+  Active: 0                 │                                                            
+ Enter submit · Esc unfocus · Ctrl-X cancel run · Ctrl-C quit · :help                    
