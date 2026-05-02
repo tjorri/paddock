@@ -93,7 +93,7 @@ func (b *TemplateBuilder) Apply(ctx context.Context) (ns, name string) {
 type PolicyBuilder struct {
 	ns, name, template string
 	credentialGrants   []credentialGrant
-	interactTarget     string
+	interact           bool
 	shellTarget        string
 	shellCommand       []string
 }
@@ -118,8 +118,8 @@ func (p *PolicyBuilder) GrantCredentialFromSecret(name, secret, key, deliveryMod
 	return p
 }
 
-func (p *PolicyBuilder) GrantInteract(target string) *PolicyBuilder {
-	p.interactTarget = target
+func (p *PolicyBuilder) GrantInteract() *PolicyBuilder {
+	p.interact = true
 	return p
 }
 
@@ -149,21 +149,23 @@ func (p *PolicyBuilder) BuildYAML() string {
 			fmt.Fprintf(&sb, "              reason: %q\n", g.reason)
 		}
 	}
-	if p.interactTarget != "" || p.shellTarget != "" {
+	if p.interact || p.shellTarget != "" {
 		sb.WriteString("    runs:\n")
-		if p.interactTarget != "" {
-			fmt.Fprintf(&sb, "      interact:\n        target: %s\n", p.interactTarget)
+		if p.interact {
+			sb.WriteString("      interact: true\n")
 		}
 		if p.shellTarget != "" {
 			fmt.Fprintf(&sb, "      shell:\n        target: %s\n", p.shellTarget)
-			fmt.Fprintf(&sb, "        command: [")
-			for i, c := range p.shellCommand {
-				if i > 0 {
-					sb.WriteString(", ")
+			if len(p.shellCommand) > 0 {
+				fmt.Fprintf(&sb, "        command: [")
+				for i, c := range p.shellCommand {
+					if i > 0 {
+						sb.WriteString(", ")
+					}
+					fmt.Fprintf(&sb, "%q", c)
 				}
-				fmt.Fprintf(&sb, "%q", c)
+				sb.WriteString("]\n")
 			}
-			sb.WriteString("]\n")
 		}
 	}
 	return sb.String()

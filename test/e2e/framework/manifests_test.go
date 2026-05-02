@@ -91,11 +91,23 @@ func TestPolicyBuilder_GrantCredentialFromSecret(t *testing.T) {
 
 func TestPolicyBuilder_GrantInteract(t *testing.T) {
 	yamlStr := NewBrokerPolicy("paddock-x", "allow-interact", "echo").
-		GrantInteract("agent").
+		GrantInteract().
 		BuildYAML()
 
-	if !strings.Contains(yamlStr, "runs:\n      interact:") || !strings.Contains(yamlStr, "target: agent") {
+	if !strings.Contains(yamlStr, "interact: true") {
 		t.Fatalf("interact grant missing:\n%s", yamlStr)
+	}
+
+	var parsed map[string]any
+	if err := yaml.Unmarshal([]byte(yamlStr), &parsed); err != nil {
+		t.Fatalf("BuildYAML produced invalid YAML: %v\n%s", err, yamlStr)
+	}
+	spec := parsed["spec"].(map[string]any)
+	grants := spec["grants"].(map[string]any)
+	runs := grants["runs"].(map[string]any)
+	if runs["interact"] != true {
+		t.Fatalf("expected runs.interact == true (bool), got %#v\n%s",
+			runs["interact"], yamlStr)
 	}
 }
 
