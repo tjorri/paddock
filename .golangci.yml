@@ -131,6 +131,19 @@ linters:
           - noctx
         text: "G204|os/exec.Command"
         path: cmd/adapter-claude-code/.*
+      # gosec G204 / noctx: harness-supervisor spawns the harness CLI
+      # whose path comes from the PADDOCK_HARNESS_BIN env var
+      # (controller-set on the agent container's Pod spec). Not user
+      # input. The subprocess lifetime is owned by ctl messages
+      # (interrupt/end), not an HTTP request context — same rationale
+      # as adapter-claude-code. noctx also fires on net.Listen for the
+      # UDS sockets and net.Dial in tests; the supervisor's listener
+      # lifecycle is owned by the run, not an HTTP context.
+      - linters:
+          - gosec
+          - noctx
+        text: "G204|os/exec.Command|net\\.Listen|net\\.Dial"
+        path: cmd/harness-supervisor/.*
       # gosec G703: per-prompt driver writes prompt files and events.jsonl
       # under <PADDOCK_WORKSPACE>/.paddock/runs/<run>/. Both env vars are
       # controller-set on the agent container's Pod spec (trusted control
