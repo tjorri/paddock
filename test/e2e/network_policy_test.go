@@ -20,7 +20,6 @@ limitations under the License.
 package e2e
 
 import (
-	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -85,7 +84,7 @@ var _ = Describe("cilium-aware network policy", Ordered, func() {
 			templateName, "--ignore-not-found"))
 	})
 
-	It("emits a CiliumNetworkPolicy with loopback-allow and toEntities for the apiserver", func() {
+	It("emits a CiliumNetworkPolicy with loopback-allow and toEntities for the apiserver", func(ctx SpecContext) {
 		By("creating the credential Secret")
 		_, err := utils.Run(exec.Command("kubectl", "-n", ns,
 			"create", "secret", "generic", credSecretName,
@@ -97,6 +96,8 @@ var _ = Describe("cilium-aware network policy", Ordered, func() {
 		// requires.egress (example.com:443) just gives the controller
 		// something to render into the per-run policy without taking a
 		// dependency on a real public destination.
+		// ClusterHarnessTemplate + requires.egress are not expressible
+		// via TemplateBuilder; keep raw YAML.
 		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: ClusterHarnessTemplate
@@ -122,6 +123,8 @@ spec:
 `, templateName, echoImage, adapterEchoImage))
 
 		By("applying a BrokerPolicy granting the credential + egress")
+		// BrokerPolicy egress grants are not expressible via PolicyBuilder;
+		// keep raw YAML.
 		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
@@ -148,30 +151,14 @@ spec:
 `, brokerPolicyName, ns, templateName, credSecretName))
 
 		By("submitting the HarnessRun")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: ClusterHarnessTemplate
-  prompt: "hello cilium-compat e2e"
-`, runName, ns, templateName))
+		run := framework.NewRun(ns, templateName).
+			WithName(runName).
+			WithPrompt("hello cilium-compat e2e").
+			WithClusterScopedTemplate().
+			Submit(ctx)
 
 		By("waiting for phase=Succeeded")
-		var status framework.HarnessRunStatus
-		Eventually(func(g Gomega) {
-			out, err := utils.Run(exec.Command("kubectl", "-n", ns,
-				"get", "harnessrun", runName, "-o", "jsonpath={.status}"))
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).NotTo(BeEmpty())
-			g.Expect(json.Unmarshal([]byte(out), &status)).To(Succeed())
-			g.Expect(status.Phase).To(Equal("Succeeded"),
-				"run still in phase %q", status.Phase)
-		}, 3*time.Minute, 3*time.Second).Should(Succeed())
+		run.WaitForPhase(ctx, "Succeeded", 3*time.Minute)
 
 		By("asserting the per-run CiliumNetworkPolicy was emitted")
 		// CNP CRDs are present on the test cluster (BeforeAll skipped
