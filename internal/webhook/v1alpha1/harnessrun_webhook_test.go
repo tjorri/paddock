@@ -703,6 +703,116 @@ func TestValidateAgainstTemplate_InteractiveAdmission(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Standard-library unit tests for the
+// paddock.dev/adapter-interactive-modes annotation gate (Task 8)
+// ---------------------------------------------------------------------------
+
+// adapterInteractiveModesAnnotationKey mirrors the literal used in the
+// webhook implementation; the tests assert against the same string.
+const adapterInteractiveModesAnnotationKey = "paddock.dev/adapter-interactive-modes"
+
+// interactiveModeAnnotationFixture builds a HarnessTemplate +
+// BrokerPolicy (granting runs.interact) pair plus an Interactive
+// HarnessRun. The annotation, if non-empty, is set on the template.
+func interactiveModeAnnotationFixture(ns, mode, annotation string) (*paddockv1alpha1.HarnessTemplate, *paddockv1alpha1.BrokerPolicy, *paddockv1alpha1.HarnessRun) {
+	tplMeta := metav1.ObjectMeta{Name: "interactive-tpl", Namespace: ns}
+	if annotation != "" {
+		tplMeta.Annotations = map[string]string{
+			adapterInteractiveModesAnnotationKey: annotation,
+		}
+	}
+	tpl := &paddockv1alpha1.HarnessTemplate{
+		ObjectMeta: tplMeta,
+		Spec: paddockv1alpha1.HarnessTemplateSpec{
+			Harness: "echo", Image: "img", Command: []string{"/bin/echo"},
+			Interactive: &paddockv1alpha1.InteractiveSpec{Mode: mode},
+		},
+	}
+	bp := &paddockv1alpha1.BrokerPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "bp", Namespace: ns},
+		Spec: paddockv1alpha1.BrokerPolicySpec{
+			AppliesToTemplates: []string{"*"},
+			Grants: paddockv1alpha1.BrokerPolicyGrants{
+				Runs: &paddockv1alpha1.GrantRunsCapabilities{Interact: true},
+			},
+		},
+	}
+	run := &paddockv1alpha1.HarnessRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "irun", Namespace: ns},
+		Spec: paddockv1alpha1.HarnessRunSpec{
+			TemplateRef: paddockv1alpha1.TemplateRef{Name: "interactive-tpl"},
+			Prompt:      "hello",
+			Mode:        paddockv1alpha1.HarnessRunModeInteractive,
+		},
+	}
+	return tpl, bp, run
+}
+
+func newSchemeForAnnotationTests(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := paddockv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	return s
+}
+
+// TestValidateRun_InteractiveMode_AnnotationMismatch — the template
+// annotation only declares "per-prompt-process" but the template's
+// spec.interactive.mode is "persistent-process" → admission must
+// reject with an error mentioning the offending mode and the
+// annotation contents.
+func TestValidateRun_InteractiveMode_AnnotationMismatch(t *testing.T) {
+	s := newSchemeForAnnotationTests(t)
+	ns := "interactive-mode-annotation-mismatch"
+	tpl, bp, run := interactiveModeAnnotationFixture(ns, "persistent-process", "per-prompt-process")
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tpl, bp).Build()
+	v := &HarnessRunCustomValidator{Client: c}
+
+	_, err := v.ValidateCreate(context.Background(), run)
+	if err == nil {
+		t.Fatal("expected rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), "persistent-process") {
+		t.Errorf("error = %q, want it to mention 'persistent-process'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "per-prompt-process") {
+		t.Errorf("error = %q, want it to mention the annotation contents 'per-prompt-process'", err.Error())
+	}
+}
+
+// TestValidateRun_InteractiveMode_AnnotationMatch — the template
+// annotation lists both modes (with surrounding whitespace to exercise
+// the trim) and the template requests "persistent-process" → admit.
+func TestValidateRun_InteractiveMode_AnnotationMatch(t *testing.T) {
+	s := newSchemeForAnnotationTests(t)
+	ns := "interactive-mode-annotation-match"
+	tpl, bp, run := interactiveModeAnnotationFixture(ns, "persistent-process", "per-prompt-process, persistent-process")
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tpl, bp).Build()
+	v := &HarnessRunCustomValidator{Client: c}
+
+	if _, err := v.ValidateCreate(context.Background(), run); err != nil {
+		t.Fatalf("expected admission, got: %v", err)
+	}
+}
+
+// TestValidateRun_InteractiveMode_AnnotationAbsent_AllowedAsSoftWarning
+// — no annotation on the template; admission must not reject for
+// backwards compatibility (the runtime supervisor remains the
+// load-bearing enforcement).
+func TestValidateRun_InteractiveMode_AnnotationAbsent_AllowedAsSoftWarning(t *testing.T) {
+	s := newSchemeForAnnotationTests(t)
+	ns := "interactive-mode-annotation-absent"
+	tpl, bp, run := interactiveModeAnnotationFixture(ns, "persistent-process", "")
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tpl, bp).Build()
+	v := &HarnessRunCustomValidator{Client: c}
+
+	if _, err := v.ValidateCreate(context.Background(), run); err != nil {
+		t.Fatalf("expected admission (annotation absent → soft warning), got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Standard-library unit tests for audit emission (F-32)
 // ---------------------------------------------------------------------------
 
