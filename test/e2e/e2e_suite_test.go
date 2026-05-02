@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -72,7 +73,7 @@ func TestE2E(t *testing.T) {
 	RunSpecs(t, "paddock e2e suite")
 }
 
-var _ = BeforeSuite(func() {
+var _ = SynchronizedBeforeSuite(func() []byte {
 	// Builds run sequentially. An earlier attempt to fan out via
 	// goroutines was reverted: on a 2-vCPU CI runner, 9 concurrent
 	// Docker builds saturate the CPU and disk I/O, making the
@@ -138,9 +139,15 @@ var _ = BeforeSuite(func() {
 	// so the first ~hundreds of milliseconds of "Ready" still fail
 	// webhook calls with "connection refused". framework.ApplyYAML in
 	// the suite's Describes handles that race with a targeted retry loop.
+	return nil
+}, func(_ []byte) {
+	SetDefaultEventuallyTimeout(3 * time.Minute)
+	SetDefaultEventuallyPollingInterval(2 * time.Second)
 })
 
-var _ = AfterSuite(func() {
+var _ = SynchronizedAfterSuite(func() {
+	// Per-proc cleanup — none needed, all state is namespaced.
+}, func() {
 	// Drain every paddock custom resource cluster-wide BEFORE
 	// undeploying the controller. Per-Describe AfterAll cleanup is
 	// best-effort and has historically missed namespaces (e.g.
