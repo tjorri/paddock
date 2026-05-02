@@ -6,6 +6,7 @@ package framework
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/yaml"
 )
@@ -164,5 +165,67 @@ func TestWorkspaceBuilder_WithSeedRepos(t *testing.T) {
 	repos := seed["repos"].([]any)
 	if len(repos) != 2 {
 		t.Fatalf("expected 2 repos, got %d", len(repos))
+	}
+}
+
+func TestRunBuilder_BatchHarnessRun(t *testing.T) {
+	yamlStr := NewRun("paddock-echo", "echo").
+		WithName("echo-1").
+		WithPrompt("hello from paddock e2e").
+		BuildYAML()
+
+	for _, want := range []string{
+		"kind: HarnessRun",
+		"name: echo-1",
+		"namespace: paddock-echo",
+		"templateRef:",
+		"name: echo",
+		`prompt: "hello from paddock e2e"`,
+	} {
+		if !strings.Contains(yamlStr, want) {
+			t.Fatalf("run yaml missing %q\n%s", want, yamlStr)
+		}
+	}
+}
+
+func TestRunBuilder_InteractiveWithMaxLifetime(t *testing.T) {
+	yamlStr := NewRun("paddock-int", "echo").
+		WithName("int-1").
+		WithMode("Interactive").
+		WithMaxLifetime(60 * time.Second).
+		BuildYAML()
+
+	for _, want := range []string{
+		"mode: Interactive",
+		"maxLifetime: 1m0s",
+	} {
+		if !strings.Contains(yamlStr, want) {
+			t.Fatalf("run yaml missing %q\n%s", want, yamlStr)
+		}
+	}
+}
+
+func TestRunBuilder_WorkspaceRefIsPlainString(t *testing.T) {
+	yamlStr := NewRun("paddock-x", "echo").
+		WithName("run-1").
+		WithWorkspace("my-ws").
+		BuildYAML()
+
+	if !strings.Contains(yamlStr, "workspaceRef: my-ws") {
+		t.Fatalf("workspaceRef must be a plain string, got:\n%s", yamlStr)
+	}
+
+	var parsed map[string]any
+	if err := yaml.Unmarshal([]byte(yamlStr), &parsed); err != nil {
+		t.Fatalf("BuildYAML produced invalid YAML: %v\n%s", err, yamlStr)
+	}
+	spec := parsed["spec"].(map[string]any)
+	wref, ok := spec["workspaceRef"].(string)
+	if !ok {
+		t.Fatalf("expected spec.workspaceRef to be a string, got %T: %#v\n%s",
+			spec["workspaceRef"], spec["workspaceRef"], yamlStr)
+	}
+	if wref != "my-ws" {
+		t.Fatalf("expected workspaceRef==my-ws, got %q", wref)
 	}
 }
