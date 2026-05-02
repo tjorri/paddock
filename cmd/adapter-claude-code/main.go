@@ -70,7 +70,7 @@ func runInteractive(ctx context.Context, mode, eventsPath string) {
 		DataSocket: envOr("PADDOCK_AGENT_DATA_SOCKET", "/paddock/agent-data.sock"),
 		CtlSocket:  envOr("PADDOCK_AGENT_CTL_SOCKET", "/paddock/agent-ctl.sock"),
 		EventsPath: eventsPath,
-		Backoff:    proxy.BackoffConfig{Initial: 50 * time.Millisecond, Max: 1600 * time.Millisecond, Tries: 6},
+		Backoff:    proxy.BackoffConfig{Initial: 50 * time.Millisecond, Max: 1600 * time.Millisecond, Tries: 30},
 		Converter: func(line string) ([]paddockv1alpha1.PaddockEvent, error) {
 			return convertLine(line, time.Now().UTC())
 		},
