@@ -21,7 +21,6 @@ package e2e
 
 import (
 	"context"
-	"fmt"
 	"os/exec"
 	"strings"
 	"time"
@@ -42,21 +41,10 @@ var _ = Describe("admission webhook", func() {
 	It("rejects a Workspace seed with an unsupported URL scheme", func(ctx SpecContext) {
 		ns := framework.CreateTenantNamespace(ctx, admissionGitSchemeNS)
 		By("attempting to create a Workspace whose seed repo URL uses git://")
-		yaml := fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: Workspace
-metadata:
-  name: ws-bad-scheme
-  namespace: %s
-spec:
-  storage:
-    size: 100Mi
-  seed:
-    repos:
-      - url: git://github.com/foo/bar.git
-        path: foo
-        depth: 1
-`, ns)
+		yaml := framework.NewWorkspace(ns, "ws-bad-scheme").
+			WithStorage("100Mi").
+			WithSeedRepo("git://github.com/foo/bar.git", "foo", 1).
+			BuildYAML()
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(yaml)
 		out, err := cmd.CombinedOutput()
@@ -73,16 +61,9 @@ spec:
 
 		invalidName := "f32-invalid-spec"
 		By("submitting a HarnessRun with an invalid spec (no prompt or promptFrom)")
-		invalidManifest := fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: any
-`, invalidName, ns)
+		invalidManifest := framework.NewRun(ns, "any").
+			WithName(invalidName).
+			BuildYAML()
 
 		cmd := exec.CommandContext(tctx, "kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(invalidManifest)
