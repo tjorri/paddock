@@ -40,6 +40,8 @@ var (
 // sigs.k8s.io/controller-runtime/pkg/scheme.Builder, kept locally so the api
 // package depends only on k8s.io/apimachinery — the upstream type was
 // deprecated in controller-runtime v0.24 for that reason.
+//
+// +kubebuilder:object:generate=false
 type Builder struct {
 	GroupVersion schema.GroupVersion
 	runtime.SchemeBuilder
