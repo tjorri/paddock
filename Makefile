@@ -88,37 +88,33 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 	@CLUSTER_NAME=$(KIND_CLUSTER) hack/install-cilium.sh
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	@# Timeout budget, aligned with the 45-min CI workflow cap. Bumped
-	@# from 22m / 21m: a 16-min local run on a fast laptop left CI
-	@# (~1.5-2x slower) within minutes of the old cap, especially with
-	@# the new proxy-substitution spec.
-	@#   -timeout=32m       → Go's test binary deadline.
-	@#   -ginkgo.timeout=30m → Ginkgo fails the current spec + prints
-	@#                         the summary ~2 min before Go kills the
-	@#                         process, so CI logs always carry the
-	@#                         real failure reason (spec #24875514481
-	@#                         lost its summary to a Go-timeout panic).
+test-e2e: setup-test-e2e ginkgo manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+	@# Process-level parallelism comes from the ginkgo CLI (--procs=N
+	@# or -p for auto). go test exposes only ginkgo's per-worker flags
+	@# (parallel.process / parallel.total) which the ginkgo CLI sets
+	@# itself when fanning out workers — running through go test would
+	@# always be serial. The CLI is pinned via go.mod's ginkgo/v2
+	@# version and installed under bin/ by `make ginkgo`.
 	@#
-	@# GINKGO_PROCS controls Ginkgo's process-level parallelism. Default
-	@#               is auto (= GOMAXPROCS-1). Set GINKGO_PROCS=1 to
-	@#               force serial execution — the always-available
-	@#               debugging fallback.
+	@# Timeout: 30m matches the per-spec budget; the CI workflow caps
+	@#          the job at 45m for headroom around build+deploy.
+	@# GINKGO_PROCS controls process-level parallelism. Default is -p
+	@#               (= GOMAXPROCS-1). Set GINKGO_PROCS=1 to force
+	@#               serial execution — the always-available debugging
+	@#               fallback.
 	@# LABELS filters specs by Ginkgo Label, e.g. LABELS=smoke for the
 	@#               happy-path specs, LABELS=broker, LABELS=hostile,
 	@#               LABELS=interactive.
 	@# FAIL_FAST=1 → opt-in fast iteration: stop on the first failing
-	@#               spec instead of running them all. Default off in CI
-	@#               so a single PR with two unrelated regressions
-	@#               surfaces both in one round-trip.
+	@#               spec instead of running them all.
 	@# KEEP_CLUSTER=1 → skip cluster teardown so a subsequent run
 	@#                  reuses it; pair with KEEP_E2E_RUN=1 for full
 	@#                  tenant-state retention.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e -timeout=32m \
-		./test/e2e/ -v -ginkgo.v -ginkgo.timeout=30m \
-		$(if $(GINKGO_PROCS),-ginkgo.procs=$(GINKGO_PROCS),-ginkgo.procs=auto) \
-		$(if $(LABELS),-ginkgo.label-filter=$(LABELS),) \
-		$(if $(FAIL_FAST),-ginkgo.fail-fast,)
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) "$(GINKGO)" -tags=e2e -v --timeout=30m \
+		$(if $(GINKGO_PROCS),--procs=$(GINKGO_PROCS),-p) \
+		$(if $(LABELS),--label-filter=$(LABELS),) \
+		$(if $(FAIL_FAST),--fail-fast,) \
+		./test/e2e/
 	$(if $(KEEP_CLUSTER),@echo "KEEP_CLUSTER=1: leaving Kind cluster intact",$(MAKE) cleanup-test-e2e)
 
 .PHONY: cleanup-test-e2e
@@ -428,6 +424,8 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GINKGO ?= $(LOCALBIN)/ginkgo
+GINKGO_VERSION ?= $(call gomodver,github.com/onsi/ginkgo/v2)
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
@@ -471,6 +469,11 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: ginkgo
+ginkgo: $(GINKGO) ## Download ginkgo CLI locally if necessary; pinned to go.mod's ginkgo/v2.
+$(GINKGO): $(LOCALBIN)
+	$(call go-install-tool,$(GINKGO),github.com/onsi/ginkgo/v2/ginkgo,$(GINKGO_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
