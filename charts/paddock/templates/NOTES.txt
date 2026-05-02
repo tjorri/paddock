@@ -1,29 +1,17 @@
 
 Paddock {{ .Chart.AppVersion }} installed into namespace {{ .Release.Namespace }}.
 
-Verify the controller rolled out:
+Verify the controller and broker rolled out (skip if you used `helm install --wait`):
 
   kubectl -n {{ .Release.Namespace }} rollout status deploy/paddock-controller-manager
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/paddock-broker
 
-Apply the reference echo template + run:
+For the canonical end-to-end walkthrough — local Kind cluster, both
+reference harnesses, BrokerPolicy setup, and the observability surface
+— see the quickstart:
 
-  kubectl apply -f https://raw.githubusercontent.com/tjorri/paddock/main/config/samples/paddock_v1alpha1_clusterharnesstemplate.yaml
-  kubectl create ns paddock-demo
-  cat <<EOF | kubectl apply -n paddock-demo -f -
-  apiVersion: paddock.dev/v1alpha1
-  kind: HarnessRun
-  metadata:
-    name: hello
-  spec:
-    templateRef:
-      name: echo-default
-      kind: ClusterHarnessTemplate
-    prompt: "hello paddock"
-  EOF
+  https://github.com/tjorri/paddock/blob/main/docs/getting-started/quickstart.md
 
-Watch it run:
-
-  kubectl paddock events hello -n paddock-demo -f
-  kubectl paddock status hello -n paddock-demo
-
-Full docs: https://github.com/tjorri/paddock
+The CLI plugin (`kubectl paddock`) is built from this repo via `make cli`
+and gives you `submit`, `status`, `events`, `logs`, `audit`, and
+`policy` subcommands. See `kubectl paddock --help` once it's on PATH.
