@@ -50,16 +50,15 @@ import (
 // Skips cleanly when the target cluster has no Cilium installation
 // (e.g. a stock kindnet cluster), so `go test -run` outside the
 // paddock-test-e2e cluster doesn't false-fail.
-var _ = Describe("cilium-aware network policy", Ordered, Serial, func() {
+var _ = Describe("cilium-aware network policy", Ordered, func() {
 	const (
-		ns               = "cilium-compat-e2e"
 		runName          = "compat-demo"
-		templateName     = "cilium-compat-echo"
 		brokerPolicyName = "cilium-compat-allow"
 		credSecretName   = "cilium-compat-cred"
 	)
+	var ns, templateName string
 
-	BeforeAll(func() {
+	BeforeAll(func(ctx SpecContext) {
 		// Skip if Cilium isn't installed. The cilium-config ConfigMap
 		// is created by every Cilium install (helm chart, cilium-cli,
 		// the kind-up.sh path) and its absence is a reliable signal
@@ -71,15 +70,13 @@ var _ = Describe("cilium-aware network policy", Ordered, Serial, func() {
 				"(run on a Cilium-enabled Kind cluster, e.g. via make setup-test-e2e)")
 		}
 
-		By("creating the cilium-compat namespace")
-		_, err = utils.Run(exec.Command("kubectl", "create", "ns", ns))
-		Expect(err).NotTo(HaveOccurred())
+		ns = framework.CreateTenantNamespace(ctx, "cilium-compat-e2e")
+		templateName = framework.ClusterScopedName("cilium-compat-echo")
 	})
 
 	AfterAll(func() {
-		// Best-effort teardown — the suite-level AfterSuite drains any
-		// surviving paddock CRs cluster-wide before `make undeploy`.
-		_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", ns, "--wait=false"))
+		// Best-effort teardown of the cluster-scoped template.
+		// Namespace cleanup is handled by CreateTenantNamespace's DeferCleanup.
 		_, _ = utils.Run(exec.Command("kubectl", "delete", "clusterharnesstemplate",
 			templateName, "--ignore-not-found"))
 	})
