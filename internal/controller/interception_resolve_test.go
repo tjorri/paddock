@@ -26,8 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/policy"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/policy"
 )
 
 func newControllerTestScheme(t *testing.T) *runtime.Scheme {

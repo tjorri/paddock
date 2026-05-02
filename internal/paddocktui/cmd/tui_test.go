@@ -19,7 +19,7 @@ package cmd
 import (
 	"testing"
 
-	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
+	paddockbroker "github.com/tjorri/paddock/internal/paddocktui/broker"
 )
 
 // TestBrokerOptsToOptions verifies that flag values are mapped correctly

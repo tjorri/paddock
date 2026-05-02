@@ -19,7 +19,7 @@ package ui
 import (
 	"fmt"
 
-	"paddock.dev/paddock/internal/paddocktui/app"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
 )
 
 func EndSessionModalView(s *app.EndSessionModalState) string {

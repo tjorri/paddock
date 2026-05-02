@@ -29,8 +29,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"paddock.dev/paddock/test/e2e/framework"
-	"paddock.dev/paddock/test/utils"
+	"github.com/tjorri/paddock/test/e2e/framework"
+	"github.com/tjorri/paddock/test/utils"
 )
 
 const (

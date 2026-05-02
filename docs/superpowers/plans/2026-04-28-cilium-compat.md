@@ -1065,7 +1065,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // CiliumNetworkPolicyGVK is the GroupVersionKind for cilium.io/v2
@@ -2482,7 +2482,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"paddock.dev/paddock/test/utils"
+	"github.com/tjorri/paddock/test/utils"
 )
 
 const ciliumCompatNamespace = "cilium-compat-e2e"

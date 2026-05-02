@@ -24,11 +24,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
-	pdkevents "paddock.dev/paddock/internal/paddocktui/events"
-	pdkruns "paddock.dev/paddock/internal/paddocktui/runs"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	paddockbroker "github.com/tjorri/paddock/internal/paddocktui/broker"
+	pdkevents "github.com/tjorri/paddock/internal/paddocktui/events"
+	pdkruns "github.com/tjorri/paddock/internal/paddocktui/runs"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 // loadSessionsCmd performs an initial List for the sidebar.

@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"paddock.dev/paddock/internal/paddocktui/app"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
 )
 
 func TestPaletteView_Closed(t *testing.T) {

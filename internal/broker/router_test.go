@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"paddock.dev/paddock/internal/broker"
+	"github.com/tjorri/paddock/internal/broker"
 )
 
 func TestInteractiveRouter_ForwardsToAdapter(t *testing.T) {

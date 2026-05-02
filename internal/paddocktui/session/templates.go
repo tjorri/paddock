@@ -23,7 +23,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // TemplateInfo is a flattened view of a HarnessTemplate suited for the

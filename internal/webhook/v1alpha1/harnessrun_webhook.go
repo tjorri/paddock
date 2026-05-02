@@ -31,9 +31,9 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/auditing"
-	"paddock.dev/paddock/internal/policy"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/auditing"
+	"github.com/tjorri/paddock/internal/policy"
 )
 
 var harnessrunlog = logf.Log.WithName("harnessrun-resource")

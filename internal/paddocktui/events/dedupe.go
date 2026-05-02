@@ -24,7 +24,7 @@ import (
 	"encoding/hex"
 	"sort"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // Dedupe tracks seen events by content hash so the tail loop doesn't

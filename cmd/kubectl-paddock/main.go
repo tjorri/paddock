@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"os"
 
-	"paddock.dev/paddock/internal/cli"
+	"github.com/tjorri/paddock/internal/cli"
 )
 
 func main() {

@@ -29,9 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	brokerapi "paddock.dev/paddock/internal/broker/api"
-	"paddock.dev/paddock/internal/policy"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
+	"github.com/tjorri/paddock/internal/policy"
 )
 
 const userSuppliedBearerPrefix = "pdk-usersecret-"

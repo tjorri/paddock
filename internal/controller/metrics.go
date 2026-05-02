@@ -23,7 +23,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // Paddock-specific Prometheus metrics. controller-runtime already

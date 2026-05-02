@@ -27,7 +27,7 @@ package brokerclienttest
 import (
 	"net/http"
 
-	"paddock.dev/paddock/internal/brokerclient"
+	"github.com/tjorri/paddock/internal/brokerclient"
 )
 
 // NewUnchecked builds a brokerclient.Client that talks to httptest-

@@ -27,7 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // seedJobInputs bundles the broker/proxy plumbing a seed Pod needs

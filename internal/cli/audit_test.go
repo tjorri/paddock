@@ -26,7 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func auditAt(ts time.Time, kind paddockv1alpha1.AuditKind, decision paddockv1alpha1.AuditDecision, name string, runName string, dest *paddockv1alpha1.AuditDestination, cred *paddockv1alpha1.AuditCredentialRef) *paddockv1alpha1.AuditEvent {

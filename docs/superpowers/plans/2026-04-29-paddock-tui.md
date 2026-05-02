@@ -4,9 +4,9 @@
 
 **Goal:** Build `paddock-tui`, a self-contained client binary that gives users a Bubble Tea–based interactive multi-session TUI on top of Paddock's existing `Workspace`, `HarnessRun`, and `PaddockEvent` surface.
 
-**Architecture:** New code lives under `cmd/paddock-tui/` and `internal/paddocktui/` with a strict no-imports-from-paddock-internal rule (only `paddock.dev/paddock/api/v1alpha1` plus external libs). Sessions are long-lived `Workspaces` labeled `paddock.dev/session=true`; each user prompt becomes one `HarnessRun` against the session's `Workspace`; the TUI watches `Workspace` and `HarnessRun` resources, dedupes `PaddockEvents` from `HarnessRun.status.recentEvents`, and synthesizes per-run boundaries client-side. No CRD, controller, broker, or adapter changes.
+**Architecture:** New code lives under `cmd/paddock-tui/` and `internal/paddocktui/` with a strict no-imports-from-paddock-internal rule (only `github.com/tjorri/paddock/api/v1alpha1` plus external libs). Sessions are long-lived `Workspaces` labeled `paddock.dev/session=true`; each user prompt becomes one `HarnessRun` against the session's `Workspace`; the TUI watches `Workspace` and `HarnessRun` resources, dedupes `PaddockEvents` from `HarnessRun.status.recentEvents`, and synthesizes per-run boundaries client-side. No CRD, controller, broker, or adapter changes.
 
-**Tech Stack:** Go 1.26, `github.com/charmbracelet/bubbletea`, `github.com/charmbracelet/bubbles`, `github.com/charmbracelet/lipgloss`, `sigs.k8s.io/controller-runtime/pkg/client`, `k8s.io/cli-runtime/pkg/genericclioptions`, `paddock.dev/paddock/api/v1alpha1`. Tests use standard `testing` plus `sigs.k8s.io/controller-runtime/pkg/client/fake`.
+**Tech Stack:** Go 1.26, `github.com/charmbracelet/bubbletea`, `github.com/charmbracelet/bubbles`, `github.com/charmbracelet/lipgloss`, `sigs.k8s.io/controller-runtime/pkg/client`, `k8s.io/cli-runtime/pkg/genericclioptions`, `github.com/tjorri/paddock/api/v1alpha1`. Tests use standard `testing` plus `sigs.k8s.io/controller-runtime/pkg/client/fake`.
 
 **Spec:** `docs/superpowers/specs/2026-04-29-paddock-tui-design.md`.
 
@@ -66,7 +66,7 @@ Test files mirror their non-test counterpart with `_test.go` suffix.
 
 ## Coding conventions
 
-- **Imports.** `internal/paddocktui/...` may import `paddock.dev/paddock/api/v1alpha1` and external libraries only. Forbidden: `internal/cli/`, `internal/broker/`, `internal/controller/`, `internal/auditing/`, `internal/policy/`, `internal/proxy/`, `internal/webhook/`, `internal/brokerclient/`. If a piece of `internal/cli` logic is useful (e.g. event dedupe), copy it — don't import.
+- **Imports.** `internal/paddocktui/...` may import `github.com/tjorri/paddock/api/v1alpha1` and external libraries only. Forbidden: `internal/cli/`, `internal/broker/`, `internal/controller/`, `internal/auditing/`, `internal/policy/`, `internal/proxy/`, `internal/webhook/`, `internal/brokerclient/`. If a piece of `internal/cli` logic is useful (e.g. event dedupe), copy it — don't import.
 - **License header.** Every new `.go` file gets the project's standard 2026 Apache-2.0 header (copy from `cmd/kubectl-paddock/main.go:1-15`).
 - **Tests.** Standard `testing.T` table tests. Use `sigs.k8s.io/controller-runtime/pkg/client/fake` for Kubernetes interactions. No Ginkgo in this package — match the `internal/cli/*_test.go` style. Use `t.Helper()` in shared helpers.
 - **Commits.** Conventional Commits with `paddock-tui` scope: `feat(paddock-tui): ...`, `test(paddock-tui): ...`, `chore(paddock-tui): ...`. After every successful task, commit before moving on.
@@ -207,7 +207,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 var scheme = runtime.NewScheme()
@@ -317,7 +317,7 @@ import (
 	"fmt"
 	"os"
 
-	"paddock.dev/paddock/internal/paddocktui/cmd"
+	"github.com/tjorri/paddock/internal/paddocktui/cmd"
 )
 
 func main() {
@@ -384,7 +384,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestIsSession(t *testing.T) {
@@ -475,7 +475,7 @@ You may obtain a copy of the License at
 package session
 
 import (
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 const (
@@ -544,7 +544,7 @@ package session
 import (
 	"time"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // Session is a TUI-shaped projection of a labeled Workspace. It carries
@@ -630,7 +630,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -713,7 +713,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // List returns sessions in ns, filtered by SessionLabel and sorted by
@@ -787,7 +787,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestCreate_StampsLabelAndAnnotations(t *testing.T) {
@@ -897,7 +897,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // CreateOptions parameterises Create. Name is required; Namespace is
@@ -998,7 +998,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestEnd_DeletesLabeledWorkspace(t *testing.T) {
@@ -1056,7 +1056,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // End deletes a session-labeled Workspace. Refuses to delete a
@@ -1107,7 +1107,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestWatch_EmitsAddOnInitialList(t *testing.T) {
@@ -1274,7 +1274,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestListTemplates(t *testing.T) {
@@ -1330,7 +1330,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // TemplateInfo is a flattened view of a HarnessTemplate suited for the
@@ -1424,7 +1424,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -1499,7 +1499,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // CreateOptions parameterises Create.
@@ -1586,7 +1586,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestCancel(t *testing.T) {
@@ -1628,7 +1628,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // Cancel terminates an in-flight HarnessRun. Mirrors the cancel
@@ -1671,7 +1671,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestWatch_FiltersByWorkspaceRef(t *testing.T) {
@@ -1725,7 +1725,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // Event is a HarnessRun watch update.
@@ -1827,7 +1827,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestDedupe(t *testing.T) {
@@ -1857,7 +1857,7 @@ import (
 	"encoding/hex"
 	"sort"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // Dedupe tracks seen events by content hash so the tail loop doesn't
@@ -1918,7 +1918,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestTail_EmitsAndTerminates(t *testing.T) {
@@ -1968,7 +1968,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // Tail polls HarnessRun.status.recentEvents, dedupes, and emits new
@@ -2071,8 +2071,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 func TestSessionList_PrintsTable(t *testing.T) {
@@ -2154,7 +2154,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 func newSessionListCmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {
@@ -2300,7 +2300,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 type sessionNewOpts struct {
@@ -2390,8 +2390,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 func TestSessionEnd_DeletesWithYes(t *testing.T) {
@@ -2434,7 +2434,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 func newSessionEndCmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {
@@ -2588,8 +2588,8 @@ package app
 import (
 	"time"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 // FocusArea is the area of the TUI that currently receives input.
@@ -2662,8 +2662,8 @@ Copyright 2026.
 package app
 
 import (
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 // Bubble Tea messages produced by the async commands in commands.go.
@@ -2793,7 +2793,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -3077,7 +3077,7 @@ package app
 import (
 	"testing"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestPromptSubmit_QueuesWhenRunInFlight(t *testing.T) {
@@ -3128,8 +3128,8 @@ import_test_helpers_here_or_inline()
 ```go
 import (
 	"time"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func pdksessionMockedActive(name, runRef string) pdksession.Session {
@@ -3390,9 +3390,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	pdkevents "paddock.dev/paddock/internal/paddocktui/events"
-	pdkruns "paddock.dev/paddock/internal/paddocktui/runs"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	pdkevents "github.com/tjorri/paddock/internal/paddocktui/events"
+	pdkruns "github.com/tjorri/paddock/internal/paddocktui/runs"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 // loadSessionsCmd performs an initial List for the sidebar.
@@ -3584,7 +3584,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 func TestUpdate_AddSession(t *testing.T) {
@@ -3651,7 +3651,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 // Update dispatches messages to per-area handlers and returns the next
@@ -3951,8 +3951,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/paddocktui/app"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
 )
 
 // SidebarView renders the sidebar from the given model. Returns the
@@ -4029,8 +4029,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"paddock.dev/paddock/internal/paddocktui/app"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 func TestSidebarView_Basic(t *testing.T) {
@@ -4099,8 +4099,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/paddocktui/app"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
 )
 
 // MainPaneView renders the focused session's run timeline plus the
@@ -4182,9 +4182,9 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/paddocktui/app"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 func TestMainPaneView_RunSucceeded(t *testing.T) {
@@ -4260,7 +4260,7 @@ import (
 	"fmt"
 	"strings"
 
-	"paddock.dev/paddock/internal/paddocktui/app"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
 )
 
 func NewSessionModalView(s *app.NewSessionModalState) string {
@@ -4298,7 +4298,7 @@ package ui
 import (
 	"fmt"
 
-	"paddock.dev/paddock/internal/paddocktui/app"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
 )
 
 func EndSessionModalView(s *app.EndSessionModalState) string {
@@ -4364,7 +4364,7 @@ package ui
 import (
 	"github.com/charmbracelet/lipgloss"
 
-	"paddock.dev/paddock/internal/paddocktui/app"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
 )
 
 // View renders the full TUI: sidebar | main pane, with footer status
@@ -4417,8 +4417,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"paddock.dev/paddock/internal/paddocktui/app"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 func TestView_EmptyState(t *testing.T) {
@@ -4498,8 +4498,8 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
-	pdkapp "paddock.dev/paddock/internal/paddocktui/app"
-	pdkui "paddock.dev/paddock/internal/paddocktui/ui"
+	pdkapp "github.com/tjorri/paddock/internal/paddocktui/app"
+	pdkui "github.com/tjorri/paddock/internal/paddocktui/ui"
 )
 
 // teaModel adapts pdkapp.Model to Bubble Tea's tea.Model by wiring the
@@ -4637,7 +4637,7 @@ git commit -m "feat(paddock-tui): wire Bubble Tea program; root cmd defaults to 
 - [ ] **Step 1: Verify the no-internal-imports rule**
 
 ```bash
-go list -deps ./internal/paddocktui/... | grep paddock.dev/paddock/internal/ | grep -v paddocktui
+go list -deps ./internal/paddocktui/... | grep github.com/tjorri/paddock/internal/ | grep -v paddocktui
 ```
 
 Expected: empty output (or only the `api/v1alpha1` import reflected via paddocktui's transitive use). If anything from `internal/cli`, `internal/broker`, etc. shows up, fix the offending file by copying logic instead of importing.

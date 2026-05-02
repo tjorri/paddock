@@ -21,9 +21,9 @@ import (
 	"errors"
 	"testing"
 
-	"paddock.dev/paddock/internal/brokerclient"
-	"paddock.dev/paddock/internal/controller"
-	"paddock.dev/paddock/internal/controller/testutil"
+	"github.com/tjorri/paddock/internal/brokerclient"
+	"github.com/tjorri/paddock/internal/controller"
+	"github.com/tjorri/paddock/internal/controller/testutil"
 )
 
 // Compile-time check: FakeBroker satisfies the BrokerIssuer interface.

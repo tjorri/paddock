@@ -19,7 +19,7 @@ package ui
 import (
 	"github.com/charmbracelet/lipgloss"
 
-	"paddock.dev/paddock/internal/paddocktui/app"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
 )
 
 // View renders the full TUI: title bar / sidebar | main pane / footer

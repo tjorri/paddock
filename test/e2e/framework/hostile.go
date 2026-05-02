@@ -13,7 +13,7 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 
-	"paddock.dev/paddock/test/utils"
+	"github.com/tjorri/paddock/test/utils"
 )
 
 // HostileEvent is a single JSON line emitted by evil-echo on stdout.

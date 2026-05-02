@@ -42,9 +42,9 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/client-go/tools/clientcmd"
 
-	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
-	"paddock.dev/paddock/test/e2e/framework"
-	"paddock.dev/paddock/test/utils"
+	paddockbroker "github.com/tjorri/paddock/internal/paddocktui/broker"
+	"github.com/tjorri/paddock/test/e2e/framework"
+	"github.com/tjorri/paddock/test/utils"
 )
 
 const (

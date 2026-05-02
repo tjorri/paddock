@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"strings"
 
-	"paddock.dev/paddock/internal/paddocktui/app"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
 )
 
 // NewSessionModalView renders the new-session modal. It takes the

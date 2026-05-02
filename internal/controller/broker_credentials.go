@@ -29,8 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	brokerapi "paddock.dev/paddock/internal/broker/api"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
 )
 
 // leaseRenewSkew is how far before ExpiresAt the controller still treats

@@ -33,8 +33,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/policy"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/policy"
 )
 
 // newPolicyCmd is the umbrella `policy` subcommand — scaffold, list,

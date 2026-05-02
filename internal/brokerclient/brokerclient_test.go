@@ -31,7 +31,7 @@ import (
 	"testing"
 	"time"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
 )
 
 func TestDecodeBrokerError_ParsesEnvelope(t *testing.T) {

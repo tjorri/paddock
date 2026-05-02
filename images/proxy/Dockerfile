@@ -19,7 +19,7 @@ COPY cmd/proxy/ cmd/proxy/
 COPY internal/auditing/ internal/auditing/
 COPY internal/proxy/ internal/proxy/
 # internal/proxy/broker_client.go and substitute.go import the broker's
-# wire types (paddock.dev/paddock/internal/broker/api) to share
+# wire types (github.com/tjorri/paddock/internal/broker/api) to share
 # request/response schemas with the broker binary without a separate
 # contract package. The shared TLS+token+envelope plumbing lives in
 # internal/brokerclient (XC-01).

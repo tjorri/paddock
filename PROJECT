@@ -7,7 +7,7 @@ domain: dev
 layout:
 - go.kubebuilder.io/v4
 projectName: paddock
-repo: paddock.dev/paddock
+repo: github.com/tjorri/paddock
 resources:
 - api:
     crdVersion: v1
@@ -15,7 +15,7 @@ resources:
   domain: dev
   group: paddock
   kind: HarnessTemplate
-  path: paddock.dev/paddock/api/v1alpha1
+  path: github.com/tjorri/paddock/api/v1alpha1
   version: v1alpha1
   webhooks:
     validation: true
@@ -25,7 +25,7 @@ resources:
   domain: dev
   group: paddock
   kind: ClusterHarnessTemplate
-  path: paddock.dev/paddock/api/v1alpha1
+  path: github.com/tjorri/paddock/api/v1alpha1
   version: v1alpha1
   webhooks:
     validation: true
@@ -36,7 +36,7 @@ resources:
   domain: dev
   group: paddock
   kind: HarnessRun
-  path: paddock.dev/paddock/api/v1alpha1
+  path: github.com/tjorri/paddock/api/v1alpha1
   version: v1alpha1
   webhooks:
     validation: true
@@ -47,7 +47,7 @@ resources:
   domain: dev
   group: paddock
   kind: Workspace
-  path: paddock.dev/paddock/api/v1alpha1
+  path: github.com/tjorri/paddock/api/v1alpha1
   version: v1alpha1
   webhooks:
     validation: true
@@ -59,7 +59,7 @@ resources:
   domain: dev
   group: paddock
   kind: BrokerPolicy
-  path: paddock.dev/paddock/api/v1alpha1
+  path: github.com/tjorri/paddock/api/v1alpha1
   version: v1alpha1
   webhooks:
     validation: true
@@ -71,7 +71,7 @@ resources:
   domain: dev
   group: paddock
   kind: AuditEvent
-  path: paddock.dev/paddock/api/v1alpha1
+  path: github.com/tjorri/paddock/api/v1alpha1
   version: v1alpha1
   webhooks:
     validation: true

@@ -27,7 +27,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 func newSessionListCmd(cfg *genericclioptions.ConfigFlags) *cobra.Command {

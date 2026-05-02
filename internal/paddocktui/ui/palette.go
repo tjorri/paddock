@@ -22,7 +22,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"paddock.dev/paddock/internal/paddocktui/app"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
 )
 
 // paletteCommands is the static catalogue rendered into hint rows when

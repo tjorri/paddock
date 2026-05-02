@@ -41,10 +41,10 @@ import (
 
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/auditing"
-	"paddock.dev/paddock/internal/controller"
-	webhookv1alpha1 "paddock.dev/paddock/internal/webhook/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/auditing"
+	"github.com/tjorri/paddock/internal/controller"
+	webhookv1alpha1 "github.com/tjorri/paddock/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 

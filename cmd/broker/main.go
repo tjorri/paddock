@@ -45,10 +45,10 @@ import (
 
 	"k8s.io/client-go/kubernetes"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/auditing"
-	"paddock.dev/paddock/internal/broker"
-	"paddock.dev/paddock/internal/broker/providers"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/auditing"
+	"github.com/tjorri/paddock/internal/broker"
+	"github.com/tjorri/paddock/internal/broker/providers"
 )
 
 var (

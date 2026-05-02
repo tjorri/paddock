@@ -24,7 +24,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"paddock.dev/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestInteractiveStatus_RoundTrip(t *testing.T) {

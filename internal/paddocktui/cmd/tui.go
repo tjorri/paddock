@@ -25,9 +25,9 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
-	pdkapp "paddock.dev/paddock/internal/paddocktui/app"
-	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
-	pdkui "paddock.dev/paddock/internal/paddocktui/ui"
+	pdkapp "github.com/tjorri/paddock/internal/paddocktui/app"
+	paddockbroker "github.com/tjorri/paddock/internal/paddocktui/broker"
+	pdkui "github.com/tjorri/paddock/internal/paddocktui/ui"
 )
 
 // brokerOpts collects the broker-connectivity flags. Populated from

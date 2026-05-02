@@ -19,7 +19,7 @@ package broker
 import (
 	"context"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
 )
 
 // SubstituteBurstForTest exposes the unexported substituteBurst constant

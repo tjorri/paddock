@@ -21,7 +21,7 @@ import (
 	"errors"
 	"testing"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 type capturedSink struct {

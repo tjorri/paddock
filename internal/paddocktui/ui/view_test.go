@@ -21,8 +21,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"paddock.dev/paddock/internal/paddocktui/app"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 func TestView_EmptyState(t *testing.T) {

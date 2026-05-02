@@ -1096,7 +1096,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"paddock.dev/paddock/test/utils"
+	"github.com/tjorri/paddock/test/utils"
 )
 
 var _ = Describe("proxy MITM substitution (hermetic)", Ordered, func() {

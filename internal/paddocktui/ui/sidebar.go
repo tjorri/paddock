@@ -22,8 +22,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/paddocktui/app"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/paddocktui/app"
 )
 
 // SidebarView renders the sidebar from the given model. Returns the

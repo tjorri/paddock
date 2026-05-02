@@ -36,10 +36,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/broker"
-	brokerapi "paddock.dev/paddock/internal/broker/api"
-	"paddock.dev/paddock/internal/broker/providers"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/broker"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
+	"github.com/tjorri/paddock/internal/broker/providers"
 )
 
 // interactiveFixture stands up a Server wired with an InteractiveRouter
