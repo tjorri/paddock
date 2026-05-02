@@ -172,6 +172,12 @@ func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 	ctlLn, _ := net.Listen("unix", ctlPath)
 	defer func() { _ = ctlLn.Close() }()
 
+	// Gate the supervisor's write on the test having subscribed to the
+	// fanout. Otherwise runDataReader can drain and broadcast both
+	// frames before the subscriber registers, dropping them on the
+	// floor (the fanout has no replay buffer).
+	startWrite := make(chan struct{})
+
 	// Fake supervisor: accept data, push two newline-delimited frames.
 	go func() {
 		c, _ := dataLn.Accept()
@@ -179,6 +185,7 @@ func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 			return
 		}
 		defer func() { _ = c.Close() }()
+		<-startWrite
 		_, _ = c.Write([]byte(`{"type":"first"}` + "\n" + `{"type":"second"}` + "\n"))
 		// Hold open until the test closes us.
 		<-time.After(2 * time.Second)
@@ -207,6 +214,7 @@ func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 	// Subscribe to the fanout directly (analogous to what the WS handler does).
 	ch := srv.fanout.subscribe()
 	defer srv.fanout.unsubscribe(ch)
+	close(startWrite)
 
 	got := []string{}
 	for i := 0; i < 2; i++ {
