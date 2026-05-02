@@ -50,6 +50,10 @@ jobs:
           kind version
 
       - name: Run e2e tests
+        # Pinned to GINKGO_PROCS=2 to match the 2-vCPU runner. The
+        # laptop default (-p / GOMAXPROCS-1) would oversubscribe.
+        env:
+          GINKGO_PROCS: "2"
         run: |
           go mod tidy
           make test-e2e
