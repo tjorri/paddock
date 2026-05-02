@@ -87,7 +87,7 @@ func (b *RunBuilder) BuildYAML() string {
 		fmt.Fprintf(&sb, "  workspaceRef: %s\n", b.workspace)
 	}
 	if b.maxLifetime > 0 {
-		fmt.Fprintf(&sb, "  maxLifetime: %s\n", b.maxLifetime.String())
+		fmt.Fprintf(&sb, "  interactiveOverrides:\n    maxLifetime: %s\n", b.maxLifetime.String())
 	}
 	if b.timeout > 0 {
 		fmt.Fprintf(&sb, "  timeout: %s\n", b.timeout.String())
@@ -125,6 +125,8 @@ func (r *Run) WaitForPhase(ctx context.Context, phase string, timeout time.Durat
 // WaitForPhaseIn polls until the run phase is one of the given values.
 func (r *Run) WaitForPhaseIn(ctx context.Context, phases []string, timeout time.Duration) {
 	ginkgo.GinkgoHelper()
+	gomega.Expect(phases).NotTo(gomega.BeEmpty(),
+		"WaitForPhaseIn requires at least one phase")
 	gomega.Eventually(func(g gomega.Gomega) {
 		out, err := RunCmd(ctx, "kubectl", "-n", r.Namespace,
 			"get", "harnessrun", r.Name, "-o", "jsonpath={.status.phase}")

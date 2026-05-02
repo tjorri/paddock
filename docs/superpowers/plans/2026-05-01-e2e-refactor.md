@@ -2419,13 +2419,11 @@ func TestRunBuilder_InteractiveWithMaxLifetime(t *testing.T) {
 		WithMaxLifetime(60 * time.Second).
 		BuildYAML()
 
-	for _, want := range []string{
-		"mode: Interactive",
-		"maxLifetime: 60s",
-	} {
-		if !strings.Contains(yaml, want) {
-			t.Fatalf("run yaml missing %q\n%s", want, yaml)
-		}
+	if !strings.Contains(yaml, "mode: Interactive") {
+		t.Fatalf("mode missing:\n%s", yaml)
+	}
+	if !strings.Contains(yaml, "interactiveOverrides:\n    maxLifetime: 1m0s") {
+		t.Fatalf("interactiveOverrides.maxLifetime missing or wrong path:\n%s", yaml)
 	}
 }
 ```
@@ -2514,7 +2512,7 @@ func (b *RunBuilder) BuildYAML() string {
 		fmt.Fprintf(&sb, "  workspaceRef:\n    name: %s\n", b.workspace)
 	}
 	if b.maxLifetime > 0 {
-		fmt.Fprintf(&sb, "  maxLifetime: %s\n", b.maxLifetime.String())
+		fmt.Fprintf(&sb, "  interactiveOverrides:\n    maxLifetime: %s\n", b.maxLifetime.String())
 	}
 	if len(b.env) > 0 {
 		sb.WriteString("  extraEnv:\n")

@@ -195,13 +195,26 @@ func TestRunBuilder_InteractiveWithMaxLifetime(t *testing.T) {
 		WithMaxLifetime(60 * time.Second).
 		BuildYAML()
 
-	for _, want := range []string{
-		"mode: Interactive",
-		"maxLifetime: 1m0s",
-	} {
-		if !strings.Contains(yamlStr, want) {
-			t.Fatalf("run yaml missing %q\n%s", want, yamlStr)
-		}
+	if !strings.Contains(yamlStr, "mode: Interactive") {
+		t.Fatalf("mode missing:\n%s", yamlStr)
+	}
+
+	var parsed map[string]any
+	if err := yaml.Unmarshal([]byte(yamlStr), &parsed); err != nil {
+		t.Fatalf("BuildYAML produced invalid YAML: %v\n%s", err, yamlStr)
+	}
+	spec := parsed["spec"].(map[string]any)
+	overrides, ok := spec["interactiveOverrides"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected spec.interactiveOverrides to be a map, got %T\n%s",
+			spec["interactiveOverrides"], yamlStr)
+	}
+	if overrides["maxLifetime"] != "1m0s" {
+		t.Fatalf("expected interactiveOverrides.maxLifetime == 1m0s, got %#v",
+			overrides["maxLifetime"])
+	}
+	if _, exists := spec["maxLifetime"]; exists {
+		t.Fatalf("maxLifetime must NOT appear at spec top-level:\n%s", yamlStr)
 	}
 }
 
