@@ -66,7 +66,6 @@ var _ = Describe("broker resource lifecycle", func() {
 		})
 		framework.NewRun(ns, "t2-patpool-tmpl").
 			WithName(runName).
-			WithClusterScopedTemplate().
 			WithPrompt("t2 revoke test").
 			Submit(ctxT)
 

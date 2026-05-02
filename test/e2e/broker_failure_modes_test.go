@@ -152,8 +152,9 @@ stringData:
 
 		By("creating a HarnessTemplate that requires DEMO_TOKEN")
 		framework.NewHarnessTemplate(ns, "tg19-template").
-			WithImage("paddock-echo:dev").
+			WithImage(echoImage).
 			WithCommand("/usr/local/bin/paddock-echo").
+			WithEventAdapter(adapterEchoImage).
 			WithRequiredCredential("DEMO_TOKEN").
 			Apply(ctxT)
 
