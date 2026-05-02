@@ -281,6 +281,16 @@ spec:
 		framework.WaitForNamespaceGone(context.Background(), homePersistNS, 20*time.Second)
 	})
 
+	AfterEach(func() {
+		if !CurrentSpecReport().Failed() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		framework.DumpRunDiagnostics(ctx, homePersistNS, homePersistRunWrite)
+		framework.DumpRunDiagnostics(ctx, homePersistNS, homePersistRunRead)
+	})
+
 	It("writes a sentinel into $HOME on a Batch run", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
