@@ -5,8 +5,8 @@ type: application
 # Chart version and appVersion move in lockstep — one repo, one release.
 # Both lines carry a release-please marker so `simple` release-type's
 # generic extra-files updater rewrites them on each release PR.
-version: 0.5.1 # x-release-please-version
-appVersion: "0.5.1" # x-release-please-version
+version: 0.5.2 # x-release-please-version
+appVersion: "0.5.2" # x-release-please-version
 kubeVersion: ">=1.29.0-0"
 keywords:
   - paddock

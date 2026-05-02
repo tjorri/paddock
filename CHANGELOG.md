@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.5.2](https://github.com/tjorri/paddock/compare/v0.5.1...v0.5.2) (2026-05-02)
+
+
+### Features
+
+* **e2e:** enable Ginkgo -p parallelism (PR 4 of 4) ([#96](https://github.com/tjorri/paddock/issues/96)) ([801d537](https://github.com/tjorri/paddock/commit/801d537e0f8fdc11fba15824821acb931318233a))
+* Interactive HarnessRun and shell access ([#87](https://github.com/tjorri/paddock/issues/87)) ([611751a](https://github.com/tjorri/paddock/commit/611751a9de7227a1f690bbea1c69f925e4e5f86c))
+* **paddock-tui:** broker client + interactive run lifecycle ([#91](https://github.com/tjorri/paddock/issues/91)) ([7cae52e](https://github.com/tjorri/paddock/commit/7cae52e0207ad4a23c9c4858c0ea314689708721))
+* **paddock-tui:** interactive multi-session TUI binary ([#85](https://github.com/tjorri/paddock/issues/85)) ([f68ad82](https://github.com/tjorri/paddock/commit/f68ad823b527c2866f6ee1e1660a1def3da7210b))
+
+
+### Bug Fixes
+
+* **controller:** make Workspace.status.totalRuns increment idempotent ([#86](https://github.com/tjorri/paddock/issues/86)) ([6cac767](https://github.com/tjorri/paddock/commit/6cac76718b12cea7aae28c14e15f6a2b3924a0bb))
+* **e2e:** lift the remaining Serial Ordered Describes (PR 5) ([#97](https://github.com/tjorri/paddock/issues/97)) ([6aa2b14](https://github.com/tjorri/paddock/commit/6aa2b14e4688fcff607a1fab4bdf2820aff3da65))
+
+
+### Code Refactoring
+
+* **e2e:** adopt fluent DSL builders (PR 3 of 4) ([#94](https://github.com/tjorri/paddock/issues/94)) ([b0ba5a7](https://github.com/tjorri/paddock/commit/b0ba5a71ed96fe0e4333f49beefdebe50da02f14))
+* **e2e:** capability-named spec files and cross-cutting helper lift (PR 2 of 4) ([#93](https://github.com/tjorri/paddock/issues/93)) ([045466b](https://github.com/tjorri/paddock/commit/045466b16d87aeac79186f093fab521c471a965e))
+* **e2e:** extract framework helpers package (PR 1 of 4) ([#92](https://github.com/tjorri/paddock/issues/92)) ([531ad6f](https://github.com/tjorri/paddock/commit/531ad6f7736c2344b1c21872d2f0bf7532ba5689))
+* rename Go module to github.com/tjorri/paddock ([#98](https://github.com/tjorri/paddock/issues/98)) ([a32048d](https://github.com/tjorri/paddock/commit/a32048d86b3f9c4e167259a8334c1c6f2c022f4b))
+
 ## [0.5.1](https://github.com/tjorri/paddock/compare/v0.5.0...v0.5.1) (2026-04-29)
 
 
