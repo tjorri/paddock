@@ -219,44 +219,124 @@ IPTABLES_INIT_IMG ?= paddock-iptables-init:dev
 E2E_EGRESS_IMG ?= paddock-e2e-egress:dev
 
 .PHONY: image-echo
-image-echo: ## Build the paddock-echo harness image.
-	$(CONTAINER_TOOL) build -t $(ECHO_IMG) images/harness-echo
+image-echo: ## Build the paddock-echo harness image, skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh echo); \
+	tag="paddock-echo:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-echo: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(ECHO_IMG); \
+	else \
+		echo "image-echo: building $(ECHO_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(ECHO_IMG) -t $$tag images/harness-echo; \
+	fi
 
 .PHONY: image-evil-echo
-image-evil-echo: ## Build the paddock-evil-echo hostile harness image (test-only).
-	$(CONTAINER_TOOL) build -t $(EVIL_ECHO_IMG) -f images/evil-echo/Dockerfile .
+image-evil-echo: ## Build the paddock-evil-echo hostile harness image (test-only), skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh evil-echo); \
+	tag="paddock-evil-echo:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-evil-echo: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(EVIL_ECHO_IMG); \
+	else \
+		echo "image-evil-echo: building $(EVIL_ECHO_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(EVIL_ECHO_IMG) -t $$tag -f images/evil-echo/Dockerfile .; \
+	fi
 
 .PHONY: image-adapter-echo
-image-adapter-echo: ## Build the paddock-adapter-echo sidecar image.
-	$(CONTAINER_TOOL) build -t $(ADAPTER_ECHO_IMG) -f images/adapter-echo/Dockerfile .
+image-adapter-echo: ## Build the paddock-adapter-echo sidecar image, skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh adapter-echo); \
+	tag="paddock-adapter-echo:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-adapter-echo: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(ADAPTER_ECHO_IMG); \
+	else \
+		echo "image-adapter-echo: building $(ADAPTER_ECHO_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(ADAPTER_ECHO_IMG) -t $$tag -f images/adapter-echo/Dockerfile .; \
+	fi
 
 .PHONY: image-collector
-image-collector: ## Build the paddock-collector sidecar image.
-	$(CONTAINER_TOOL) build -t $(COLLECTOR_IMG) -f images/collector/Dockerfile .
+image-collector: ## Build the paddock-collector sidecar image, skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh collector); \
+	tag="paddock-collector:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-collector: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(COLLECTOR_IMG); \
+	else \
+		echo "image-collector: building $(COLLECTOR_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(COLLECTOR_IMG) -t $$tag -f images/collector/Dockerfile .; \
+	fi
 
 .PHONY: image-claude-code
-image-claude-code: ## Build the paddock-claude-code demo harness image (wraps Anthropic's claude CLI).
-	$(CONTAINER_TOOL) build -t $(CLAUDE_CODE_IMG) images/harness-claude-code
+image-claude-code: ## Build the paddock-claude-code demo harness image (wraps Anthropic's claude CLI), skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh claude-code); \
+	tag="paddock-claude-code:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-claude-code: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(CLAUDE_CODE_IMG); \
+	else \
+		echo "image-claude-code: building $(CLAUDE_CODE_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(CLAUDE_CODE_IMG) -t $$tag images/harness-claude-code; \
+	fi
 
 .PHONY: image-adapter-claude-code
-image-adapter-claude-code: ## Build the paddock-adapter-claude-code sidecar image.
-	$(CONTAINER_TOOL) build -t $(ADAPTER_CLAUDE_CODE_IMG) -f images/adapter-claude-code/Dockerfile .
+image-adapter-claude-code: ## Build the paddock-adapter-claude-code sidecar image, skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh adapter-claude-code); \
+	tag="paddock-adapter-claude-code:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-adapter-claude-code: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(ADAPTER_CLAUDE_CODE_IMG); \
+	else \
+		echo "image-adapter-claude-code: building $(ADAPTER_CLAUDE_CODE_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(ADAPTER_CLAUDE_CODE_IMG) -t $$tag -f images/adapter-claude-code/Dockerfile .; \
+	fi
 
 .PHONY: image-broker
-image-broker: ## Build the paddock-broker image.
-	$(CONTAINER_TOOL) build -t $(BROKER_IMG) -f images/broker/Dockerfile .
+image-broker: ## Build the paddock-broker image, skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh broker); \
+	tag="paddock-broker:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-broker: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(BROKER_IMG); \
+	else \
+		echo "image-broker: building $(BROKER_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(BROKER_IMG) -t $$tag -f images/broker/Dockerfile .; \
+	fi
 
 .PHONY: image-proxy
-image-proxy: ## Build the paddock-proxy sidecar image.
-	$(CONTAINER_TOOL) build -t $(PROXY_IMG) -f images/proxy/Dockerfile .
+image-proxy: ## Build the paddock-proxy sidecar image, skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh proxy); \
+	tag="paddock-proxy:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-proxy: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(PROXY_IMG); \
+	else \
+		echo "image-proxy: building $(PROXY_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(PROXY_IMG) -t $$tag -f images/proxy/Dockerfile .; \
+	fi
 
 .PHONY: image-iptables-init
-image-iptables-init: ## Build the paddock-iptables-init image (NET_ADMIN init container).
-	$(CONTAINER_TOOL) build -t $(IPTABLES_INIT_IMG) -f images/iptables-init/Dockerfile .
+image-iptables-init: ## Build the paddock-iptables-init image (NET_ADMIN init container), skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh iptables-init); \
+	tag="paddock-iptables-init:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-iptables-init: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(IPTABLES_INIT_IMG); \
+	else \
+		echo "image-iptables-init: building $(IPTABLES_INIT_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(IPTABLES_INIT_IMG) -t $$tag -f images/iptables-init/Dockerfile .; \
+	fi
 
 .PHONY: image-e2e-egress
-image-e2e-egress: ## Build the paddock-e2e-egress harness (e2e-only probe tool).
-	$(CONTAINER_TOOL) build -t $(E2E_EGRESS_IMG) images/harness-e2e-egress
+image-e2e-egress: ## Build the paddock-e2e-egress harness (e2e-only probe tool), skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh e2e-egress); \
+	tag="paddock-e2e-egress:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-e2e-egress: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(E2E_EGRESS_IMG); \
+	else \
+		echo "image-e2e-egress: building $(E2E_EGRESS_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(E2E_EGRESS_IMG) -t $$tag images/harness-e2e-egress; \
+	fi
 
 .PHONY: images
 images: image-echo image-adapter-echo image-collector image-claude-code image-adapter-claude-code image-broker image-proxy image-iptables-init image-evil-echo ## Build all reference images.
