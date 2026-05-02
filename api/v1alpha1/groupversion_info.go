@@ -20,8 +20,9 @@ limitations under the License.
 package v1alpha1
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
 var (
@@ -29,8 +30,33 @@ var (
 	GroupVersion = schema.GroupVersion{Group: "paddock.dev", Version: "v1alpha1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
-	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
+	SchemeBuilder = &Builder{GroupVersion: GroupVersion}
 
 	// AddToScheme adds the types in this group-version to the given scheme.
 	AddToScheme = SchemeBuilder.AddToScheme
 )
+
+// Builder maps Go types to a Kubernetes GroupVersionKind scheme. It mirrors
+// sigs.k8s.io/controller-runtime/pkg/scheme.Builder, kept locally so the api
+// package depends only on k8s.io/apimachinery — the upstream type was
+// deprecated in controller-runtime v0.24 for that reason.
+type Builder struct {
+	GroupVersion schema.GroupVersion
+	runtime.SchemeBuilder
+}
+
+// Register adds one or more objects to the SchemeBuilder so they can be added
+// to a Scheme. Register mutates b.
+func (b *Builder) Register(objects ...runtime.Object) *Builder {
+	b.SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(b.GroupVersion, objects...)
+		metav1.AddToGroupVersion(s, b.GroupVersion)
+		return nil
+	})
+	return b
+}
+
+// AddToScheme adds all registered types to s.
+func (b *Builder) AddToScheme(s *runtime.Scheme) error {
+	return b.SchemeBuilder.AddToScheme(s)
+}
