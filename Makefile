@@ -100,12 +100,26 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 	@#                         real failure reason (spec #24875514481
 	@#                         lost its summary to a Go-timeout panic).
 	@#
+	@# GINKGO_PROCS controls Ginkgo's process-level parallelism. Default
+	@#               is auto (= GOMAXPROCS-1). Set GINKGO_PROCS=1 to
+	@#               force serial execution — the always-available
+	@#               debugging fallback.
+	@# LABELS filters specs by Ginkgo Label, e.g. LABELS=smoke for the
+	@#               happy-path specs, LABELS=broker, LABELS=hostile,
+	@#               LABELS=interactive.
 	@# FAIL_FAST=1 → opt-in fast iteration: stop on the first failing
-	@#               spec instead of running all 21. Default off in CI
+	@#               spec instead of running them all. Default off in CI
 	@#               so a single PR with two unrelated regressions
 	@#               surfaces both in one round-trip.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e -timeout=32m ./test/e2e/ -v -ginkgo.v -ginkgo.timeout=30m $(if $(FAIL_FAST),-ginkgo.fail-fast,)
-	$(MAKE) cleanup-test-e2e
+	@# KEEP_CLUSTER=1 → skip cluster teardown so a subsequent run
+	@#                  reuses it; pair with KEEP_E2E_RUN=1 for full
+	@#                  tenant-state retention.
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e -timeout=32m \
+		./test/e2e/ -v -ginkgo.v -ginkgo.timeout=30m \
+		$(if $(GINKGO_PROCS),-ginkgo.procs=$(GINKGO_PROCS),-ginkgo.procs=auto) \
+		$(if $(LABELS),-ginkgo.label-filter=$(LABELS),) \
+		$(if $(FAIL_FAST),-ginkgo.fail-fast,)
+	$(if $(KEEP_CLUSTER),@echo "KEEP_CLUSTER=1: leaving Kind cluster intact",$(MAKE) cleanup-test-e2e)
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
