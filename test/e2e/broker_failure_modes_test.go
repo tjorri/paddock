@@ -21,6 +21,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -102,7 +103,17 @@ var _ = Describe("broker failure modes", Ordered, Serial, Label("broker"), func(
 			Submit(ctx)
 
 		Eventually(func(g Gomega) {
-			status := run.Status(ctx)
+			// Inline status fetch instead of run.Status — under -p, the
+			// run is queried fast enough that .status may still be
+			// empty when the first Eventually tick fires. Status's
+			// internal package-level gomega.Expect on an empty json
+			// would panic out instead of letting Eventually retry.
+			out, err := framework.RunCmd(ctx, "kubectl", "-n", ns,
+				"get", "harnessrun", brokerDownRunName, "-o", "jsonpath={.status}")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).NotTo(BeEmpty(), "status not yet populated")
+			var status framework.HarnessRunStatus
+			g.Expect(json.Unmarshal([]byte(out), &status)).To(Succeed())
 			g.Expect(status.Phase).To(Equal("Pending"),
 				"want Pending while broker is scaled to zero; got %q", status.Phase)
 			ready := framework.FindCondition(status.Conditions, "BrokerReady")

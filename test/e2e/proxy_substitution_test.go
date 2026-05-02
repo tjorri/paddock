@@ -48,18 +48,16 @@ import (
 // #83 to ship undetected. A future fully-hermetic regression requires
 // replicating the upstream-CA bundle into per-run namespaces; deferred
 // to a follow-up.
-var _ = Describe("proxy MITM substitution", Ordered, Serial, func() {
+var _ = Describe("proxy MITM substitution", Ordered, func() {
 	const (
-		subNS           = "paddock-test-substitution"
-		subTemplateName = "probe-curl"
-		listenerHost    = "httpbin.org"
+		listenerHost = "httpbin.org"
 	)
-	var sentinel string
+	var (
+		ns, templateName string
+		sentinel         string
+	)
 
-	BeforeAll(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-
+	BeforeAll(func(ctx SpecContext) {
 		// Per-test-run random sentinel so the assertion can't accidentally
 		// match leftover state from a previous run.
 		buf := make([]byte, 8)
@@ -67,9 +65,8 @@ var _ = Describe("proxy MITM substitution", Ordered, Serial, func() {
 		Expect(err).NotTo(HaveOccurred(), "rand.Read for sentinel")
 		sentinel = "PADDOCK-E2E-SENTINEL-" + hex.EncodeToString(buf)
 
-		_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-			"delete", "ns", subNS, "--ignore-not-found", "--wait=true", "--timeout=60s"))
-		framework.CreateNamespace(ctx, subNS)
+		ns = framework.CreateTenantNamespace(ctx, "paddock-test-substitution")
+		templateName = framework.ClusterScopedName("probe-curl")
 
 		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: v1
@@ -78,7 +75,7 @@ metadata:
   name: probe-secret
   namespace: %s
 stringData:
-  token: %q`, subNS, sentinel))
+  token: %q`, ns, sentinel))
 
 		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
@@ -100,7 +97,7 @@ spec:
               header: {name: Authorization, valuePrefix: "Bearer "}
     egress:
       - host: %q
-        ports: [443]`, subNS, subTemplateName, listenerHost, listenerHost))
+        ports: [443]`, ns, templateName, listenerHost, listenerHost))
 
 		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
@@ -124,17 +121,16 @@ spec:
     timeout: 90s
   workspace:
     required: true
-    mountPath: /workspace`, subTemplateName, subTemplateName, listenerHost, listenerHost))
+    mountPath: /workspace`, templateName, templateName, listenerHost, listenerHost))
 	})
 
 	AfterAll(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		// Best-effort teardown of the cluster-scoped template.
+		// Namespace cleanup is handled by CreateTenantNamespace's DeferCleanup.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-
 		_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-			"delete", "ns", subNS, "--ignore-not-found", "--wait=true", "--timeout=60s"))
-		_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-			"delete", "clusterharnesstemplate", subTemplateName, "--ignore-not-found"))
+			"delete", "clusterharnesstemplate", templateName, "--ignore-not-found"))
 	})
 
 	It("substitutes a credential into requests addressed to a public host", func() {
@@ -142,7 +138,7 @@ spec:
 		defer cancel()
 
 		runName := "substitute-probe"
-		run := framework.NewRun(subNS, subTemplateName).
+		run := framework.NewRun(ns, templateName).
 			WithName(runName).
 			WithPrompt("probe-substitution").
 			WithClusterScopedTemplate().
@@ -150,7 +146,7 @@ spec:
 
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
-				framework.DumpRunDiagnostics(ctx, subNS, runName)
+				framework.DumpRunDiagnostics(ctx, ns, runName)
 			}
 		})
 
@@ -166,7 +162,7 @@ spec:
 		// is robust to header-key casing and to httpbin's response-shape
 		// drift; the per-run random sentinel makes false positives
 		// effectively impossible.
-		out := framework.ReadRunOutput(ctx, subNS, runName)
+		out := framework.ReadRunOutput(ctx, ns, runName)
 		want := "Bearer " + sentinel
 		Expect(out).To(ContainSubstring(want),
 			"agent stdout should contain the substituted real-secret sentinel (httpbin echoes the request); proxy may not have MITMed.\nexpected: %q\nagent stdout:\n%s",
