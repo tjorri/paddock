@@ -41,7 +41,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -55,7 +54,6 @@ import (
 )
 
 const (
-	interactiveNS           = "paddock-test-interactive"
 	interactiveTpl          = "interactive-stub"
 	interactiveSA           = "interactive-runner"
 	interactivePolicy       = "interactive-allow"
@@ -63,21 +61,16 @@ const (
 	interactiveRunShell     = "stub-run-shell"
 )
 
-var _ = Describe("interactive run lifecycle", Ordered, Serial, Label("interactive"), func() {
+var _ = Describe("interactive run lifecycle", Ordered, Label("interactive"), func() {
 	var (
+		ns          string
 		token       string
 		brokerPort  int
 		stopForward func()
 	)
 
-	BeforeAll(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-
-		// Clean slate. Per-Describe namespace; AfterAll deletes it again.
-		_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-			"delete", "ns", interactiveNS, "--ignore-not-found", "--wait=true", "--timeout=60s"))
-		framework.CreateNamespace(ctx, interactiveNS)
+	BeforeAll(func(ctx SpecContext) {
+		ns = framework.CreateTenantNamespace(ctx, "paddock-test-interactive")
 
 		// ServiceAccount the e2e runner authenticates as when calling the
 		// broker. The broker only checks token audience + namespace match;
@@ -87,7 +80,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: %s
-  namespace: %s`, interactiveSA, interactiveNS))
+  namespace: %s`, interactiveSA, ns))
 
 		// HarnessTemplate with interactive support. Short maxLifetime so
 		// the lifecycle spec's watchdog fires within the suite budget;
@@ -117,7 +110,7 @@ spec:
     timeout: 5m
   workspace:
     required: true
-    mountPath: /workspace`, interactiveTpl, interactiveNS, echoImage, adapterEchoImage))
+    mountPath: /workspace`, interactiveTpl, ns, echoImage, adapterEchoImage))
 
 		// BrokerPolicy granting runs.interact + runs.shell against the
 		// stub template. Shell command is /bin/sh because the alpine-
@@ -125,14 +118,14 @@ spec:
 		// default). target=agent so the WS exec lands in the harness
 		// container, where the harness's `sleep infinity` loop keeps
 		// the pod alive.
-		framework.NewBrokerPolicy(interactiveNS, interactivePolicy, interactiveTpl).
+		framework.NewBrokerPolicy(ns, interactivePolicy, interactiveTpl).
 			GrantInteract().
 			GrantShell("agent", "/bin/sh", "-c", "echo hello && sleep 1").
 			Apply(ctx)
 
 		// Broker SA-token + port-forward. Both shared by every It in
 		// this Describe.
-		token = framework.CreateBrokerToken(ctx, interactiveNS, interactiveSA)
+		token = framework.CreateBrokerToken(ctx, ns, interactiveSA)
 		brokerPort, stopForward = framework.GetBroker(ctx).PortForward(ctx)
 	})
 
@@ -140,13 +133,6 @@ spec:
 		if stopForward != nil {
 			stopForward()
 		}
-		if os.Getenv("KEEP_E2E_RUN") == "1" {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
-		_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-			"delete", "ns", interactiveNS, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 	})
 
 	It("cancels a Bound run when its max-lifetime elapses", func() {
@@ -155,11 +141,11 @@ spec:
 
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
-				framework.DumpRunDiagnostics(ctx, interactiveNS, interactiveRunLifecycle)
+				framework.DumpRunDiagnostics(ctx, ns, interactiveRunLifecycle)
 			}
 		})
 
-		run := framework.NewRun(interactiveNS, interactiveTpl).
+		run := framework.NewRun(ns, interactiveTpl).
 			WithName(interactiveRunLifecycle).
 			WithMode("Interactive").
 			WithPrompt("hello-from-init").
@@ -170,7 +156,7 @@ spec:
 
 		By("posting a prompt to the broker /v1/runs/.../prompts")
 		url := fmt.Sprintf("https://127.0.0.1:%d/v1/runs/%s/%s/prompts",
-			brokerPort, interactiveNS, interactiveRunLifecycle)
+			brokerPort, ns, interactiveRunLifecycle)
 		// Eventually because Phase=Running fires before the pod's PodIP
 		// is necessarily populated (init containers can still be
 		// running) — the broker's adapter resolver returns 502 "no
@@ -212,7 +198,7 @@ spec:
 
 		By("asserting an interactive-run-terminated audit event with reason=max-lifetime")
 		Eventually(func() bool {
-			return framework.FindAuditEvent(ctx, interactiveNS, interactiveRunLifecycle,
+			return framework.FindAuditEvent(ctx, ns, interactiveRunLifecycle,
 				"interactive-run-terminated", "max-lifetime") != nil
 		}, 60*time.Second, 2*time.Second).Should(BeTrue())
 	})
@@ -223,7 +209,7 @@ spec:
 
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
-				framework.DumpRunDiagnostics(ctx, interactiveNS, interactiveRunShell)
+				framework.DumpRunDiagnostics(ctx, ns, interactiveRunShell)
 				// Explicit broker logs by deployment ref — the label
 				// selector form sometimes returns nothing in this
 				// suite. Dumps last 100 lines, includes prior runs.
@@ -236,13 +222,13 @@ spec:
 			}
 			delCtx, delCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer delCancel()
-			_, _ = utils.Run(exec.CommandContext(delCtx, "kubectl", "-n", interactiveNS,
+			_, _ = utils.Run(exec.CommandContext(delCtx, "kubectl", "-n", ns,
 				"delete", "harnessrun", interactiveRunShell, "--ignore-not-found", "--wait=false"))
 		})
 
 		// Override maxLifetime to 5m so the watchdog doesn't cancel
 		// the run mid-shell.
-		shellRun := framework.NewRun(interactiveNS, interactiveTpl).
+		shellRun := framework.NewRun(ns, interactiveTpl).
 			WithName(interactiveRunShell).
 			WithMode("Interactive").
 			WithPrompt("shell-test").
@@ -257,7 +243,7 @@ spec:
 		// pod may not yet be scheduled to a node — pods/exec needs
 		// pod.Spec.NodeName populated.
 		Eventually(func() string {
-			out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", interactiveNS,
+			out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", ns,
 				"get", "pods", "-l", "paddock.dev/run="+interactiveRunShell,
 				"-o", "jsonpath={.items[0].status.phase}"))
 			if err != nil {
@@ -268,7 +254,7 @@ spec:
 
 		By("dialing /v1/runs/.../shell over WebSocket")
 		wsURL := fmt.Sprintf("wss://127.0.0.1:%d/v1/runs/%s/%s/shell",
-			brokerPort, interactiveNS, interactiveRunShell)
+			brokerPort, ns, interactiveRunShell)
 		dialCtx, cancelDial := context.WithTimeout(ctx, 30*time.Second)
 		defer cancelDial()
 		conn, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
