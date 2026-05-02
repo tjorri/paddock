@@ -1,4 +1,5 @@
 //go:build e2e
+// +build e2e
 
 /*
 Copyright 2026.
@@ -16,25 +17,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package e2e — HOME persistence across Batch runs in the same Workspace.
-//
-// Verifies that $HOME (= <workspace-mountPath>/.home) is durable across
-// consecutive Batch HarnessRuns that share a named Workspace. The lock
-// guarantee introduced by the HOME-from-PVC feature (Tasks 1-5 of
-// feat/paddock-tui-interactive): whatever a run writes to $HOME must still
-// be there when the next run in the same workspace starts.
-//
-// Test shape:
-//  1. Run "write" — a Batch run that writes a sentinel file at $HOME/.persisted.
-//  2. Run "read"  — a second Batch run against the same Workspace that reads
-//     $HOME/.persisted and surfaces the content in its result summary.
-//  3. Assert both runs reach Succeeded, and that the "read" run's output
-//     summary contains the sentinel written by the "write" run.
-//
-// The harness image used is paddock-echo (Alpine + sh). Its entrypoint is
-// overridden via spec.command so the shell script can exercise HOME directly.
-// The script stays echo-adapter-compatible (writes PADDOCK_RAW_PATH events +
-// PADDOCK_RESULT_PATH JSON) so the collector sidecar processes them normally.
 package e2e
 
 import (
@@ -54,6 +36,16 @@ import (
 )
 
 const (
+	// Multi-repo workspace seeding constants
+	multiTenantNamespace = "paddock-multi-e2e"
+	multiWorkspace       = "multi"
+	multiDebugPod        = "multi-debug"
+	multiRepoAURL        = "https://github.com/octocat/Hello-World.git"
+	multiRepoBURL        = "https://github.com/octocat/Spoon-Knife.git"
+	multiRepoAPath       = "hello"
+	multiRepoBPath       = "spoon"
+
+	// HOME persistence constants
 	homePersistNS        = "paddock-home-persist-e2e"
 	homePersistTemplate  = "home-persist-echo"
 	homePersistWorkspace = "home-persist-ws"
@@ -62,22 +54,131 @@ const (
 	homePersistSentinel  = "paddock-home-e2e-sentinel-v1"
 )
 
-var _ = Describe("HOME persistence across Batch runs", Ordered, func() {
+var _ = Describe("workspace seeding", func() {
+	It("clones every seed repo into its own subdir and writes the manifest", func(ctx SpecContext) {
+		ns := framework.CreateTenantNamespace(ctx, multiTenantNamespace)
+
+		By("creating a Workspace with two public repos")
+		framework.ApplyYAML(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: Workspace
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  storage:
+    size: 100Mi
+  seed:
+    repos:
+      - url: %s
+        path: %s
+        depth: 1
+      - url: %s
+        path: %s
+        depth: 1
+`, multiWorkspace, ns, multiRepoAURL, multiRepoAPath, multiRepoBURL, multiRepoBPath))
+
+		By("waiting for the Workspace to reach phase=Active")
+		Eventually(func(g Gomega) {
+			out, err := utils.Run(exec.Command("kubectl", "-n", ns,
+				"get", "workspace", multiWorkspace, "-o", "jsonpath={.status.phase}"))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(out)).To(Equal("Active"),
+				"workspace still in phase %q", strings.TrimSpace(out))
+		}, 3*time.Minute, 3*time.Second).Should(Succeed())
+
+		By("verifying the seed Job emitted an init container per repo")
+		initNames, err := utils.Run(exec.Command("kubectl", "-n", ns,
+			"get", "job", multiWorkspace+"-seed",
+			"-o", "jsonpath={.spec.template.spec.initContainers[*].name}"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.Fields(strings.TrimSpace(initNames))).To(ConsistOf("repo-0", "repo-1"))
+
+		By("launching a debug Pod that mounts the PVC and prints the layout")
+		framework.ApplyYAML(fmt.Sprintf(`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: inspect
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - |
+          set -eu
+          echo '===MANIFEST==='
+          cat /workspace/.paddock/repos.json
+          echo '===HELLO==='
+          ls /workspace/%s
+          echo '===SPOON==='
+          ls /workspace/%s
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: ws
+          mountPath: /workspace
+  volumes:
+    - name: ws
+      persistentVolumeClaim:
+        claimName: ws-%s
+`, multiDebugPod, ns, multiRepoAPath, multiRepoBPath, multiWorkspace))
+
+		By("waiting for the debug pod to Succeed")
+		Eventually(func(g Gomega) {
+			out, err := utils.Run(exec.Command("kubectl", "-n", ns,
+				"get", "pod", multiDebugPod, "-o", "jsonpath={.status.phase}"))
+			g.Expect(err).NotTo(HaveOccurred())
+			phase := strings.TrimSpace(out)
+			g.Expect(phase).To(Equal("Succeeded"), "debug pod phase=%q", phase)
+		}, 90*time.Second, 2*time.Second).Should(Succeed())
+
+		By("verifying the manifest and directory layout")
+		logs, err := utils.Run(exec.Command("kubectl", "-n", ns,
+			"logs", multiDebugPod))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(logs).To(ContainSubstring("===MANIFEST==="))
+		Expect(logs).To(ContainSubstring(`"url": "` + multiRepoAURL + `"`))
+		Expect(logs).To(ContainSubstring(`"url": "` + multiRepoBURL + `"`))
+		Expect(logs).To(ContainSubstring(`"path": "` + multiRepoAPath + `"`))
+		Expect(logs).To(ContainSubstring(`"path": "` + multiRepoBPath + `"`))
+		// Hello-World repo contains README; both clones should
+		// leave a real working tree with a .git dir.
+		Expect(logs).To(ContainSubstring("===HELLO==="))
+		Expect(logs).To(ContainSubstring("README"))
+		Expect(logs).To(ContainSubstring("===SPOON==="))
+	})
+})
+
+var _ = Describe("workspace persistence", Ordered, func() {
 	// The suite-level BeforeSuite installs CRDs and deploys the
 	// controller-manager; this Describe only manages its own tenant
 	// namespace. AfterAll drains tenant state while the controller is
 	// still alive (same teardown pattern as e2e_test.go).
 
-	BeforeAll(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	BeforeAll(func(ctx SpecContext) {
+		cleanCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
 		// Clean slate in case a prior interrupted run left debris.
-		_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
+		_, _ = utils.Run(exec.CommandContext(cleanCtx, "kubectl",
 			"delete", "ns", homePersistNS,
 			"--ignore-not-found", "--wait=true", "--timeout=60s"))
 
-		mustCreateNamespace(homePersistNS)
+		framework.CreateTenantNamespace(ctx, homePersistNS)
 
 		// Namespaced HarnessTemplate. The command overrides paddock-echo's
 		// entrypoint with a shell script that reads E2E_HOME_PHASE and
@@ -87,7 +188,7 @@ var _ = Describe("HOME persistence across Batch runs", Ordered, func() {
 		//
 		// Single-quoted heredoc avoids any variable expansion in the YAML
 		// string literal; the variables are evaluated inside the container.
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessTemplate
 metadata:
@@ -136,7 +237,7 @@ spec:
 
 		// Explicit named Workspace so both runs share the same PVC and
 		// therefore the same $HOME directory.
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: Workspace
 metadata:
@@ -186,16 +287,16 @@ spec:
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		dumpRunDiagnostics(ctx, homePersistNS, homePersistRunWrite)
-		dumpRunDiagnostics(ctx, homePersistNS, homePersistRunRead)
+		framework.DumpRunDiagnostics(ctx, homePersistNS, homePersistRunWrite)
+		framework.DumpRunDiagnostics(ctx, homePersistNS, homePersistRunRead)
 	})
 
-	It("write run reaches Succeeded and persists $HOME/.persisted", func() {
+	It("writes a sentinel into $HOME on a Batch run", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 
 		By("submitting the write HarnessRun")
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -214,16 +315,16 @@ spec:
 
 		By("waiting for the write run to reach Succeeded")
 		Eventually(func() string {
-			return runPhase(ctx, homePersistNS, homePersistRunWrite)
+			return framework.RunPhase(ctx, homePersistNS, homePersistRunWrite)
 		}, 2*time.Minute, 2*time.Second).Should(Equal("Succeeded"))
 	})
 
-	It("read run reaches Succeeded and recovers the sentinel from $HOME", func() {
+	It("reads the sentinel back on a subsequent Batch run sharing the Workspace", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 
 		By("submitting the read HarnessRun against the same workspace")
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -242,7 +343,7 @@ spec:
 
 		By("waiting for the read run to reach Succeeded")
 		Eventually(func() string {
-			return runPhase(ctx, homePersistNS, homePersistRunRead)
+			return framework.RunPhase(ctx, homePersistNS, homePersistRunRead)
 		}, 2*time.Minute, 2*time.Second).Should(Equal("Succeeded"))
 
 		By("verifying the read run's output summary contains the written sentinel")

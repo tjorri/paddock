@@ -57,7 +57,7 @@ const (
 	tuiE2ERun       = "tui-int-run"
 )
 
-var _ = Describe("TUI broker client drives an Interactive run", Ordered, func() {
+var _ = Describe("interactive run via TUI client", Ordered, func() {
 	BeforeAll(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
@@ -67,12 +67,12 @@ var _ = Describe("TUI broker client drives an Interactive run", Ordered, func() 
 			"delete", "ns", tuiE2ENS,
 			"--ignore-not-found", "--wait=true", "--timeout=60s"))
 
-		mustCreateNamespace(tuiE2ENS)
+		framework.CreateNamespace(ctx, tuiE2ENS)
 
 		// ServiceAccount the broker client authenticates as. The broker
 		// only checks audience + namespace; no extra RBAC on the SA itself
 		// is required beyond what the default service-account-issuer grants.
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -89,7 +89,7 @@ metadata:
 		// max-lifetime watchdog fires within the test's 180s terminal
 		// wait. The 50s idle/detach values keep the webhook invariants
 		// idleTimeout<=maxLifetime + detachTimeout<=maxLifetime satisfied.
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessTemplate
 metadata:
@@ -114,7 +114,7 @@ spec:
     mountPath: /workspace`, tuiE2ETpl, tuiE2ENS, echoImage, adapterEchoImage))
 
 		// BrokerPolicy granting runs.interact against the template.
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
 metadata:
@@ -127,7 +127,7 @@ spec:
       interact: true`, tuiE2EPolicy, tuiE2ENS, tuiE2ETpl))
 
 		// Named Workspace so the run has a PVC to mount.
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: Workspace
 metadata:
@@ -167,13 +167,13 @@ spec:
 		framework.WaitForNamespaceGone(context.Background(), tuiE2ENS, 20*time.Second)
 	})
 
-	It("opens the broker stream, receives a frame, and ends the run cleanly", func() {
+	It("TUI broker client drives a Bound interactive run end-to-end", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 		defer cancel()
 
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
-				dumpRunDiagnostics(ctx, tuiE2ENS, tuiE2ERun)
+				framework.DumpRunDiagnostics(ctx, tuiE2ENS, tuiE2ERun)
 			}
 			// Best-effort cleanup of the run so AfterAll's namespace
 			// delete has one less finaliser to chase.
@@ -186,7 +186,7 @@ spec:
 		By("submitting an Interactive HarnessRun")
 		// No interactiveOverrides — the template's 60s maxLifetime is the
 		// load-bearing knob for this test (see template comment above).
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -201,7 +201,7 @@ spec:
   prompt: "hello-tui-e2e"`, tuiE2ERun, tuiE2ENS, tuiE2ETpl, tuiE2EWorkspace))
 
 		By("waiting for Phase=Running")
-		Eventually(func() string { return runPhase(ctx, tuiE2ENS, tuiE2ERun) },
+		Eventually(func() string { return framework.RunPhase(ctx, tuiE2ENS, tuiE2ERun) },
 			3*time.Minute, 2*time.Second).Should(Equal("Running"))
 
 		By("building a rest.Config from the current kubeconfig")
@@ -267,7 +267,7 @@ spec:
 		// mechanism. The 3-minute deadline gives the watchdog (60s
 		// max-lifetime + Job teardown + reconcile) generous head room
 		// over the budget interactive_test.go already proves works.
-		Eventually(func() string { return runPhase(ctx, tuiE2ENS, tuiE2ERun) },
+		Eventually(func() string { return framework.RunPhase(ctx, tuiE2ENS, tuiE2ERun) },
 			3*time.Minute, 3*time.Second).Should(
 			Or(Equal("Cancelled"), Equal("Succeeded")),
 			"run did not reach a terminal phase")

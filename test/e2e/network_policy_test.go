@@ -51,7 +51,7 @@ import (
 // Skips cleanly when the target cluster has no Cilium installation
 // (e.g. a stock kindnet cluster), so `go test -run` outside the
 // paddock-test-e2e cluster doesn't false-fail.
-var _ = Describe("paddock cilium compat (Issue #79)", Ordered, func() {
+var _ = Describe("cilium-aware network policy", Ordered, func() {
 	const (
 		ns               = "cilium-compat-e2e"
 		runName          = "compat-demo"
@@ -85,7 +85,7 @@ var _ = Describe("paddock cilium compat (Issue #79)", Ordered, func() {
 			templateName, "--ignore-not-found"))
 	})
 
-	It("emits a CiliumNetworkPolicy with toEntities + loopback rules for non-trivial requires", func() {
+	It("emits a CiliumNetworkPolicy with loopback-allow and toEntities for the apiserver", func() {
 		By("creating the credential Secret")
 		_, err := utils.Run(exec.Command("kubectl", "-n", ns,
 			"create", "secret", "generic", credSecretName,
@@ -181,17 +181,12 @@ spec:
 		Expect(err).NotTo(HaveOccurred(),
 			"expected ciliumnetworkpolicy/%s-egress to exist", runName)
 
-		// Issue #79 B-FIX: every Cilium-emitted per-run policy must
-		// allow toCIDR 127.0.0.0/8 so iptables-redirected agent
-		// traffic to the local proxy isn't dropped by NP enforcement.
+		// Covers Issue #79 B-FIX: iptables-redirected agent traffic to loopback
+		// must remain allowed by the per-run CiliumNetworkPolicy.
 		Expect(cnpYAML).To(ContainSubstring("127.0.0.0/8"),
 			"CNP must include loopback toCIDR rule (Issue #79 B-FIX)")
 
-		// Issue #79 A-FIX: the kube-apiserver allow is now scoped via
-		// toEntities rather than ipBlock against the Service ClusterIP,
-		// since Cilium does not enforce ipBlock against host-network
-		// destinations. A defensive remote-node entity is also emitted
-		// for clusters where the apiserver runs as a static pod.
+		// Covers Issue #79 A-FIX: avoid ipBlock against host-network apiserver.
 		Expect(cnpYAML).To(ContainSubstring("kube-apiserver"),
 			"CNP must include toEntities: kube-apiserver (Issue #79 A-FIX)")
 		Expect(cnpYAML).To(ContainSubstring("remote-node"),

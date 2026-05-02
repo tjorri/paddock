@@ -63,7 +63,7 @@ const (
 	interactiveRunShell     = "stub-run-shell"
 )
 
-var _ = Describe("Interactive HarnessRun lifecycle", Ordered, func() {
+var _ = Describe("interactive run lifecycle", Ordered, func() {
 	var (
 		token       string
 		brokerPort  int
@@ -77,12 +77,12 @@ var _ = Describe("Interactive HarnessRun lifecycle", Ordered, func() {
 		// Clean slate. Per-Describe namespace; AfterAll deletes it again.
 		_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
 			"delete", "ns", interactiveNS, "--ignore-not-found", "--wait=true", "--timeout=60s"))
-		mustCreateNamespace(interactiveNS)
+		framework.CreateNamespace(ctx, interactiveNS)
 
 		// ServiceAccount the e2e runner authenticates as when calling the
 		// broker. The broker only checks token audience + namespace match;
 		// no extra RBAC is required for the SA itself.
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -95,7 +95,7 @@ metadata:
 		// pod survives the test. The 50s/60s ratio keeps the webhook's
 		// idleTimeout<=maxLifetime + detachTimeout<=maxLifetime invariants
 		// satisfied.
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessTemplate
 metadata:
@@ -125,7 +125,7 @@ spec:
 		// default). target=agent so the WS exec lands in the harness
 		// container, where the harness's `sleep infinity` loop keeps
 		// the pod alive.
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
 metadata:
@@ -159,17 +159,17 @@ spec:
 			"delete", "ns", interactiveNS, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 	})
 
-	It("reaches Running, accepts a prompt via /v1/runs/.../prompts, and is cancelled by the max-lifetime watchdog", func() {
+	It("cancels a Bound run when its max-lifetime elapses", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
-				dumpRunDiagnostics(ctx, interactiveNS, interactiveRunLifecycle)
+				framework.DumpRunDiagnostics(ctx, interactiveNS, interactiveRunLifecycle)
 			}
 		})
 
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -183,7 +183,7 @@ spec:
   prompt: "hello-from-init"`, interactiveRunLifecycle, interactiveNS, interactiveTpl))
 
 		By("waiting for Phase=Running")
-		Eventually(func() string { return runPhase(ctx, interactiveNS, interactiveRunLifecycle) },
+		Eventually(func() string { return framework.RunPhase(ctx, interactiveNS, interactiveRunLifecycle) },
 			2*time.Minute, 2*time.Second).Should(Equal("Running"))
 
 		By("posting a prompt to the broker /v1/runs/.../prompts")
@@ -226,7 +226,7 @@ spec:
 		// maxLifetime=60s; the watchdog runs on the controller's
 		// reconcile cadence, so allow a generous budget for the
 		// cancel + finaliser settle.
-		Eventually(func() string { return runPhase(ctx, interactiveNS, interactiveRunLifecycle) },
+		Eventually(func() string { return framework.RunPhase(ctx, interactiveNS, interactiveRunLifecycle) },
 			3*time.Minute, 5*time.Second).Should(Equal("Cancelled"))
 
 		By("asserting an interactive-run-terminated audit event with reason=max-lifetime")
@@ -236,13 +236,13 @@ spec:
 		}, 60*time.Second, 2*time.Second).Should(BeTrue())
 	})
 
-	It("opens a shell over /v1/runs/.../shell and runs echo hello", func() {
+	It("/v1/runs/.../shell streams a working agent container", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
 
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
-				dumpRunDiagnostics(ctx, interactiveNS, interactiveRunShell)
+				framework.DumpRunDiagnostics(ctx, interactiveNS, interactiveRunShell)
 				// Explicit broker logs by deployment ref — the label
 				// selector form sometimes returns nothing in this
 				// suite. Dumps last 100 lines, includes prior runs.
@@ -261,7 +261,7 @@ spec:
 
 		// Override maxLifetime to 5m so the watchdog doesn't cancel
 		// the run mid-shell.
-		mustApplyManifest(fmt.Sprintf(`
+		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -277,7 +277,7 @@ spec:
     maxLifetime: 5m`, interactiveRunShell, interactiveNS, interactiveTpl))
 
 		By("waiting for Phase=Running on the shell run")
-		Eventually(func() string { return runPhase(ctx, interactiveNS, interactiveRunShell) },
+		Eventually(func() string { return framework.RunPhase(ctx, interactiveNS, interactiveRunShell) },
 			2*time.Minute, 2*time.Second).Should(Equal("Running"))
 
 		By("waiting for the run pod to reach PodPhase=Running")

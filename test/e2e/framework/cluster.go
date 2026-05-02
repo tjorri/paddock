@@ -155,6 +155,22 @@ func ForceClearAllPaddockCRs(ctx context.Context) {
 	}
 }
 
+// CreateNamespace creates a Kubernetes namespace and fails the spec if the
+// create call returns an unexpected error. Idempotent: an AlreadyExists
+// response is silently ignored so re-running a partially completed spec
+// doesn't break BeforeAll setup.
+//
+// Unlike CreateTenantNamespace, this function does NOT register a
+// DeferCleanup for teardown — callers that need automatic teardown should
+// use CreateTenantNamespace instead.
+func CreateNamespace(ctx context.Context, ns string) {
+	ginkgo.GinkgoHelper()
+	out, err := RunCmd(ctx, "kubectl", "create", "ns", ns)
+	if err != nil && !strings.Contains(out, "AlreadyExists") {
+		gomega.Expect(err).NotTo(gomega.HaveOccurred(), "kubectl create ns %s: %s", ns, out)
+	}
+}
+
 // CreateTenantNamespace creates a tenant namespace and registers a
 // DeferCleanup hook that drains finalizers, force-clears on timeout,
 // and emits a WARNING if the namespace pins in Terminating.
