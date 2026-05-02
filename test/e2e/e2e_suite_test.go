@@ -20,16 +20,16 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"testing"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"paddock.dev/paddock/test/e2e/framework"
 	"paddock.dev/paddock/test/utils"
 )
 
@@ -54,6 +54,14 @@ var (
 	skipCertManagerInstall        = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
 	isCertManagerAlreadyInstalled = false
 )
+
+// Top-level diagnostic dump: emits comprehensive post-mortem artifacts
+// on every spec failure. Wired once for the whole suite, replacing the
+// per-Describe AfterEach duplicate in the main pipeline Describe.
+var _ = func() bool {
+	framework.RegisterDiagnosticDump()
+	return true
+}()
 
 // TestE2E runs the end-to-end suite. Expects Kind installed and a
 // cluster named $KIND_CLUSTER (default "paddock-test-e2e") usable.
@@ -128,8 +136,8 @@ var _ = BeforeSuite(func() {
 	// webhook is reachable — the Endpoints object is populated
 	// before kube-proxy finishes programming the ClusterIP rules,
 	// so the first ~hundreds of milliseconds of "Ready" still fail
-	// webhook calls with "connection refused". applyFromYAML in the
-	// suite's Describes handles that race with a targeted retry loop.
+	// webhook calls with "connection refused". framework.ApplyYAML in
+	// the suite's Describes handles that race with a targeted retry loop.
 })
 
 var _ = AfterSuite(func() {
@@ -147,7 +155,7 @@ var _ = AfterSuite(func() {
 	// controller is alive; `make undeploy` then has nothing left to
 	// wait on, and `make uninstall` removes the now-empty CRDs cleanly.
 	By("draining paddock CRs cluster-wide before controller teardown")
-	drainPaddockResources()
+	framework.DrainAllPaddockResources(context.Background())
 
 	By("undeploying the controller-manager (suite-level)")
 	_, _ = utils.Run(exec.Command("make", "undeploy", "ignore-not-found=true"))
@@ -160,82 +168,6 @@ var _ = AfterSuite(func() {
 		utils.UninstallCertManager()
 	}
 })
-
-// drainPaddockResources deletes every paddock CR cluster-wide with
-// --wait so finalizers run while the controller is still alive.
-// Idempotent: per-Describe AfterAlls usually cover their own state;
-// this is the safety net that catches any namespace they missed.
-//
-// Order: HarnessRun first (its finalizer drives Workspace
-// activeRunRef clearance), then Workspace, then the rest. Other CRs
-// have no inter-finalizer dependencies — order among them is for
-// reading-order clarity only.
-//
-// Per-CR --timeout=60s + outer runWithTimeout=90s means a single
-// stuck finalizer caps drain cost rather than dragging the whole
-// AfterSuite past Ginkgo's deadline. Force-clear fallback fires per
-// surviving CR with a loud warning so a regression in a finalizer
-// loop can't hide behind a green AfterSuite.
-func drainPaddockResources() {
-	type drainTarget struct {
-		kind       string // plural.fqdn so kubectl resolves unambiguously
-		namespaced bool
-	}
-	targets := []drainTarget{
-		{"harnessruns.paddock.dev", true},
-		{"workspaces.paddock.dev", true},
-		{"brokerpolicies.paddock.dev", true},
-		{"harnesstemplates.paddock.dev", true},
-		{"auditevents.paddock.dev", true},
-		{"clusterharnesstemplates.paddock.dev", false},
-	}
-
-	for _, t := range targets {
-		args := []string{"delete", t.kind, "--all", "--ignore-not-found=true",
-			"--wait=true", "--timeout=60s"}
-		if t.namespaced {
-			args = append(args, "-A")
-		}
-		runWithTimeout(90*time.Second, "kubectl", args...)
-	}
-
-	// Belt-and-braces: any namespaced CR still present after the
-	// targeted delete means its finalizer didn't converge — emit a
-	// loud warning and force-clear so AfterSuite still completes
-	// (the cluster is about to be torn down anyway).
-	forceClearSurvivingPaddockCRs()
-}
-
-// forceClearSurvivingPaddockCRs nulls out finalizers on any
-// HarnessRun/Workspace that survived the targeted drain. Mirrors
-// the per-namespace forceClearFinalizers fallback used by
-// e2e_test.go's AfterAll, but cluster-wide and AfterSuite-scoped.
-//
-// Emits a WARNING on every survivor so a regression in the
-// controller's reconcile-delete loop is visible in CI logs even
-// when the suite reports green.
-func forceClearSurvivingPaddockCRs() {
-	for _, kind := range []string{"harnessruns", "workspaces"} {
-		out, err := utils.Run(exec.Command("kubectl", "get", kind, "-A",
-			"-o", "jsonpath={range .items[*]}{.metadata.namespace} {.metadata.name}{\"\\n\"}{end}",
-			"--ignore-not-found"))
-		if err != nil || strings.TrimSpace(out) == "" {
-			continue
-		}
-		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-			parts := strings.Fields(line)
-			if len(parts) != 2 {
-				continue
-			}
-			ns, name := parts[0], parts[1]
-			_, _ = fmt.Fprintf(GinkgoWriter,
-				"WARNING: %s %s/%s survived AfterSuite drain — force-clearing finalizers; "+
-					"investigate the controller's reconcile-delete loop\n", kind, ns, name)
-			runWithTimeout(10*time.Second, "kubectl", "-n", ns, "patch", kind, name,
-				"--type=merge", "-p", `{"metadata":{"finalizers":null}}`)
-		}
-	}
-}
 
 // buildAndLoad runs `make <targets>` then kind-loads the resulting
 // image. Fails the suite on either step so BeforeSuite reports the

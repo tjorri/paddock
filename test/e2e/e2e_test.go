@@ -22,17 +22,16 @@ package e2e
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"paddock.dev/paddock/test/e2e/framework"
 	"paddock.dev/paddock/test/utils"
 )
 
@@ -56,7 +55,6 @@ const (
 	// v0.3 broker/proxy scenarios (spec 0002 §15.5-7). Each lives in
 	// its own namespace so the AuditEvent queries don't cross-contaminate
 	// and the scenarios can run independently.
-	v3BrokerDeploy         = "paddock-broker"
 	v3EgressNamespace      = "paddock-v3-egress-e2e"
 	v3EgressTemplate       = "e2e-egress"
 	v3EgressRunName        = "egress-1"
@@ -68,64 +66,6 @@ const (
 	v3PolicyDelPolicyName  = "transient-policy"
 	v3PolicyDelRunName     = "policy-delete-1"
 )
-
-// paddockEvent mirrors the serialised PaddockEvent — the e2e package
-// stays decoupled from the api module's typed client to keep the
-// build surface small.
-type paddockEvent struct {
-	SchemaVersion string            `json:"schemaVersion"`
-	Timestamp     string            `json:"ts"`
-	Type          string            `json:"type"`
-	Summary       string            `json:"summary,omitempty"`
-	Fields        map[string]string `json:"fields,omitempty"`
-}
-
-type harnessRunStatus struct {
-	Phase        string                `json:"phase"`
-	JobName      string                `json:"jobName"`
-	WorkspaceRef string                `json:"workspaceRef"`
-	RecentEvents []paddockEvent        `json:"recentEvents"`
-	Conditions   []harnessRunCondition `json:"conditions"`
-	Outputs      *struct {
-		Summary      string `json:"summary"`
-		FilesChanged int    `json:"filesChanged"`
-	} `json:"outputs"`
-}
-
-type harnessRunCondition struct {
-	Type    string `json:"type"`
-	Status  string `json:"status"`
-	Reason  string `json:"reason"`
-	Message string `json:"message"`
-}
-
-// auditEvent mirrors the trimmed subset of the AuditEvent CRD the v0.3
-// scenarios care about. Parsed from `kubectl get auditevents -o json`
-// output so the e2e package doesn't need a typed client.
-type auditEventList struct {
-	Items []auditEvent `json:"items"`
-}
-
-type auditEvent struct {
-	Metadata struct {
-		Name              string `json:"name"`
-		Namespace         string `json:"namespace"`
-		CreationTimestamp string `json:"creationTimestamp"`
-	} `json:"metadata"`
-	Spec struct {
-		Decision  string `json:"decision"`
-		Kind      string `json:"kind"`
-		Timestamp string `json:"timestamp"`
-		Reason    string `json:"reason"`
-		RunRef    *struct {
-			Name string `json:"name"`
-		} `json:"runRef,omitempty"`
-		Destination *struct {
-			Host string `json:"host"`
-			Port int    `json:"port"`
-		} `json:"destination,omitempty"`
-	} `json:"spec"`
-}
 
 var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 	// The suite-level BeforeSuite installs CRDs + deploys the
@@ -146,7 +86,7 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		// namespace-delete cascade, leftover HarnessRun/Workspace
 		// objects keep their finalizers forever → namespace pins in
 		// Terminating → CRD delete in `kustomize delete` blocks →
-		// undeploy hangs until its runWithTimeout fires.
+		// undeploy hangs until its RunCmdWithTimeout fires.
 		//
 		// Fix: drain tenant state first (namespaces must fully
 		// disappear while the controller is still alive), THEN
@@ -163,7 +103,7 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		//    parallel. --wait=false so we can drive our own wait
 		//    loop below and keep the parallelism.
 		for _, ns := range testNamespaces {
-			runWithTimeout(10*time.Second, "kubectl", "delete", "ns", ns,
+			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "ns", ns,
 				"--wait=false", "--ignore-not-found=true")
 		}
 
@@ -175,74 +115,27 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 		//    45-60s of drain time); still well below Ginkgo's 11-min
 		//    suite timeout. Fallback on timeout → force-clear + warn.
 		for _, ns := range testNamespaces {
-			if waitForNamespaceGone(ns, 120*time.Second) {
+			if framework.WaitForNamespaceGone(context.Background(), ns, 120*time.Second) {
 				continue
 			}
 			fmt.Fprintf(GinkgoWriter,
 				"WARNING: namespace %s stuck in Terminating after 120s; "+
 					"controller-side finalizer drain likely broken — force-clearing\n", ns)
-			forceClearFinalizers(ns)
+			framework.ForceClearFinalizers(context.Background(), ns)
 			// One more short wait so subsequent steps aren't racing
 			// a half-gone namespace; fall through regardless.
-			waitForNamespaceGone(ns, 20*time.Second)
+			framework.WaitForNamespaceGone(context.Background(), ns, 20*time.Second)
 		}
 
 		// 3. Non-finalizer cluster-scoped resources.
-		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", clusterTemplateName, "--ignore-not-found=true")
-		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3EgressTemplate, "--ignore-not-found=true")
-		runWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3BrokerDownTemplate, "--ignore-not-found=true")
+		_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", clusterTemplateName, "--ignore-not-found=true")
+		_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3EgressTemplate, "--ignore-not-found=true")
+		_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete", "clusterharnesstemplate", v3BrokerDownTemplate, "--ignore-not-found=true")
 
 		// Suite-level AfterSuite handles `make undeploy` + `make
 		// uninstall` after every Describe finishes — the controller
 		// stays alive across Describes so the next one's tenant-state
 		// reconciliation just works.
-	})
-
-	AfterEach(func() {
-		spec := CurrentSpecReport()
-		if !spec.Failed() {
-			return
-		}
-		// Collect evidence for post-mortem — keep the output tight so
-		// CI logs stay readable when something breaks.
-		By("dumping controller-manager logs")
-		if logs, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-			"logs", "-l", "control-plane=controller-manager", "--tail=200")); err == nil {
-			fmt.Fprintln(GinkgoWriter, "--- controller logs ---\n"+logs)
-		}
-		By("dumping broker logs")
-		if logs, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-			"logs", "-l", "app.kubernetes.io/component=broker", "--tail=200")); err == nil && strings.TrimSpace(logs) != "" {
-			fmt.Fprintln(GinkgoWriter, "--- broker logs ---\n"+logs)
-		}
-		// v0.3 per-run logs: proxy sidecar + iptables-init init container.
-		// Dumped from every v0.3 scenario namespace because a failure can
-		// occur in whichever scenario owns the current spec.
-		for _, ns := range []string{runNamespace, v3EgressNamespace, v3BrokerDownNamespace, v3PolicyDelNamespace} {
-			By("dumping run namespace events: " + ns)
-			if evts, err := utils.Run(exec.Command("kubectl", "-n", ns,
-				"get", "events", "--sort-by=.lastTimestamp")); err == nil && strings.TrimSpace(evts) != "" {
-				fmt.Fprintln(GinkgoWriter, "--- events ("+ns+") ---\n"+evts)
-			}
-			if pods, err := utils.Run(exec.Command("kubectl", "-n", ns, "get", "pods", "-o", "wide")); err == nil && strings.TrimSpace(pods) != "" {
-				fmt.Fprintln(GinkgoWriter, "--- pods ("+ns+") ---\n"+pods)
-			}
-			// Per-container logs — Ignore errors so namespaces not used
-			// by this spec silently skip.
-			for _, c := range []string{"proxy", "iptables-init", "agent", "adapter", "collector"} {
-				out, err := utils.Run(exec.Command("kubectl", "-n", ns,
-					"logs", "-l", "paddock.dev/run", "-c", c, "--tail=100"))
-				if err == nil && strings.TrimSpace(out) != "" {
-					fmt.Fprintln(GinkgoWriter, "--- "+c+" logs ("+ns+") ---\n"+out)
-				}
-			}
-			// AuditEvents aid v0.3 diagnosis: shows what the proxy
-			// decided about each connection.
-			if out, err := utils.Run(exec.Command("kubectl", "-n", ns,
-				"get", "auditevents", "--sort-by=.spec.timestamp")); err == nil && strings.TrimSpace(out) != "" {
-				fmt.Fprintln(GinkgoWriter, "--- auditevents ("+ns+") ---\n"+out)
-			}
-		}
 	})
 
 	SetDefaultEventuallyTimeout(3 * time.Minute)
@@ -255,7 +148,7 @@ var _ = Describe("paddock v0.1-v0.3 pipeline", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("applying the echo ClusterHarnessTemplate")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: ClusterHarnessTemplate
 metadata:
@@ -274,7 +167,7 @@ spec:
 `, clusterTemplateName, echoImage, adapterEchoImage))
 
 			By("submitting a HarnessRun (ephemeral workspace, inline prompt)")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -288,7 +181,7 @@ spec:
 `, runName, runNamespace, clusterTemplateName))
 
 			By("waiting for phase=Succeeded")
-			var status harnessRunStatus
+			var status framework.HarnessRunStatus
 			Eventually(func(g Gomega) {
 				out, err := utils.Run(exec.Command("kubectl", "-n", runNamespace,
 					"get", "harnessrun", runName, "-o", "jsonpath={.status}"))
@@ -358,7 +251,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			By("creating a Workspace with two public repos")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: Workspace
 metadata:
@@ -394,7 +287,7 @@ spec:
 			Expect(strings.Fields(strings.TrimSpace(initNames))).To(ConsistOf("repo-0", "repo-1"))
 
 			By("launching a debug Pod that mounts the PVC and prints the layout")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: v1
 kind: Pod
 metadata:
@@ -502,7 +395,7 @@ spec:
 			// Empty requires means every namespace admits the template
 			// without a matching BrokerPolicy; admission is a fast path,
 			// enforcement is at the proxy.
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: ClusterHarnessTemplate
 metadata:
@@ -521,7 +414,7 @@ spec:
 `, v3EgressTemplate, e2eEgressImage, adapterEchoImage))
 
 			By("submitting a HarnessRun whose probe target is evil.com")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -547,8 +440,8 @@ spec:
 			}, 3*time.Minute, 3*time.Second).Should(Succeed())
 
 			By("confirming an egress-block AuditEvent landed for evil.com:443")
-			events := listAuditEvents(v3EgressNamespace)
-			var blocked *auditEvent
+			events := framework.ListAuditEvents(context.Background(), v3EgressNamespace)
+			var blocked *framework.AuditEvent
 			for i := range events {
 				e := events[i]
 				if e.Spec.Kind == "egress-block" && e.Spec.Destination != nil &&
@@ -576,7 +469,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			By("registering a template that requires a broker-issued credential")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: ClusterHarnessTemplate
 metadata:
@@ -598,7 +491,7 @@ spec:
 `, v3BrokerDownTemplate, echoImage, adapterEchoImage))
 
 			By("applying a BrokerPolicy granting DEMO_TOKEN via UserSuppliedSecret (in-container delivery)")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
 metadata:
@@ -621,9 +514,8 @@ spec:
 `, v3BrokerDownNamespace, v3BrokerDownTemplate, v3BrokerDownSecretName))
 
 			By("scaling the broker Deployment to 0 before submitting the run")
-			_, err = utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-				"scale", "deploy", v3BrokerDeploy, "--replicas=0"))
-			Expect(err).NotTo(HaveOccurred())
+			broker := framework.GetBroker(context.Background())
+			broker.ScaleTo(context.Background(), 0)
 			// Wait until every broker Pod is gone — not just NotReady —
 			// so kube-proxy has pulled the Endpoints entries and the
 			// reconciler's first Issue RPC can't slip through against a
@@ -641,13 +533,13 @@ spec:
 			// DeferCleanup runs after the It completes (success, Fail,
 			// or panic) and integrates with Ginkgo's reporter, unlike
 			// defer which silently logs on a writer that a SIGKILL
-			// could truncate. restoreBroker asserts loudly — a visible
+			// could truncate. RestoreOnTeardown asserts loudly — a visible
 			// red here beats a broken broker cascading into Scenario C
 			// and being mis-attributed as a Scenario C flake.
-			DeferCleanup(restoreBroker)
+			broker.RestoreOnTeardown()
 
 			By("submitting a HarnessRun and expecting Pending/BrokerUnavailable")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -661,7 +553,7 @@ spec:
 `, v3BrokerDownRunName, v3BrokerDownNamespace, v3BrokerDownTemplate))
 
 			Eventually(func(g Gomega) {
-				var status harnessRunStatus
+				var status framework.HarnessRunStatus
 				out, err := utils.Run(exec.Command("kubectl", "-n", v3BrokerDownNamespace,
 					"get", "harnessrun", v3BrokerDownRunName, "-o", "jsonpath={.status}"))
 				g.Expect(err).NotTo(HaveOccurred())
@@ -669,7 +561,7 @@ spec:
 				g.Expect(json.Unmarshal([]byte(out), &status)).To(Succeed())
 				g.Expect(status.Phase).To(Equal("Pending"),
 					"want Pending while broker is scaled to zero; got %q", status.Phase)
-				ready := findCondition(status.Conditions, "BrokerReady")
+				ready := framework.FindCondition(status.Conditions, "BrokerReady")
 				g.Expect(ready).NotTo(BeNil())
 				g.Expect(ready.Status).To(Equal("False"))
 				g.Expect(ready.Reason).To(Equal("BrokerUnavailable"),
@@ -677,7 +569,8 @@ spec:
 			}, 90*time.Second, 3*time.Second).Should(Succeed())
 
 			By("re-scaling the broker to 1 and waiting for it to accept traffic")
-			restoreBroker()
+			broker.ScaleTo(context.Background(), 1)
+			broker.WaitReady(context.Background())
 
 			By("expecting the run to reach Succeeded once the broker is back")
 			Eventually(func(g Gomega) {
@@ -693,7 +586,7 @@ spec:
 	Context("v0.3 BrokerPolicy deleted mid-run", func() {
 		It("keeps blocking new upstream connections after the policy is deleted", func() {
 			By("confirming Scenario B left the broker serving (pre-check)")
-			requireBrokerHealthy()
+			framework.GetBroker(context.Background()).RequireHealthy(context.Background())
 
 			By("creating the policy-delete-scenario namespace")
 			_, err := utils.Run(exec.Command("kubectl", "create", "ns", v3PolicyDelNamespace))
@@ -712,7 +605,7 @@ spec:
 			// Server-side structural validation rejects the object
 			// pre-webhook if the key is absent, so supply an empty
 			// credentials array to satisfy the schema.
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: BrokerPolicy
 metadata:
@@ -725,7 +618,7 @@ spec:
 `, v3PolicyDelPolicyName, v3PolicyDelNamespace, v3EgressTemplate))
 
 			By("submitting a HarnessRun that loop-probes evil.com while holding the Pod for 45s")
-			applyFromYAML(fmt.Sprintf(`
+			framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
 metadata:
@@ -747,7 +640,7 @@ spec:
 
 			By("waiting for at least one egress-block AuditEvent (pre-delete baseline)")
 			Eventually(func(g Gomega) {
-				events := listAuditEvents(v3PolicyDelNamespace)
+				events := framework.ListAuditEvents(context.Background(), v3PolicyDelNamespace)
 				var count int
 				for _, e := range events {
 					if e.Spec.Kind == "egress-block" {
@@ -769,7 +662,7 @@ spec:
 			// absorb kubelet scheduling + loop cadence + kubectl
 			// round-trips without being flaky.
 			Eventually(func(g Gomega) {
-				events := listAuditEvents(v3PolicyDelNamespace)
+				events := framework.ListAuditEvents(context.Background(), v3PolicyDelNamespace)
 				var freshest time.Time
 				for _, e := range events {
 					if e.Spec.Kind != "egress-block" {
@@ -800,221 +693,3 @@ spec:
 		})
 	})
 })
-
-// listAuditEvents returns the AuditEvents currently present in the
-// namespace, decoded from `kubectl get -o json`. Unconditional Expect
-// on failure keeps the assertion stacks short in scenario code.
-func listAuditEvents(ns string) []auditEvent {
-	out, err := utils.Run(exec.Command("kubectl", "-n", ns, "get", "auditevents", "-o", "json"))
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "listing auditevents in %s", ns)
-	var list auditEventList
-	ExpectWithOffset(1, json.Unmarshal([]byte(out), &list)).To(Succeed(),
-		"decoding auditevents list in %s", ns)
-	return list.Items
-}
-
-// findCondition returns a pointer to the first condition of the given
-// type, or nil if none is present. Used by the broker-down scenario to
-// inspect BrokerReady.
-func findCondition(conds []harnessRunCondition, conditionType string) *harnessRunCondition {
-	for i := range conds {
-		if conds[i].Type == conditionType {
-			return &conds[i]
-		}
-	}
-	return nil
-}
-
-// restoreBroker re-scales the paddock-broker Deployment to 1, waits
-// for the rollout, and probes its Endpoints until it's actually
-// serving traffic. Idempotent — safe to call from the scenario body
-// AND from DeferCleanup.
-//
-// All failures are reported with Ginkgo's Fail so restoration problems
-// surface as a clean red instead of silently poisoning the next
-// scenario (the Ordered Describe shares broker state across all specs).
-// The Endpoints probe is symmetric with the pre-check that waits for
-// the pods to disappear during scale-to-zero.
-func restoreBroker() {
-	if _, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-		"scale", "deploy", v3BrokerDeploy, "--replicas=1")); err != nil {
-		Fail(fmt.Sprintf("restoreBroker: scale --replicas=1 failed: %v", err))
-	}
-	if _, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-		"rollout", "status", "deploy/"+v3BrokerDeploy, "--timeout=120s")); err != nil {
-		Fail(fmt.Sprintf("restoreBroker: rollout status failed: %v", err))
-	}
-	Eventually(func(g Gomega) {
-		addrs, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-			"get", "endpoints", v3BrokerDeploy,
-			"-o", "jsonpath={.subsets[*].addresses[*].ip}"))
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(addrs)).NotTo(BeEmpty(),
-			"broker Endpoints has no ready addresses: %q", strings.TrimSpace(addrs))
-	}, 30*time.Second, 2*time.Second).Should(Succeed(),
-		"restoreBroker: broker Endpoints never populated after scale-up")
-}
-
-// requireBrokerHealthy is a cheap pre-check for scenarios that follow
-// Scenario B in the Ordered Describe — if Scenario B's restoreBroker
-// regressed, we want the failure attributed to this assertion rather
-// than masqueraded as a Scenario C flake.
-func requireBrokerHealthy() {
-	EventuallyWithOffset(1, func(g Gomega) {
-		addrs, err := utils.Run(exec.Command("kubectl", "-n", controlPlaneNamespace,
-			"get", "endpoints", v3BrokerDeploy,
-			"-o", "jsonpath={.subsets[*].addresses[*].ip}"))
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(strings.TrimSpace(addrs)).NotTo(BeEmpty(),
-			"broker Endpoints empty — did Scenario B's restoreBroker misfire?")
-	}, 30*time.Second, 2*time.Second).Should(Succeed())
-}
-
-// applyFromYAML pipes the given YAML into `kubectl apply -f -`,
-// retrying on transient webhook/apiserver errors for up to applyRetryBudget.
-//
-// Why retry: a freshly-rolled controller races with kube-proxy's
-// Service→Pod rule programming. The Deployment's rollout-status
-// returns Ready and the Endpoints object gets populated before
-// kube-proxy has actually programmed the ClusterIP forwarding, which
-// opens a ~hundreds-of-milliseconds window where the apiserver's
-// webhook call to paddock-webhook-service:443 gets "connection
-// refused". Retries close the window without swallowing real
-// validation failures — see isRetriableApplyErr.
-func applyFromYAML(yaml string) {
-	const applyRetryBudget = 30 * time.Second
-	deadline := time.Now().Add(applyRetryBudget)
-	var lastErr error
-	attempt := 0
-	for {
-		attempt++
-		cmd := exec.Command("kubectl", "apply", "-f", "-")
-		cmd.Stdin = strings.NewReader(yaml)
-		_, err := utils.Run(cmd)
-		if err == nil {
-			return
-		}
-		lastErr = err
-		// Eager diagnostic: print the kubectl stderr + the YAML body
-		// to GinkgoWriter BEFORE we decide whether to retry. If Go's
-		// test-timeout kills the process later (as it did on CI run
-		// 24875514481), the Ginkgo spec-failure summary never lands in
-		// the log — but streamed `-v` output does. Without this, a
-		// mid-teardown kill leaves operators with no cause.
-		fmt.Fprintf(GinkgoWriter,
-			"kubectl apply attempt %d failed (retriable=%t): %v\nYAML:\n%s\n",
-			attempt, isRetriableApplyErr(err), err, yaml)
-		if !isRetriableApplyErr(err) || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	ExpectWithOffset(1, lastErr).NotTo(HaveOccurred(), "kubectl apply failed for:\n%s", yaml)
-}
-
-// isRetriableApplyErr returns true only for transient webhook/apiserver
-// conditions that typically resolve within a few seconds of a fresh
-// deploy. Deliberately does NOT match the generic "Internal error
-// occurred: failed calling webhook" prefix, which also fires for
-// permanent failures (cert issues, webhook-returned errors) that
-// retries can't fix.
-func isRetriableApplyErr(err error) bool {
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "connection refused"):
-		return true
-	case strings.Contains(msg, "no endpoints available for service"):
-		return true
-	case strings.Contains(msg, "context deadline exceeded"):
-		return true
-	}
-	return false
-}
-
-// waitForNamespaceGone polls `kubectl get ns <ns>` until the API
-// server returns NotFound or the budget expires. Returns true on
-// disappearance, false on timeout. Each poll call is bounded by
-// runWithTimeout so a totally unresponsive apiserver can't stall
-// AfterAll past its own deadline.
-//
-// Used by the teardown sequence to wait for the controller's
-// finalizer drain to finish BEFORE `make undeploy` scales it to zero
-// — the alternative (kubectl delete ns --wait with one --timeout per
-// call) serialises the work; this keeps namespace deletions running
-// in parallel and just watches from the outside.
-func waitForNamespaceGone(ns string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := utils.Run(exec.CommandContext(ctx, "kubectl", "get", "ns", ns))
-		cancel()
-		if err != nil && strings.Contains(err.Error(), "not found") {
-			return true
-		}
-		time.Sleep(2 * time.Second)
-	}
-	return false
-}
-
-// forceClearFinalizers is the last-resort fallback for AfterAll —
-// fires only when waitForNamespaceGone times out, which means the
-// controller's reconcile-delete loop failed to converge. Null-patches
-// .metadata.finalizers on every HarnessRun and Workspace in ns so the
-// namespace terminator can finish. Safe in test teardown only — the
-// follow-on `kind delete cluster` reclaims any owned resources the
-// finalizer cleanup would have handled (Job, PVC, Secret).
-//
-// When this runs it's a signal that a controller-side change broke
-// finalizer convergence — the calling AfterAll branch emits a loud
-// warning so the regression doesn't hide behind a green teardown.
-func forceClearFinalizers(ns string) {
-	for _, kind := range []string{"harnessruns", "workspaces"} {
-		out, err := utils.Run(exec.Command("kubectl", "-n", ns, "get", kind,
-			"-o", "jsonpath={.items[*].metadata.name}", "--ignore-not-found"))
-		if err != nil {
-			continue
-		}
-		for _, name := range strings.Fields(strings.TrimSpace(out)) {
-			runWithTimeout(10*time.Second, "kubectl", "-n", ns, "patch", kind, name,
-				"--type=merge", "-p", `{"metadata":{"finalizers":null}}`)
-		}
-	}
-}
-
-// runWithTimeout runs a command via utils.Run under a context with
-// the given deadline. On timeout the ENTIRE process group gets
-// SIGKILL, and pipe I/O is force-closed within WaitDelay. A one-line
-// note lands on GinkgoWriter. Output is discarded — callers who need
-// it should use utils.Run directly. Intended for best-effort teardown
-// steps that must not block the suite.
-//
-// Why the process-group gymnastics: `exec.CommandContext`'s default
-// cancel signals only the top-level process. When we call `make
-// undeploy`, `make` spawns `kustomize build | kubectl delete`, and
-// those children inherit stdout/stderr fds. SIGKILL on `make` leaves
-// them running with the pipes open, and `os/exec.(*Cmd).Wait()`
-// blocks forever in `awaitGoroutines` draining the pipe readers.
-// CI run 24880620880 hung AfterAll on exactly this and hit Ginkgo's
-// 11-min suite timeout. Setpgid + pgid-SIGKILL kills the whole tree;
-// WaitDelay caps the pipe-drain wait as a belt-and-suspenders so Wait
-// can never block past `timeout + WaitDelay`.
-func runWithTimeout(timeout time.Duration, name string, args ...string) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
-		}
-		// Negative pid signals the process group created by Setpgid,
-		// not just the leader — kills make + every inherited child.
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	cmd.WaitDelay = 5 * time.Second
-	_, err := utils.Run(cmd)
-	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		fmt.Fprintf(GinkgoWriter, "teardown timed out after %s: %s %s\n",
-			timeout, name, strings.Join(args, " "))
-	}
-}

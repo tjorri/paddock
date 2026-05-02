@@ -49,6 +49,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"paddock.dev/paddock/test/e2e/framework"
 	"paddock.dev/paddock/test/utils"
 )
 
@@ -169,14 +170,14 @@ spec:
 			"delete", "ns", homePersistNS,
 			"--wait=false", "--ignore-not-found=true"))
 
-		if waitForNamespaceGone(homePersistNS, 90*time.Second) {
+		if framework.WaitForNamespaceGone(context.Background(), homePersistNS, 90*time.Second) {
 			return
 		}
 		fmt.Fprintf(GinkgoWriter,
 			"WARNING: namespace %s stuck in Terminating after 90s — force-clearing finalizers\n",
 			homePersistNS)
-		forceClearFinalizers(homePersistNS)
-		waitForNamespaceGone(homePersistNS, 20*time.Second)
+		framework.ForceClearFinalizers(context.Background(), homePersistNS)
+		framework.WaitForNamespaceGone(context.Background(), homePersistNS, 20*time.Second)
 	})
 
 	AfterEach(func() {
@@ -249,7 +250,7 @@ spec:
 		// output ConfigMap (<run>-out) under key "phase"="Completed" and
 		// the run's status.outputs.summary field. Poll status.outputs
 		// rather than the ConfigMap — same poll we'd use for events.
-		var runStatus harnessRunStatus
+		var runStatus framework.HarnessRunStatus
 		Eventually(func(g Gomega) {
 			out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", homePersistNS,
 				"get", "harnessrun", homePersistRunRead, "-o", "jsonpath={.status}"))
