@@ -246,7 +246,11 @@ func TestStream_CtxCancel(t *testing.T) {
 	// Cancel the context; the read loop must exit.
 	cancel()
 
-	// Assert the channel closes within 2 seconds.
+	// Assert the channel closes. The deadline is generous because this
+	// test runs t.Parallel alongside four other parallel tests in the
+	// same package under `-race`, and CI runners can stall scheduling
+	// for seconds at a time. A real goroutine leak would never close,
+	// so 10s still surfaces it without flaking on a busy runner.
 	select {
 	case _, ok := <-ch:
 		if ok {
@@ -254,13 +258,14 @@ func TestStream_CtxCancel(t *testing.T) {
 			for range ch {
 			}
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("goroutine leak: channel did not close within 2s after ctx cancel")
+	case <-time.After(10 * time.Second):
+		t.Fatal("goroutine leak: channel did not close within 10s after ctx cancel")
 	}
 
-	// Wait briefly for goroutines spawned by Open to exit, then check
-	// the count. Allow a small delta for test-framework goroutines.
-	deadline := time.Now().Add(2 * time.Second)
+	// Wait for goroutines spawned by Open to exit, then check the count.
+	// Same parallel-test caveat applies — give the scheduler room before
+	// asserting.
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if runtime.NumGoroutine() <= goroutinesBefore+2 {
 			break

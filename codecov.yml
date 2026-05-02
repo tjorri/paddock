@@ -1,0 +1,24 @@
+# Codecov configuration. Two status checks are posted on PRs:
+#
+#   project — overall repo coverage. Marked informational so a tiny
+#             noise drop on a refactor / release-please PR does not
+#             block merge. A 1% threshold guards against runaway
+#             erosion in the rare case someone removes a tested
+#             package without adding tests elsewhere.
+#
+#   patch   — coverage on the lines added/changed by the PR. This is
+#             the real gate: new code should be exercised by tests.
+#             target=auto pins the bar to current project coverage so
+#             the threshold tracks reality instead of an arbitrary
+#             number we forget to revisit.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+        informational: true
+    patch:
+      default:
+        target: auto
+        threshold: 0%
