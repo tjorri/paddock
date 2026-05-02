@@ -114,17 +114,9 @@ spec:
     mountPath: /workspace`, tuiE2ETpl, tuiE2ENS, echoImage, adapterEchoImage))
 
 		// BrokerPolicy granting runs.interact against the template.
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: BrokerPolicy
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  appliesToTemplates: ["%s"]
-  grants:
-    runs:
-      interact: true`, tuiE2EPolicy, tuiE2ENS, tuiE2ETpl))
+		framework.NewBrokerPolicy(tuiE2ENS, tuiE2EPolicy, tuiE2ETpl).
+			GrantInteract().
+			Apply(ctx)
 
 		// Named Workspace so the run has a PVC to mount.
 		framework.ApplyYAML(fmt.Sprintf(`
@@ -186,23 +178,15 @@ spec:
 		By("submitting an Interactive HarnessRun")
 		// No interactiveOverrides — the template's 60s maxLifetime is the
 		// load-bearing knob for this test (see template comment above).
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: HarnessTemplate
-  workspaceRef: %s
-  mode: Interactive
-  prompt: "hello-tui-e2e"`, tuiE2ERun, tuiE2ENS, tuiE2ETpl, tuiE2EWorkspace))
+		run := framework.NewRun(tuiE2ENS, tuiE2ETpl).
+			WithName(tuiE2ERun).
+			WithMode("Interactive").
+			WithWorkspace(tuiE2EWorkspace).
+			WithPrompt("hello-tui-e2e").
+			Submit(ctx)
 
 		By("waiting for Phase=Running")
-		Eventually(func() string { return framework.RunPhase(ctx, tuiE2ENS, tuiE2ERun) },
-			3*time.Minute, 2*time.Second).Should(Equal("Running"))
+		run.WaitForPhase(ctx, "Running", 3*time.Minute)
 
 		By("building a rest.Config from the current kubeconfig")
 		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
@@ -267,9 +251,6 @@ spec:
 		// mechanism. The 3-minute deadline gives the watchdog (60s
 		// max-lifetime + Job teardown + reconcile) generous head room
 		// over the budget interactive_test.go already proves works.
-		Eventually(func() string { return framework.RunPhase(ctx, tuiE2ENS, tuiE2ERun) },
-			3*time.Minute, 3*time.Second).Should(
-			Or(Equal("Cancelled"), Equal("Succeeded")),
-			"run did not reach a terminal phase")
+		run.WaitForPhaseIn(ctx, []string{"Cancelled", "Succeeded"}, 3*time.Minute)
 	})
 })
