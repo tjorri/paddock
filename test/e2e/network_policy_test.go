@@ -50,7 +50,7 @@ import (
 // Skips cleanly when the target cluster has no Cilium installation
 // (e.g. a stock kindnet cluster), so `go test -run` outside the
 // paddock-test-e2e cluster doesn't false-fail.
-var _ = Describe("cilium-aware network policy", Ordered, func() {
+var _ = Describe("cilium-aware network policy", Ordered, Serial, func() {
 	const (
 		ns               = "cilium-compat-e2e"
 		runName          = "compat-demo"

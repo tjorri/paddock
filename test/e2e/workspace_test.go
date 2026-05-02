@@ -83,7 +83,7 @@ if [ -n "${PADDOCK_RESULT_PATH:-}" ]; then
 fi`
 )
 
-var _ = Describe("workspace seeding", func() {
+var _ = Describe("workspace seeding", Label("smoke"), func() {
 	It("clones every seed repo into its own subdir and writes the manifest", func(ctx SpecContext) {
 		ns := framework.CreateTenantNamespace(ctx, multiTenantNamespace)
 
@@ -179,16 +179,21 @@ var _ = Describe("workspace persistence", Ordered, func() {
 	// namespace. AfterAll drains tenant state while the controller is
 	// still alive (same teardown pattern as e2e_test.go).
 
+	// Per-process suffixed namespace; captured from CreateTenantNamespace
+	// so under -p the spec body uses the same name BeforeAll created.
+	var ns string
+
 	BeforeAll(func(ctx SpecContext) {
 		cleanCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
 		// Clean slate in case a prior interrupted run left debris.
+		base := framework.TenantNamespace(homePersistNS)
 		_, _ = utils.Run(exec.CommandContext(cleanCtx, "kubectl",
-			"delete", "ns", homePersistNS,
+			"delete", "ns", base,
 			"--ignore-not-found", "--wait=true", "--timeout=60s"))
 
-		framework.CreateTenantNamespace(ctx, homePersistNS)
+		ns = framework.CreateTenantNamespace(ctx, homePersistNS)
 
 		// Namespaced HarnessTemplate. The command overrides paddock-echo's
 		// entrypoint with a shell script that reads E2E_HOME_PHASE and
@@ -196,7 +201,7 @@ var _ = Describe("workspace persistence", Ordered, func() {
 		// echo-adapter-compatible events to PADDOCK_RAW_PATH and a result
 		// JSON to PADDOCK_RESULT_PATH so the collector processes them normally.
 		script := strings.Replace(homePersistScriptTemplate, "__SENTINEL__", homePersistSentinel, 1)
-		framework.NewHarnessTemplate(homePersistNS, homePersistTemplate).
+		framework.NewHarnessTemplate(ns, homePersistTemplate).
 			WithImage(echoImage).
 			WithCommand("/bin/sh", "-c", script).
 			WithEventAdapter(adapterEchoImage).
@@ -205,7 +210,7 @@ var _ = Describe("workspace persistence", Ordered, func() {
 
 		// Explicit named Workspace so both runs share the same PVC and
 		// therefore the same $HOME directory.
-		ws := framework.NewWorkspace(homePersistNS, homePersistWorkspace).
+		ws := framework.NewWorkspace(ns, homePersistWorkspace).
 			WithStorage("100Mi").
 			Apply(ctx)
 
@@ -222,17 +227,17 @@ var _ = Describe("workspace persistence", Ordered, func() {
 		defer cancel()
 
 		_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-			"delete", "ns", homePersistNS,
+			"delete", "ns", ns,
 			"--wait=false", "--ignore-not-found=true"))
 
-		if framework.WaitForNamespaceGone(context.Background(), homePersistNS, 90*time.Second) {
+		if framework.WaitForNamespaceGone(context.Background(), ns, 90*time.Second) {
 			return
 		}
 		fmt.Fprintf(GinkgoWriter,
 			"WARNING: namespace %s stuck in Terminating after 90s — force-clearing finalizers\n",
-			homePersistNS)
-		framework.ForceClearFinalizers(context.Background(), homePersistNS)
-		framework.WaitForNamespaceGone(context.Background(), homePersistNS, 20*time.Second)
+			ns)
+		framework.ForceClearFinalizers(context.Background(), ns)
+		framework.WaitForNamespaceGone(context.Background(), ns, 20*time.Second)
 	})
 
 	It("writes a sentinel into $HOME on a Batch run", func() {
@@ -240,7 +245,7 @@ var _ = Describe("workspace persistence", Ordered, func() {
 		defer cancel()
 
 		By("submitting the write HarnessRun")
-		run := framework.NewRun(homePersistNS, homePersistTemplate).
+		run := framework.NewRun(ns, homePersistTemplate).
 			WithName(homePersistRunWrite).
 			WithWorkspace(homePersistWorkspace).
 			WithPrompt("write HOME sentinel").
@@ -256,7 +261,7 @@ var _ = Describe("workspace persistence", Ordered, func() {
 		defer cancel()
 
 		By("submitting the read HarnessRun against the same workspace")
-		run := framework.NewRun(homePersistNS, homePersistTemplate).
+		run := framework.NewRun(ns, homePersistTemplate).
 			WithName(homePersistRunRead).
 			WithWorkspace(homePersistWorkspace).
 			WithPrompt("read HOME sentinel").

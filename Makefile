@@ -88,24 +88,34 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 	@CLUSTER_NAME=$(KIND_CLUSTER) hack/install-cilium.sh
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	@# Timeout budget, aligned with the 45-min CI workflow cap. Bumped
-	@# from 22m / 21m: a 16-min local run on a fast laptop left CI
-	@# (~1.5-2x slower) within minutes of the old cap, especially with
-	@# the new proxy-substitution spec.
-	@#   -timeout=32m       → Go's test binary deadline.
-	@#   -ginkgo.timeout=30m → Ginkgo fails the current spec + prints
-	@#                         the summary ~2 min before Go kills the
-	@#                         process, so CI logs always carry the
-	@#                         real failure reason (spec #24875514481
-	@#                         lost its summary to a Go-timeout panic).
+test-e2e: setup-test-e2e ginkgo manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+	@# Process-level parallelism comes from the ginkgo CLI (--procs=N
+	@# or -p for auto). go test exposes only ginkgo's per-worker flags
+	@# (parallel.process / parallel.total) which the ginkgo CLI sets
+	@# itself when fanning out workers — running through go test would
+	@# always be serial. The CLI is pinned via go.mod's ginkgo/v2
+	@# version and installed under bin/ by `make ginkgo`.
 	@#
+	@# Timeout: 30m matches the per-spec budget; the CI workflow caps
+	@#          the job at 45m for headroom around build+deploy.
+	@# GINKGO_PROCS controls process-level parallelism. Default is -p
+	@#               (= GOMAXPROCS-1). Set GINKGO_PROCS=1 to force
+	@#               serial execution — the always-available debugging
+	@#               fallback.
+	@# LABELS filters specs by Ginkgo Label, e.g. LABELS=smoke for the
+	@#               happy-path specs, LABELS=broker, LABELS=hostile,
+	@#               LABELS=interactive.
 	@# FAIL_FAST=1 → opt-in fast iteration: stop on the first failing
-	@#               spec instead of running all 21. Default off in CI
-	@#               so a single PR with two unrelated regressions
-	@#               surfaces both in one round-trip.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e -timeout=32m ./test/e2e/ -v -ginkgo.v -ginkgo.timeout=30m $(if $(FAIL_FAST),-ginkgo.fail-fast,)
-	$(MAKE) cleanup-test-e2e
+	@#               spec instead of running them all.
+	@# KEEP_CLUSTER=1 → skip cluster teardown so a subsequent run
+	@#                  reuses it; pair with KEEP_E2E_RUN=1 for full
+	@#                  tenant-state retention.
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) "$(GINKGO)" -tags=e2e -v --timeout=30m \
+		$(if $(GINKGO_PROCS),--procs=$(GINKGO_PROCS),-p) \
+		$(if $(LABELS),--label-filter=$(LABELS),) \
+		$(if $(FAIL_FAST),--fail-fast,) \
+		./test/e2e/
+	$(if $(KEEP_CLUSTER),@echo "KEEP_CLUSTER=1: leaving Kind cluster intact",$(MAKE) cleanup-test-e2e)
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
@@ -205,44 +215,124 @@ IPTABLES_INIT_IMG ?= paddock-iptables-init:dev
 E2E_EGRESS_IMG ?= paddock-e2e-egress:dev
 
 .PHONY: image-echo
-image-echo: ## Build the paddock-echo harness image.
-	$(CONTAINER_TOOL) build -t $(ECHO_IMG) images/harness-echo
+image-echo: ## Build the paddock-echo harness image, skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh echo); \
+	tag="paddock-echo:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-echo: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(ECHO_IMG); \
+	else \
+		echo "image-echo: building $(ECHO_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(ECHO_IMG) -t $$tag images/harness-echo; \
+	fi
 
 .PHONY: image-evil-echo
-image-evil-echo: ## Build the paddock-evil-echo hostile harness image (test-only).
-	$(CONTAINER_TOOL) build -t $(EVIL_ECHO_IMG) -f images/evil-echo/Dockerfile .
+image-evil-echo: ## Build the paddock-evil-echo hostile harness image (test-only), skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh evil-echo); \
+	tag="paddock-evil-echo:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-evil-echo: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(EVIL_ECHO_IMG); \
+	else \
+		echo "image-evil-echo: building $(EVIL_ECHO_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(EVIL_ECHO_IMG) -t $$tag -f images/evil-echo/Dockerfile .; \
+	fi
 
 .PHONY: image-adapter-echo
-image-adapter-echo: ## Build the paddock-adapter-echo sidecar image.
-	$(CONTAINER_TOOL) build -t $(ADAPTER_ECHO_IMG) -f images/adapter-echo/Dockerfile .
+image-adapter-echo: ## Build the paddock-adapter-echo sidecar image, skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh adapter-echo); \
+	tag="paddock-adapter-echo:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-adapter-echo: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(ADAPTER_ECHO_IMG); \
+	else \
+		echo "image-adapter-echo: building $(ADAPTER_ECHO_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(ADAPTER_ECHO_IMG) -t $$tag -f images/adapter-echo/Dockerfile .; \
+	fi
 
 .PHONY: image-collector
-image-collector: ## Build the paddock-collector sidecar image.
-	$(CONTAINER_TOOL) build -t $(COLLECTOR_IMG) -f images/collector/Dockerfile .
+image-collector: ## Build the paddock-collector sidecar image, skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh collector); \
+	tag="paddock-collector:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-collector: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(COLLECTOR_IMG); \
+	else \
+		echo "image-collector: building $(COLLECTOR_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(COLLECTOR_IMG) -t $$tag -f images/collector/Dockerfile .; \
+	fi
 
 .PHONY: image-claude-code
-image-claude-code: ## Build the paddock-claude-code demo harness image (wraps Anthropic's claude CLI).
-	$(CONTAINER_TOOL) build -t $(CLAUDE_CODE_IMG) images/harness-claude-code
+image-claude-code: ## Build the paddock-claude-code demo harness image (wraps Anthropic's claude CLI), skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh claude-code); \
+	tag="paddock-claude-code:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-claude-code: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(CLAUDE_CODE_IMG); \
+	else \
+		echo "image-claude-code: building $(CLAUDE_CODE_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(CLAUDE_CODE_IMG) -t $$tag images/harness-claude-code; \
+	fi
 
 .PHONY: image-adapter-claude-code
-image-adapter-claude-code: ## Build the paddock-adapter-claude-code sidecar image.
-	$(CONTAINER_TOOL) build -t $(ADAPTER_CLAUDE_CODE_IMG) -f images/adapter-claude-code/Dockerfile .
+image-adapter-claude-code: ## Build the paddock-adapter-claude-code sidecar image, skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh adapter-claude-code); \
+	tag="paddock-adapter-claude-code:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-adapter-claude-code: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(ADAPTER_CLAUDE_CODE_IMG); \
+	else \
+		echo "image-adapter-claude-code: building $(ADAPTER_CLAUDE_CODE_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(ADAPTER_CLAUDE_CODE_IMG) -t $$tag -f images/adapter-claude-code/Dockerfile .; \
+	fi
 
 .PHONY: image-broker
-image-broker: ## Build the paddock-broker image.
-	$(CONTAINER_TOOL) build -t $(BROKER_IMG) -f images/broker/Dockerfile .
+image-broker: ## Build the paddock-broker image, skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh broker); \
+	tag="paddock-broker:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-broker: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(BROKER_IMG); \
+	else \
+		echo "image-broker: building $(BROKER_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(BROKER_IMG) -t $$tag -f images/broker/Dockerfile .; \
+	fi
 
 .PHONY: image-proxy
-image-proxy: ## Build the paddock-proxy sidecar image.
-	$(CONTAINER_TOOL) build -t $(PROXY_IMG) -f images/proxy/Dockerfile .
+image-proxy: ## Build the paddock-proxy sidecar image, skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh proxy); \
+	tag="paddock-proxy:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-proxy: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(PROXY_IMG); \
+	else \
+		echo "image-proxy: building $(PROXY_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(PROXY_IMG) -t $$tag -f images/proxy/Dockerfile .; \
+	fi
 
 .PHONY: image-iptables-init
-image-iptables-init: ## Build the paddock-iptables-init image (NET_ADMIN init container).
-	$(CONTAINER_TOOL) build -t $(IPTABLES_INIT_IMG) -f images/iptables-init/Dockerfile .
+image-iptables-init: ## Build the paddock-iptables-init image (NET_ADMIN init container), skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh iptables-init); \
+	tag="paddock-iptables-init:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-iptables-init: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(IPTABLES_INIT_IMG); \
+	else \
+		echo "image-iptables-init: building $(IPTABLES_INIT_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(IPTABLES_INIT_IMG) -t $$tag -f images/iptables-init/Dockerfile .; \
+	fi
 
 .PHONY: image-e2e-egress
-image-e2e-egress: ## Build the paddock-e2e-egress harness (e2e-only probe tool).
-	$(CONTAINER_TOOL) build -t $(E2E_EGRESS_IMG) images/harness-e2e-egress
+image-e2e-egress: ## Build the paddock-e2e-egress harness (e2e-only probe tool), skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh e2e-egress); \
+	tag="paddock-e2e-egress:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-e2e-egress: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(E2E_EGRESS_IMG); \
+	else \
+		echo "image-e2e-egress: building $(E2E_EGRESS_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(E2E_EGRESS_IMG) -t $$tag images/harness-e2e-egress; \
+	fi
 
 .PHONY: images
 images: image-echo image-adapter-echo image-collector image-claude-code image-adapter-claude-code image-broker image-proxy image-iptables-init image-evil-echo ## Build all reference images.
@@ -334,6 +424,8 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GINKGO ?= $(LOCALBIN)/ginkgo
+GINKGO_VERSION ?= $(call gomodver,github.com/onsi/ginkgo/v2)
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
@@ -377,6 +469,11 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: ginkgo
+ginkgo: $(GINKGO) ## Download ginkgo CLI locally if necessary; pinned to go.mod's ginkgo/v2.
+$(GINKGO): $(LOCALBIN)
+	$(call go-install-tool,$(GINKGO),github.com/onsi/ginkgo/v2/ginkgo,$(GINKGO_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

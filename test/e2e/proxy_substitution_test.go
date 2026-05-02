@@ -48,7 +48,7 @@ import (
 // #83 to ship undetected. A future fully-hermetic regression requires
 // replicating the upstream-CA bundle into per-run namespaces; deferred
 // to a follow-up.
-var _ = Describe("proxy MITM substitution", Ordered, func() {
+var _ = Describe("proxy MITM substitution", Ordered, Serial, func() {
 	const (
 		subNS           = "paddock-test-substitution"
 		subTemplateName = "probe-curl"

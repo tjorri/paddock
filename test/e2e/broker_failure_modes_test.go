@@ -45,7 +45,7 @@ const (
 	leakGuardNS        = "paddock-broker-leak-guard"    // F-11
 )
 
-var _ = Describe("broker failure modes", Ordered, func() {
+var _ = Describe("broker failure modes", Ordered, Serial, Label("broker"), func() {
 	It("holds runs Pending while the broker is unavailable and resumes when it returns", func(ctx SpecContext) {
 		ns := framework.CreateTenantNamespace(ctx, brokerDownNS)
 

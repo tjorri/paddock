@@ -49,7 +49,7 @@ const (
 	policyDelRunName    = "policy-delete-1"
 )
 
-var _ = Describe("egress enforcement", func() {
+var _ = Describe("egress enforcement", Label("hostile"), func() {
 	It("records an egress-block AuditEvent for an ungranted destination", func() {
 		ns := framework.CreateTenantNamespace(context.Background(), egressBlockNS)
 
