@@ -46,6 +46,9 @@ func View(m app.Model, width, height int) string {
 	main := MainPaneView(m, width-30, bodyHeight)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, main)
 	composed := lipgloss.JoinVertical(lipgloss.Left, title, body, footer)
+	if m.Palette.Open() {
+		return overlay(composed, PaletteView(m.Palette, width))
+	}
 	switch m.Modal {
 	case app.ModalNew:
 		return overlay(composed, NewSessionModalView(m))

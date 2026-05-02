@@ -19,6 +19,7 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tjorri/paddock/internal/paddocktui/app"
@@ -41,6 +42,15 @@ func TestView_OneSessionFocused(t *testing.T) {
 	}
 	got := View(m, 80, 24)
 	checkGolden(t, got, "view_one_session.golden")
+}
+
+func TestView_PaletteOpen_RendersOverlay(t *testing.T) {
+	m := app.Model{Sessions: map[string]*app.SessionState{}, FocusArea: app.FocusSidebar, Namespace: "default"}
+	m.Palette = m.Palette.WithOpen(true)
+	got := View(m, 80, 24)
+	if !strings.Contains(got, "Command palette") {
+		t.Errorf("palette overlay missing from view when Palette.Open() is true; got\n%s", got)
+	}
 }
 
 func TestView_HelpModalOpen(t *testing.T) {
