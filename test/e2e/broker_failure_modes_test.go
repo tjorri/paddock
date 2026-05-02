@@ -56,30 +56,13 @@ var _ = Describe("broker failure modes", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		By("registering a template that requires a broker-issued credential")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: ClusterHarnessTemplate
-metadata:
-  name: %s
-spec:
-  harness: echo
-  image: %s
-  command: ["/usr/local/bin/paddock-echo"]
-  eventAdapter:
-    image: %s
-  requires:
-    credentials:
-      - name: DEMO_TOKEN
-  defaults:
-    timeout: 60s
-  workspace:
-    required: true
-    mountPath: /workspace
-`, brokerDownTemplate, echoImage, adapterEchoImage))
-		DeferCleanup(func() {
-			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete",
-				"clusterharnesstemplate", brokerDownTemplate, "--ignore-not-found=true")
-		})
+		framework.NewHarnessTemplate(ns, brokerDownTemplate).
+			WithImage(echoImage).
+			WithCommand("/usr/local/bin/paddock-echo").
+			WithEventAdapter(adapterEchoImage).
+			WithDefaultTimeout("60s").
+			WithRequiredCredential("DEMO_TOKEN").
+			Apply(ctx)
 
 		By("applying a BrokerPolicy granting DEMO_TOKEN via UserSuppliedSecret (in-container delivery)")
 		framework.NewBrokerPolicy(ns, "allow-broker-down", brokerDownTemplate).
@@ -116,7 +99,6 @@ spec:
 		run := framework.NewRun(ns, brokerDownTemplate).
 			WithName(brokerDownRunName).
 			WithPrompt("e2e broker-down").
-			WithClusterScopedTemplate().
 			Submit(ctx)
 
 		Eventually(func(g Gomega) {
