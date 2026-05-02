@@ -70,12 +70,16 @@ func isRetriableApplyErr(output string) bool {
 		strings.Contains(o, "failed to call webhook")
 }
 
-// ApplyManifestFile applies the YAML file at path using `kubectl apply -f
-// <path>`. The command runs from the project root (so relative paths such as
-// "config/samples/…" resolve correctly). Fails the spec on error.
+// ApplyManifestFile applies the YAML file at path using `kubectl apply
+// --server-side --force-conflicts -f <path>`. Server-side apply makes
+// concurrent applies of the same file from parallel workers (-p) merge
+// cleanly instead of racing on the client-side apply's annotation-based
+// reconciliation. The command runs from the project root (so relative
+// paths such as "config/samples/…" resolve correctly). Fails the spec
+// on error.
 func ApplyManifestFile(path string) {
 	ginkgo.GinkgoHelper()
-	cmd := exec.Command("kubectl", "apply", "-f", path)
+	cmd := exec.Command("kubectl", "apply", "--server-side", "--force-conflicts", "-f", path)
 	cmd.Dir = projectDir()
 	out, err := cmd.CombinedOutput()
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(),
@@ -83,11 +87,12 @@ func ApplyManifestFile(path string) {
 }
 
 // ApplyManifestFileToNamespace applies the YAML file at path into the given
-// namespace using `kubectl -n <ns> apply -f <path>`. Runs from the project
-// root. Fails the spec on error.
+// namespace using `kubectl -n <ns> apply --server-side --force-conflicts -f
+// <path>`. Same parallelism rationale as ApplyManifestFile. Runs from the
+// project root. Fails the spec on error.
 func ApplyManifestFileToNamespace(path, ns string) {
 	ginkgo.GinkgoHelper()
-	cmd := exec.Command("kubectl", "-n", ns, "apply", "-f", path)
+	cmd := exec.Command("kubectl", "-n", ns, "apply", "--server-side", "--force-conflicts", "-f", path)
 	cmd.Dir = projectDir()
 	out, err := cmd.CombinedOutput()
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(),
