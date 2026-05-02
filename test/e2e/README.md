@@ -27,18 +27,19 @@ KEEP_E2E_RUN=1 make test-e2e  # leave tenant resources behind on failure
 
 Wall-clock on a 10-core developer laptop (GOMAXPROCS=10 → -p auto = 9
 workers); CI on the GitHub-hosted ubuntu-latest 2-vCPU runner with
-`GINKGO_PROCS=2` pinned. The lower bound is dominated by the 10
-`Serial` specs (broker failure modes + the 4 Ordered Describes that
-share cluster-scoped state).
+`GINKGO_PROCS=2` pinned. The lower bound is dominated by the 5
+`Serial` specs in `broker_failure_modes_test.go` (scale-to-zero,
+restart, /readyz, audit-unavailable, leak-guard) which mutate the
+shared broker.
 
 | Configuration | Wall-clock |
 |---|---|
-| `make test-e2e` (laptop, `-p` auto) | ~12.4 min |
+| `make test-e2e` (laptop, `-p` auto) | ~8.6 min |
 | `GINKGO_PROCS=1 make test-e2e` (serial debug) | ~19.5 min |
 | `GINKGO_PROCS=2 make test-e2e` (CI runner) | ~12.4 min |
-| `GINKGO_PROCS=4 make test-e2e` (laptop, capped) | ~13.5 min |
+| `GINKGO_PROCS=4 make test-e2e` (laptop, capped) | ~9.9 min |
 
-Pre-PR-4 baseline: ~16 min laptop, ~30 min CI.
+Pre-refactor baseline: ~16 min laptop, ~30 min CI.
 
 ## Architecture in 5 minutes
 
