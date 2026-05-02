@@ -98,8 +98,3 @@ func run(ctx context.Context, logger *log.Logger, cfg Config) error {
 	}
 	return fmt.Errorf("unreachable: validateEnv accepted invalid mode %q", cfg.Mode)
 }
-
-// Stub so the file compiles before Task 3 lands.
-func runPerPrompt(ctx context.Context, logger *log.Logger, cfg Config) error {
-	return fmt.Errorf("per-prompt-process mode not yet implemented")
-}
