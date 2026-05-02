@@ -48,7 +48,7 @@ RUN chmod +x /usr/local/bin/paddock-claude-code
 COPY --from=paddock-harness-supervisor:dev /supervisor /usr/local/bin/paddock-harness-supervisor
 
 # Harness invocation contract for the supervisor (per spec §4.3).
-ENV PADDOCK_HARNESS_BIN=/root/.local/bin/claude
+ENV PADDOCK_HARNESS_BIN=/home/paddock/.local/bin/claude
 ENV PADDOCK_HARNESS_ARGS_PERSISTENT="--input-format stream-json --output-format stream-json"
 ENV PADDOCK_HARNESS_ARGS_PER_PROMPT="--print --input-format stream-json --output-format stream-json"
 
