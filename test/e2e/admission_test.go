@@ -37,7 +37,7 @@ const (
 	admissionPolicyRejNS = "paddock-admission-policy-rejected"
 )
 
-var _ = Describe("admission webhook", func() {
+var _ = Describe("admission webhook", Label("smoke", "hostile"), func() {
 	It("rejects a Workspace seed with an unsupported URL scheme", func(ctx SpecContext) {
 		ns := framework.CreateTenantNamespace(ctx, admissionGitSchemeNS)
 		By("attempting to create a Workspace whose seed repo URL uses git://")

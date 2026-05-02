@@ -37,7 +37,7 @@ const (
 	echoRunName         = "echo-1"
 )
 
-var _ = Describe("harness lifecycle", func() {
+var _ = Describe("harness lifecycle", Label("smoke"), func() {
 	It("completes a Batch run end-to-end with events and outputs", func(ctx SpecContext) {
 		ns := framework.CreateTenantNamespace(ctx, echoTenantNamespace)
 

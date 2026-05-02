@@ -41,7 +41,7 @@ const (
 	issueOversizeNS = "paddock-t2-oversize"
 )
 
-var _ = Describe("broker resource lifecycle", func() {
+var _ = Describe("broker resource lifecycle", Label("broker"), func() {
 	It("revokes a PATPool lease when the issuing run is deleted", func(ctx SpecContext) {
 		ctxT, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()

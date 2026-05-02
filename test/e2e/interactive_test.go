@@ -63,7 +63,7 @@ const (
 	interactiveRunShell     = "stub-run-shell"
 )
 
-var _ = Describe("interactive run lifecycle", Ordered, func() {
+var _ = Describe("interactive run lifecycle", Ordered, Label("interactive"), func() {
 	var (
 		token       string
 		brokerPort  int

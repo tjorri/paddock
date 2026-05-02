@@ -83,7 +83,7 @@ if [ -n "${PADDOCK_RESULT_PATH:-}" ]; then
 fi`
 )
 
-var _ = Describe("workspace seeding", func() {
+var _ = Describe("workspace seeding", Label("smoke"), func() {
 	It("clones every seed repo into its own subdir and writes the manifest", func(ctx SpecContext) {
 		ns := framework.CreateTenantNamespace(ctx, multiTenantNamespace)
 
