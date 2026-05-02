@@ -34,7 +34,6 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -49,7 +48,6 @@ import (
 )
 
 const (
-	tuiE2ENS        = "paddock-tui-e2e"
 	tuiE2ETpl       = "tui-echo-interactive"
 	tuiE2EWorkspace = "tui-e2e-ws"
 	tuiE2ESA        = "tui-e2e-runner"
@@ -57,17 +55,11 @@ const (
 	tuiE2ERun       = "tui-int-run"
 )
 
-var _ = Describe("interactive run via TUI client", Ordered, Serial, Label("interactive"), func() {
-	BeforeAll(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
+var _ = Describe("interactive run via TUI client", Ordered, Label("interactive"), func() {
+	var ns string
 
-		// Clean slate in case a prior interrupted run left debris.
-		_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-			"delete", "ns", tuiE2ENS,
-			"--ignore-not-found", "--wait=true", "--timeout=60s"))
-
-		framework.CreateNamespace(ctx, tuiE2ENS)
+	BeforeAll(func(ctx SpecContext) {
+		ns = framework.CreateTenantNamespace(ctx, "paddock-tui-e2e")
 
 		// ServiceAccount the broker client authenticates as. The broker
 		// only checks audience + namespace; no extra RBAC on the SA itself
@@ -77,7 +69,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: %s
-  namespace: %s`, tuiE2ESA, tuiE2ENS))
+  namespace: %s`, tuiE2ESA, ns))
 
 		// HarnessTemplate with per-prompt-process interactive mode.
 		//
@@ -111,10 +103,10 @@ spec:
     timeout: 5m
   workspace:
     required: true
-    mountPath: /workspace`, tuiE2ETpl, tuiE2ENS, echoImage, adapterEchoImage))
+    mountPath: /workspace`, tuiE2ETpl, ns, echoImage, adapterEchoImage))
 
 		// BrokerPolicy granting runs.interact against the template.
-		framework.NewBrokerPolicy(tuiE2ENS, tuiE2EPolicy, tuiE2ETpl).
+		framework.NewBrokerPolicy(ns, tuiE2EPolicy, tuiE2ETpl).
 			GrantInteract().
 			Apply(ctx)
 
@@ -127,11 +119,11 @@ metadata:
   namespace: %s
 spec:
   storage:
-    size: 100Mi`, tuiE2EWorkspace, tuiE2ENS))
+    size: 100Mi`, tuiE2EWorkspace, ns))
 
 		// Wait for the Workspace to reach Active before submitting runs.
 		Eventually(func(g Gomega) {
-			out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", tuiE2ENS,
+			out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", ns,
 				"get", "workspace", tuiE2EWorkspace,
 				"-o", "jsonpath={.status.phase}"))
 			g.Expect(err).NotTo(HaveOccurred())
@@ -140,45 +132,26 @@ spec:
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 	})
 
-	AfterAll(func() {
-		if os.Getenv("KEEP_E2E_RUN") == "1" {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
-		_, _ = utils.Run(exec.CommandContext(ctx, "kubectl",
-			"delete", "ns", tuiE2ENS,
-			"--wait=false", "--ignore-not-found=true"))
-		if framework.WaitForNamespaceGone(context.Background(), tuiE2ENS, 90*time.Second) {
-			return
-		}
-		fmt.Fprintf(GinkgoWriter,
-			"WARNING: namespace %s stuck in Terminating after 90s — force-clearing finalizers\n",
-			tuiE2ENS)
-		framework.ForceClearFinalizers(context.Background(), tuiE2ENS)
-		framework.WaitForNamespaceGone(context.Background(), tuiE2ENS, 20*time.Second)
-	})
-
 	It("TUI broker client drives a Bound interactive run end-to-end", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 		defer cancel()
 
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
-				framework.DumpRunDiagnostics(ctx, tuiE2ENS, tuiE2ERun)
+				framework.DumpRunDiagnostics(ctx, ns, tuiE2ERun)
 			}
 			// Best-effort cleanup of the run so AfterAll's namespace
 			// delete has one less finaliser to chase.
 			delCtx, delCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer delCancel()
-			_, _ = utils.Run(exec.CommandContext(delCtx, "kubectl", "-n", tuiE2ENS,
+			_, _ = utils.Run(exec.CommandContext(delCtx, "kubectl", "-n", ns,
 				"delete", "harnessrun", tuiE2ERun, "--ignore-not-found", "--wait=false"))
 		})
 
 		By("submitting an Interactive HarnessRun")
 		// No interactiveOverrides — the template's 60s maxLifetime is the
 		// load-bearing knob for this test (see template comment above).
-		run := framework.NewRun(tuiE2ENS, tuiE2ETpl).
+		run := framework.NewRun(ns, tuiE2ETpl).
 			WithName(tuiE2ERun).
 			WithMode("Interactive").
 			WithWorkspace(tuiE2EWorkspace).
@@ -206,7 +179,7 @@ spec:
 			Namespace:               "paddock-system",
 			Port:                    8443,
 			ServiceAccount:          tuiE2ESA,
-			ServiceAccountNamespace: tuiE2ENS,
+			ServiceAccountNamespace: ns,
 			Source:                  restCfg,
 			CASecretName:            "broker-serving-cert",
 			CASecretNamespace:       "paddock-system",
@@ -216,7 +189,7 @@ spec:
 		defer func() { _ = bc.Close() }()
 
 		By("opening the broker stream")
-		ch, err := bc.Open(ctx, tuiE2ENS, tuiE2ERun)
+		ch, err := bc.Open(ctx, ns, tuiE2ERun)
 		Expect(err).NotTo(HaveOccurred(), "broker.Open")
 
 		By("waiting for at least one StreamFrame within 2 minutes")
@@ -237,7 +210,7 @@ spec:
 		// Allow up to 30s for the End RPC to reach the broker.
 		endCtx, endCancel := context.WithTimeout(ctx, 30*time.Second)
 		defer endCancel()
-		Expect(bc.End(endCtx, tuiE2ENS, tuiE2ERun, "test-complete")).To(Succeed(), "broker.End")
+		Expect(bc.End(endCtx, ns, tuiE2ERun, "test-complete")).To(Succeed(), "broker.End")
 
 		By("waiting for the run to reach a terminal phase (Cancelled or Succeeded)")
 		// Termination chain for an echo-adapter Interactive run:
