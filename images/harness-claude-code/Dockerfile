@@ -44,6 +44,14 @@ ENV DISABLE_AUTOUPDATER=1
 COPY run.sh /usr/local/bin/paddock-claude-code
 RUN chmod +x /usr/local/bin/paddock-claude-code
 
+# Supervisor binary for interactive mode (per spec §7.2).
+COPY --from=paddock-harness-supervisor:dev /supervisor /usr/local/bin/paddock-harness-supervisor
+
+# Harness invocation contract for the supervisor (per spec §4.3).
+ENV PADDOCK_HARNESS_BIN=/root/.local/bin/claude
+ENV PADDOCK_HARNESS_ARGS_PERSISTENT="--input-format stream-json --output-format stream-json"
+ENV PADDOCK_HARNESS_ARGS_PER_PROMPT="--print --input-format stream-json --output-format stream-json"
+
 USER 65532:65532
 WORKDIR /workspace
 
