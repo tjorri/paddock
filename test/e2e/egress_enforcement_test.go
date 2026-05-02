@@ -53,57 +53,26 @@ var _ = Describe("egress enforcement", func() {
 	It("records an egress-block AuditEvent for an ungranted destination", func() {
 		ns := framework.CreateTenantNamespace(context.Background(), egressBlockNS)
 
-		By("registering the e2e-egress ClusterHarnessTemplate (empty requires)")
+		By("registering the e2e-egress HarnessTemplate (empty requires)")
 		// Empty requires means every namespace admits the template
 		// without a matching BrokerPolicy; admission is a fast path,
 		// enforcement is at the proxy.
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: ClusterHarnessTemplate
-metadata:
-  name: %s
-spec:
-  harness: e2e-egress
-  image: %s
-  command: ["/usr/local/bin/paddock-e2e-egress"]
-  eventAdapter:
-    image: %s
-  defaults:
-    timeout: 120s
-  workspace:
-    required: true
-    mountPath: /workspace
-`, egressBlockTemplate, e2eEgressImage, adapterEchoImage))
-		DeferCleanup(func() {
-			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete",
-				"clusterharnesstemplate", egressBlockTemplate, "--ignore-not-found=true")
-		})
+		framework.NewHarnessTemplate(ns, egressBlockTemplate).
+			WithImage(e2eEgressImage).
+			WithCommand("/usr/local/bin/paddock-e2e-egress").
+			WithEventAdapter(adapterEchoImage).
+			WithDefaultTimeout("120s").
+			Apply(context.Background())
 
 		By("submitting a HarnessRun whose probe target is evil.com")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: ClusterHarnessTemplate
-  prompt: "e2e egress-block"
-  extraEnv:
-    - name: E2E_EGRESS_TARGETS
-      value: "https://evil.com"
-`, egressBlockRunName, ns, egressBlockTemplate))
+		run := framework.NewRun(ns, egressBlockTemplate).
+			WithName(egressBlockRunName).
+			WithPrompt("e2e egress-block").
+			WithEnv("E2E_EGRESS_TARGETS", "https://evil.com").
+			Submit(context.Background())
 
 		By("waiting for the run to Succeed (probe failure is swallowed by the harness)")
-		Eventually(func(g Gomega) {
-			phase, err := utils.Run(exec.Command("kubectl", "-n", ns,
-				"get", "harnessrun", egressBlockRunName, "-o", "jsonpath={.status.phase}"))
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(strings.TrimSpace(phase)).To(Equal("Succeeded"),
-				"run still in phase %q", strings.TrimSpace(phase))
-		}, 3*time.Minute, 3*time.Second).Should(Succeed())
+		run.WaitForPhase(context.Background(), "Succeeded", 3*time.Minute)
 
 		By("confirming an egress-block AuditEvent landed for evil.com:443")
 		events := framework.ListAuditEvents(context.Background(), ns)
@@ -126,28 +95,13 @@ spec:
 	It("keeps blocking upstream connections after a granting BrokerPolicy is deleted", func() {
 		ns := framework.CreateTenantNamespace(context.Background(), policyDeleteMidRunNS)
 
-		By("registering the e2e-egress ClusterHarnessTemplate (empty requires)")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: ClusterHarnessTemplate
-metadata:
-  name: %s
-spec:
-  harness: e2e-egress
-  image: %s
-  command: ["/usr/local/bin/paddock-e2e-egress"]
-  eventAdapter:
-    image: %s
-  defaults:
-    timeout: 120s
-  workspace:
-    required: true
-    mountPath: /workspace
-`, egressBlockTemplate, e2eEgressImage, adapterEchoImage))
-		DeferCleanup(func() {
-			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete",
-				"clusterharnesstemplate", egressBlockTemplate, "--ignore-not-found=true")
-		})
+		By("registering the e2e-egress HarnessTemplate (empty requires)")
+		framework.NewHarnessTemplate(ns, egressBlockTemplate).
+			WithImage(e2eEgressImage).
+			WithCommand("/usr/local/bin/paddock-e2e-egress").
+			WithEventAdapter(adapterEchoImage).
+			WithDefaultTimeout("120s").
+			Apply(context.Background())
 
 		By("confirming Scenario B left the broker serving (pre-check)")
 		framework.GetBroker(context.Background()).RequireHealthy(context.Background())
@@ -178,25 +132,13 @@ spec:
 `, policyDelPolicyName, ns, egressBlockTemplate))
 
 		By("submitting a HarnessRun that loop-probes evil.com while holding the Pod for 45s")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: ClusterHarnessTemplate
-  prompt: "e2e policy-delete"
-  extraEnv:
-    - name: E2E_EGRESS_LOOP
-      value: "https://evil.com"
-    - name: E2E_HOLD_SECONDS
-      value: "45"
-    - name: E2E_LOOP_SECONDS
-      value: "3"
-`, policyDelRunName, ns, egressBlockTemplate))
+		run := framework.NewRun(ns, egressBlockTemplate).
+			WithName(policyDelRunName).
+			WithPrompt("e2e policy-delete").
+			WithEnv("E2E_EGRESS_LOOP", "https://evil.com").
+			WithEnv("E2E_HOLD_SECONDS", "45").
+			WithEnv("E2E_LOOP_SECONDS", "3").
+			Submit(context.Background())
 
 		By("waiting for at least one egress-block AuditEvent (pre-delete baseline)")
 		Eventually(func(g Gomega) {
@@ -242,14 +184,7 @@ spec:
 		}, 30*time.Second, 3*time.Second).Should(Succeed())
 
 		By("waiting for the run to complete on its own")
-		Eventually(func(g Gomega) {
-			phase, err := utils.Run(exec.Command("kubectl", "-n", ns,
-				"get", "harnessrun", policyDelRunName, "-o", "jsonpath={.status.phase}"))
-			g.Expect(err).NotTo(HaveOccurred())
-			p := strings.TrimSpace(phase)
-			g.Expect(p).To(BeElementOf("Succeeded", "Failed"),
-				"run still in phase %q", p)
-		}, 3*time.Minute, 3*time.Second).Should(Succeed())
+		run.WaitForPhaseIn(context.Background(), []string{"Succeeded", "Failed"}, 3*time.Minute)
 	})
 
 	It("denies raw-TCP egress to a Service IP even with HTTPS_PROXY unset", func() {
@@ -270,24 +205,14 @@ spec:
 
 		By("submitting a HarnessRun that attempts cooperative-mode bypass (args baked into evil-echo-tg2 template)")
 		runName := "tg2-cooperative-bypass"
-		runManifest := fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: evil-echo-tg2
-    kind: ClusterHarnessTemplate
-  prompt: "tg-2 hostile probe"
-`, runName, ns)
-		framework.ApplyYAML(runManifest)
+		run := framework.NewRun(ns, "evil-echo-tg2").
+			WithName(runName).
+			WithPrompt("tg-2 hostile probe").
+			WithClusterScopedTemplate().
+			Submit(ctx)
 
 		By("waiting for terminal phase")
-		Eventually(func() string {
-			return framework.RunPhase(ctx, ns, runName)
-		}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
+		run.WaitForPhaseIn(ctx, []string{"Succeeded", "Failed"}, 4*time.Minute)
 
 		By("dumping run state for diagnostic context")
 		framework.DumpRunDiagnostics(ctx, ns, runName)
@@ -325,23 +250,13 @@ spec:
 		framework.ApplyManifestFileToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", ns)
 
 		runName := "tg10a-smuggle"
-		runManifest := fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: evil-echo-tg10a
-    kind: ClusterHarnessTemplate
-  prompt: "tg-10a smuggle headers"
-`, runName, ns)
-		framework.ApplyYAML(runManifest)
+		run := framework.NewRun(ns, "evil-echo-tg10a").
+			WithName(runName).
+			WithPrompt("tg-10a smuggle headers").
+			WithClusterScopedTemplate().
+			Submit(ctx)
 
-		Eventually(func() string {
-			return framework.RunPhase(ctx, ns, runName)
-		}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
+		run.WaitForPhaseIn(ctx, []string{"Succeeded", "Failed"}, 4*time.Minute)
 
 		output := framework.ReadRunOutput(ctx, ns, runName)
 		events := framework.ParseHostileEvents(output)
@@ -376,23 +291,13 @@ spec:
 		framework.ApplyManifestFileToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", ns)
 
 		runName := "tg13a-host-not-allowed"
-		runManifest := fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: evil-echo-tg13a
-    kind: ClusterHarnessTemplate
-  prompt: "tg-13a host-not-allowed probe"
-`, runName, ns)
-		framework.ApplyYAML(runManifest)
+		run := framework.NewRun(ns, "evil-echo-tg13a").
+			WithName(runName).
+			WithPrompt("tg-13a host-not-allowed probe").
+			WithClusterScopedTemplate().
+			Submit(ctx)
 
-		Eventually(func() string {
-			return framework.RunPhase(ctx, ns, runName)
-		}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
+		run.WaitForPhaseIn(ctx, []string{"Succeeded", "Failed"}, 4*time.Minute)
 
 		output := framework.ReadRunOutput(ctx, ns, runName)
 		events := framework.ParseHostileEvents(output)
@@ -435,23 +340,13 @@ spec:
 		framework.ApplyManifestFileToNamespace("config/samples/paddock_v1alpha1_brokerpolicy_evil_echo.yaml", ns)
 
 		runName := "tg25a-smoke"
-		runManifest := fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: evil-echo-tg25a
-    kind: ClusterHarnessTemplate
-  prompt: "tg-25a phase-2g smoke"
-`, runName, ns)
-		framework.ApplyYAML(runManifest)
+		run := framework.NewRun(ns, "evil-echo-tg25a").
+			WithName(runName).
+			WithPrompt("tg-25a phase-2g smoke").
+			WithClusterScopedTemplate().
+			Submit(ctx)
 
-		Eventually(func() string {
-			return framework.RunPhase(ctx, ns, runName)
-		}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
+		run.WaitForPhaseIn(ctx, []string{"Succeeded", "Failed"}, 4*time.Minute)
 
 		// Smoke: the run reached a terminal phase. The load-bearing F-25
 		// idle-timeout assertion lives in unit tests
@@ -476,24 +371,14 @@ spec:
 
 		By("submitting a HarnessRun that probes for SA tokens and the broker (args baked into evil-echo-tg7 template)")
 		runName := "tg7-sa-token-forgery"
-		runManifest := fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: evil-echo-tg7
-    kind: ClusterHarnessTemplate
-  prompt: "tg-7 sa-token forgery probe"
-`, runName, ns)
-		framework.ApplyYAML(runManifest)
+		run := framework.NewRun(ns, "evil-echo-tg7").
+			WithName(runName).
+			WithPrompt("tg-7 sa-token forgery probe").
+			WithClusterScopedTemplate().
+			Submit(ctx)
 
 		By("waiting for terminal phase")
-		Eventually(func() string {
-			return framework.RunPhase(ctx, ns, runName)
-		}, 4*time.Minute, 5*time.Second).Should(Or(Equal("Succeeded"), Equal("Failed")))
+		run.WaitForPhaseIn(ctx, []string{"Succeeded", "Failed"}, 4*time.Minute)
 
 		By("reading harness output")
 		output := framework.ReadRunOutput(ctx, ns, runName)

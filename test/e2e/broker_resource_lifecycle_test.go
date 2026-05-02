@@ -23,7 +23,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os/exec"
@@ -65,17 +64,10 @@ var _ = Describe("broker resource lifecycle", func() {
 				framework.DumpRunDiagnostics(ctxT, ns, runName)
 			}
 		})
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: t2-patpool-tmpl
-  prompt: "t2 revoke test"
-`, runName, ns))
+		framework.NewRun(ns, "t2-patpool-tmpl").
+			WithName(runName).
+			WithPrompt("t2 revoke test").
+			Submit(ctxT)
 
 		By("waiting for at least one IssuedLease to appear on the run")
 		Eventually(func() int {

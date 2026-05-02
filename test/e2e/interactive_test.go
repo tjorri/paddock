@@ -125,20 +125,10 @@ spec:
 		// default). target=agent so the WS exec lands in the harness
 		// container, where the harness's `sleep infinity` loop keeps
 		// the pod alive.
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: BrokerPolicy
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  appliesToTemplates: ["%s"]
-  grants:
-    runs:
-      interact: true
-      shell:
-        target: agent
-        command: ["/bin/sh", "-c", "echo hello && sleep 1"]`, interactivePolicy, interactiveNS, interactiveTpl))
+		framework.NewBrokerPolicy(interactiveNS, interactivePolicy, interactiveTpl).
+			GrantInteract().
+			GrantShell("agent", "/bin/sh", "-c", "echo hello && sleep 1").
+			Apply(ctx)
 
 		// Broker SA-token + port-forward. Both shared by every It in
 		// this Describe.
@@ -169,22 +159,14 @@ spec:
 			}
 		})
 
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: HarnessTemplate
-  mode: Interactive
-  prompt: "hello-from-init"`, interactiveRunLifecycle, interactiveNS, interactiveTpl))
+		run := framework.NewRun(interactiveNS, interactiveTpl).
+			WithName(interactiveRunLifecycle).
+			WithMode("Interactive").
+			WithPrompt("hello-from-init").
+			Submit(ctx)
 
 		By("waiting for Phase=Running")
-		Eventually(func() string { return framework.RunPhase(ctx, interactiveNS, interactiveRunLifecycle) },
-			2*time.Minute, 2*time.Second).Should(Equal("Running"))
+		run.WaitForPhase(ctx, "Running", 2*time.Minute)
 
 		By("posting a prompt to the broker /v1/runs/.../prompts")
 		url := fmt.Sprintf("https://127.0.0.1:%d/v1/runs/%s/%s/prompts",
@@ -226,8 +208,7 @@ spec:
 		// maxLifetime=60s; the watchdog runs on the controller's
 		// reconcile cadence, so allow a generous budget for the
 		// cancel + finaliser settle.
-		Eventually(func() string { return framework.RunPhase(ctx, interactiveNS, interactiveRunLifecycle) },
-			3*time.Minute, 5*time.Second).Should(Equal("Cancelled"))
+		run.WaitForPhase(ctx, "Cancelled", 3*time.Minute)
 
 		By("asserting an interactive-run-terminated audit event with reason=max-lifetime")
 		Eventually(func() bool {
@@ -261,24 +242,15 @@ spec:
 
 		// Override maxLifetime to 5m so the watchdog doesn't cancel
 		// the run mid-shell.
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: HarnessTemplate
-  mode: Interactive
-  prompt: "shell-test"
-  interactiveOverrides:
-    maxLifetime: 5m`, interactiveRunShell, interactiveNS, interactiveTpl))
+		shellRun := framework.NewRun(interactiveNS, interactiveTpl).
+			WithName(interactiveRunShell).
+			WithMode("Interactive").
+			WithPrompt("shell-test").
+			WithMaxLifetime(5 * time.Minute).
+			Submit(ctx)
 
 		By("waiting for Phase=Running on the shell run")
-		Eventually(func() string { return framework.RunPhase(ctx, interactiveNS, interactiveRunShell) },
-			2*time.Minute, 2*time.Second).Should(Equal("Running"))
+		shellRun.WaitForPhase(ctx, "Running", 2*time.Minute)
 
 		By("waiting for the run pod to reach PodPhase=Running")
 		// HarnessRun.Phase=Running fires from Job.Active, but the

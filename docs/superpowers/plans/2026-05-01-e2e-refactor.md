@@ -2124,10 +2124,10 @@ func TestPolicyBuilder_GrantCredentialFromSecret(t *testing.T) {
 
 func TestPolicyBuilder_GrantInteract(t *testing.T) {
 	yaml := NewBrokerPolicy("paddock-x", "allow-interact", "echo").
-		GrantInteract("agent").
+		GrantInteract().
 		BuildYAML()
 
-	if !strings.Contains(yaml, "runs:\n      interact:") || !strings.Contains(yaml, "target: agent") {
+	if !strings.Contains(yaml, "interact: true") {
 		t.Fatalf("interact grant missing:\n%s", yaml)
 	}
 }
@@ -2158,7 +2158,7 @@ func TestPolicyBuilder_GrantShell(t *testing.T) {
 type PolicyBuilder struct {
 	ns, name, template string
 	credentialGrants   []credentialGrant
-	interactTarget     string
+	interact           bool
 	shellTarget        string
 	shellCommand       []string
 }
@@ -2183,8 +2183,8 @@ func (p *PolicyBuilder) GrantCredentialFromSecret(name, secret, key, deliveryMod
 	return p
 }
 
-func (p *PolicyBuilder) GrantInteract(target string) *PolicyBuilder {
-	p.interactTarget = target
+func (p *PolicyBuilder) GrantInteract() *PolicyBuilder {
+	p.interact = true
 	return p
 }
 
@@ -2214,10 +2214,10 @@ func (p *PolicyBuilder) BuildYAML() string {
 			fmt.Fprintf(&sb, "              reason: %q\n", g.reason)
 		}
 	}
-	if p.interactTarget != "" || p.shellTarget != "" {
+	if p.interact || p.shellTarget != "" {
 		sb.WriteString("    runs:\n")
-		if p.interactTarget != "" {
-			fmt.Fprintf(&sb, "      interact:\n        target: %s\n", p.interactTarget)
+		if p.interact {
+			sb.WriteString("      interact: true\n")
 		}
 		if p.shellTarget != "" {
 			fmt.Fprintf(&sb, "      shell:\n        target: %s\n", p.shellTarget)
@@ -2419,13 +2419,11 @@ func TestRunBuilder_InteractiveWithMaxLifetime(t *testing.T) {
 		WithMaxLifetime(60 * time.Second).
 		BuildYAML()
 
-	for _, want := range []string{
-		"mode: Interactive",
-		"maxLifetime: 60s",
-	} {
-		if !strings.Contains(yaml, want) {
-			t.Fatalf("run yaml missing %q\n%s", want, yaml)
-		}
+	if !strings.Contains(yaml, "mode: Interactive") {
+		t.Fatalf("mode missing:\n%s", yaml)
+	}
+	if !strings.Contains(yaml, "interactiveOverrides:\n    maxLifetime: 1m0s") {
+		t.Fatalf("interactiveOverrides.maxLifetime missing or wrong path:\n%s", yaml)
 	}
 }
 ```
@@ -2514,7 +2512,7 @@ func (b *RunBuilder) BuildYAML() string {
 		fmt.Fprintf(&sb, "  workspaceRef:\n    name: %s\n", b.workspace)
 	}
 	if b.maxLifetime > 0 {
-		fmt.Fprintf(&sb, "  maxLifetime: %s\n", b.maxLifetime.String())
+		fmt.Fprintf(&sb, "  interactiveOverrides:\n    maxLifetime: %s\n", b.maxLifetime.String())
 	}
 	if len(b.env) > 0 {
 		sb.WriteString("  extraEnv:\n")

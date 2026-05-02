@@ -21,7 +21,6 @@ package e2e
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -52,6 +51,36 @@ const (
 	homePersistRunWrite  = "home-persist-write"
 	homePersistRunRead   = "home-persist-read"
 	homePersistSentinel  = "paddock-home-e2e-sentinel-v1"
+
+	// homePersistScriptTemplate is the shell script executed by the home-persist
+	// HarnessTemplate. __SENTINEL__ is replaced with homePersistSentinel via
+	// strings.Replace before passing to the builder. The %s sequences in the
+	// shell printf calls are literal shell directives, not Go format verbs.
+	homePersistScriptTemplate = `set -eu
+: "${PADDOCK_RAW_PATH:=/paddock/raw/out}"
+: "${E2E_HOME_PHASE:=write}"
+: "${E2E_SENTINEL:=__SENTINEL__}"
+mkdir -p "$(dirname "$PADDOCK_RAW_PATH")"
+: >"$PADDOCK_RAW_PATH"
+if [ "$E2E_HOME_PHASE" = "write" ]; then
+  mkdir -p "$HOME"
+  printf '%s\n' "$E2E_SENTINEL" >"$HOME/.persisted"
+  summary="wrote HOME sentinel"
+else
+  if [ -f "$HOME/.persisted" ]; then
+    content=$(cat "$HOME/.persisted")
+    summary="read HOME sentinel: $content"
+  else
+    summary="HOME_FILE_MISSING"
+  fi
+fi
+printf '{"kind":"message","text":"home-persist: %s"}\n' "$summary" >>"$PADDOCK_RAW_PATH"
+printf '{"kind":"result","summary":"%s","filesChanged":0}\n' "$summary" >>"$PADDOCK_RAW_PATH"
+if [ -n "${PADDOCK_RESULT_PATH:-}" ]; then
+  mkdir -p "$(dirname "$PADDOCK_RESULT_PATH")"
+  printf '{"pullRequests":[],"filesChanged":0,"summary":"%s","artifacts":[]}\n' \
+    "$summary" >"$PADDOCK_RESULT_PATH"
+fi`
 )
 
 var _ = Describe("workspace seeding", func() {
@@ -59,33 +88,14 @@ var _ = Describe("workspace seeding", func() {
 		ns := framework.CreateTenantNamespace(ctx, multiTenantNamespace)
 
 		By("creating a Workspace with two public repos")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: Workspace
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  storage:
-    size: 100Mi
-  seed:
-    repos:
-      - url: %s
-        path: %s
-        depth: 1
-      - url: %s
-        path: %s
-        depth: 1
-`, multiWorkspace, ns, multiRepoAURL, multiRepoAPath, multiRepoBURL, multiRepoBPath))
+		ws := framework.NewWorkspace(ns, multiWorkspace).
+			WithStorage("100Mi").
+			WithSeedRepo(multiRepoAURL, multiRepoAPath, 1).
+			WithSeedRepo(multiRepoBURL, multiRepoBPath, 1).
+			Apply(ctx)
 
 		By("waiting for the Workspace to reach phase=Active")
-		Eventually(func(g Gomega) {
-			out, err := utils.Run(exec.Command("kubectl", "-n", ns,
-				"get", "workspace", multiWorkspace, "-o", "jsonpath={.status.phase}"))
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(strings.TrimSpace(out)).To(Equal("Active"),
-				"workspace still in phase %q", strings.TrimSpace(out))
-		}, 3*time.Minute, 3*time.Second).Should(Succeed())
+		ws.WaitForActive(ctx, 3*time.Minute)
 
 		By("verifying the seed Job emitted an init container per repo")
 		initNames, err := utils.Run(exec.Command("kubectl", "-n", ns,
@@ -185,78 +195,22 @@ var _ = Describe("workspace persistence", Ordered, func() {
 		// performs either a write or a read against $HOME. The script writes
 		// echo-adapter-compatible events to PADDOCK_RAW_PATH and a result
 		// JSON to PADDOCK_RESULT_PATH so the collector processes them normally.
-		//
-		// Single-quoted heredoc avoids any variable expansion in the YAML
-		// string literal; the variables are evaluated inside the container.
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessTemplate
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  harness: echo
-  image: %s
-  command:
-    - /bin/sh
-    - -c
-    - |
-      set -eu
-      : "${PADDOCK_RAW_PATH:=/paddock/raw/out}"
-      : "${E2E_HOME_PHASE:=write}"
-      : "${E2E_SENTINEL:=%s}"
-      mkdir -p "$(dirname "$PADDOCK_RAW_PATH")"
-      : >"$PADDOCK_RAW_PATH"
-      if [ "$E2E_HOME_PHASE" = "write" ]; then
-        mkdir -p "$HOME"
-        printf '%%s\n' "$E2E_SENTINEL" >"$HOME/.persisted"
-        summary="wrote HOME sentinel"
-      else
-        if [ -f "$HOME/.persisted" ]; then
-          content=$(cat "$HOME/.persisted")
-          summary="read HOME sentinel: $content"
-        else
-          summary="HOME_FILE_MISSING"
-        fi
-      fi
-      printf '{"kind":"message","text":"home-persist: %%s"}\n' "$summary" >>"$PADDOCK_RAW_PATH"
-      printf '{"kind":"result","summary":"%%s","filesChanged":0}\n' "$summary" >>"$PADDOCK_RAW_PATH"
-      if [ -n "${PADDOCK_RESULT_PATH:-}" ]; then
-        mkdir -p "$(dirname "$PADDOCK_RESULT_PATH")"
-        printf '{"pullRequests":[],"filesChanged":0,"summary":"%%s","artifacts":[]}\n' \
-          "$summary" >"$PADDOCK_RESULT_PATH"
-      fi
-  eventAdapter:
-    image: %s
-  defaults:
-    timeout: 120s
-  workspace:
-    required: true
-    mountPath: /workspace
-`, homePersistTemplate, homePersistNS, echoImage, homePersistSentinel, adapterEchoImage))
+		script := strings.Replace(homePersistScriptTemplate, "__SENTINEL__", homePersistSentinel, 1)
+		framework.NewHarnessTemplate(homePersistNS, homePersistTemplate).
+			WithImage(echoImage).
+			WithCommand("/bin/sh", "-c", script).
+			WithEventAdapter(adapterEchoImage).
+			WithDefaultTimeout("120s").
+			Apply(ctx)
 
 		// Explicit named Workspace so both runs share the same PVC and
 		// therefore the same $HOME directory.
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: Workspace
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  storage:
-    size: 100Mi
-`, homePersistWorkspace, homePersistNS))
+		ws := framework.NewWorkspace(homePersistNS, homePersistWorkspace).
+			WithStorage("100Mi").
+			Apply(ctx)
 
 		// Wait for the Workspace to reach Active before submitting runs.
-		Eventually(func(g Gomega) {
-			out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", homePersistNS,
-				"get", "workspace", homePersistWorkspace,
-				"-o", "jsonpath={.status.phase}"))
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(strings.TrimSpace(out)).To(Equal("Active"),
-				"workspace still in phase %q", strings.TrimSpace(out))
-		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+		ws.WaitForActive(ctx, 2*time.Minute)
 	})
 
 	AfterAll(func() {
@@ -281,42 +235,20 @@ spec:
 		framework.WaitForNamespaceGone(context.Background(), homePersistNS, 20*time.Second)
 	})
 
-	AfterEach(func() {
-		if !CurrentSpecReport().Failed() {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		framework.DumpRunDiagnostics(ctx, homePersistNS, homePersistRunWrite)
-		framework.DumpRunDiagnostics(ctx, homePersistNS, homePersistRunRead)
-	})
-
 	It("writes a sentinel into $HOME on a Batch run", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 
 		By("submitting the write HarnessRun")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: HarnessTemplate
-  workspaceRef: %s
-  prompt: "write HOME sentinel"
-  extraEnv:
-    - name: E2E_HOME_PHASE
-      value: write
-`, homePersistRunWrite, homePersistNS, homePersistTemplate, homePersistWorkspace))
+		run := framework.NewRun(homePersistNS, homePersistTemplate).
+			WithName(homePersistRunWrite).
+			WithWorkspace(homePersistWorkspace).
+			WithPrompt("write HOME sentinel").
+			WithEnv("E2E_HOME_PHASE", "write").
+			Submit(ctx)
 
 		By("waiting for the write run to reach Succeeded")
-		Eventually(func() string {
-			return framework.RunPhase(ctx, homePersistNS, homePersistRunWrite)
-		}, 2*time.Minute, 2*time.Second).Should(Equal("Succeeded"))
+		run.WaitForPhase(ctx, "Succeeded", 2*time.Minute)
 	})
 
 	It("reads the sentinel back on a subsequent Batch run sharing the Workspace", func() {
@@ -324,40 +256,23 @@ spec:
 		defer cancel()
 
 		By("submitting the read HarnessRun against the same workspace")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: HarnessTemplate
-  workspaceRef: %s
-  prompt: "read HOME sentinel"
-  extraEnv:
-    - name: E2E_HOME_PHASE
-      value: read
-`, homePersistRunRead, homePersistNS, homePersistTemplate, homePersistWorkspace))
+		run := framework.NewRun(homePersistNS, homePersistTemplate).
+			WithName(homePersistRunRead).
+			WithWorkspace(homePersistWorkspace).
+			WithPrompt("read HOME sentinel").
+			WithEnv("E2E_HOME_PHASE", "read").
+			Submit(ctx)
 
 		By("waiting for the read run to reach Succeeded")
-		Eventually(func() string {
-			return framework.RunPhase(ctx, homePersistNS, homePersistRunRead)
-		}, 2*time.Minute, 2*time.Second).Should(Equal("Succeeded"))
+		run.WaitForPhase(ctx, "Succeeded", 2*time.Minute)
 
 		By("verifying the read run's output summary contains the written sentinel")
 		// The collector writes the harness's result.json summary into the
 		// output ConfigMap (<run>-out) under key "phase"="Completed" and
 		// the run's status.outputs.summary field. Poll status.outputs
 		// rather than the ConfigMap — same poll we'd use for events.
-		var runStatus framework.HarnessRunStatus
 		Eventually(func(g Gomega) {
-			out, err := utils.Run(exec.CommandContext(ctx, "kubectl", "-n", homePersistNS,
-				"get", "harnessrun", homePersistRunRead, "-o", "jsonpath={.status}"))
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).NotTo(BeEmpty())
-			g.Expect(json.Unmarshal([]byte(out), &runStatus)).To(Succeed())
+			runStatus := run.Status(ctx)
 			g.Expect(runStatus.Outputs).NotTo(BeNil(),
 				"status.outputs not yet populated")
 			g.Expect(runStatus.Outputs.Summary).To(ContainSubstring(homePersistSentinel),

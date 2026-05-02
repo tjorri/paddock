@@ -21,7 +21,6 @@ package e2e
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -57,53 +56,19 @@ var _ = Describe("broker failure modes", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		By("registering a template that requires a broker-issued credential")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: ClusterHarnessTemplate
-metadata:
-  name: %s
-spec:
-  harness: echo
-  image: %s
-  command: ["/usr/local/bin/paddock-echo"]
-  eventAdapter:
-    image: %s
-  requires:
-    credentials:
-      - name: DEMO_TOKEN
-  defaults:
-    timeout: 60s
-  workspace:
-    required: true
-    mountPath: /workspace
-`, brokerDownTemplate, echoImage, adapterEchoImage))
-		DeferCleanup(func() {
-			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl", "delete",
-				"clusterharnesstemplate", brokerDownTemplate, "--ignore-not-found=true")
-		})
+		framework.NewHarnessTemplate(ns, brokerDownTemplate).
+			WithImage(echoImage).
+			WithCommand("/usr/local/bin/paddock-echo").
+			WithEventAdapter(adapterEchoImage).
+			WithDefaultTimeout("60s").
+			WithRequiredCredential("DEMO_TOKEN").
+			Apply(ctx)
 
 		By("applying a BrokerPolicy granting DEMO_TOKEN via UserSuppliedSecret (in-container delivery)")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: BrokerPolicy
-metadata:
-  name: allow-broker-down
-  namespace: %s
-spec:
-  appliesToTemplates: ["%s"]
-  grants:
-    credentials:
-      - name: DEMO_TOKEN
-        provider:
-          kind: UserSuppliedSecret
-          secretRef:
-            name: %s
-            key: DEMO_TOKEN
-          deliveryMode:
-            inContainer:
-              accepted: true
-              reason: "E2E broker-down scenario exercises a raw credential plumbed into the run container."
-`, ns, brokerDownTemplate, brokerDownSecret))
+		framework.NewBrokerPolicy(ns, "allow-broker-down", brokerDownTemplate).
+			GrantCredentialFromSecret("DEMO_TOKEN", brokerDownSecret, "DEMO_TOKEN", "inContainer",
+				"E2E broker-down scenario exercises a raw credential plumbed into the run container.").
+			Apply(ctx)
 
 		By("scaling the broker Deployment to 0 before submitting the run")
 		broker := framework.GetBroker(context.Background())
@@ -131,26 +96,13 @@ spec:
 		broker.RestoreOnTeardown()
 
 		By("submitting a HarnessRun and expecting Pending/BrokerUnavailable")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: ClusterHarnessTemplate
-  prompt: "e2e broker-down"
-`, brokerDownRunName, ns, brokerDownTemplate))
+		run := framework.NewRun(ns, brokerDownTemplate).
+			WithName(brokerDownRunName).
+			WithPrompt("e2e broker-down").
+			Submit(ctx)
 
 		Eventually(func(g Gomega) {
-			var status framework.HarnessRunStatus
-			out, err := utils.Run(exec.Command("kubectl", "-n", ns,
-				"get", "harnessrun", brokerDownRunName, "-o", "jsonpath={.status}"))
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).NotTo(BeEmpty())
-			g.Expect(json.Unmarshal([]byte(out), &status)).To(Succeed())
+			status := run.Status(ctx)
 			g.Expect(status.Phase).To(Equal("Pending"),
 				"want Pending while broker is scaled to zero; got %q", status.Phase)
 			ready := framework.FindCondition(status.Conditions, "BrokerReady")
@@ -165,13 +117,7 @@ spec:
 		broker.WaitReady(context.Background())
 
 		By("expecting the run to reach Succeeded once the broker is back")
-		Eventually(func(g Gomega) {
-			phase, err := utils.Run(exec.Command("kubectl", "-n", ns,
-				"get", "harnessrun", brokerDownRunName, "-o", "jsonpath={.status.phase}"))
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(strings.TrimSpace(phase)).To(Equal("Succeeded"),
-				"run still in phase %q after broker returned", strings.TrimSpace(phase))
-		}, 3*time.Minute, 3*time.Second).Should(Succeed())
+		run.WaitForPhase(ctx, "Succeeded", 3*time.Minute)
 	})
 
 	It("fails issuance closed when AuditEvent writes are denied", func(ctx SpecContext) {
@@ -187,28 +133,10 @@ spec:
 			"delete", "ns", auditUnavailableNS, "--ignore-not-found", "--wait=true", "--timeout=60s"))
 		ns := framework.CreateTenantNamespace(ctxT, auditUnavailableNS)
 
-		tg19Policy := fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: BrokerPolicy
-metadata:
-  name: tg19-policy
-  namespace: %s
-spec:
-  appliesToTemplates: ["*"]
-  grants:
-    credentials:
-      - name: DEMO_TOKEN
-        provider:
-          kind: UserSuppliedSecret
-          secretRef:
-            name: tg19-demo
-            key: token
-          deliveryMode:
-            inContainer:
-              accepted: true
-              reason: "TG-19 adversarial fixture; tests broker fail-closed semantics"
-`, ns)
-		framework.ApplyYAML(tg19Policy)
+		framework.NewBrokerPolicy(ns, "tg19-policy", "*").
+			GrantCredentialFromSecret("DEMO_TOKEN", "tg19-demo", "token", "inContainer",
+				"TG-19 adversarial fixture; tests broker fail-closed semantics").
+			Apply(ctxT)
 
 		By("creating the upstream Secret the policy references")
 		tg19Secret := fmt.Sprintf(`
@@ -223,33 +151,12 @@ stringData:
 		framework.ApplyYAML(tg19Secret)
 
 		By("creating a HarnessTemplate that requires DEMO_TOKEN")
-		templateManifest := fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessTemplate
-metadata:
-  name: tg19-template
-  namespace: %s
-spec:
-  harness: paddock-echo
-  image: paddock-echo:dev
-  command: ["/usr/local/bin/paddock-echo"]
-  requires:
-    credentials:
-      - name: DEMO_TOKEN
-  workspace:
-    required: true
-    mountPath: /workspace
-  defaults:
-    timeout: 60s
-    resources:
-      limits:
-        cpu: 200m
-        memory: 128Mi
-      requests:
-        cpu: 50m
-        memory: 64Mi
-`, ns)
-		framework.ApplyYAML(templateManifest)
+		framework.NewHarnessTemplate(ns, "tg19-template").
+			WithImage(echoImage).
+			WithCommand("/usr/local/bin/paddock-echo").
+			WithEventAdapter(adapterEchoImage).
+			WithRequiredCredential("DEMO_TOKEN").
+			Apply(ctxT)
 
 		By("patching the broker ClusterRole to remove auditevents:create")
 		// Restoration is symmetric: a JSON-patch add appends the
@@ -276,18 +183,10 @@ spec:
 
 		By("submitting a HarnessRun that triggers broker.Issue")
 		runName := "tg19-fail-closed"
-		runManifest := fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: tg19-template
-  prompt: "tg-19 audit-fail probe"
-`, runName, ns)
-		framework.ApplyYAML(runManifest)
+		run := framework.NewRun(ns, "tg19-template").
+			WithName(runName).
+			WithPrompt("tg-19 audit-fail probe").
+			Submit(ctxT)
 
 		By("giving the controller time to attempt issuance against the audit-broken broker")
 		// The broker returns 503 AuditUnavailable on every Issue
@@ -319,7 +218,7 @@ spec:
 		// secret with non-empty DEMO_TOKEN bytes, which would surface
 		// as base64-encoded data in jsonpath output.
 		out, getErr := utils.Run(exec.CommandContext(ctxT, "kubectl", "-n", ns,
-			"get", "secret", runName+"-broker-creds",
+			"get", "secret", run.Name+"-broker-creds",
 			"-o", "jsonpath={.data.DEMO_TOKEN}"))
 		if getErr != nil {
 			// kubectl errored — most likely the secret doesn't exist.
@@ -382,17 +281,10 @@ spec:
 		// other, so prefer the more robust sequential setup.
 
 		By("starting run-a and waiting for it to acquire a lease")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: t2-patpool-tmpl
-  prompt: "t2 restart test"
-`, runA, ns))
+		framework.NewRun(ns, "t2-patpool-tmpl").
+			WithName(runA).
+			WithPrompt("t2 restart test").
+			Submit(ctxT)
 		runAOK := false
 		Eventually(func() int {
 			return framework.IssuedLeaseCount(ctxT, ns, runA)
@@ -406,17 +298,10 @@ spec:
 		})
 
 		By("starting run-b and waiting for it to acquire a lease")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: t2-patpool-tmpl
-  prompt: "t2 restart test"
-`, runB, ns))
+		framework.NewRun(ns, "t2-patpool-tmpl").
+			WithName(runB).
+			WithPrompt("t2 restart test").
+			Submit(ctxT)
 		runBOK := false
 		DeferCleanup(func() {
 			// On any failure (including run-b never leasing), dump
@@ -481,17 +366,10 @@ spec:
 				framework.DumpRunDiagnostics(ctxT, ns, runName)
 			}
 		})
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: t2-patpool-tmpl
-  prompt: "t2 force-clear test"
-`, runName, ns))
+		framework.NewRun(ns, "t2-patpool-tmpl").
+			WithName(runName).
+			WithPrompt("t2 force-clear test").
+			Submit(ctxT)
 
 		Eventually(func() int {
 			return framework.IssuedLeaseCount(ctxT, ns, runName)

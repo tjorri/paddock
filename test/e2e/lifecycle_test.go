@@ -20,8 +20,6 @@ limitations under the License.
 package e2e
 
 import (
-	"encoding/json"
-	"fmt"
 	"os/exec"
 	"strings"
 	"time"
@@ -43,59 +41,22 @@ var _ = Describe("harness lifecycle", func() {
 	It("completes a Batch run end-to-end with events and outputs", func(ctx SpecContext) {
 		ns := framework.CreateTenantNamespace(ctx, echoTenantNamespace)
 
-		By("applying the echo ClusterHarnessTemplate")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: ClusterHarnessTemplate
-metadata:
-  name: %s
-spec:
-  harness: echo
-  image: %s
-  command: ["/usr/local/bin/paddock-echo"]
-  eventAdapter:
-    image: %s
-  defaults:
-    timeout: 60s
-  workspace:
-    required: true
-    mountPath: /workspace
-`, echoTemplateName, echoImage, adapterEchoImage))
-
-		// Cluster-scoped resource: register cleanup explicitly (the
-		// tenant namespace's DeferCleanup only takes care of namespaced
-		// resources).
-		DeferCleanup(func(ctx SpecContext) {
-			_, _ = framework.RunCmdWithTimeout(10*time.Second, "kubectl",
-				"delete", "clusterharnesstemplate", echoTemplateName,
-				"--ignore-not-found=true")
-		})
+		By("applying the echo HarnessTemplate")
+		framework.NewHarnessTemplate(ns, echoTemplateName).
+			WithImage(echoImage).
+			WithCommand("/usr/local/bin/paddock-echo").
+			WithEventAdapter(adapterEchoImage).
+			Apply(ctx)
 
 		By("submitting a HarnessRun (ephemeral workspace, inline prompt)")
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: ClusterHarnessTemplate
-  prompt: "hello from paddock e2e"
-`, echoRunName, ns, echoTemplateName))
+		run := framework.NewRun(ns, echoTemplateName).
+			WithName(echoRunName).
+			WithPrompt("hello from paddock e2e").
+			Submit(ctx)
 
 		By("waiting for phase=Succeeded")
-		var status framework.HarnessRunStatus
-		Eventually(func(g Gomega) {
-			out, err := utils.Run(exec.Command("kubectl", "-n", ns,
-				"get", "harnessrun", echoRunName, "-o", "jsonpath={.status}"))
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(out).NotTo(BeEmpty())
-			g.Expect(json.Unmarshal([]byte(out), &status)).To(Succeed())
-			g.Expect(status.Phase).To(Equal("Succeeded"),
-				"run still in phase %q", status.Phase)
-		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+		run.WaitForPhase(ctx, "Succeeded", 2*time.Minute)
+		status := run.Status(ctx)
 
 		By("verifying status.recentEvents came through the adapter + collector")
 		Expect(status.RecentEvents).To(HaveLen(4),

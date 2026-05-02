@@ -142,17 +142,11 @@ spec:
 		defer cancel()
 
 		runName := "substitute-probe"
-		framework.ApplyYAML(fmt.Sprintf(`
-apiVersion: paddock.dev/v1alpha1
-kind: HarnessRun
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  templateRef:
-    name: %s
-    kind: ClusterHarnessTemplate
-  prompt: "probe-substitution"`, runName, subNS, subTemplateName))
+		run := framework.NewRun(subNS, subTemplateName).
+			WithName(runName).
+			WithPrompt("probe-substitution").
+			WithClusterScopedTemplate().
+			Submit(ctx)
 
 		DeferCleanup(func() {
 			if CurrentSpecReport().Failed() {
@@ -160,9 +154,7 @@ spec:
 			}
 		})
 
-		Eventually(func() string {
-			return framework.RunPhase(ctx, subNS, runName)
-		}, 4*time.Minute, 5*time.Second).Should(Equal("Succeeded"))
+		run.WaitForPhase(ctx, "Succeeded", 4*time.Minute)
 
 		// httpbin.org/anything echoes the request as JSON in the response
 		// body. The agent's curl writes that JSON to stdout. The
