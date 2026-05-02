@@ -38,6 +38,18 @@ import (
 // the receiving-side counterpart that resolves the race. Beyond the
 // existing dataWriteMu / ctlWriteMu serialization, no additional
 // synchronization is required here.
+//
+// Failure mode: when any UDS write below fails (begin-prompt ctl,
+// data body, or end-prompt ctl), the supervisor's prompt-boundary
+// state is desynchronized. The handler returns 502, but there is no
+// recovery path on the proxy side: a subsequent /prompts will issue
+// another begin-prompt against a connection the supervisor has
+// already given up on, and that call will also fail. Treat 502 from
+// this endpoint as run-fatal at the broker layer, not as a retryable
+// transient. The cleaner recovery -- close the entire Server on UDS
+// write error so subsequent calls hard-fail with a definitive error
+// -- is a planned follow-up tracked alongside the supervisor-side
+// {"event":"crashed"} ctl emission.
 func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
