@@ -101,8 +101,20 @@ func runPersistent(ctx context.Context, logger *log.Logger, cfg Config) error {
 				logger.Printf("unknown ctl action: %q", msg.Action)
 			}
 		case <-stdoutDone:
-			// Harness exited unexpectedly. Surface as crash.
+			// Harness's stdout closed. This can happen two ways:
+			//   1. Adapter called /end → proxy CloseWrites the data UDS →
+			//      supervisor's stdin goroutine sees EOF → closes harness's
+			//      stdin → harness reads EOF, exits 0. The "end" ctl message
+			//      may still be in flight on ctlMsgs; we treat this as a
+			//      clean shutdown regardless of arrival ordering.
+			//   2. Harness crashed mid-stream without prompting from us.
+			//
+			// cmd.Wait() returning nil (exit 0) means (1); a non-nil error
+			// (non-zero exit, signal, etc.) means (2).
 			waitErr := cmd.Wait()
+			if waitErr == nil {
+				return nil
+			}
 			return fmt.Errorf("harness crashed: %w", waitErr)
 		}
 	}

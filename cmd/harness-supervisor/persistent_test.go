@@ -175,6 +175,50 @@ func TestPersistent_HarnessCrashSurfaces(t *testing.T) {
 	}
 }
 
+func TestPersistent_CleanExitOnDataEOFIsNotCrash(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	cfg := Config{
+		Mode:       "persistent-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		HarnessBin: testFixtureHarness(t),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runPersistent(ctx, testLogger(t), cfg) }()
+
+	dataConn := dialEventually(t, dataPath)
+	defer func() { _ = dataConn.Close() }()
+	ctlConn := dialEventually(t, ctlPath)
+	defer func() { _ = ctlConn.Close() }()
+
+	// Drain "ready" event.
+	scanner := bufio.NewScanner(dataConn)
+	if !scanner.Scan() {
+		t.Fatalf("scan ready: %v", scanner.Err())
+	}
+
+	// Close the data UDS write half WITHOUT sending an "end" ctl message.
+	// This races stdoutDone against ctlMsgs (which never gets an end). The
+	// supervisor must treat this as a clean exit, not a crash, since
+	// fake_harness.sh exits 0 on stdin EOF.
+	if cw, ok := dataConn.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	} else {
+		t.Skip("dataConn doesn't support CloseWrite")
+	}
+
+	if err := <-errCh; err != nil {
+		t.Errorf("clean exit misclassified as error: %v", err)
+	}
+}
+
 // shortTempDir returns a per-test temp directory rooted at /tmp.
 // Unix domain sockets are capped at ~104 bytes on macOS (sun_path),
 // and Go's t.TempDir() under /var/folders/... blows that limit for
