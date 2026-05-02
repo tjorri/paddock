@@ -1406,3 +1406,64 @@ func TestBuildPodSpec_HomeInitFirst(t *testing.T) {
 		t.Fatalf("paddock-home-init must be the first init container; got order: %v", names)
 	}
 }
+
+// TestBuildAdapterContainer_HasUDSSocketEnv asserts that the adapter
+// sidecar gets the UDS socket paths it needs to dial the supervisor
+// running in the agent container. Spec §4.4 (interactive-adapter-as-proxy):
+// adapter and agent must agree on the IPC paths.
+func TestBuildAdapterContainer_HasUDSSocketEnv(t *testing.T) {
+	tpl := echoTemplateFixture()
+	run := echoRunFixture()
+
+	c := buildAdapterContainer(run, tpl)
+
+	want := map[string]string{
+		"PADDOCK_AGENT_DATA_SOCKET": "/paddock/agent-data.sock",
+		"PADDOCK_AGENT_CTL_SOCKET":  "/paddock/agent-ctl.sock",
+	}
+	for k, v := range want {
+		var found bool
+		for _, e := range c.Env {
+			if e.Name == k {
+				if e.Value != v {
+					t.Errorf("env %s = %q, want %q", k, e.Value, v)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("env %s not set on adapter container", k)
+		}
+	}
+}
+
+// TestBuildEnv_AgentHasUDSSocketEnv asserts that the agent container's
+// env carries the same UDS socket paths the adapter sees, so the
+// supervisor (running in the agent) listens where the adapter dials.
+func TestBuildEnv_AgentHasUDSSocketEnv(t *testing.T) {
+	tpl := echoTemplateFixture()
+	run := echoRunFixture()
+	in := defaultInputs()
+
+	env := buildEnv(run, tpl, in)
+	want := map[string]string{
+		"PADDOCK_AGENT_DATA_SOCKET": "/paddock/agent-data.sock",
+		"PADDOCK_AGENT_CTL_SOCKET":  "/paddock/agent-ctl.sock",
+	}
+	for k, v := range want {
+		var found bool
+		for _, e := range env {
+			if e.Name == k {
+				if e.Value != v {
+					t.Errorf("env %s = %q, want %q", k, e.Value, v)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("env %s not set on agent container", k)
+		}
+	}
+}

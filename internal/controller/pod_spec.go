@@ -51,6 +51,16 @@ const (
 	defaultWorkspaceMount = "/workspace"
 	rawSubdir             = "/paddock/raw/out"
 	eventsSubdir          = "/paddock/events/events.jsonl"
+	// agentDataSocketPath is the UDS the supervisor (in the agent
+	// container) listens on for prompt/event traffic; the adapter
+	// proxy dials this path. Both containers mount /paddock as a
+	// shared emptyDir, so the same path resolves in both.
+	// Spec 2026-05-02-interactive-adapter-as-proxy §4.4.
+	agentDataSocketPath = "/paddock/agent-data.sock"
+	// agentCtlSocketPath is the UDS the supervisor listens on for
+	// out-of-band control RPCs (lifecycle / detach / health). Same
+	// shared-emptyDir contract as agentDataSocketPath.
+	agentCtlSocketPath = "/paddock/agent-ctl.sock"
 	// reposManifestRelPath is the path, relative to the workspace
 	// mount, where the seed Job writes the repo manifest. Kept in sync
 	// with seedManifestRelPath in workspace_seed.go.
@@ -484,6 +494,13 @@ func buildAdapterContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTe
 	env := []corev1.EnvVar{
 		{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
 		{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
+		// UDS paths to the supervisor in the agent container. Both
+		// containers see the same /paddock emptyDir mount, so the
+		// adapter proxy dials these from its side and the supervisor
+		// listens on them from the agent's side. Spec
+		// 2026-05-02-interactive-adapter-as-proxy §4.4.
+		{Name: "PADDOCK_AGENT_DATA_SOCKET", Value: agentDataSocketPath},
+		{Name: "PADDOCK_AGENT_CTL_SOCKET", Value: agentCtlSocketPath},
 	}
 	// Interactive runs: signal the adapter which interactive driver
 	// strategy the template's adapter image should use (per-prompt-process
@@ -885,6 +902,12 @@ func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in po
 		corev1.EnvVar{Name: "PADDOCK_REPOS_PATH", Value: mount + "/" + reposManifestRelPath},
 		corev1.EnvVar{Name: "PADDOCK_RUN_NAME", Value: run.Name},
 		corev1.EnvVar{Name: "PADDOCK_MODEL", Value: effectiveModel(run, template)},
+		// UDS paths the supervisor listens on; the adapter dials
+		// these. Single source of truth shared with the adapter env
+		// in buildAdapterContainer. Spec
+		// 2026-05-02-interactive-adapter-as-proxy §4.4.
+		corev1.EnvVar{Name: "PADDOCK_AGENT_DATA_SOCKET", Value: agentDataSocketPath},
+		corev1.EnvVar{Name: "PADDOCK_AGENT_CTL_SOCKET", Value: agentCtlSocketPath},
 	)
 
 	// HOME-from-PVC default (spec 2026-04-30-paddock-tui-interactive
