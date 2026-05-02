@@ -46,7 +46,11 @@ jobs:
           go mod tidy
           make test
 
+      # Run on success AND failure: a single flaky test should not
+      # poison the main coverage baseline. Go writes cover.out as it
+      # goes, so a failed `make test` still produces a usable profile.
       - name: Upload coverage to Codecov
+        if: always()
         uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5.5.4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
