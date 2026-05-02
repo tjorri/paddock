@@ -29,6 +29,8 @@ case "$image" in
     deps="api cmd/adapter-echo images/adapter-echo go.mod go.sum" ;;
   collector)
     deps="api cmd/collector images/collector go.mod go.sum" ;;
+  harness-supervisor)
+    deps="cmd/harness-supervisor images/harness-supervisor go.mod go.sum" ;;
   evil-echo)
     deps="images/evil-echo internal/brokerclient go.mod go.sum" ;;
   adapter-claude-code)

@@ -215,6 +215,7 @@ ECHO_IMG ?= paddock-echo:dev
 EVIL_ECHO_IMG ?= paddock-evil-echo:dev
 ADAPTER_ECHO_IMG ?= paddock-adapter-echo:dev
 COLLECTOR_IMG ?= paddock-collector:dev
+HARNESS_SUPERVISOR_IMG ?= paddock-harness-supervisor:dev
 CLAUDE_CODE_IMG ?= paddock-claude-code:dev
 ADAPTER_CLAUDE_CODE_IMG ?= paddock-adapter-claude-code:dev
 BROKER_IMG ?= paddock-broker:dev
@@ -270,8 +271,20 @@ image-collector: ## Build the paddock-collector sidecar image, skipping if sourc
 		$(CONTAINER_TOOL) build -t $(COLLECTOR_IMG) -t $$tag -f images/collector/Dockerfile .; \
 	fi
 
+.PHONY: image-harness-supervisor
+image-harness-supervisor: ## Build the paddock-harness-supervisor image (bridges UDS to harness CLI stdio), skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh harness-supervisor); \
+	tag="paddock-harness-supervisor:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-harness-supervisor: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(HARNESS_SUPERVISOR_IMG); \
+	else \
+		echo "image-harness-supervisor: building $(HARNESS_SUPERVISOR_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(HARNESS_SUPERVISOR_IMG) -t $$tag -f images/harness-supervisor/Dockerfile .; \
+	fi
+
 .PHONY: image-claude-code
-image-claude-code: ## Build the paddock-claude-code demo harness image (wraps Anthropic's claude CLI), skipping if source hash matches.
+image-claude-code: image-harness-supervisor ## Build the paddock-claude-code demo harness image (wraps Anthropic's claude CLI), skipping if source hash matches.
 	@hash=$$(hack/image-hash.sh claude-code); \
 	tag="paddock-claude-code:dev-$$hash"; \
 	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
@@ -343,7 +356,7 @@ image-e2e-egress: ## Build the paddock-e2e-egress harness (e2e-only probe tool),
 	fi
 
 .PHONY: images
-images: image-echo image-adapter-echo image-collector image-claude-code image-adapter-claude-code image-broker image-proxy image-iptables-init image-evil-echo ## Build all reference images.
+images: image-echo image-adapter-echo image-collector image-harness-supervisor image-claude-code image-adapter-claude-code image-broker image-proxy image-iptables-init image-evil-echo ## Build all reference images.
 
 .PHONY: trivy-images
 trivy-images: ## Run trivy on all Paddock images. Fails on HIGH/CRITICAL.
