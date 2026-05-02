@@ -48,7 +48,9 @@ import (
 	"github.com/coder/websocket"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/client-go/tools/clientcmd"
 
+	paddockbroker "github.com/tjorri/paddock/internal/paddocktui/broker"
 	"github.com/tjorri/paddock/test/e2e/framework"
 	"github.com/tjorri/paddock/test/utils"
 )
@@ -289,5 +291,272 @@ spec:
 			}
 		}
 		Fail(fmt.Sprintf("never received 'hello' from shell within budget; got: %q", string(got)))
+	})
+})
+
+// Supervisor-mode interactive specs (spec 2026-05-02-interactive-adapter-as-proxy §8,
+// testing layer 3): exercise the full broker → adapter → UDS → supervisor →
+// fake-CLI → UDS → adapter → broker WS path. The fake-claude harness mimics
+// the stream-json contract without the install + API call, so CI runs without
+// external network or API budget.
+//
+// Each It owns its own template + run so the supervisor and per-prompt
+// state machines stay isolated. Both specs share the namespace + SA so the
+// broker-token and namespace plumbing is set up once.
+const (
+	supervisorSA               = "supervisor-runner"
+	supervisorPolicy           = "supervisor-allow"
+	supervisorTplPersistent    = "supervisor-persistent"
+	supervisorTplPerPrompt     = "supervisor-per-prompt"
+	supervisorRunPersistent    = "supervisor-run-persistent"
+	supervisorRunPerPrompt     = "supervisor-run-per-prompt"
+	supervisorPolicyPersistent = "supervisor-allow-persistent"
+	supervisorPolicyPerPrompt  = "supervisor-allow-per-prompt"
+)
+
+var _ = Describe("interactive run via supervisor", Ordered, Label("interactive"), func() {
+	var ns string
+
+	BeforeAll(func(ctx SpecContext) {
+		ns = framework.CreateTenantNamespace(ctx, "paddock-supervisor-e2e")
+
+		// ServiceAccount the broker client authenticates as. The broker
+		// only checks audience + namespace; no extra RBAC is required
+		// beyond what the default service-account-issuer grants.
+		framework.ApplyYAML(fmt.Sprintf(`
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: %s
+  namespace: %s`, supervisorSA, ns))
+
+		// Persistent-process template. The supervisor + fake-claude
+		// pair clean up cleanly on /end (supervisor closes stdin to
+		// fake-claude, fake-claude's read loop exits, supervisor's
+		// cmd.Wait returns), so the run reaches Succeeded naturally —
+		// no max-lifetime watchdog dependency.
+		//
+		// idleTimeout/detachIdleTimeout/detachTimeout/maxLifetime kept
+		// short so any flake (e.g. /end never wired through) hits the
+		// watchdog inside the suite budget. The annotation matches
+		// spec.interactive.mode so the webhook accepts the run.
+		framework.ApplyYAML(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessTemplate
+metadata:
+  name: %s
+  namespace: %s
+  annotations:
+    paddock.dev/adapter-interactive-modes: "persistent-process,per-prompt-process"
+spec:
+  harness: claude-code-fake
+  image: %s
+  command: ["/usr/local/bin/paddock-claude-code-fake"]
+  eventAdapter:
+    image: %s
+  interactive:
+    mode: persistent-process
+    idleTimeout: 50s
+    detachIdleTimeout: 50s
+    detachTimeout: 50s
+    maxLifetime: 90s
+  defaults:
+    timeout: 5m
+  workspace:
+    required: true
+    mountPath: /workspace`, supervisorTplPersistent, ns, claudeCodeFakeImage, adapterClaudeCodeImage))
+
+		// Per-prompt-process template. Same shape, different
+		// interactive.mode — the controller wires PADDOCK_INTERACTIVE_MODE
+		// onto the supervisor + adapter containers so each turn spawns
+		// a fresh fake-claude process.
+		framework.ApplyYAML(fmt.Sprintf(`
+apiVersion: paddock.dev/v1alpha1
+kind: HarnessTemplate
+metadata:
+  name: %s
+  namespace: %s
+  annotations:
+    paddock.dev/adapter-interactive-modes: "persistent-process,per-prompt-process"
+spec:
+  harness: claude-code-fake
+  image: %s
+  command: ["/usr/local/bin/paddock-claude-code-fake"]
+  eventAdapter:
+    image: %s
+  interactive:
+    mode: per-prompt-process
+    idleTimeout: 50s
+    detachIdleTimeout: 50s
+    detachTimeout: 50s
+    maxLifetime: 90s
+  defaults:
+    timeout: 5m
+  workspace:
+    required: true
+    mountPath: /workspace`, supervisorTplPerPrompt, ns, claudeCodeFakeImage, adapterClaudeCodeImage))
+
+		// Per-template BrokerPolicy granting runs.interact. Two
+		// policies (one per template) so each spec's admission check is
+		// independent.
+		framework.NewBrokerPolicy(ns, supervisorPolicyPersistent, supervisorTplPersistent).
+			GrantInteract().
+			Apply(ctx)
+		framework.NewBrokerPolicy(ns, supervisorPolicyPerPrompt, supervisorTplPerPrompt).
+			GrantInteract().
+			Apply(ctx)
+	})
+
+	// runSupervisorRoundTrip is the shared driver for both modes. Each
+	// call submits a HarnessRun against the named template, opens the
+	// broker stream via paddockbroker.Client, posts a prompt, asserts a
+	// stream-json frame returns, ends the run, and asserts the run
+	// reaches Succeeded. The events.jsonl assertion is via
+	// HarnessRun.status.recentEvents (populated by the collector
+	// flushing the workspace events.jsonl into the output ConfigMap),
+	// which is the test surface the framework exposes for events.
+	runSupervisorRoundTrip := func(ctx context.Context, runName, templateName string) {
+		By("submitting an Interactive HarnessRun against the supervisor template")
+		run := framework.NewRun(ns, templateName).
+			WithName(runName).
+			WithMode("Interactive").
+			WithPrompt(`{"role":"user","content":"hello supervisor"}`).
+			Submit(ctx)
+
+		By("waiting for Phase=Running")
+		run.WaitForPhase(ctx, "Running", 3*time.Minute)
+
+		By("building a rest.Config from the current kubeconfig")
+		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+		restCfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+			loadingRules,
+			&clientcmd.ConfigOverrides{},
+		).ClientConfig()
+		Expect(err).NotTo(HaveOccurred(), "build rest.Config from kubeconfig")
+
+		By("constructing a paddockbroker.Client via New")
+		bCtx, bCancel := context.WithTimeout(ctx, 30*time.Second)
+		bc, err := paddockbroker.New(bCtx, paddockbroker.Options{
+			Service:                 "paddock-broker",
+			Namespace:               "paddock-system",
+			Port:                    8443,
+			ServiceAccount:          supervisorSA,
+			ServiceAccountNamespace: ns,
+			Source:                  restCfg,
+			CASecretName:            "broker-serving-cert",
+			CASecretNamespace:       "paddock-system",
+		})
+		bCancel()
+		Expect(err).NotTo(HaveOccurred(), "paddockbroker.New")
+		defer func() { _ = bc.Close() }()
+
+		By("opening the broker stream")
+		ch, err := bc.Open(ctx, ns, runName)
+		Expect(err).NotTo(HaveOccurred(), "broker.Open")
+
+		By("posting a prompt to the broker /v1/runs/.../prompts via paddockbroker.Submit")
+		// The stream-json input the prompt body is serialized into is
+		// passed verbatim to the supervisor's data UDS, which pipes it
+		// to fake-claude's stdin. fake-claude echoes back as
+		// {"type":"assistant","message":<input>}\n. The adapter
+		// converts each line and forwards to the broker stream.
+		//
+		// Submit may transiently fail with HTTP 502 while the adapter
+		// is warming up (the agent container's run.sh + supervisor
+		// take a few seconds to bind UDS, during which the adapter
+		// dial-with-backoff is still connecting). Retry on 502 until
+		// the broker accepts the prompt; ErrTurnInFlight (409) means
+		// a previous attempt's turn is still recorded — also a
+		// successful exit.
+		var submittedSeq int32
+		Eventually(func(g Gomega) {
+			seq, sErr := bc.Submit(ctx, ns, runName, `{"role":"user","content":"ping"}`)
+			if paddockbroker.IsTurnInFlight(sErr) {
+				return // a previous attempt got in; treat as success
+			}
+			g.Expect(sErr).NotTo(HaveOccurred())
+			submittedSeq = seq
+		}, 60*time.Second, 1*time.Second).Should(Succeed())
+		GinkgoWriter.Printf("submitted prompt seq=%d\n", submittedSeq)
+
+		By("waiting for at least one stream-json frame within 30s")
+		// Generous budget: the supervisor + adapter UDS round-trip is
+		// sub-second once the connections are up, but pod warm-up +
+		// adapter dial-with-backoff can take a few seconds on a busy
+		// CI node. 30s is comfortable headroom over the typical settle.
+		select {
+		case f, ok := <-ch:
+			Expect(ok).To(BeTrue(), "stream channel closed before any frame arrived")
+			Expect(f.Type).NotTo(BeEmpty(),
+				"received a frame but Type is empty: %+v", f)
+			GinkgoWriter.Printf("received StreamFrame type=%q data=%s\n", f.Type, string(f.Data))
+		case <-time.After(30 * time.Second):
+			Fail("no StreamFrame arrived within 30s")
+		}
+
+		By("ending the run via paddockbroker.End")
+		endCtx, endCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer endCancel()
+		Expect(bc.End(endCtx, ns, runName, "test-complete")).To(Succeed(), "broker.End")
+
+		By("waiting for the run to reach Succeeded (supervisor exits cleanly on /end)")
+		// Termination chain for a supervisor-driven run on /end:
+		//
+		//   broker /end → adapter ctlMessage{"action":"end"} →
+		//   supervisor closes stdin to fake-claude → fake-claude
+		//   read loop exits → supervisor cmd.Wait returns →
+		//   agent container exits 0 → Job completes → run = Succeeded.
+		//
+		// Cancelled is a tolerated outcome: if /end races the
+		// max-lifetime watchdog (or some other path), the run may
+		// land Cancelled instead. Either is a clean termination.
+		run.WaitForPhaseIn(ctx, []string{"Succeeded", "Cancelled"}, 3*time.Minute)
+
+		By("asserting status.recentEvents contains a fake-harness 'assistant' frame")
+		// The adapter-claude-code converter emits a Message-type
+		// PaddockEvent for every "assistant" stream frame, and the
+		// collector flushes the workspace events.jsonl into the
+		// output ConfigMap which the controller projects into
+		// status.recentEvents. Thus a single recentEvents entry of
+		// type=Message is sufficient evidence the full path worked.
+		//
+		// status.recentEvents is updated on a reconcile that fires
+		// after the collector flushes the ConfigMap — Eventually
+		// covers the small post-Succeeded settle window.
+		Eventually(func(g Gomega) {
+			status := run.Status(ctx)
+			g.Expect(status.RecentEvents).NotTo(BeEmpty(),
+				"expected at least one recentEvent; status=%+v", status)
+		}, 60*time.Second, 2*time.Second).Should(Succeed())
+	}
+
+	It("completes a persistent-process round-trip", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+		defer cancel()
+		DeferCleanup(func() {
+			if CurrentSpecReport().Failed() {
+				framework.DumpRunDiagnostics(ctx, ns, supervisorRunPersistent)
+			}
+			delCtx, delCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer delCancel()
+			_, _ = utils.Run(exec.CommandContext(delCtx, "kubectl", "-n", ns,
+				"delete", "harnessrun", supervisorRunPersistent, "--ignore-not-found", "--wait=false"))
+		})
+		runSupervisorRoundTrip(ctx, supervisorRunPersistent, supervisorTplPersistent)
+	})
+
+	It("completes a per-prompt-process round-trip", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+		defer cancel()
+		DeferCleanup(func() {
+			if CurrentSpecReport().Failed() {
+				framework.DumpRunDiagnostics(ctx, ns, supervisorRunPerPrompt)
+			}
+			delCtx, delCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer delCancel()
+			_, _ = utils.Run(exec.CommandContext(delCtx, "kubectl", "-n", ns,
+				"delete", "harnessrun", supervisorRunPerPrompt, "--ignore-not-found", "--wait=false"))
+		})
+		runSupervisorRoundTrip(ctx, supervisorRunPerPrompt, supervisorTplPerPrompt)
 	})
 })

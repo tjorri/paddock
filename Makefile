@@ -295,6 +295,18 @@ image-claude-code: image-harness-supervisor ## Build the paddock-claude-code dem
 		$(CONTAINER_TOOL) build -t $(CLAUDE_CODE_IMG) -t $$tag images/harness-claude-code; \
 	fi
 
+.PHONY: image-claude-code-fake
+image-claude-code-fake: image-harness-supervisor ## Build the fake-claude harness image (e2e only — no install, no API call), skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh claude-code-fake); \
+	tag="paddock-claude-code-fake:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-claude-code-fake: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag paddock-claude-code-fake:dev; \
+	else \
+		echo "image-claude-code-fake: building paddock-claude-code-fake:dev (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t paddock-claude-code-fake:dev -t $$tag images/harness-claude-code-fake; \
+	fi
+
 .PHONY: image-adapter-claude-code
 image-adapter-claude-code: ## Build the paddock-adapter-claude-code sidecar image, skipping if source hash matches.
 	@hash=$$(hack/image-hash.sh adapter-claude-code); \
