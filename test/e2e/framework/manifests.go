@@ -61,11 +61,16 @@ func (b *TemplateBuilder) BuildYAML() string {
 	fmt.Fprintf(&sb, "kind: HarnessTemplate\n")
 	fmt.Fprintf(&sb, "metadata:\n  name: %s\n  namespace: %s\n", b.name, b.ns)
 	fmt.Fprintf(&sb, "spec:\n  harness: %s\n  image: %s\n", b.harness, b.image)
-	fmt.Fprintf(&sb, "  command:")
-	for _, c := range b.command {
-		fmt.Fprintf(&sb, " [%q]", c)
+	if len(b.command) > 0 {
+		sb.WriteString("  command: [")
+		for i, c := range b.command {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			fmt.Fprintf(&sb, "%q", c)
+		}
+		sb.WriteString("]\n")
 	}
-	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "  eventAdapter:\n    image: %s\n", b.eventAdapterImage)
 	fmt.Fprintf(&sb, "  defaults:\n    timeout: %s\n", b.defaultTimeout)
 	fmt.Fprintf(&sb, "  workspace:\n    required: true\n    mountPath: %s\n", b.workspaceMountPath)
