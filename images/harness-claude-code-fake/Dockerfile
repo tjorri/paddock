@@ -16,19 +16,24 @@ ENV PADDOCK_HARNESS_BIN=/usr/local/bin/fake-claude
 ENV PADDOCK_HARNESS_ARGS_PERSISTENT=""
 ENV PADDOCK_HARNESS_ARGS_PER_PROMPT=""
 
-# Inline fake harness CLI: echoes stream-json input back as
-# stream-json output. The trap on SIGINT lets the supervisor's
-# per-prompt-process mode exercise its interrupt path without the
-# fake CLI dying outright.
+# Inline fake harness CLI: emits a well-formed stream-json
+# "assistant" event per input line so the adapter's convertLine
+# parser (cmd/adapter-claude-code/convert.go) translates it to a
+# Message PaddockEvent. The fake's output schema must match the
+# real claude --output-format stream-json shape: assistant.message
+# is an object with .role and .content[] where each content block
+# has .type ("text" | "tool_use" | ...) and a type-specific body.
+# The trap on SIGINT lets the supervisor's per-prompt-process mode
+# exercise its interrupt path without the fake CLI dying outright.
 RUN cat <<'EOF' > /usr/local/bin/fake-claude && chmod +x /usr/local/bin/fake-claude
 #!/bin/sh
-trap 'echo "{\"type\":\"interrupted\"}"; INTERRUPTED=1' INT
+trap 'printf "%s\n" "{\"type\":\"interrupted\"}"; INTERRUPTED=1' INT
 while IFS= read -r line; do
   if [ -n "${INTERRUPTED:-}" ]; then
     INTERRUPTED=
     continue
   fi
-  printf '{"type":"assistant","message":%s}\n' "$line"
+  printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"fake reply"}]}}\n'
 done
 EOF
 
