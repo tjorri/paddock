@@ -15,95 +15,95 @@ limitations under the License.
 */
 
 // Command adapter-claude-code is the event adapter sidecar for the
-// paddock-claude-code harness. It tails PADDOCK_RAW_PATH (claude's
-// stream-json output), converts each line to zero or more
-// PaddockEvents, and appends them to PADDOCK_EVENTS_PATH.
+// paddock-claude-code harness. In batch mode it tails PADDOCK_RAW_PATH
+// (claude's stream-json output), converts each line to zero or more
+// PaddockEvents, and appends them to PADDOCK_EVENTS_PATH. In
+// interactive mode it serves the proxy.Server HTTP+WS surface,
+// forwarding stream-json frames between the broker and the per-run
+// supervisor over a pair of unix-domain sockets.
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
-	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
+
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/adapter/proxy"
 )
 
-// newPerPromptDriver constructs a Driver for "per-prompt-process" mode.
-func newPerPromptDriver(logger *log.Logger) Driver { return NewPerPromptDriver(logger) }
+const defaultPoll = 200 * time.Millisecond
 
-// newPersistentDriver constructs a Driver for "persistent-process" mode.
-func newPersistentDriver(logger *log.Logger) Driver { return NewPersistentDriver(logger) }
+func main() {
+	rawPath := flag.String("raw", envOr("PADDOCK_RAW_PATH", "/paddock/raw/out"), "Path to raw claude stream-json input (tailed in batch mode).")
+	eventsPath := flag.String("events", envOr("PADDOCK_EVENTS_PATH", "/paddock/events/events.jsonl"), "Path to PaddockEvents output JSONL.")
+	poll := flag.Duration("poll", defaultPoll, "Poll interval while tailing input.")
+	flag.Parse()
 
-// runInteractive starts the loopback HTTP server for interactive mode and
-// blocks until SIGTERM or SIGINT is received.
-func runInteractive(mode string) {
-	logger := log.New(os.Stderr, "adapter-claude-code: ", log.LstdFlags)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
 
-	var drv Driver
-	switch mode {
-	case "per-prompt-process":
-		drv = newPerPromptDriver(logger)
-	case "persistent-process":
-		drv = newPersistentDriver(logger)
-	default:
-		logger.Fatalf("unknown PADDOCK_INTERACTIVE_MODE %q", mode)
+	if mode := os.Getenv("PADDOCK_INTERACTIVE_MODE"); mode != "" {
+		runInteractive(ctx, mode, *eventsPath)
+		return
 	}
 
-	srv := NewServer(Config{Mode: mode, Driver: drv})
+	if err := runBatch(ctx, *rawPath, *eventsPath, *poll); err != nil && !errors.Is(err, context.Canceled) {
+		log.Fatalf("adapter-claude-code: %v", err)
+	}
+}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
+// runInteractive instantiates the proxy server with the claude-code
+// converter and serves on :8431.
+func runInteractive(ctx context.Context, mode, eventsPath string) {
+	logger := log.New(os.Stderr, "adapter-claude-code: ", log.LstdFlags)
+
+	srv, err := proxy.NewServer(ctx, proxy.Config{
+		Mode:       mode,
+		DataSocket: envOr("PADDOCK_AGENT_DATA_SOCKET", "/paddock/agent-data.sock"),
+		CtlSocket:  envOr("PADDOCK_AGENT_CTL_SOCKET", "/paddock/agent-ctl.sock"),
+		EventsPath: eventsPath,
+		Backoff:    proxy.BackoffConfig{Initial: 50 * time.Millisecond, Max: 1600 * time.Millisecond, Tries: 6},
+		Converter: func(line string) ([]paddockv1alpha1.PaddockEvent, error) {
+			return convertLine(line, time.Now().UTC())
+		},
+	})
+	if err != nil {
+		logger.Fatalf("proxy NewServer: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
 
 	// Bind to all interfaces. The broker connects from another pod via
 	// the run pod's eth0 IP, so a loopback-only listener (127.0.0.1)
 	// would be unreachable. NetworkPolicy ingress (controller Task 12)
 	// restricts the actual peer set to broker-namespace + broker-pod.
-	ln, err := srv.Listen(ctx, ":8431")
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", ":8431")
 	if err != nil {
-		logger.Fatalf("listen: %v", err)
+		logger.Fatalf("listen :8431: %v", err)
+	}
+	httpSrv := &http.Server{
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {
 		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutCtx); err != nil {
-			logger.Printf("shutdown: %v", err)
-		}
+		shutCtx, scancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer scancel()
+		_ = httpSrv.Shutdown(shutCtx)
 	}()
 
-	logger.Printf("interactive mode %q listening on %s", mode, ln.Addr())
-	if err := srv.Serve(ln); err != nil {
+	logger.Printf("interactive mode %q listening on %s (events -> %s)", mode, ln.Addr(), eventsPath)
+	if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Fatalf("serve: %v", err)
-	}
-}
-
-const defaultPoll = 200 * time.Millisecond
-
-func main() {
-	rawPath := flag.String("raw", envOr("PADDOCK_RAW_PATH", "/paddock/raw/out"), "Path to raw claude stream-json input (tailed).")
-	eventsPath := flag.String("events", envOr("PADDOCK_EVENTS_PATH", "/paddock/events/events.jsonl"), "Path to PaddockEvents output JSONL.")
-	poll := flag.Duration("poll", defaultPoll, "Poll interval while tailing input.")
-	flag.Parse()
-
-	if mode := os.Getenv("PADDOCK_INTERACTIVE_MODE"); mode != "" {
-		runInteractive(mode)
-		return
-	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	if err := run(ctx, *rawPath, *eventsPath, *poll); err != nil && !errors.Is(err, context.Canceled) {
-		log.Fatalf("adapter-claude-code: %v", err)
 	}
 }
 
@@ -112,106 +112,4 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-// run tails rawPath, converts each complete line to zero-or-more
-// PaddockEvents, and appends each event to eventsPath. Exits cleanly
-// on SIGTERM (Pod shutdown) after draining any trailing partial line.
-func run(ctx context.Context, rawPath, eventsPath string, poll time.Duration) error {
-	if err := os.MkdirAll(filepath.Dir(eventsPath), 0o755); err != nil {
-		return fmt.Errorf("mkdir events dir: %w", err)
-	}
-	out, err := os.OpenFile(eventsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return fmt.Errorf("open events: %w", err)
-	}
-	defer out.Close()
-
-	in, err := openOrWait(ctx, rawPath, poll)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	enc := json.NewEncoder(out)
-	var carry []byte
-	buf := make([]byte, 8192)
-
-	for {
-		n, readErr := in.Read(buf)
-		if n > 0 {
-			carry = append(carry, buf[:n]...)
-			for {
-				idx := bytes.IndexByte(carry, '\n')
-				if idx < 0 {
-					break
-				}
-				line := string(carry[:idx+1])
-				carry = carry[idx+1:]
-				if err := emit(enc, out, line); err != nil {
-					return err
-				}
-			}
-		}
-		if ctx.Err() != nil {
-			flushCarry(enc, out, carry)
-			return nil
-		}
-		if readErr == nil {
-			continue
-		}
-		if errors.Is(readErr, io.EOF) {
-			select {
-			case <-ctx.Done():
-				flushCarry(enc, out, carry)
-				return nil
-			case <-time.After(poll):
-			}
-			continue
-		}
-		return fmt.Errorf("read raw: %w", readErr)
-	}
-}
-
-func emit(enc *json.Encoder, w *os.File, line string) error {
-	events, err := convertLine(line, time.Now().UTC())
-	if err != nil {
-		// Malformed stream-json lines happen (claude occasionally
-		// prefixes with diagnostic text). Skip, don't crash.
-		log.Printf("skip malformed line: %v", err)
-		return nil
-	}
-	for _, ev := range events {
-		if err := enc.Encode(ev); err != nil {
-			return fmt.Errorf("write event: %w", err)
-		}
-	}
-	if len(events) > 0 {
-		_ = w.Sync()
-	}
-	return nil
-}
-
-func flushCarry(enc *json.Encoder, w *os.File, carry []byte) {
-	if len(bytes.TrimSpace(carry)) == 0 {
-		return
-	}
-	_ = emit(enc, w, string(carry))
-}
-
-func openOrWait(ctx context.Context, path string, poll time.Duration) (*os.File, error) {
-	for {
-		f, err := os.Open(path)
-		if err == nil {
-			return f, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("open raw: %w", err)
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(poll):
-		}
-	}
 }
