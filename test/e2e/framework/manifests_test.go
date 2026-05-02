@@ -127,3 +127,42 @@ func TestPolicyBuilder_GrantShell(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkspaceBuilder_WithSeedRepos(t *testing.T) {
+	yamlStr := NewWorkspace("paddock-multi", "multi").
+		WithStorage("100Mi").
+		WithSeedRepo("https://github.com/octocat/Hello-World.git", "hello", 1).
+		WithSeedRepo("https://github.com/octocat/Spoon-Knife.git", "spoon", 1).
+		BuildYAML()
+
+	for _, want := range []string{
+		"kind: Workspace",
+		"name: multi",
+		"namespace: paddock-multi",
+		"size: 100Mi",
+		`url: https://github.com/octocat/Hello-World.git`,
+		`path: hello`,
+		`url: https://github.com/octocat/Spoon-Knife.git`,
+		`path: spoon`,
+	} {
+		if !strings.Contains(yamlStr, want) {
+			t.Fatalf("workspace yaml missing %q\n%s", want, yamlStr)
+		}
+	}
+
+	// Round-trip parse — caught a similar shape bug in PolicyBuilder.
+	var parsed map[string]any
+	if err := yaml.Unmarshal([]byte(yamlStr), &parsed); err != nil {
+		t.Fatalf("BuildYAML produced invalid YAML: %v\n%s", err, yamlStr)
+	}
+	spec := parsed["spec"].(map[string]any)
+	storage := spec["storage"].(map[string]any)
+	if storage["size"] != "100Mi" {
+		t.Fatalf("expected storage.size == 100Mi, got %#v", storage["size"])
+	}
+	seed := spec["seed"].(map[string]any)
+	repos := seed["repos"].([]any)
+	if len(repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(repos))
+	}
+}
