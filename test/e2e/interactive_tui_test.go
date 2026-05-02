@@ -57,7 +57,7 @@ const (
 	tuiE2ERun       = "tui-int-run"
 )
 
-var _ = Describe("interactive run via TUI client", Ordered, Label("interactive"), func() {
+var _ = Describe("interactive run via TUI client", Ordered, Serial, Label("interactive"), func() {
 	BeforeAll(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
