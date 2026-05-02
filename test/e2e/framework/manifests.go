@@ -88,3 +88,88 @@ func (b *TemplateBuilder) Apply(ctx context.Context) (ns, name string) {
 	ApplyYAML(b.BuildYAML())
 	return b.ns, b.name
 }
+
+// PolicyBuilder constructs a namespaced BrokerPolicy manifest.
+type PolicyBuilder struct {
+	ns, name, template string
+	credentialGrants   []credentialGrant
+	interactTarget     string
+	shellTarget        string
+	shellCommand       []string
+}
+
+type credentialGrant struct {
+	name         string
+	secretName   string
+	secretKey    string
+	deliveryMode string // "inContainer" | "proxyInjected"
+	reason       string
+}
+
+func NewBrokerPolicy(ns, name, template string) *PolicyBuilder {
+	return &PolicyBuilder{ns: ns, name: name, template: template}
+}
+
+func (p *PolicyBuilder) GrantCredentialFromSecret(name, secret, key, deliveryMode, reason string) *PolicyBuilder {
+	p.credentialGrants = append(p.credentialGrants, credentialGrant{
+		name: name, secretName: secret, secretKey: key,
+		deliveryMode: deliveryMode, reason: reason,
+	})
+	return p
+}
+
+func (p *PolicyBuilder) GrantInteract(target string) *PolicyBuilder {
+	p.interactTarget = target
+	return p
+}
+
+func (p *PolicyBuilder) GrantShell(target string, command ...string) *PolicyBuilder {
+	p.shellTarget = target
+	p.shellCommand = command
+	return p
+}
+
+func (p *PolicyBuilder) BuildYAML() string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "apiVersion: paddock.dev/v1alpha1\nkind: BrokerPolicy\n")
+	fmt.Fprintf(&sb, "metadata:\n  name: %s\n  namespace: %s\n", p.name, p.ns)
+	fmt.Fprintf(&sb, "spec:\n  appliesToTemplates: [%q]\n  grants:\n", p.template)
+	if len(p.credentialGrants) > 0 {
+		sb.WriteString("    credentials:\n")
+		for _, g := range p.credentialGrants {
+			fmt.Fprintf(&sb, "      - name: %s\n", g.name)
+			fmt.Fprintf(&sb, "        provider:\n")
+			fmt.Fprintf(&sb, "          kind: UserSuppliedSecret\n")
+			fmt.Fprintf(&sb, "          secretRef:\n")
+			fmt.Fprintf(&sb, "            name: %s\n", g.secretName)
+			fmt.Fprintf(&sb, "            key: %s\n", g.secretKey)
+			fmt.Fprintf(&sb, "          deliveryMode:\n")
+			fmt.Fprintf(&sb, "            %s:\n", g.deliveryMode)
+			fmt.Fprintf(&sb, "              accepted: true\n")
+			fmt.Fprintf(&sb, "              reason: %q\n", g.reason)
+		}
+	}
+	if p.interactTarget != "" || p.shellTarget != "" {
+		sb.WriteString("    runs:\n")
+		if p.interactTarget != "" {
+			fmt.Fprintf(&sb, "      interact:\n        target: %s\n", p.interactTarget)
+		}
+		if p.shellTarget != "" {
+			fmt.Fprintf(&sb, "      shell:\n        target: %s\n", p.shellTarget)
+			fmt.Fprintf(&sb, "        command: [")
+			for i, c := range p.shellCommand {
+				if i > 0 {
+					sb.WriteString(", ")
+				}
+				fmt.Fprintf(&sb, "%q", c)
+			}
+			sb.WriteString("]\n")
+		}
+	}
+	return sb.String()
+}
+
+// Apply renders + applies the manifest.
+func (p *PolicyBuilder) Apply(ctx context.Context) {
+	ApplyYAML(p.BuildYAML())
+}

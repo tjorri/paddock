@@ -65,3 +65,53 @@ func TestTemplateBuilder_MultiArgCommandIsValidYAML(t *testing.T) {
 		t.Fatalf("BuildYAML produced invalid YAML: %v\n--- yaml ---\n%s", err, yamlStr)
 	}
 }
+
+func TestPolicyBuilder_GrantCredentialFromSecret(t *testing.T) {
+	yamlStr := NewBrokerPolicy("paddock-x", "allow", "echo").
+		GrantCredentialFromSecret("DEMO_TOKEN", "my-secret", "DEMO_TOKEN", "inContainer", "test fixture").
+		BuildYAML()
+
+	for _, want := range []string{
+		"kind: BrokerPolicy",
+		"name: allow",
+		"namespace: paddock-x",
+		`appliesToTemplates: ["echo"]`,
+		"name: DEMO_TOKEN",
+		"kind: UserSuppliedSecret",
+		"name: my-secret",
+		"key: DEMO_TOKEN",
+		"inContainer:",
+		"accepted: true",
+	} {
+		if !strings.Contains(yamlStr, want) {
+			t.Fatalf("yaml missing %q\n--- yaml ---\n%s", want, yamlStr)
+		}
+	}
+}
+
+func TestPolicyBuilder_GrantInteract(t *testing.T) {
+	yamlStr := NewBrokerPolicy("paddock-x", "allow-interact", "echo").
+		GrantInteract("agent").
+		BuildYAML()
+
+	if !strings.Contains(yamlStr, "runs:\n      interact:") || !strings.Contains(yamlStr, "target: agent") {
+		t.Fatalf("interact grant missing:\n%s", yamlStr)
+	}
+}
+
+func TestPolicyBuilder_GrantShell(t *testing.T) {
+	yamlStr := NewBrokerPolicy("paddock-x", "allow-shell", "echo").
+		GrantShell("agent", "/bin/sh", "-c", "echo hello").
+		BuildYAML()
+
+	for _, want := range []string{
+		"runs:",
+		"shell:",
+		"target: agent",
+		`command: ["/bin/sh", "-c", "echo hello"]`,
+	} {
+		if !strings.Contains(yamlStr, want) {
+			t.Fatalf("shell grant missing %q\n%s", want, yamlStr)
+		}
+	}
+}
