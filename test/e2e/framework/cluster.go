@@ -185,7 +185,7 @@ func CreateNamespace(ctx context.Context, ns string) {
 // always-valid kubectl namespace identifiers.
 func CreateTenantNamespace(ctx context.Context, base string) string {
 	ginkgo.GinkgoHelper()
-	ns := base + GinkgoProcessSuffix()
+	ns := TenantNamespace(base)
 	_, err := RunCmd(ctx, "kubectl", "create", "ns", ns)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "create ns %s", ns)
 
