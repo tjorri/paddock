@@ -26,9 +26,9 @@ import (
 	"testing"
 	"time"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
-	"paddock.dev/paddock/internal/brokerclient"
-	"paddock.dev/paddock/internal/brokerclient/brokerclienttest"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
+	"github.com/tjorri/paddock/internal/brokerclient"
+	"github.com/tjorri/paddock/internal/brokerclient/brokerclienttest"
 )
 
 // startTestBroker spins up a TLS httptest server that dispatches every

@@ -42,9 +42,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	brokerclient "paddock.dev/paddock/internal/brokerclient"
-	"paddock.dev/paddock/internal/policy"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	brokerclient "github.com/tjorri/paddock/internal/brokerclient"
+	"github.com/tjorri/paddock/internal/policy"
 )
 
 // Finalizer that lets the run cancel its Job and release the

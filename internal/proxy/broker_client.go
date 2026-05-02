@@ -24,8 +24,8 @@ import (
 	"net/http"
 	"time"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
-	"paddock.dev/paddock/internal/brokerclient"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
+	"github.com/tjorri/paddock/internal/brokerclient"
 )
 
 // BrokerClient talks to the paddock-broker over HTTPS, authenticated

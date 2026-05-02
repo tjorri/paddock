@@ -19,7 +19,7 @@ package providers
 import (
 	"context"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // RenewableProvider is an optional companion interface to Provider for

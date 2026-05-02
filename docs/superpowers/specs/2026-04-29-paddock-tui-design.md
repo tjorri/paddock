@@ -97,7 +97,7 @@ internal/paddocktui/
 
 **Import rule (load-bearing):** `internal/paddocktui/...` may import from:
 
-- `paddock.dev/paddock/api/v1alpha1` (CRD types — already a stable public Go surface; the project's Go module path is `paddock.dev/paddock`)
+- `github.com/tjorri/paddock/api/v1alpha1` (CRD types — already a stable public Go surface; the project's Go module path is `github.com/tjorri/paddock`)
 - External libraries (`charmbracelet/bubbletea`, `charmbracelet/bubbles`, `charmbracelet/lipgloss`, `k8s.io/client-go`, `k8s.io/apimachinery`, `sigs.k8s.io/controller-runtime`, etc.)
 
 It **must not** import from `internal/cli/`, `internal/broker/`, `internal/controller/`, `internal/auditing/`, `internal/policy/`, `internal/proxy/`, `internal/webhook/`, `internal/brokerclient/`, or any other Paddock-internal package. If functionality from those packages turns out to be useful, copy what's needed into `internal/paddocktui/` rather than depending on them — the small duplication cost is the price of clean lift-out.

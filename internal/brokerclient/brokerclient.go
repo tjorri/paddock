@@ -36,7 +36,7 @@ import (
 	"strings"
 	"time"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
 )
 
 // TokenReader returns the SA bearer token to attach to every outbound

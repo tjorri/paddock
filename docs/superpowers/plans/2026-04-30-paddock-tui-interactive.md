@@ -536,7 +536,7 @@ import (
     metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
     "k8s.io/apimachinery/pkg/types"
 
-    paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+    paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // TestHomePersistence locks the HOME-from-PVC default: two Batch runs
@@ -848,7 +848,7 @@ import (
     "strings"
     "testing"
 
-    "paddock.dev/paddock/internal/paddocktui/app"
+    "github.com/tjorri/paddock/internal/paddocktui/app"
 )
 
 func TestPaletteView_Closed(t *testing.T) {
@@ -895,7 +895,7 @@ import (
 
     "github.com/charmbracelet/lipgloss"
 
-    "paddock.dev/paddock/internal/paddocktui/app"
+    "github.com/tjorri/paddock/internal/paddocktui/app"
 )
 
 // paletteCommands is the static catalogue rendered into hint rows when
@@ -2709,7 +2709,7 @@ import (
     "sigs.k8s.io/controller-runtime/pkg/client"
     "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-    paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+    paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestList_FilterByWorkspace(t *testing.T) {
@@ -2751,7 +2751,7 @@ import (
 
     "sigs.k8s.io/controller-runtime/pkg/client"
 
-    paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+    paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // List returns HarnessRuns in ns whose Spec.WorkspaceRef matches.
@@ -2988,7 +2988,7 @@ type interactiveInterruptedMsg struct{ RunName string }
 type interactiveEndedMsg struct{ RunName string }
 ```
 
-Use the alias `paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"`.
+Use the alias `paddockbroker "github.com/tjorri/paddock/internal/paddocktui/broker"`.
 
 - [ ] **Step 4: Add the commands**
 
@@ -3844,8 +3844,8 @@ import (
 
     metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-    paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-    paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
+    paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+    paddockbroker "github.com/tjorri/paddock/internal/paddocktui/broker"
 )
 
 // TestInteractiveTUIE2E spins up an Interactive HarnessRun in a fresh

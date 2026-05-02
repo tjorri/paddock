@@ -30,9 +30,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/broker"
-	"paddock.dev/paddock/internal/broker/providers"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/broker"
+	"github.com/tjorri/paddock/internal/broker/providers"
 )
 
 // streamFixture wires a Server + InteractiveRouter pointed at a

@@ -24,9 +24,9 @@ import (
 	"sync"
 	"time"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	brokerapi "paddock.dev/paddock/internal/broker/api"
-	"paddock.dev/paddock/internal/brokerclient"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
+	"github.com/tjorri/paddock/internal/brokerclient"
 )
 
 // RevokeCall records one Revoke invocation for inspection in tests.

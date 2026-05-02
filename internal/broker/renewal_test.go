@@ -24,9 +24,9 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/broker"
-	"paddock.dev/paddock/internal/broker/providers"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/broker"
+	"github.com/tjorri/paddock/internal/broker/providers"
 )
 
 // fakeRenewable is a Provider that also implements RenewableProvider.

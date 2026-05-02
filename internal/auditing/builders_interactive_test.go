@@ -20,8 +20,8 @@ import (
 	"testing"
 	"time"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/auditing"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/auditing"
 )
 
 func TestNewPromptSubmitted(t *testing.T) {

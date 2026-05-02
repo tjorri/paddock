@@ -267,7 +267,7 @@ Search for `func runWithTimeout` in `test/e2e/e2e_test.go`; delete the function 
 
 - [ ] **Step 1.2.3: Update callers in `e2e_test.go` and `e2e_suite_test.go`.**
 
-Replace each `runWithTimeout(...)` call site with `framework.RunCmdWithTimeout(...)`. Add `"paddock.dev/paddock/test/e2e/framework"` to the import block of each touched file.
+Replace each `runWithTimeout(...)` call site with `framework.RunCmdWithTimeout(...)`. Add `"github.com/tjorri/paddock/test/e2e/framework"` to the import block of each touched file.
 
 Example before:
 ```go
@@ -1337,7 +1337,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"paddock.dev/paddock/test/e2e/framework"
+	"github.com/tjorri/paddock/test/e2e/framework"
 )
 
 // (specs added in subsequent tasks)
@@ -1400,7 +1400,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"paddock.dev/paddock/test/e2e/framework"
+	"github.com/tjorri/paddock/test/e2e/framework"
 )
 
 const (

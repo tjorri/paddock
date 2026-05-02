@@ -26,9 +26,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	paddockbroker "github.com/tjorri/paddock/internal/paddocktui/broker"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 // testSessionName is the canonical session name used across reducer

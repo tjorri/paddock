@@ -314,7 +314,7 @@ import (
 	"testing"
 	"time"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
 )
 
 // startTestBroker spins up a TLS httptest server that serves the
@@ -633,7 +633,7 @@ import (
 	"net/http"
 	"os"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
 )
 
 // TokenReader returns the SA bearer token to attach to every outbound
@@ -711,7 +711,7 @@ import (
 	"strings"
 	"testing"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
 )
 
 func TestDecodeBrokerError_ParsesEnvelope(t *testing.T) {
@@ -796,7 +796,7 @@ import (
 	"strings"
 	"time"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
 )
 ```
 
@@ -932,7 +932,7 @@ import (
 	"testing"
 	"time"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
 )
 ```
 
@@ -1158,8 +1158,8 @@ import (
 	"fmt"
 	"time"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
-	"paddock.dev/paddock/internal/brokerclient"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
+	"github.com/tjorri/paddock/internal/brokerclient"
 )
 
 // BrokerIssuer is the reconciler's view of the broker. Injected so
@@ -1266,7 +1266,7 @@ mutation.
 
 In `internal/controller/broker_client_test.go`:
 
-1. Add the import: `"paddock.dev/paddock/internal/brokerclient"`.
+1. Add the import: `"github.com/tjorri/paddock/internal/brokerclient"`.
 2. At the line `var be *BrokerError` (one occurrence around line 110),
    change to `var be *brokerclient.BrokerError`.
 3. The `t.Fatalf("expected *BrokerError, got %T...")` log message
@@ -1337,9 +1337,9 @@ import (
 	"net/http"
 	"time"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
-	"paddock.dev/paddock/internal/broker/providers"
-	"paddock.dev/paddock/internal/brokerclient"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
+	"github.com/tjorri/paddock/internal/broker/providers"
+	"github.com/tjorri/paddock/internal/brokerclient"
 )
 
 // BrokerClient talks to the paddock-broker over HTTPS, authenticated
@@ -1712,7 +1712,7 @@ type BasicAuth = brokerapi.BasicAuth
 Add the import to the provider.go import block:
 
 ```go
-brokerapi "paddock.dev/paddock/internal/broker/api"
+brokerapi "github.com/tjorri/paddock/internal/broker/api"
 ```
 
 - [ ] **Step 3: Run all tests to confirm the alias bridge holds**
@@ -1769,7 +1769,7 @@ aliases are gone.
 - [ ] **Step 1: Migrate proxy `broker_client.go` off `providers.SubstituteResult`**
 
 In `internal/proxy/broker_client.go`, delete the
-`paddock.dev/paddock/internal/broker/providers` import and replace each
+`github.com/tjorri/paddock/internal/broker/providers` import and replace each
 occurrence of `providers.SubstituteResult` with
 `brokerapi.SubstituteResult` (three sites in `SubstituteAuth`'s body).
 
@@ -1777,8 +1777,8 @@ occurrence of `providers.SubstituteResult` with
 
 In `internal/proxy/substitute.go`:
 
-1. Delete the `paddock.dev/paddock/internal/broker/providers` import
-   and add `brokerapi "paddock.dev/paddock/internal/broker/api"`.
+1. Delete the `github.com/tjorri/paddock/internal/broker/providers` import
+   and add `brokerapi "github.com/tjorri/paddock/internal/broker/api"`.
 2. In the `Substituter` interface (line ~40), change
    `providers.SubstituteResult` to `brokerapi.SubstituteResult`.
 3. In `applySubstitutionToRequest` (line ~163), change `res
@@ -1788,8 +1788,8 @@ In `internal/proxy/substitute.go`:
 
 In `internal/proxy/substitute_test.go`:
 
-1. Replace the `"paddock.dev/paddock/internal/broker/providers"`
-   import with `brokerapi "paddock.dev/paddock/internal/broker/api"`.
+1. Replace the `"github.com/tjorri/paddock/internal/broker/providers"`
+   import with `brokerapi "github.com/tjorri/paddock/internal/broker/api"`.
 2. Replace every `providers.SubstituteResult{` with
    `brokerapi.SubstituteResult{` (in `recordingSubstituter.SubstituteAuth`,
    any other test fakes, and in any literal returns).
@@ -1807,7 +1807,7 @@ Expected: no remaining `providers.` references in this file.
 - [ ] **Step 4: Verify proxy no longer depends on providers**
 
 ```bash
-grep -rn '"paddock.dev/paddock/internal/broker/providers"' internal/proxy/
+grep -rn '"github.com/tjorri/paddock/internal/broker/providers"' internal/proxy/
 ```
 
 Expected: no output.
@@ -1819,7 +1819,7 @@ For each of `internal/broker/providers/anthropic.go`,
 `internal/broker/providers/patpool.go`,
 `internal/broker/providers/usersuppliedsecret.go`:
 
-1. Add `brokerapi "paddock.dev/paddock/internal/broker/api"` to the
+1. Add `brokerapi "github.com/tjorri/paddock/internal/broker/api"` to the
    import block (if not already present).
 2. Replace every `SubstituteResult{` literal with
    `brokerapi.SubstituteResult{`.
@@ -1966,7 +1966,7 @@ grep -A5 "switch be.Code" internal/controller/broker_client.go
 # Expected: brokerapi.CodeRunNotFound etc., no string literals.
 
 # 6. Proxy no longer imports providers.
-grep -rn '"paddock.dev/paddock/internal/broker/providers"' internal/proxy/
+grep -rn '"github.com/tjorri/paddock/internal/broker/providers"' internal/proxy/
 # Expected: no output.
 
 # 7. SubstituteResult / BasicAuth live in broker/api with no alias in providers.

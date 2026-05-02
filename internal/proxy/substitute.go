@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
 )
 
 // Substituter rewrites outbound request headers just before the proxy

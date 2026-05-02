@@ -21,8 +21,8 @@ package app
 import (
 	"time"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 // FocusArea is the area of the TUI that currently receives input.

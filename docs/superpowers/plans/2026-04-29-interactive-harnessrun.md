@@ -713,7 +713,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestInteractiveStatus_RoundTrip(t *testing.T) {
@@ -1309,8 +1309,8 @@ package auditing_test
 import (
 	"testing"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/auditing"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/auditing"
 )
 
 func TestNewPromptSubmitted(t *testing.T) {
@@ -1450,7 +1450,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // PromptAuditInput is the input shape for NewPromptSubmitted.
@@ -1693,7 +1693,7 @@ package providers
 import (
 	"context"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // RenewableProvider is an optional companion interface to Provider for
@@ -1744,7 +1744,7 @@ import (
 	"context"
 	"errors"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // Renew issues a fresh GitHub App installation token reusing the same
@@ -1776,8 +1776,8 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/broker/providers"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/broker/providers"
 )
 
 func TestGitHubApp_Renew_Success(t *testing.T) {
@@ -1943,9 +1943,9 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/broker"
-	"paddock.dev/paddock/internal/broker/providers"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/broker"
+	"github.com/tjorri/paddock/internal/broker/providers"
 )
 
 type fakeRenewable struct {
@@ -2089,8 +2089,8 @@ import (
 	"context"
 	"time"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/broker/providers"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/broker/providers"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -2246,7 +2246,7 @@ import (
 	"testing"
 	"time"
 
-	main "paddock.dev/paddock/cmd/adapter-claude-code"
+	main "github.com/tjorri/paddock/cmd/adapter-claude-code"
 )
 
 func TestServer_PromptsRouted(t *testing.T) {
@@ -2595,7 +2595,7 @@ import (
 	"testing"
 	"time"
 
-	main "paddock.dev/paddock/cmd/adapter-claude-code"
+	main "github.com/tjorri/paddock/cmd/adapter-claude-code"
 )
 
 func TestPerPromptDriver_SubmitWritesPromptFile(t *testing.T) {
@@ -2979,7 +2979,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"paddock.dev/paddock/internal/broker"
+	"github.com/tjorri/paddock/internal/broker"
 )
 
 func TestInteractiveRouter_ForwardsToAdapter(t *testing.T) {
@@ -3248,8 +3248,8 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	brokerapi "paddock.dev/paddock/internal/broker/api"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
 )
 
 func TestPrompts_HappyPath(t *testing.T) {
@@ -3345,10 +3345,10 @@ import (
 	"fmt"
 	"net/http"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	brokerapi "paddock.dev/paddock/internal/broker/api"
-	"paddock.dev/paddock/internal/auditing"
-	"paddock.dev/paddock/internal/policy"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
+	"github.com/tjorri/paddock/internal/auditing"
+	"github.com/tjorri/paddock/internal/policy"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -3876,7 +3876,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestNextDeadline_NotInteractiveYieldsNone(t *testing.T) {
@@ -4041,7 +4041,7 @@ package controller
 import (
 	"time"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 type watchdogAction int
@@ -4469,7 +4469,7 @@ import (
 	"testing"
 	"time"
 
-	main "paddock.dev/paddock/cmd/adapter-claude-code"
+	main "github.com/tjorri/paddock/cmd/adapter-claude-code"
 )
 
 func TestPersistentDriver_SubmitWritesStreamJSON(t *testing.T) {
@@ -4648,7 +4648,7 @@ import (
 	"context"
 	"net/http"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 	"nhooyr.io/websocket"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )

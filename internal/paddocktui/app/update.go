@@ -27,10 +27,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
-	pdkruns "paddock.dev/paddock/internal/paddocktui/runs"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	paddockbroker "github.com/tjorri/paddock/internal/paddocktui/broker"
+	pdkruns "github.com/tjorri/paddock/internal/paddocktui/runs"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 // errNoSessionFocused is the user-facing banner shown when an action

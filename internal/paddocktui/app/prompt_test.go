@@ -6,9 +6,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	paddockbroker "paddock.dev/paddock/internal/paddocktui/broker"
-	pdksession "paddock.dev/paddock/internal/paddocktui/session"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	paddockbroker "github.com/tjorri/paddock/internal/paddocktui/broker"
+	pdksession "github.com/tjorri/paddock/internal/paddocktui/session"
 )
 
 func TestPromptSubmit_QueuesWhenRunInFlight(t *testing.T) {

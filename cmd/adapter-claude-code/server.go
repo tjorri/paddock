@@ -24,7 +24,7 @@ import (
 	"net/http"
 	"time"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // Driver is the interface that per-prompt-process and persistent-process

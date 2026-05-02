@@ -36,7 +36,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	gomega "github.com/onsi/gomega"
 
-	"paddock.dev/paddock/test/utils"
+	"github.com/tjorri/paddock/test/utils"
 )
 
 const (

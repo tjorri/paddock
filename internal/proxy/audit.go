@@ -20,8 +20,8 @@ import (
 	"context"
 	"time"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/auditing"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/auditing"
 )
 
 // AuditSink records per-connection decisions. Phase 2c migrated this

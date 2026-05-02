@@ -667,7 +667,7 @@ import (
 	"strconv"
 	"time"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 ```
 
@@ -878,7 +878,7 @@ import (
 	"testing"
 	"time"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // fixedOrigDest returns a Server.OriginalDestination function that
@@ -1326,8 +1326,8 @@ import (
 	"testing"
 	"time"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/auditing"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/auditing"
 )
 
 // recordingAuditSink is a auditing.Sink fake that captures every Write

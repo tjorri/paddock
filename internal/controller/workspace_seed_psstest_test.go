@@ -25,7 +25,7 @@ import (
 	psapi "k8s.io/pod-security-admission/api"
 	pspolicy "k8s.io/pod-security-admission/policy"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // TestSeedJobPodSpec_PSSRestricted asserts each first-party container

@@ -449,7 +449,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func policyWithDiscovery(name string, expiresAt time.Time) *paddockv1alpha1.BrokerPolicy {
@@ -618,7 +618,7 @@ package policy
 import (
 	"time"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // AnyDiscoveryActive reports whether at least one matching BrokerPolicy
@@ -728,7 +728,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 var _ = Describe("BrokerPolicy controller", func() {
@@ -855,7 +855,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // BrokerPolicyReconciler watches BrokerPolicies and maintains
@@ -1413,7 +1413,7 @@ In `internal/broker/server.go`, find `handleValidateEgress` (around line 324). R
 	}
 ```
 
-Make sure `time` and `paddock.dev/paddock/internal/policy` are imported (likely already).
+Make sure `time` and `github.com/tjorri/paddock/internal/policy` are imported (likely already).
 
 - [ ] **Step 4: Update proxy to emit discovery-allow events**
 

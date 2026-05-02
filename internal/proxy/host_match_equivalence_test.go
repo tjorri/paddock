@@ -19,7 +19,7 @@ package proxy
 import (
 	"testing"
 
-	"paddock.dev/paddock/internal/policy"
+	"github.com/tjorri/paddock/internal/policy"
 )
 
 // TestHostMatchEquivalence guards the broker-side and proxy-side

@@ -600,7 +600,7 @@ To:
 	if !policy.AnyHostMatches(lease.AllowedHosts, req.Host) {
 ```
 
-Add `policy "paddock.dev/paddock/internal/policy"` to the imports if
+Add `policy "github.com/tjorri/paddock/internal/policy"` to the imports if
 not already present.
 
 - [ ] **Step 6: Replace `hostMatchesGlobs` call in `githubapp.go`**
@@ -1442,7 +1442,7 @@ package proxy
 import (
 	"testing"
 
-	"paddock.dev/paddock/internal/policy"
+	"github.com/tjorri/paddock/internal/policy"
 )
 
 // TestHostMatchEquivalence guards the broker-side and proxy-side

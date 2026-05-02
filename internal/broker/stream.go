@@ -38,9 +38,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	"paddock.dev/paddock/internal/auditing"
-	brokerapi "paddock.dev/paddock/internal/broker/api"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	"github.com/tjorri/paddock/internal/auditing"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
 )
 
 // streamSubprotocol is the WebSocket subprotocol the broker negotiates

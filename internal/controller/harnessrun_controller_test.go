@@ -32,9 +32,9 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	brokerclient "paddock.dev/paddock/internal/brokerclient"
-	"paddock.dev/paddock/internal/controller/testutil"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	brokerclient "github.com/tjorri/paddock/internal/brokerclient"
+	"github.com/tjorri/paddock/internal/controller/testutil"
 )
 
 // waitWorkspaceActive waits for the Workspace controller to promote

@@ -33,7 +33,7 @@ func buildProxyBinary(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "proxy")
-	cmd := exec.CommandContext(context.Background(), "go", "build", "-o", bin, "paddock.dev/paddock/cmd/proxy") //nolint:gosec
+	cmd := exec.CommandContext(context.Background(), "go", "build", "-o", bin, "github.com/tjorri/paddock/cmd/proxy") //nolint:gosec
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

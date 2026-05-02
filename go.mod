@@ -1,10 +1,9 @@
-module paddock.dev/paddock
+module github.com/tjorri/paddock
 
 go 1.26.2
 
 require (
 	github.com/cert-manager/cert-manager v1.20.2
-	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/coder/websocket v1.8.14

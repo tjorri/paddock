@@ -38,10 +38,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
-	brokerapi "paddock.dev/paddock/internal/broker/api"
-	"paddock.dev/paddock/internal/brokerclient"
-	"paddock.dev/paddock/internal/controller/testutil"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
+	"github.com/tjorri/paddock/internal/brokerclient"
+	"github.com/tjorri/paddock/internal/controller/testutil"
 )
 
 var _ = Describe("ensureBrokerCredentials", func() {

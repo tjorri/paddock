@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"os"
 
-	"paddock.dev/paddock/internal/paddocktui/cmd"
+	"github.com/tjorri/paddock/internal/paddocktui/cmd"
 )
 
 func main() {

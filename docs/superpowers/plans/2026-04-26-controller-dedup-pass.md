@@ -169,7 +169,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestCopyCAToSecret_PropagatesCABundle(t *testing.T) {
@@ -908,7 +908,7 @@ func (r *HarnessRunReconciler) ensureJob(
 ```
 
 (`policy` is already imported in this file — verify. If not, add
-`policy "paddock.dev/paddock/internal/policy"` to the import block.)
+`policy "github.com/tjorri/paddock/internal/policy"` to the import block.)
 
 - [ ] **Step 4: Drop the duplicate resolve inside `ensureJob`**
 
@@ -1861,7 +1861,7 @@ import (
 	psapi "k8s.io/pod-security-admission/api"
 	pspolicy "k8s.io/pod-security-admission/policy"
 
-	paddockv1alpha1 "paddock.dev/paddock/api/v1alpha1"
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 // TestSeedJobPodSpec_PSSRestricted asserts each first-party container
@@ -2037,7 +2037,7 @@ import (
 	"sync"
 	"time"
 
-	brokerapi "paddock.dev/paddock/internal/broker/api"
+	brokerapi "github.com/tjorri/paddock/internal/broker/api"
 )
 
 // BrokerError is the testutil-package mirror of controller.BrokerError.
@@ -2116,8 +2116,8 @@ import (
 	"context"
 	"testing"
 
-	"paddock.dev/paddock/internal/controller"
-	"paddock.dev/paddock/internal/controller/testutil"
+	"github.com/tjorri/paddock/internal/controller"
+	"github.com/tjorri/paddock/internal/controller/testutil"
 )
 
 // Compile-time check.
@@ -2160,7 +2160,7 @@ Expected: PASS.
 
 Edit `internal/controller/broker_credentials_test.go`:
 
-1. Add `"paddock.dev/paddock/internal/controller/testutil"` to the
+1. Add `"github.com/tjorri/paddock/internal/controller/testutil"` to the
    imports.
 2. Delete the in-file `fakeBroker` type definition + Issue method
    (lines 36–68).
