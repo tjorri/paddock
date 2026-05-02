@@ -180,6 +180,16 @@ spec:
 		framework.WaitForNamespaceGone(context.Background(), homePersistNS, 20*time.Second)
 	})
 
+	AfterEach(func() {
+		if !CurrentSpecReport().Failed() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		dumpRunDiagnostics(ctx, homePersistNS, homePersistRunWrite)
+		dumpRunDiagnostics(ctx, homePersistNS, homePersistRunRead)
+	})
+
 	It("write run reaches Succeeded and persists $HOME/.persisted", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
