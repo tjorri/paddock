@@ -223,8 +223,11 @@ func run(ctx context.Context, cfg *Config) error {
 	// ConfigMap publisher: translates each transcript Append into a
 	// debounced ConfigMap patch. The publisher owns its own ring
 	// buffer so a slow controller cannot back-pressure transcript
-	// writes.
-	pub, pubCh := startPublisher(cfg, tw)
+	// writes. The done channel signals that the publisher's tail
+	// goroutine has fully drained — used in shutdown to serialize
+	// finalizePublish's result.json + phase=Completed Sets before
+	// pub.Flush sends the final snapshot.
+	pub, pubCh, pubDone := startPublisher(cfg, tw)
 
 	switch {
 	case cfg.InteractiveMode != "":
@@ -246,6 +249,17 @@ func run(ctx context.Context, cfg *Config) error {
 	//  5. Best-effort metadata completion write.
 	tw.Unsubscribe(pubCh)
 	close(pubCh)
+
+	// Wait for the publisher's tail goroutine to drain before doing
+	// the final Sets — otherwise pub.Flush below could snapshot
+	// before result.json + phase=Completed land. Bounded by the same
+	// flush timeout so a stuck goroutine doesn't hang shutdown.
+	select {
+	case <-pubDone:
+	case <-time.After(cfg.PublishFlushTimeout):
+		log.Printf("runtime-claude-code: publisher tail goroutine did not drain in %s", cfg.PublishFlushTimeout)
+	}
+	finalizePublish(cfg, pub)
 
 	flushCtx, flushCancel := context.WithTimeout(context.Background(), cfg.PublishFlushTimeout)
 	if err := pub.Flush(flushCtx); err != nil {
@@ -273,9 +287,11 @@ func run(ctx context.Context, cfg *Config) error {
 
 // startPublisher wires a debounced ConfigMap publisher to a transcript
 // subscription. The publisher's "events.jsonl" key is rebuilt from a
-// bounded ring buffer per ADR-0005/ADR-0007. The "phase" key marks
-// Running on first event and Completed when the channel closes.
-func startPublisher(cfg *Config, tw *transcript.Writer) (*publish.Publisher, chan []byte) {
+// bounded ring buffer per ADR-0005/ADR-0007. Returns a done channel
+// that closes when the publisher's tail goroutine exits, so the
+// caller can serialize the final shutdown writes (result.json,
+// phase=Completed) before pub.Flush.
+func startPublisher(cfg *Config, tw *transcript.Writer) (*publish.Publisher, chan []byte, <-chan struct{}) {
 	write := buildConfigMapWriter(cfg)
 	pub := publish.NewPublisher(write, cfg.PublishDebounce)
 	pub.Set("phase", "Running")
@@ -283,8 +299,10 @@ func startPublisher(cfg *Config, tw *transcript.Writer) (*publish.Publisher, cha
 	ring := publish.NewRing(cfg.RingMaxEvents, cfg.RingMaxBytes)
 	ch := make(chan []byte, 64)
 	tw.Subscribe(ch)
+	done := make(chan struct{})
 
 	go func() {
+		defer close(done)
 		// Project each line through publish.Project to drop large
 		// fields before they reach the ConfigMap. The transcript
 		// remains the source of truth on the workspace PVC.
@@ -296,22 +314,26 @@ func startPublisher(cfg *Config, tw *transcript.Writer) (*publish.Publisher, cha
 			ring.Add(string(line))
 			pub.Set("events.jsonl", ring.Snapshot())
 		}
-		// On shutdown: read the agent-written result.json from the
-		// workspace PVC (same dir as the transcript) and surface it on
-		// the ConfigMap so the controller's parseResultJSON can populate
-		// status.outputs. Inherits the collector's pre-unified-runtime
-		// behaviour. Missing result.json is fine — harnesses without a
-		// result-emit phase just don't populate status.outputs.
-		resultPath := filepath.Join(cfg.TranscriptDir, "result.json")
-		if data, err := os.ReadFile(resultPath); err == nil { //nolint:gosec // G304: path derived from controller-set env, not user input
-			pub.Set("result.json", string(data))
-		} else if !errors.Is(err, os.ErrNotExist) {
-			log.Printf("runtime-claude-code: read result.json: %v", err)
-		}
-		pub.Set("phase", "Completed")
 	}()
 
-	return pub, ch
+	return pub, ch, done
+}
+
+// finalizePublish runs the post-loop shutdown writes: read the
+// agent-emitted result.json (if present) and mark phase=Completed.
+// Called from main AFTER the publisher's tail goroutine has drained
+// (signalled via the done channel) and BEFORE pub.Flush, so all
+// final state is captured in a single ConfigMap write. Inherits the
+// collector's pre-unified-runtime shutdown behaviour the controller
+// relies on to populate Status.Outputs.
+func finalizePublish(cfg *Config, pub *publish.Publisher) {
+	resultPath := filepath.Join(cfg.TranscriptDir, "result.json")
+	if data, err := os.ReadFile(resultPath); err == nil { //nolint:gosec // G304: path derived from controller-set env, not user input
+		pub.Set("result.json", string(data))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		log.Printf("runtime-claude-code: read result.json: %v", err)
+	}
+	pub.Set("phase", "Completed")
 }
 
 // projectLine decodes a raw events.jsonl line, applies publish.Project
