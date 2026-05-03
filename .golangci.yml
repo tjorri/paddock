@@ -120,7 +120,7 @@ linters:
       - linters:
           - gosec
         text: "G30[126]"
-        path: internal/adapter/proxy/.*
+        path: internal/runtime/proxy/.*
       # gosec G118 / noctx: adapter-claude-code's runInteractive spawns
       # a shutdown goroutine that uses context.Background() with a
       # bounded timeout because the HTTP server's graceful shutdown
@@ -144,14 +144,14 @@ linters:
           - noctx
         text: "G204|os/exec.Command|net\\.Listen|net\\.Dial"
         path: cmd/harness-supervisor/.*
-      # noctx: internal/adapter/proxy tests use net.Listen for UDS
+      # noctx: internal/runtime/proxy tests use net.Listen for UDS
       # listeners and httptest.NewRequest for handler unit tests; the
       # production code under test owns its own listener via
       # net.ListenConfig and uses request-scoped contexts.
       - linters:
           - noctx
         text: "net\\.Listen|httptest\\.NewRequest"
-        path: internal/adapter/proxy/.*
+        path: internal/runtime/proxy/.*
       # gosec G703: per-prompt driver writes prompt files and events.jsonl
       # under <PADDOCK_WORKSPACE>/.paddock/runs/<run>/. Both env vars are
       # controller-set on the agent container's Pod spec (trusted control
@@ -177,7 +177,7 @@ linters:
       - linters:
           - gosec
         text: "G304"
-        path: internal/adapter/proxy/.*
+        path: internal/runtime/proxy/.*
       - linters:
           - gosec
         text: "G304"

@@ -38,8 +38,8 @@ import (
 	"time"
 
 	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
-	"github.com/tjorri/paddock/internal/adapter/proxy"
 	"github.com/tjorri/paddock/internal/brokerclient"
+	"github.com/tjorri/paddock/internal/runtime/proxy"
 )
 
 const defaultPoll = 200 * time.Millisecond
