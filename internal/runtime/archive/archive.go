@@ -49,8 +49,11 @@ type Metadata struct {
 
 // Archive is the per-run handle for the workspace archive directory.
 // Construct with Open(); call WriteStartMetadata() once at startup,
-// UpdateCompletion() once on agent exit. Concurrent writes from the
-// same Archive are serialized internally.
+// UpdateCompletion() once on agent exit.
+//
+// Not safe for concurrent use. The runtime calls these methods from a
+// single goroutine (start at boot, completion at exit); add external
+// synchronization if a future caller needs concurrent writes.
 type Archive struct {
 	dir string
 }
@@ -125,6 +128,12 @@ func (a *Archive) writeMetadata(m Metadata) error {
 	if err != nil {
 		return fmt.Errorf("archive: open tmp: %w", err)
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(tmp)
+		}
+	}()
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(&m); err != nil {
@@ -137,5 +146,6 @@ func (a *Archive) writeMetadata(m Metadata) error {
 	if err := os.Rename(tmp, a.MetadataPath()); err != nil {
 		return fmt.Errorf("archive: rename: %w", err)
 	}
+	committed = true
 	return nil
 }
