@@ -102,6 +102,11 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runs/{ns}/{name}/prompts", s.handlePrompts)
 	mux.HandleFunc("POST /v1/runs/{ns}/{name}/interrupt", s.handleInterrupt)
 	mux.HandleFunc("POST /v1/runs/{ns}/{name}/end", s.handleEnd)
+	// turn-complete is the adapter's callback when claude emits its
+	// terminal Result/Error frame for a turn. Clears
+	// Status.Interactive.CurrentTurnSeq so the next /prompts isn't
+	// blocked by the in-flight guard, and emits prompt-completed audit.
+	mux.HandleFunc("POST /v1/runs/{ns}/{name}/turn-complete", s.handleTurnComplete)
 
 	// Streaming endpoint: WebSocket reverse proxy onto the adapter's
 	// /stream. Not wrapped in limitBody — WebSocket needs the raw body
