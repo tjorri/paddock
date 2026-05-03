@@ -347,7 +347,7 @@ metadata:
   name: %s
   namespace: %s
   annotations:
-    paddock.dev/adapter-interactive-modes: "persistent-process,per-prompt-process"
+    paddock.dev/runtime-interactive-modes: "persistent-process,per-prompt-process"
 spec:
   harness: claude-code-fake
   image: %s
@@ -377,7 +377,7 @@ metadata:
   name: %s
   namespace: %s
   annotations:
-    paddock.dev/adapter-interactive-modes: "persistent-process,per-prompt-process"
+    paddock.dev/runtime-interactive-modes: "persistent-process,per-prompt-process"
 spec:
   harness: claude-code-fake
   image: %s

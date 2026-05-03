@@ -704,12 +704,12 @@ func TestValidateAgainstTemplate_InteractiveAdmission(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Standard-library unit tests for the
-// paddock.dev/adapter-interactive-modes annotation gate (Task 8)
+// paddock.dev/runtime-interactive-modes annotation gate (Task 8)
 // ---------------------------------------------------------------------------
 
 // adapterInteractiveModesAnnotationKey mirrors the literal used in the
 // webhook implementation; the tests assert against the same string.
-const adapterInteractiveModesAnnotationKey = "paddock.dev/adapter-interactive-modes"
+const adapterInteractiveModesAnnotationKey = "paddock.dev/runtime-interactive-modes"
 
 // interactiveModeAnnotationFixture builds a HarnessTemplate +
 // BrokerPolicy (granting runs.interact) pair plus an Interactive
