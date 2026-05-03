@@ -47,10 +47,9 @@ func turnTerminalEventType(t string) bool {
 // event is delivered through it (the unified runtime wires this to
 // transcript.Writer.Append). When onEvent is nil but eventsPath is
 // set, events are JSON-encoded directly to the file at eventsPath
-// (the legacy adapter behaviour, retained until cmd/adapter-claude-
-// code is deleted). The two paths are mutually exclusive in
-// practice; if both are set, onEvent wins and the file is left
-// untouched.
+// (a direct-write fallback retained for tests). The two paths are
+// mutually exclusive in practice; if both are set, onEvent wins and
+// the file is left untouched.
 //
 // onTurnComplete, when non-nil, is invoked in a goroutine once per
 // turn-terminal PaddockEvent (Type=Result or Type=Error) so a slow

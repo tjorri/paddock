@@ -14,12 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package proxy is the adapter-side HTTP+WS frontend that forwards
+// Package proxy is the runtime-side HTTP+WS frontend that forwards
 // stream-json frames between the broker and the per-run harness
 // supervisor over a pair of unix-domain sockets.
 //
-// The adapter is harness-agnostic — it knows nothing about the
-// underlying CLI. The caller (e.g. cmd/adapter-claude-code) wires a
+// The proxy is harness-agnostic — it knows nothing about the
+// underlying CLI. The caller (e.g. cmd/runtime-claude-code) wires a
 // harness-specific Converter that maps each line from the data UDS
 // to zero-or-more PaddockEvents written to events.jsonl.
 package proxy
@@ -41,17 +41,16 @@ type Config struct {
 	Mode       string // "per-prompt-process" | "persistent-process"
 	DataSocket string
 	CtlSocket  string
-	// EventsPath is the legacy path used by cmd/adapter-claude-code:
-	// when set (and OnEvent is nil), runDataReader writes converted
-	// PaddockEvents directly to this path. The unified runtime leaves
-	// this empty and supplies OnEvent instead, so transcript writes
-	// flow through the transcript package on the workspace PVC. The
-	// field is retained until the legacy adapter is deleted in a
-	// follow-up task; do not add new callers.
+	// EventsPath is a legacy direct-write path: when set (and OnEvent
+	// is nil), runDataReader writes converted PaddockEvents directly
+	// to this path. The unified runtime leaves this empty and supplies
+	// OnEvent instead, so transcript writes flow through the transcript
+	// package on the workspace PVC. Retained for tests that exercise
+	// the direct-write path; do not add new production callers.
 	EventsPath string
 	Backoff    BackoffConfig
 	// Converter is the harness-specific line-to-PaddockEvent translator
-	// (e.g. cmd/adapter-claude-code/convert.go). May be nil for tests.
+	// (e.g. cmd/runtime-claude-code/convert.go). May be nil for tests.
 	Converter func(line string) ([]paddockv1alpha1.PaddockEvent, error)
 	// PromptFormatter wraps the user's text + broker-assigned seq into
 	// the harness CLI's native stdin shape (e.g. claude stream-json).

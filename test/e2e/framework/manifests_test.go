@@ -15,7 +15,7 @@ func TestTemplateBuilder_BasicHarness(t *testing.T) {
 	out := NewHarnessTemplate("paddock-echo", "echo").
 		WithImage("paddock-echo:dev").
 		WithCommand("/usr/local/bin/paddock-echo").
-		WithRuntime("paddock-adapter-echo:dev").
+		WithRuntime("paddock-runtime-echo:dev").
 		WithDefaultTimeout("60s").
 		WithWorkspaceMount("/workspace").
 		BuildYAML()
@@ -26,7 +26,7 @@ func TestTemplateBuilder_BasicHarness(t *testing.T) {
 		"namespace: paddock-echo",
 		"image: paddock-echo:dev",
 		"/usr/local/bin/paddock-echo",
-		"image: paddock-adapter-echo:dev",
+		"image: paddock-runtime-echo:dev",
 		"timeout: 60s",
 		"mountPath: /workspace",
 	} {

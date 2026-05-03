@@ -103,7 +103,7 @@ spec:
     timeout: 5m
   workspace:
     required: true
-    mountPath: /workspace`, tuiE2ETpl, ns, echoImage, adapterEchoImage))
+    mountPath: /workspace`, tuiE2ETpl, ns, echoImage, runtimeEchoImage))
 
 		// BrokerPolicy granting runs.interact against the template.
 		framework.NewBrokerPolicy(ns, tuiE2EPolicy, tuiE2ETpl).

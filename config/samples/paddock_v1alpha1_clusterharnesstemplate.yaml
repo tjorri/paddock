@@ -12,8 +12,8 @@ spec:
   command:
     - /usr/local/bin/paddock-echo
   runtime:
-    # Built locally via `make image-adapter-echo`.
-    image: paddock-adapter-echo:dev
+    # Built locally via `make image-runtime-echo`.
+    image: paddock-runtime-echo:dev
   defaults:
     model: none
     timeout: 30s

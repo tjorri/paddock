@@ -31,7 +31,6 @@ resolves to the loaded images:
 helm install paddock ./charts/paddock \
   --namespace paddock-system --create-namespace \
   --set image.tag=dev \
-  --set collectorImage.tag=dev \
   --set brokerImage.tag=dev \
   --set proxyImage.tag=dev \
   --set iptablesInitImage.tag=dev
@@ -56,7 +55,6 @@ through to `Chart.AppVersion`, so you usually only override
 |-------------------------------|----------------------------|---------|
 | `image.repository`            | `paddock-manager`          | Controller-manager + webhook. |
 | `image.tag`                   | `""` → `AppVersion`        | Manager image tag. |
-| `collectorImage.repository`   | `paddock-collector`        | Generic collector sidecar injected into every run. |
 | `brokerImage.repository`      | `paddock-broker`           | Broker Deployment in `paddock-system`. |
 | `proxyImage.repository`       | `paddock-proxy`            | Per-run egress proxy sidecar. Empty `.repository` disables the sidecar entirely — runs complete with `EgressConfigured=False`. |
 | `iptablesInitImage.repository`| `paddock-iptables-init`    | NET_ADMIN init container for transparent mode. Empty forces every run to cooperative mode regardless of PSA posture. |
@@ -92,7 +90,6 @@ helm install paddock ./charts/paddock \
   -n paddock-system --create-namespace \
   --set image.repository=ghcr.io/tjorri/paddock-manager \
   --set image.tag=v0.3.0 \
-  --set collectorImage.repository=ghcr.io/tjorri/paddock-collector \
   --set brokerImage.repository=ghcr.io/tjorri/paddock-broker \
   --set proxyImage.repository=ghcr.io/tjorri/paddock-proxy \
   --set iptablesInitImage.repository=ghcr.io/tjorri/paddock-iptables-init

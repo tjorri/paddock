@@ -327,7 +327,7 @@ spec:
                               description: Target is which container the broker exec's into.
                               enum:
                                 - agent
-                                - adapter
+                                - runtime
                               type: string
                           type: object
                       type: object

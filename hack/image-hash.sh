@@ -25,16 +25,10 @@ case "$image" in
     deps="cmd/iptables-init images/iptables-init go.mod go.sum" ;;
   echo)
     deps="images/harness-echo" ;;
-  adapter-echo)
-    deps="api cmd/adapter-echo images/adapter-echo go.mod go.sum" ;;
-  collector)
-    deps="api cmd/collector images/collector go.mod go.sum" ;;
   harness-supervisor)
     deps="cmd/harness-supervisor images/harness-supervisor go.mod go.sum" ;;
   evil-echo)
     deps="images/evil-echo internal/brokerclient go.mod go.sum" ;;
-  adapter-claude-code)
-    deps="api cmd/adapter-claude-code internal/adapter/proxy images/adapter-claude-code go.mod go.sum" ;;
   runtime-claude-code)
     deps="api cmd/runtime-claude-code internal/runtime internal/broker/api internal/brokerclient internal/auditing images/runtime-claude-code go.mod go.sum" ;;
   runtime-echo)

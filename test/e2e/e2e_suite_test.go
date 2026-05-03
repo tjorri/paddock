@@ -42,8 +42,7 @@ import (
 const (
 	managerImage           = "paddock-manager:dev"
 	echoImage              = "paddock-echo:dev"
-	adapterEchoImage       = "paddock-adapter-echo:dev"
-	collectorImage         = "paddock-collector:dev"
+	runtimeEchoImage       = "paddock-runtime-echo:dev"
 	brokerImage            = "paddock-broker:dev"
 	proxyImage             = "paddock-proxy:dev"
 	iptablesInitImage      = "paddock-iptables-init:dev"
@@ -51,7 +50,7 @@ const (
 	paddockEvilEchoImage   = "paddock-evil-echo:dev"
 	harnessSupervisorImage = "paddock-harness-supervisor:dev"
 	claudeCodeFakeImage    = "paddock-claude-code-fake:dev"
-	adapterClaudeCodeImage = "paddock-adapter-claude-code:dev"
+	runtimeClaudeCodeImage = "paddock-runtime-claude-code:dev"
 )
 
 var (
@@ -87,10 +86,9 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	By("building and loading paddock-manager")
 	buildAndLoad(managerImage, []string{"docker-build", fmt.Sprintf("IMG=%s", managerImage)})
 
-	By("building and loading paddock-echo + adapter-echo + collector")
+	By("building and loading paddock-echo + runtime-echo")
 	buildAndLoad(echoImage, []string{"image-echo"})
-	buildAndLoad(adapterEchoImage, []string{"image-adapter-echo"})
-	buildAndLoad(collectorImage, []string{"image-collector"})
+	buildAndLoad(runtimeEchoImage, []string{"image-runtime-echo"})
 
 	By("building and loading broker + proxy + iptables-init + e2e-egress (v0.3)")
 	buildAndLoad(brokerImage, []string{"image-broker"})
@@ -101,13 +99,13 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	By("building and loading paddock-evil-echo (hostile harness)")
 	buildAndLoad(paddockEvilEchoImage, []string{"image-evil-echo"})
 
-	By("building and loading harness-supervisor + adapter-claude-code + claude-code-fake (interactive)")
+	By("building and loading harness-supervisor + runtime-claude-code + claude-code-fake (interactive)")
 	// image-claude-code-fake's Dockerfile COPY-s from
 	// paddock-harness-supervisor:dev, so the supervisor target must
 	// build first. Order matters: harness-supervisor → claude-code-fake.
-	// adapter-claude-code is independent.
+	// runtime-claude-code is independent.
 	buildAndLoad(harnessSupervisorImage, []string{"image-harness-supervisor"})
-	buildAndLoad(adapterClaudeCodeImage, []string{"image-adapter-claude-code"})
+	buildAndLoad(runtimeClaudeCodeImage, []string{"image-runtime-claude-code"})
 	buildAndLoad(claudeCodeFakeImage, []string{"image-claude-code-fake"})
 
 	if !skipCertManagerInstall {

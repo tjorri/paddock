@@ -228,7 +228,7 @@ func TestIntersectMatches_Runs(t *testing.T) {
 				Grants: paddockv1alpha1.BrokerPolicyGrants{
 					Runs: &paddockv1alpha1.GrantRunsCapabilities{
 						Shell: &paddockv1alpha1.ShellCapability{
-							Target: "adapter",
+							Target: "runtime",
 						},
 					},
 				},
@@ -244,20 +244,20 @@ func TestIntersectMatches_Runs(t *testing.T) {
 		if result.Shell == nil {
 			t.Fatalf("Shell = nil, want non-nil")
 		}
-		if result.Shell.Target != "adapter" {
-			t.Errorf("Shell.Target = %q, want %q", result.Shell.Target, "adapter")
+		if result.Shell.Target != "runtime" {
+			t.Errorf("Shell.Target = %q, want %q", result.Shell.Target, "runtime")
 		}
 	})
 
-	t.Run("most permissive shell target wins (agent beats adapter)", func(t *testing.T) {
-		pAdapter := &paddockv1alpha1.BrokerPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: "adapter-policy", Namespace: "ns"},
+	t.Run("most permissive shell target wins (agent beats runtime)", func(t *testing.T) {
+		pRuntime := &paddockv1alpha1.BrokerPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "runtime-policy", Namespace: "ns"},
 			Spec: paddockv1alpha1.BrokerPolicySpec{
 				AppliesToTemplates: []string{"*"},
 				Grants: paddockv1alpha1.BrokerPolicyGrants{
 					Runs: &paddockv1alpha1.GrantRunsCapabilities{
 						Shell: &paddockv1alpha1.ShellCapability{
-							Target: "adapter",
+							Target: "runtime",
 						},
 					},
 				},
@@ -277,7 +277,7 @@ func TestIntersectMatches_Runs(t *testing.T) {
 			},
 		}
 		result := policy.IntersectMatches(
-			[]*paddockv1alpha1.BrokerPolicy{pAdapter, pAgent},
+			[]*paddockv1alpha1.BrokerPolicy{pRuntime, pAgent},
 			paddockv1alpha1.RequireSpec{},
 		)
 		if result.Shell == nil {
@@ -296,7 +296,7 @@ func TestIntersectMatches_Runs(t *testing.T) {
 				Grants: paddockv1alpha1.BrokerPolicyGrants{
 					Runs: &paddockv1alpha1.GrantRunsCapabilities{
 						Shell: &paddockv1alpha1.ShellCapability{
-							Target:        "adapter",
+							Target:        "runtime",
 							AllowedPhases: []paddockv1alpha1.HarnessRunPhase{"Running", "Idle"},
 						},
 					},
@@ -310,7 +310,7 @@ func TestIntersectMatches_Runs(t *testing.T) {
 				Grants: paddockv1alpha1.BrokerPolicyGrants{
 					Runs: &paddockv1alpha1.GrantRunsCapabilities{
 						Shell: &paddockv1alpha1.ShellCapability{
-							Target:        "adapter",
+							Target:        "runtime",
 							AllowedPhases: nil, // empty = "any phase"
 						},
 					},
@@ -337,7 +337,7 @@ func TestIntersectMatches_Runs(t *testing.T) {
 				Grants: paddockv1alpha1.BrokerPolicyGrants{
 					Runs: &paddockv1alpha1.GrantRunsCapabilities{
 						Shell: &paddockv1alpha1.ShellCapability{
-							Target:           "adapter",
+							Target:           "runtime",
 							RecordTranscript: false,
 						},
 					},
@@ -351,7 +351,7 @@ func TestIntersectMatches_Runs(t *testing.T) {
 				Grants: paddockv1alpha1.BrokerPolicyGrants{
 					Runs: &paddockv1alpha1.GrantRunsCapabilities{
 						Shell: &paddockv1alpha1.ShellCapability{
-							Target:           "adapter",
+							Target:           "runtime",
 							RecordTranscript: true,
 						},
 					},
@@ -378,7 +378,7 @@ func TestIntersectMatches_Runs(t *testing.T) {
 				Grants: paddockv1alpha1.BrokerPolicyGrants{
 					Runs: &paddockv1alpha1.GrantRunsCapabilities{
 						Shell: &paddockv1alpha1.ShellCapability{
-							Target:        "adapter",
+							Target:        "runtime",
 							AllowedPhases: []paddockv1alpha1.HarnessRunPhase{"Running", "Idle"},
 						},
 					},
@@ -392,7 +392,7 @@ func TestIntersectMatches_Runs(t *testing.T) {
 				Grants: paddockv1alpha1.BrokerPolicyGrants{
 					Runs: &paddockv1alpha1.GrantRunsCapabilities{
 						Shell: &paddockv1alpha1.ShellCapability{
-							Target:        "adapter",
+							Target:        "runtime",
 							AllowedPhases: []paddockv1alpha1.HarnessRunPhase{"Idle", "Failed"},
 						},
 					},

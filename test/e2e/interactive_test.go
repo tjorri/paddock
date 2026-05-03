@@ -20,7 +20,7 @@ limitations under the License.
 // Package e2e — Interactive HarnessRun lifecycle + shell scenarios.
 //
 // These specs exercise Stage A (broker wiring) + Stage B (interactive
-// adapter-echo + stay-alive harness) of the Interactive HarnessRun MVP:
+// runtime-echo + stay-alive harness) of the Interactive HarnessRun MVP:
 //
 //   - Lifecycle: create an Interactive HarnessRun, wait for Phase=Running,
 //     POST a prompt to the broker over port-forward+SA-token, assert 202,
@@ -112,7 +112,7 @@ spec:
     timeout: 5m
   workspace:
     required: true
-    mountPath: /workspace`, interactiveTpl, ns, echoImage, adapterEchoImage))
+    mountPath: /workspace`, interactiveTpl, ns, echoImage, runtimeEchoImage))
 
 		// BrokerPolicy granting runs.interact + runs.shell against the
 		// stub template. Shell command is /bin/sh because the alpine-
@@ -364,7 +364,7 @@ spec:
     timeout: 5m
   workspace:
     required: true
-    mountPath: /workspace`, supervisorTplPersistent, ns, claudeCodeFakeImage, adapterClaudeCodeImage))
+    mountPath: /workspace`, supervisorTplPersistent, ns, claudeCodeFakeImage, runtimeClaudeCodeImage))
 
 		// Per-prompt-process template. Same shape, different
 		// interactive.mode — the controller wires PADDOCK_INTERACTIVE_MODE
@@ -394,7 +394,7 @@ spec:
     timeout: 5m
   workspace:
     required: true
-    mountPath: /workspace`, supervisorTplPerPrompt, ns, claudeCodeFakeImage, adapterClaudeCodeImage))
+    mountPath: /workspace`, supervisorTplPerPrompt, ns, claudeCodeFakeImage, runtimeClaudeCodeImage))
 
 		// Per-template BrokerPolicy granting runs.interact. Two
 		// policies (one per template) so each spec's admission check is
@@ -513,15 +513,15 @@ spec:
 		run.WaitForPhaseIn(ctx, []string{"Succeeded", "Cancelled"}, 3*time.Minute)
 
 		By("asserting status.recentEvents contains a fake-harness 'assistant' frame")
-		// The adapter-claude-code converter emits a Message-type
+		// The runtime-claude-code converter emits a Message-type
 		// PaddockEvent for every "assistant" stream frame, and the
-		// collector flushes the workspace events.jsonl into the
+		// runtime publishes the workspace events.jsonl into the
 		// output ConfigMap which the controller projects into
 		// status.recentEvents. Thus a single recentEvents entry of
 		// type=Message is sufficient evidence the full path worked.
 		//
 		// status.recentEvents is updated on a reconcile that fires
-		// after the collector flushes the ConfigMap — Eventually
+		// after the runtime flushes the ConfigMap — Eventually
 		// covers the small post-Succeeded settle window.
 		Eventually(func(g Gomega) {
 			status := run.Status(ctx)

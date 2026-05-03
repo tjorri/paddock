@@ -782,7 +782,6 @@ spec:
             - --metrics-bind-address=:8443
             - --leader-elect
             - --health-probe-bind-address=:8081
-            - --collector-image={{ .Values.collectorImage.repository }}:{{ .Values.collectorImage.tag | default .Chart.AppVersion }}
             - --recent-events-cap={{ .Values.recentEventsCap | default 50 }}
             - --audit-retention-days={{ .Values.auditRetentionDays | default 30 }}
             - --broker-endpoint=https://paddock-broker.paddock-system.svc:8443

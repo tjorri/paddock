@@ -96,12 +96,8 @@ type HarnessRunReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
-	// CollectorImage is the image used for the generic collector
-	// sidecar. When empty, DefaultCollectorImage is used.
-	CollectorImage string
-
 	// RingMaxEvents caps status.recentEvents at decode time.
-	// Mirrors the collector's ring-max-events flag (ADR-0007);
+	// Mirrors the runtime's ring-max-events flag (ADR-0007);
 	// the controller trims the parsed list to this count as
 	// belt-and-braces against ConfigMap-side drift. 0 disables.
 	RingMaxEvents int
@@ -1278,7 +1274,6 @@ func (r *HarnessRunReconciler) ensureJob(
 		workspacePVC:    pvcName,
 		promptSecret:    promptSecretName(run),
 		outputConfigMap: outputCMName(run),
-		collectorImage:  r.CollectorImage,
 		homeInitImage:   r.HomeInitImage,
 		serviceAccount:  collectorSAName(run),
 	}

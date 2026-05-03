@@ -128,8 +128,8 @@ kind-up: ## Create local dev Kind cluster and install cert-manager.
 .PHONY: kind-load
 kind-load: ## Load all paddock-*:dev images into the local dev Kind cluster (paddock-dev).
 	@for img in paddock-manager:dev paddock-broker:dev paddock-proxy:dev paddock-iptables-init:dev \
-	           paddock-echo:dev paddock-adapter-echo:dev paddock-collector:dev \
-	           paddock-claude-code:dev paddock-adapter-claude-code:dev; do \
+	           paddock-echo:dev paddock-runtime-echo:dev \
+	           paddock-claude-code:dev paddock-runtime-claude-code:dev; do \
 		$(KIND) load docker-image --name paddock-dev "$$img"; \
 	done
 
@@ -213,11 +213,8 @@ docker-push: ## Push docker image with the manager.
 
 ECHO_IMG ?= paddock-echo:dev
 EVIL_ECHO_IMG ?= paddock-evil-echo:dev
-ADAPTER_ECHO_IMG ?= paddock-adapter-echo:dev
-COLLECTOR_IMG ?= paddock-collector:dev
 HARNESS_SUPERVISOR_IMG ?= paddock-harness-supervisor:dev
 CLAUDE_CODE_IMG ?= paddock-claude-code:dev
-ADAPTER_CLAUDE_CODE_IMG ?= paddock-adapter-claude-code:dev
 RUNTIME_CLAUDE_CODE_IMG ?= paddock-runtime-claude-code:dev
 RUNTIME_ECHO_IMG ?= paddock-runtime-echo:dev
 BROKER_IMG ?= paddock-broker:dev
@@ -247,30 +244,6 @@ image-evil-echo: ## Build the paddock-evil-echo hostile harness image (test-only
 	else \
 		echo "image-evil-echo: building $(EVIL_ECHO_IMG) (hash $$hash)"; \
 		$(CONTAINER_TOOL) build -t $(EVIL_ECHO_IMG) -t $$tag -f images/evil-echo/Dockerfile .; \
-	fi
-
-.PHONY: image-adapter-echo
-image-adapter-echo: ## Build the paddock-adapter-echo sidecar image, skipping if source hash matches.
-	@hash=$$(hack/image-hash.sh adapter-echo); \
-	tag="paddock-adapter-echo:dev-$$hash"; \
-	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
-		echo "image-adapter-echo: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
-		$(CONTAINER_TOOL) tag $$tag $(ADAPTER_ECHO_IMG); \
-	else \
-		echo "image-adapter-echo: building $(ADAPTER_ECHO_IMG) (hash $$hash)"; \
-		$(CONTAINER_TOOL) build -t $(ADAPTER_ECHO_IMG) -t $$tag -f images/adapter-echo/Dockerfile .; \
-	fi
-
-.PHONY: image-collector
-image-collector: ## Build the paddock-collector sidecar image, skipping if source hash matches.
-	@hash=$$(hack/image-hash.sh collector); \
-	tag="paddock-collector:dev-$$hash"; \
-	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
-		echo "image-collector: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
-		$(CONTAINER_TOOL) tag $$tag $(COLLECTOR_IMG); \
-	else \
-		echo "image-collector: building $(COLLECTOR_IMG) (hash $$hash)"; \
-		$(CONTAINER_TOOL) build -t $(COLLECTOR_IMG) -t $$tag -f images/collector/Dockerfile .; \
 	fi
 
 .PHONY: image-harness-supervisor
@@ -307,18 +280,6 @@ image-claude-code-fake: image-harness-supervisor ## Build the fake-claude harnes
 	else \
 		echo "image-claude-code-fake: building paddock-claude-code-fake:dev (hash $$hash)"; \
 		$(CONTAINER_TOOL) build -t paddock-claude-code-fake:dev -t $$tag images/harness-claude-code-fake; \
-	fi
-
-.PHONY: image-adapter-claude-code
-image-adapter-claude-code: ## Build the paddock-adapter-claude-code sidecar image, skipping if source hash matches.
-	@hash=$$(hack/image-hash.sh adapter-claude-code); \
-	tag="paddock-adapter-claude-code:dev-$$hash"; \
-	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
-		echo "image-adapter-claude-code: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
-		$(CONTAINER_TOOL) tag $$tag $(ADAPTER_CLAUDE_CODE_IMG); \
-	else \
-		echo "image-adapter-claude-code: building $(ADAPTER_CLAUDE_CODE_IMG) (hash $$hash)"; \
-		$(CONTAINER_TOOL) build -t $(ADAPTER_CLAUDE_CODE_IMG) -t $$tag -f images/adapter-claude-code/Dockerfile .; \
 	fi
 
 .PHONY: image-runtime-claude-code
@@ -394,14 +355,14 @@ image-e2e-egress: ## Build the paddock-e2e-egress harness (e2e-only probe tool),
 	fi
 
 .PHONY: images
-images: image-echo image-adapter-echo image-runtime-echo image-collector image-harness-supervisor image-claude-code image-adapter-claude-code image-runtime-claude-code image-broker image-proxy image-iptables-init image-evil-echo ## Build all reference images.
+images: image-echo image-runtime-echo image-harness-supervisor image-claude-code image-runtime-claude-code image-broker image-proxy image-iptables-init image-evil-echo ## Build all reference images.
 
 .PHONY: trivy-images
 trivy-images: ## Run trivy on all Paddock images. Fails on HIGH/CRITICAL.
 	@command -v trivy >/dev/null 2>&1 || { echo "Install trivy: https://aquasecurity.github.io/trivy/"; exit 1; }
 	@for img in paddock-manager:dev paddock-broker:dev paddock-proxy:dev paddock-iptables-init:dev \
-	            paddock-echo:dev paddock-adapter-echo:dev paddock-collector:dev \
-	            paddock-claude-code:dev paddock-adapter-claude-code:dev; do \
+	            paddock-echo:dev paddock-runtime-echo:dev \
+	            paddock-claude-code:dev paddock-runtime-claude-code:dev; do \
 	  echo "==> trivy on $$img"; \
 	  trivy image --severity HIGH,CRITICAL --exit-code 1 --ignorefile .trivyignore "$$img" || exit 1; \
 	done

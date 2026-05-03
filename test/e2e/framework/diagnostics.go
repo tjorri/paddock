@@ -171,7 +171,7 @@ func dumpNamespace(ctx context.Context, ns string) {
 	dump("harnessrun descriptions",
 		"-n", ns, "describe", "harnessruns")
 
-	for _, c := range []string{"proxy", "iptables-init", "agent", "adapter", "collector"} {
+	for _, c := range []string{"proxy", "iptables-init", "agent", "runtime"} {
 		out, err := exec.CommandContext(ctx, "kubectl",
 			"-n", ns, "logs", "-l", "paddock.dev/run", "-c", c, "--tail=100").
 			CombinedOutput()

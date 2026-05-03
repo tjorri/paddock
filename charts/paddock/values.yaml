@@ -2,20 +2,11 @@
 #
 # Defaults install the controller-manager with the reference images
 # built out of this repo. Production installs override image.repository
-# + image.tag (and typically collectorImage) to point at a registry.
+# + image.tag to point at a registry.
 
 image:
   repository: paddock-manager
   # When empty, falls back to Chart.AppVersion.
-  tag: ""
-  pullPolicy: IfNotPresent
-
-# Image the controller injects into every HarnessRun Pod as the
-# generic collector sidecar. Versions in lockstep with the manager,
-# so the default tag mirrors `image.tag` (empty → Chart.AppVersion).
-# Override both when pulling from a private registry.
-collectorImage:
-  repository: paddock-collector
   tag: ""
   pullPolicy: IfNotPresent
 
@@ -103,7 +94,7 @@ resources:
 leaderElection:
   enabled: true
 
-# Cap on status.recentEvents entries when parsing collector snapshots
+# Cap on status.recentEvents entries when parsing runtime snapshots
 # (ADR-0007). Wired through to the manager's --recent-events-cap flag.
 recentEventsCap: 50
 

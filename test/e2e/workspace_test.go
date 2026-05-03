@@ -204,7 +204,7 @@ var _ = Describe("workspace persistence", Ordered, func() {
 		framework.NewHarnessTemplate(ns, homePersistTemplate).
 			WithImage(echoImage).
 			WithCommand("/bin/sh", "-c", script).
-			WithRuntime(adapterEchoImage).
+			WithRuntime(runtimeEchoImage).
 			WithDefaultTimeout("120s").
 			Apply(ctx)
 

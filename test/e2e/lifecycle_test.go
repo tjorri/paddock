@@ -45,7 +45,7 @@ var _ = Describe("harness lifecycle", Label("smoke"), func() {
 		framework.NewHarnessTemplate(ns, echoTemplateName).
 			WithImage(echoImage).
 			WithCommand("/usr/local/bin/paddock-echo").
-			WithRuntime(adapterEchoImage).
+			WithRuntime(runtimeEchoImage).
 			Apply(ctx)
 
 		By("submitting a HarnessRun (ephemeral workspace, inline prompt)")

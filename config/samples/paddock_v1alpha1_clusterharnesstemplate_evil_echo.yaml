@@ -32,7 +32,7 @@ spec:
     - "--connect-raw-tcp"
     - "10.96.0.10:443"
   runtime:
-    image: paddock-adapter-echo:dev
+    image: paddock-runtime-echo:dev
     imagePullPolicy: IfNotPresent
   # Non-empty requires triggers per-run NetworkPolicy emission (the
   # controller skips NP for empty-requires runs since there's nothing
@@ -76,7 +76,7 @@ spec:
     - "--probe-broker"
     - "https://paddock-broker.paddock-system.svc:8443/v1/issue"
   runtime:
-    image: paddock-adapter-echo:dev
+    image: paddock-runtime-echo:dev
     imagePullPolicy: IfNotPresent
   requires:
     egress:
@@ -118,7 +118,7 @@ spec:
     - "--smuggle-headers"
     - "Cookie=session=stolen,X-Forwarded-For=1.2.3.4,X-Anthropic-Account=evil"
   runtime:
-    image: paddock-adapter-echo:dev
+    image: paddock-runtime-echo:dev
     imagePullPolicy: IfNotPresent
   requires:
     egress:
@@ -157,7 +157,7 @@ spec:
     - "--probe-provider-substitution-host"
     - "https://evil.com/"
   runtime:
-    image: paddock-adapter-echo:dev
+    image: paddock-runtime-echo:dev
     imagePullPolicy: IfNotPresent
   requires:
     egress:
@@ -195,7 +195,7 @@ spec:
   args:
     - "--probe-env-override"
   runtime:
-    image: paddock-adapter-echo:dev
+    image: paddock-runtime-echo:dev
     imagePullPolicy: IfNotPresent
   requires:
     egress:

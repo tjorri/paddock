@@ -52,7 +52,7 @@ func echoTemplateFixture() *resolvedTemplate {
 			Image:   "paddock-echo:dev",
 			Command: []string{"/usr/local/bin/paddock-echo"},
 			Runtime: &paddockv1alpha1.RuntimeSpec{
-				Image: "paddock-adapter-echo:dev",
+				Image: "paddock-runtime-echo:dev",
 			},
 			Workspace: paddockv1alpha1.WorkspaceRequirement{
 				Required:  true,
@@ -77,7 +77,6 @@ func defaultInputs() podSpecInputs {
 		workspacePVC:    "ws-run-echo",
 		promptSecret:    "run-echo-prompt",
 		outputConfigMap: "run-echo-out",
-		collectorImage:  "paddock-collector:dev",
 		serviceAccount:  "run-echo-collector",
 	}
 }

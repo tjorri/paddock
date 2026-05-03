@@ -86,7 +86,7 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Format the prompt for the harness CLI's stdin. The proxy is
-	// harness-agnostic; the per-harness shim (cmd/adapter-claude-code/
+	// harness-agnostic; the per-harness shim (cmd/runtime-claude-code/
 	// main.go for claude) supplies a PromptFormatter that wraps the
 	// user's text into the harness's native stream-json shape. When
 	// PromptFormatter is nil, fall back to writing the request body

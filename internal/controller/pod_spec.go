@@ -175,10 +175,6 @@ const (
 	paddockSAMountPath = "/var/run/secrets/kubernetes.io/serviceaccount"
 )
 
-// DefaultCollectorImage is used when the reconciler does not override
-// it. Overridable via the manager's --collector-image flag (M7+).
-const DefaultCollectorImage = "paddock-collector:dev"
-
 // DefaultProxyImage is used when the reconciler does not override it.
 // Overridable via --proxy-image. Zero string disables the sidecar.
 const DefaultProxyImage = "paddock-proxy:dev"
@@ -200,7 +196,6 @@ type podSpecInputs struct {
 	workspacePVC    string
 	promptSecret    string
 	outputConfigMap string
-	collectorImage  string
 	serviceAccount  string
 
 	// brokerCredsSecret, when non-empty, names an owned Secret whose

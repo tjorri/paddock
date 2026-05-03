@@ -378,8 +378,8 @@ func runBatch(ctx context.Context, cfg *Config, tw *transcript.Writer) {
 	cfg.setExit("succeeded", "agent exited cleanly")
 }
 
-// tailAndConvert mirrors cmd/adapter-claude-code/batch.go's tail loop
-// but routes converted events through the transcript writer.
+// tailAndConvert tails the harness CLI's stream-json output file and
+// routes converted PaddockEvents through the transcript writer.
 func tailAndConvert(ctx context.Context, path string, tw *transcript.Writer, poll time.Duration) error {
 	in, err := openOrWait(ctx, path, poll)
 	if err != nil {
@@ -633,8 +633,7 @@ func envOr(key, fallback string) string {
 // stream-json shape claude reads when invoked with `--input-format
 // stream-json`. The "_paddock_seq" tag is a custom correlation field;
 // claude ignores unknown keys, so it survives the round-trip without
-// disturbing the model. Lifted verbatim from
-// cmd/adapter-claude-code/main.go in the Task 10 migration.
+// disturbing the model.
 func claudePromptFormatter(text string, seq int32) ([]byte, error) {
 	type contentBlock struct {
 		Type string `json:"type"`
