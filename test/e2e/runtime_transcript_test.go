@@ -218,20 +218,20 @@ spec:
 
 		By(fmt.Sprintf("submitting %d prompts and waiting for each turn to drain", transcriptPromptN))
 		// Submit serializes against the broker's CurrentTurnSeq gate.
-		// Each fake-claude turn ends with a result frame, which fires
+		// Each fake-claude turn ends with a Result frame, which fires
 		// the runtime's OnTurnComplete and clears the gate so the next
-		// prompt is accepted. Eventually wraps Submit so the (rare)
-		// 502 during pod warm-up window gets retried; ErrTurnInFlight
-		// is treated as a successful queueing of a prior attempt.
+		// prompt is accepted. We treat IsTurnInFlight as a retryable
+		// error (NOT as success) — the previous prompt's turn-complete
+		// callback is still in flight; just wait it out and retry.
+		// Eventually's polling cadence + 90s budget gives the gate
+		// plenty of time to clear between prompts.
 		for i := 0; i < transcriptPromptN; i++ {
 			text := fmt.Sprintf(`{"role":"user","content":"prompt-%d"}`, i+1)
 			Eventually(func(g Gomega) {
 				_, sErr := bc.Submit(ctx, ns, transcriptRunName, text)
-				if paddockbroker.IsTurnInFlight(sErr) {
-					return // a previous attempt got in; keep going
-				}
 				g.Expect(sErr).NotTo(HaveOccurred(),
-					"Submit failed on prompt %d", i+1)
+					"Submit failed on prompt %d (turn-in-flight=%v)",
+					i+1, paddockbroker.IsTurnInFlight(sErr))
 			}, 90*time.Second, 1*time.Second).Should(Succeed())
 			GinkgoWriter.Printf("submitted prompt %d\n", i+1)
 		}
