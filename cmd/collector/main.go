@@ -37,7 +37,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+
+	"github.com/tjorri/paddock/internal/runtime/publish"
 )
+
+// WriteFunc is re-exported from internal/runtime/publish so the
+// collector's run signature stays stable while the implementation lives
+// in the library. Future runtime binaries import publish.WriteFunc
+// directly.
+type WriteFunc = publish.WriteFunc
 
 type config struct {
 	rawPath    string
@@ -129,11 +137,11 @@ func run(ctx context.Context, cfg config, write WriteFunc) error {
 	}
 	defer eventsDst.Close()
 
-	pub := NewPublisher(write, cfg.debounce)
+	pub := publish.NewPublisher(write, cfg.debounce)
 	defer pub.Close()
 	pub.Set("phase", "Running")
 
-	ring := NewRing(cfg.ringMaxEvents, cfg.ringMaxBytes)
+	ring := publish.NewRing(cfg.ringMaxEvents, cfg.ringMaxBytes)
 
 	var wg sync.WaitGroup
 	var rawErr, evErr error

@@ -14,7 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package main
+// Package publish projects PaddockEvents from the runtime's transcript
+// to the controller-watched output ConfigMap. The ConfigMap is the
+// summary projection (capped, drops Fields.text and assistant
+// Fields.content); the workspace-PVC events.jsonl is the system of
+// record. See docs/superpowers/specs/2026-05-03-unified-runtime-design.md
+// §3.4 §7.1.
+package publish
 
 import (
 	"context"
