@@ -40,7 +40,7 @@ func TestTemplateBuilder_WithRequiredCredential(t *testing.T) {
 	out := NewHarnessTemplate("paddock-x", "harness").
 		WithImage("img:dev").
 		WithCommand("/bin/sh").
-		WithRuntime("adapter:dev").
+		WithRuntime("paddock-runtime-echo:dev").
 		WithRequiredCredential("DEMO_TOKEN").
 		BuildYAML()
 
@@ -53,7 +53,7 @@ func TestTemplateBuilder_MultiArgCommandIsValidYAML(t *testing.T) {
 	yamlStr := NewHarnessTemplate("paddock-x", "harness").
 		WithImage("img:dev").
 		WithCommand("/bin/sh", "-c", "echo hello && sleep 1").
-		WithRuntime("adapter:dev").
+		WithRuntime("paddock-runtime-echo:dev").
 		BuildYAML()
 
 	if !strings.Contains(yamlStr, `command: ["/bin/sh", "-c", "echo hello && sleep 1"]`) {

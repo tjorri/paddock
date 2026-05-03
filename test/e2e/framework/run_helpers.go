@@ -22,7 +22,7 @@ func RunPhase(ctx context.Context, namespace, name string) string {
 
 // ReadRunOutput returns the concatenated stdout from the named HarnessRun's
 // agent container. The agent container writes output directly to stdout (not
-// to the collector sidecar's PADDOCK_RAW_PATH), so this helper fetches pod
+// to the runtime sidecar's PADDOCK_RAW_PATH), so this helper fetches pod
 // logs rather than the run's output ConfigMap.
 //
 // Returns an empty string when the run's Job or pod has not yet been created.

@@ -58,7 +58,7 @@ var _ = Describe("harness lifecycle", Label("smoke"), func() {
 		run.WaitForPhase(ctx, "Succeeded", 2*time.Minute)
 		status := run.Status(ctx)
 
-		By("verifying status.recentEvents came through the adapter + collector")
+		By("verifying status.recentEvents came through the runtime sidecar")
 		Expect(status.RecentEvents).To(HaveLen(4),
 			"expected the 4 deterministic echo events; got %+v", status.RecentEvents)
 		types := make([]string, len(status.RecentEvents))
@@ -81,7 +81,11 @@ var _ = Describe("harness lifecycle", Label("smoke"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(out)).To(Equal("Completed"))
 
-		By("verifying the per-run collector RBAC was provisioned")
+		By("verifying the per-run runtime RBAC was provisioned")
+		// Naming retained as <run>-collector for backwards compatibility
+		// with pre-unified-runtime workspaces; the SA is mounted into the
+		// runtime sidecar and grants get+update on the run's output
+		// ConfigMap.
 		_, err = utils.Run(exec.Command("kubectl", "-n", ns,
 			"get", "serviceaccount", echoRunName+"-collector"))
 		Expect(err).NotTo(HaveOccurred())

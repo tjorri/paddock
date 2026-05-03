@@ -74,7 +74,7 @@ metadata:
 		// HarnessTemplate with per-prompt-process interactive mode.
 		//
 		// Timing rationale (mirrors interactive_test.go's stub template):
-		// the echo adapter's /end is a no-op stub — it can't kill the
+		// the echo runtime's /end is a no-op stub — it can't kill the
 		// agent container's `sleep infinity` across PID namespaces — so
 		// the controller-side watchdog is the only thing that drives the
 		// run to a terminal phase. Setting maxLifetime: 60s ensures the
@@ -193,7 +193,7 @@ spec:
 		Expect(err).NotTo(HaveOccurred(), "broker.Open")
 
 		By("waiting for at least one StreamFrame within 2 minutes")
-		// Per-prompt-process echo adapter emits frames in response to the
+		// Per-prompt-process echo runtime emits frames in response to the
 		// initial prompt supplied in spec.prompt. The timeout covers both
 		// the pod warm-up window and the stream dial+first-frame round-trip.
 		select {
@@ -213,13 +213,13 @@ spec:
 		Expect(bc.End(endCtx, ns, tuiE2ERun, "test-complete")).To(Succeed(), "broker.End")
 
 		By("waiting for the run to reach a terminal phase (Cancelled or Succeeded)")
-		// Termination chain for an echo-adapter Interactive run:
+		// Termination chain for an echo-runtime Interactive run:
 		//
-		//   bc.End → broker /end (audit + forward) → adapter /end (no-op
+		//   bc.End → broker /end (audit + forward) → runtime /end (no-op
 		//   stub) → harness keeps sleeping → 60s max-lifetime watchdog
 		//   fires → controller deletes Job → run reaches Cancelled.
 		//
-		// The echo adapter's /end can't kill the harness across PID
+		// The echo runtime's /end can't kill the harness across PID
 		// namespaces, so the watchdog is the actual termination
 		// mechanism. The 3-minute deadline gives the watchdog (60s
 		// max-lifetime + Job teardown + reconcile) generous head room
