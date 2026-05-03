@@ -25,9 +25,10 @@ package main
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -38,6 +39,7 @@ import (
 
 	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 	"github.com/tjorri/paddock/internal/adapter/proxy"
+	"github.com/tjorri/paddock/internal/brokerclient"
 )
 
 const defaultPoll = 200 * time.Millisecond
@@ -66,6 +68,8 @@ func main() {
 func runInteractive(ctx context.Context, mode, eventsPath string) {
 	logger := log.New(os.Stderr, "adapter-claude-code: ", log.LstdFlags)
 
+	turnComplete := buildTurnCompleteHook(logger)
+
 	srv, err := proxy.NewServer(ctx, proxy.Config{
 		Mode:       mode,
 		DataSocket: envOr("PADDOCK_AGENT_DATA_SOCKET", "/paddock/agent-data.sock"),
@@ -76,6 +80,7 @@ func runInteractive(ctx context.Context, mode, eventsPath string) {
 			return convertLine(line, time.Now().UTC())
 		},
 		PromptFormatter: claudePromptFormatter,
+		OnTurnComplete:  turnComplete,
 	})
 	if err != nil {
 		logger.Fatalf("proxy NewServer: %v", err)
@@ -114,6 +119,61 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// buildTurnCompleteHook returns a proxy.OnTurnComplete implementation
+// that POSTs to the broker's /v1/runs/{ns}/{name}/turn-complete
+// endpoint. Returns nil (and logs a warning) when any required env
+// var is missing — the proxy still functions without turn-complete
+// callbacks, which is correct for batch-mode tests.
+//
+// Required envs:
+//
+//	PADDOCK_BROKER_URL         e.g. https://paddock-broker.paddock-system.svc:8443
+//	PADDOCK_BROKER_TOKEN_PATH  default /var/run/secrets/paddock-broker/token
+//	PADDOCK_BROKER_CA_PATH     default /etc/paddock-broker/ca/ca.crt
+//	PADDOCK_RUN_NAME, PADDOCK_RUN_NAMESPACE
+//
+// The defaults match the volumeMounts wired up by
+// internal/controller/pod_spec.go (brokerTokenMountPath and
+// brokerCAMountPath).
+func buildTurnCompleteHook(logger *log.Logger) func(context.Context) {
+	endpoint := os.Getenv("PADDOCK_BROKER_URL")
+	tokenPath := envOr("PADDOCK_BROKER_TOKEN_PATH", "/var/run/secrets/paddock-broker/token")
+	caPath := envOr("PADDOCK_BROKER_CA_PATH", "/etc/paddock-broker/ca/ca.crt")
+	runName := os.Getenv("PADDOCK_RUN_NAME")
+	runNs := os.Getenv("PADDOCK_RUN_NAMESPACE")
+
+	if endpoint == "" || tokenPath == "" || caPath == "" || runName == "" || runNs == "" {
+		logger.Printf("turn-complete hook disabled: missing one of PADDOCK_BROKER_URL/PADDOCK_BROKER_TOKEN_PATH/PADDOCK_BROKER_CA_PATH/PADDOCK_RUN_NAME/PADDOCK_RUN_NAMESPACE")
+		return nil
+	}
+
+	c, err := brokerclient.New(brokerclient.Options{
+		Endpoint:     endpoint,
+		CABundlePath: caPath,
+		TokenReader:  brokerclient.FileTokenReader(tokenPath),
+		RunName:      runName,
+		RunNamespace: runNs,
+		// 10s comfortably covers a typical apiserver patch + audit
+		// emit; turn-complete is best-effort, so a slow broker
+		// shouldn't block the data reader.
+		Timeout: 10 * time.Second,
+	})
+	if err != nil {
+		logger.Printf("turn-complete hook disabled: brokerclient.New: %v", err)
+		return nil
+	}
+
+	path := fmt.Sprintf("/v1/runs/%s/%s/turn-complete", runNs, runName)
+	return func(ctx context.Context) {
+		resp, err := c.Do(ctx, path, []byte("{}"))
+		if err != nil {
+			logger.Printf("turn-complete callback: %v", err)
+			return
+		}
+		_ = resp.Body.Close()
+	}
 }
 
 // claudePromptFormatter wraps the user's prompt text into the

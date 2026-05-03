@@ -54,6 +54,16 @@ type Config struct {
 	// that accept Paddock's {text,seq,submitter} wire shape directly
 	// and for proxy unit tests.
 	PromptFormatter func(text string, seq int32) ([]byte, error)
+	// OnTurnComplete is invoked by the data reader once per turn-
+	// terminal event observed via Converter — i.e. a PaddockEvent of
+	// Type "Result" or "Error". The adapter shim wires this to a
+	// fire-and-forget POST to the broker's /turn-complete endpoint so
+	// the in-flight CurrentTurnSeq gate is cleared. Per-harness shims
+	// provide the implementation; the proxy package stays harness-
+	// agnostic. May be nil — proxy unit tests and batch-mode runs
+	// without broker wiring leave it unset, in which case the data
+	// reader skips the callback entirely.
+	OnTurnComplete func(ctx context.Context)
 }
 
 // Server wraps the adapter's HTTP+WS surface and the dialed UDS pair.
@@ -110,7 +120,7 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 		// the lifetime of the Server. It returns on EOF (supervisor
 		// closed the connection) or any I/O error; the Server's
 		// callers observe failure via subsequent /prompts errors.
-		_ = runDataReader(dataConn, s.fanout, cfg.EventsPath, cfg.Converter)
+		_ = runDataReader(dataConn, s.fanout, cfg.EventsPath, cfg.Converter, cfg.OnTurnComplete)
 	}()
 
 	return s, nil

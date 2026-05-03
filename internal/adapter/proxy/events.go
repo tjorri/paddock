@@ -18,6 +18,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,13 +30,34 @@ import (
 	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
+// turnTerminalEventType reports whether a PaddockEvent type signals
+// the end of a turn (claude's stream-json closes a turn with either a
+// final Result frame or an Error frame). The adapter shim's
+// OnTurnComplete hook fires once per turn-terminal event so the
+// broker can clear Status.Interactive.CurrentTurnSeq.
+func turnTerminalEventType(t string) bool {
+	return t == "Result" || t == "Error"
+}
+
 // runDataReader reads the data UDS line-by-line, broadcasts each
 // line to subscribers (for /stream WS clients) and translates each
 // line via cfg.Converter, appending results to cfg.EventsPath.
 //
+// onTurnComplete, when non-nil, is invoked in a goroutine once per
+// turn-terminal PaddockEvent (Type=Result or Type=Error) so a slow
+// broker callback cannot stall the data reader. May fire multiple
+// times if the converter emits more than one turn-terminal event for
+// a single line; the broker handler is idempotent.
+//
 // Returns when the data UDS read returns an error (typically EOF
 // after the supervisor closes the connection).
-func runDataReader(r io.Reader, fan *fanout, eventsPath string, conv func(string) ([]paddockv1alpha1.PaddockEvent, error)) error {
+func runDataReader(
+	r io.Reader,
+	fan *fanout,
+	eventsPath string,
+	conv func(string) ([]paddockv1alpha1.PaddockEvent, error),
+	onTurnComplete func(ctx context.Context),
+) error {
 	var (
 		out *os.File
 		enc *json.Encoder
@@ -58,19 +80,30 @@ func runDataReader(r io.Reader, fan *fanout, eventsPath string, conv func(string
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
 			fan.broadcast(line)
-			if enc != nil {
+			if conv != nil {
 				events, cerr := conv(string(line))
 				if cerr != nil {
 					log.Printf("convert line: %v", cerr)
 				}
-				for _, ev := range events {
-					if werr := enc.Encode(ev); werr != nil {
-						log.Printf("write event: %v", werr)
-						break
+				if enc != nil {
+					for _, ev := range events {
+						if werr := enc.Encode(ev); werr != nil {
+							log.Printf("write event: %v", werr)
+							break
+						}
+					}
+					if len(events) > 0 {
+						_ = out.Sync()
 					}
 				}
-				if len(events) > 0 {
-					_ = out.Sync()
+				if onTurnComplete != nil {
+					for _, ev := range events {
+						if turnTerminalEventType(ev.Type) {
+							// Fire-and-forget: don't let a slow
+							// broker stall data-reader throughput.
+							go onTurnComplete(context.Background())
+						}
+					}
 				}
 			}
 		}
