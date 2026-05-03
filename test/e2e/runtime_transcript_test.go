@@ -320,24 +320,3 @@ spec:
 		// (and downstream log aggregators) consume.
 	})
 })
-
-// splitNonEmptyLines splits on \n and drops empty/whitespace lines.
-func splitNonEmptyLines(s string) []string {
-	out := make([]string, 0, strings.Count(s, "\n")+1)
-	for _, l := range strings.Split(s, "\n") {
-		l = strings.TrimRight(l, "\r")
-		if strings.TrimSpace(l) == "" {
-			continue
-		}
-		out = append(out, l)
-	}
-	return out
-}
-
-// safeIndex returns lines[i] or a placeholder if i is out of range.
-func safeIndex(lines []string, i int) string {
-	if i < 0 || i >= len(lines) {
-		return "<out-of-range>"
-	}
-	return lines[i]
-}
