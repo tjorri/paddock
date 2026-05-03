@@ -62,15 +62,27 @@ type Archive struct {
 // is /workspace/.paddock/runs/<runName> by convention; pass the full
 // path to allow tests to use a tempdir.
 func Open(dir string) (*Archive, error) {
-	// 0o755: the run archive lives in /workspace/.paddock/runs/<run>/
-	// inside a Pod-local volume. Sibling containers in the same Pod
-	// (controller-side collectors, future readers) need read+exec on
-	// the directory to walk the archive. Matches the convention used
-	// by the existing adapter/collector writers documented in
-	// .golangci.yml's gosec G30[126] exclusion for the sibling
-	// packages.
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: see rationale above
+	// 0o777: the run archive lives in /workspace/.paddock/runs/<run>/
+	// inside the workspace PVC, which is pod-scoped. Multiple containers
+	// in the same pod write here:
+	//
+	//   - the runtime owns events.jsonl and metadata.json (this package)
+	//   - the agent owns result.json and raw.jsonl (its harness CLI)
+	//
+	// They run under different UIDs (runtime=1339, agent typically=65532
+	// or harness-author-pinned), so the directory must be writable by
+	// any container in the pod. "World-writable" is bounded to the same
+	// pod's containers because the volume itself is pod-scoped — the
+	// same Pod-local trust model documented on the harness-supervisor
+	// UDS chmod (cmd/harness-supervisor/listener.go).
+	if err := os.MkdirAll(dir, 0o777); err != nil { //nolint:gosec // G301: pod-scoped — see rationale above
 		return nil, fmt.Errorf("archive: mkdir %s: %w", dir, err)
+	}
+	// MkdirAll respects umask, which on most container runtimes masks
+	// out world-write (umask 022 -> 0o755). Force the mode so the
+	// agent container can actually write into the dir.
+	if err := os.Chmod(dir, 0o777); err != nil { //nolint:gosec // G302: pod-scoped — see rationale above
+		return nil, fmt.Errorf("archive: chmod %s: %w", dir, err)
 	}
 	return &Archive{dir: dir}, nil
 }
