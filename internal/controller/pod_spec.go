@@ -39,8 +39,8 @@ var (
 	defaultProxyMemoryLimit   = resource.MustParse("128Mi")
 )
 
-// Standard paths and mount points — declared here so the adapter and
-// collector sidecars consume the exact same constants as the agent.
+// Standard paths and mount points — declared here so the runtime
+// sidecar consumes the exact same constants as the agent.
 const (
 	sharedVolumeName      = "paddock-shared"
 	sharedMountPath       = "/paddock"
@@ -52,10 +52,11 @@ const (
 	rawSubdir             = "/paddock/raw/out"
 	eventsSubdir          = "/paddock/events/events.jsonl"
 	// agentDataSocketPath is the UDS the supervisor (in the agent
-	// container) listens on for prompt/event traffic; the adapter
-	// proxy dials this path. Both containers mount /paddock as a
+	// container) listens on for prompt/event traffic; the runtime
+	// sidecar dials this path. Both containers mount /paddock as a
 	// shared emptyDir, so the same path resolves in both.
-	// Spec 2026-05-02-interactive-adapter-as-proxy §4.4.
+	// Spec 2026-05-02-interactive-adapter-as-proxy §4.4 (UDS contract
+	// preserved across the unified-runtime refactor).
 	agentDataSocketPath = "/paddock/agent-data.sock"
 	// agentCtlSocketPath is the UDS the supervisor listens on for
 	// out-of-band control RPCs (lifecycle / detach / health). Same
@@ -67,8 +68,7 @@ const (
 	reposManifestRelPath = ".paddock/repos.json"
 
 	agentContainerName           = "agent"
-	adapterContainerName         = "adapter"
-	collectorContainerName       = "collector"
+	runtimeContainerName         = "runtime"
 	proxyContainerName           = "proxy"
 	iptablesInitContainerName    = "iptables-init"
 	paddockHomeInitContainerName = "paddock-home-init"
@@ -77,7 +77,7 @@ const (
 	// terminationGracePeriodSeconds applied to Interactive runs (when the
 	// template's Defaults.TerminationGracePeriodSeconds is not set). 300s
 	// is long enough for an in-flight prompt to finish flushing and the
-	// adapter to drain its raw/event streams before SIGKILL. Still
+	// runtime to drain its raw/event streams before SIGKILL. Still
 	// clamped at maxPodGracePeriodSecs.
 	interactiveGracePeriodSecs = 300
 	// maxPodGracePeriodSecs is the controller-side belt-and-braces clamp
@@ -122,11 +122,17 @@ const (
 	// defaultProxyUID. 1337 is the Istio convention — low enough
 	// conflict risk against typical agent container UIDs.
 	proxyRunAsUID = 1337
-	// adapterRunAsUID and collectorRunAsUID pin the sidecar UIDs so the
-	// iptables-init --bypass-uids list can RETURN their egress without
-	// looping it through the proxy. F-20 / Phase 2h Theme 4.
-	adapterRunAsUID   = 1338
-	collectorRunAsUID = 1339
+	// runtimeRunAsUID pins the runtime sidecar UID so the iptables-init
+	// --bypass-uids list can RETURN its egress without looping it
+	// through the proxy. F-20 / Phase 2h Theme 4.
+	//
+	// The unified runtime owns the workspace PVC (transcript + archive
+	// at /workspace/.paddock/runs/<run>/), so it inherits the UID
+	// previously assigned to the collector — same trust profile against
+	// the workspace, same FSGroup-based group write semantics. The
+	// pre-unified split between adapter (1338) and collector (1339)
+	// collapses to a single 1339 here.
+	runtimeRunAsUID = 1339
 	// agentCABundleMountPath is where the agent sees the MITM CA
 	// bundle. Points at a single file (ca.crt key of the per-run
 	// Secret — the cluster root, self-signed; see agentCABundleSubPath
@@ -157,11 +163,11 @@ const (
 
 	// paddockSAVolumeName is the explicit projected SA-token mount
 	// added to sidecars only. Pod-level AutomountServiceAccountToken
-	// is set to false; sidecars that need API access (collector for
-	// AuditEvent emission, proxy for broker authentication) get the
-	// token via this explicit volume. The agent container does not
-	// mount this — F-38: prevents the agent from forging AuditEvents
-	// or making other unauthorised API calls.
+	// is set to false; sidecars that need API access (runtime for
+	// ConfigMap patching + AuditEvent emission, proxy for broker
+	// authentication) get the token via this explicit volume. The
+	// agent container does not mount this — F-38: prevents the agent
+	// from forging AuditEvents or making other unauthorised API calls.
 	paddockSAVolumeName = "paddock-sa-token"
 	// paddockSAMountPath mirrors the standard SA-token projection path
 	// so client libraries that auto-discover (kubernetes.io/serviceaccount)
@@ -253,7 +259,8 @@ type podSpecInputs struct {
 // buildJob renders the batchv1.Job for a HarnessRun. Assumes the caller
 // has already resolved the template, validated the prompt source, and
 // (when workspace is required) confirmed the Workspace is Active, and
-// has created the output ConfigMap + collector ServiceAccount.
+// has created the output ConfigMap + run ServiceAccount the runtime
+// container authenticates as.
 func buildJob(
 	run *paddockv1alpha1.HarnessRun,
 	template *resolvedTemplate,
@@ -298,11 +305,13 @@ func buildJob(
 	}
 }
 
-// buildPodSpec assembles the PodSpec: agent as the main container, and
-// adapter + collector as native sidecars (init containers with
-// restartPolicy: Always — K8s 1.29+; see ADR-0009). The collector is
-// always present; the adapter is present only when the template
-// declares a runtime image.
+// buildPodSpec assembles the PodSpec: agent as the main container,
+// runtime + (optional) proxy as native sidecars (init containers with
+// restartPolicy: Always — K8s 1.29+; see ADR-0009). The runtime
+// sidecar is present whenever template.Spec.Runtime is set, which is
+// the post-unified-runtime norm; templates omitting Runtime fall back
+// to a one-shot agent-only pod (used by the harness-author smoke
+// fixtures).
 func buildPodSpec(
 	run *paddockv1alpha1.HarnessRun,
 	template *resolvedTemplate,
@@ -326,12 +335,7 @@ func buildPodSpec(
 		grace = maxPodGracePeriodSecs
 	}
 
-	collectorImage := in.collectorImage
-	if collectorImage == "" {
-		collectorImage = DefaultCollectorImage
-	}
-
-	initContainers := make([]corev1.Container, 0, 5)
+	initContainers := make([]corev1.Container, 0, 4)
 
 	// paddock-home-init runs FIRST. mkdir is filesystem-only — no
 	// dependency on iptables/proxy/sidecar lifecycle — and HOME points
@@ -346,10 +350,13 @@ func buildPodSpec(
 		initContainers = append(initContainers, buildIPTablesInitContainer(in))
 	}
 
+	// Runtime sidecar (unified runtime; replaces the prior adapter +
+	// collector pair). Owns the full harness-side data plane: input
+	// recording, output translation, transcript persistence, ConfigMap
+	// publishing, stdout passthrough, and the broker HTTP+WS surface.
 	if template.Spec.Runtime != nil {
-		initContainers = append(initContainers, buildAdapterContainer(run, template, in))
+		initContainers = append(initContainers, buildRuntimeContainer(run, template, in))
 	}
-	initContainers = append(initContainers, buildCollectorContainer(run, template, collectorImage, in.outputConfigMap))
 	if proxyEnabled(in) {
 		initContainers = append(initContainers, buildProxyContainer(run, in))
 	}
@@ -373,16 +380,16 @@ func buildPodSpec(
 		// as root; per-container SecurityContext on first-party
 		// sidecars enforces non-root individually. See F-37 / Phase 2e.
 		//
-		// FSGroup makes the workspace PVC writable across pinned sidecar
-		// UIDs (collector=1339, adapter=1338) AND the agent's
-		// image-default UID (typically 65532 for distroless:nonroot).
-		// Without it, the collector creates `/workspace/.paddock/runs/...`
-		// owned by 1339:1339 mode 0755 and the agent (UID 65532) can't
-		// write its result.json there. Setting fsGroup=65532 makes K8s
-		// chown the PVC to GID 65532 and OR g+rwx onto contents, and adds
-		// 65532 as a supplementary group on every container — so all the
-		// pinned-UID sidecars (and the tenant agent) can collaborate on
-		// the workspace. F-20 follow-up.
+		// FSGroup makes the workspace PVC writable across the pinned
+		// runtime sidecar UID (1339) AND the agent's image-default UID
+		// (typically 65532 for distroless:nonroot). Without it, the
+		// runtime creates `/workspace/.paddock/runs/...` owned by
+		// 1339:1339 mode 0755 and the agent (UID 65532) can't write its
+		// result.json there. Setting fsGroup=65532 makes K8s chown the
+		// PVC to GID 65532 and OR g+rwx onto contents, and adds 65532
+		// as a supplementary group on every container — so the runtime
+		// sidecar and the tenant agent collaborate on the workspace.
+		// F-20 follow-up.
 		SecurityContext: &corev1.PodSecurityContext{
 			FSGroup: ptr.To(int64(65532)),
 			SeccompProfile: &corev1.SeccompProfile{
@@ -403,32 +410,15 @@ func proxyEnabled(in podSpecInputs) bool {
 
 // runContainerSecurityContextBaseline returns the PSS-baseline envelope
 // applied to containers whose image is not first-party (agent: tenant
-// image; adapter: template-author image). Drop ALL caps + no privilege
-// escalation are non-breaking; we deliberately leave RunAsNonRoot and
+// image; runtime: harness-author image, may import internal/runtime
+// from a non-distroless base). Drop ALL caps + no privilege escalation
+// are non-breaking; we deliberately leave RunAsNonRoot and
 // ReadOnlyRootFilesystem unset so existing third-party images keep
 // working. SeccompProfile is set explicitly even though the pod-level
 // default covers it — keeps the per-container envelope self-documenting.
 // See design Section 3.2.
 func runContainerSecurityContextBaseline() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
-		AllowPrivilegeEscalation: ptr.To(false),
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-		SeccompProfile: &corev1.SeccompProfile{
-			Type: corev1.SeccompProfileTypeRuntimeDefault,
-		},
-	}
-}
-
-// runContainerSecurityContextRestricted returns the PSS-restricted
-// envelope applied to first-party containers (collector). Adds
-// RunAsNonRoot:true and ReadOnlyRootFilesystem:true on top of the
-// baseline. The collector writes only to mounted volumes (shared
-// emptyDir, workspace PVC, projected SA token), so RO root is safe.
-// See design Section 3.2.
-func runContainerSecurityContextRestricted() *corev1.SecurityContext {
-	return &corev1.SecurityContext{
-		RunAsNonRoot:             ptr.To(true),
-		ReadOnlyRootFilesystem:   ptr.To(true),
 		AllowPrivilegeEscalation: ptr.To(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		SeccompProfile: &corev1.SeccompProfile{
@@ -477,60 +467,94 @@ func buildAgentContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemp
 	return c
 }
 
-// buildAdapterContainer constructs the per-harness event adapter as a
-// native sidecar. It sees only the shared /paddock volume; the
-// workspace PVC is the collector's concern.
-func buildAdapterContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in podSpecInputs) corev1.Container {
+// buildRuntimeContainer constructs the unified per-run runtime sidecar
+// that owns the full harness-side data plane. It mounts:
+//
+//   - /paddock (shared emptyDir, communicates with the agent over
+//     UDS for prompts + raw output)
+//   - the workspace PVC (transcript at /workspace/.paddock/runs/<run>/
+//     and the agent's result.json — the runtime archives both into
+//     the run-output ConfigMap)
+//   - paddock-sa-token (in-cluster SA token for ConfigMap patching
+//     and AuditEvent creation)
+//   - the prompt Secret (Batch runs read PADDOCK_PROMPT_FILE to record
+//     the seed prompt as a PromptSubmitted event)
+//   - broker token + CA when in.brokerEndpoint is set (interactive
+//     /turn-complete and Capability fetches)
+//
+// Always runs as a native sidecar (RestartPolicy=Always) in both Batch
+// and Interactive modes for symmetry; in Batch the runtime exits
+// shortly after the agent does (debounced flush + Done event).
+//
+// Replaces the prior adapter+collector pair (4-container pods → 3).
+// The runtime mounts the workspace PVC, which the adapter previously
+// did not — the "adapter doesn't see workspace" boundary was theatre
+// relative to the agent's much larger trust surface; spec §1
+// documents the rationale.
+func buildRuntimeContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in podSpecInputs) corev1.Container {
 	always := corev1.ContainerRestartPolicyAlways
+	mountPath := effectiveWorkspaceMount(template)
 	sc := runContainerSecurityContextBaseline()
-	sc.RunAsUser = ptr.To(int64(adapterRunAsUID))
+	sc.RunAsUser = ptr.To(int64(runtimeRunAsUID))
 	// RunAsGroup pinned to the shared workspace GID so files the
-	// adapter creates on the workspace PVC end up group-readable by
+	// runtime creates on the workspace PVC end up group-readable by
 	// the agent (which runs at the image-default UID, typically 65532
-	// for distroless:nonroot). Without this, the runtime falls back to
+	// for distroless:nonroot). Without this, the kubelet falls back to
 	// GID 0 when RunAsUser overrides the image's USER and no entry for
-	// 1338 exists in /etc/passwd. F-20 follow-up.
+	// 1339 exists in /etc/passwd. F-20 follow-up.
 	sc.RunAsGroup = ptr.To(int64(65532))
+
+	transcriptDir := path.Join(mountPath, ".paddock", "runs", run.Name)
 	env := []corev1.EnvVar{
+		// Shared /paddock contract with the agent supervisor.
 		{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
-		{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
-		// UDS paths to the supervisor in the agent container. Both
-		// containers see the same /paddock emptyDir mount, so the
-		// adapter proxy dials these from its side and the supervisor
-		// listens on them from the agent's side. Spec
-		// 2026-05-02-interactive-adapter-as-proxy §4.4.
 		{Name: "PADDOCK_AGENT_DATA_SOCKET", Value: agentDataSocketPath},
 		{Name: "PADDOCK_AGENT_CTL_SOCKET", Value: agentCtlSocketPath},
+		// Run identity — required by the runtime; loaded into Config.
+		{Name: "PADDOCK_RUN_NAME", Value: run.Name},
+		{Name: "PADDOCK_RUN_NAMESPACE", Value: run.Namespace},
+		{Name: "PADDOCK_WORKSPACE_NAME", Value: run.Spec.WorkspaceRef},
+		{Name: "PADDOCK_TEMPLATE_NAME", Value: template.SourceName},
+		{Name: "PADDOCK_HARNESS_IMAGE", Value: template.Spec.Image},
+		{Name: "PADDOCK_MODE", Value: string(effectiveMode(run))},
+		// Persistence: transcript + ConfigMap publishing.
+		{Name: "PADDOCK_TRANSCRIPT_DIR", Value: transcriptDir},
+		{Name: "PADDOCK_OUTPUT_CONFIGMAP", Value: in.outputConfigMap},
+		// Prompt file (Batch runs replay this as a PromptSubmitted
+		// event; Interactive runs ignore the file and accept prompts
+		// over the broker WS instead).
+		{Name: "PADDOCK_PROMPT_FILE", Value: promptMountPath + "/" + promptFileName},
 	}
-	// Interactive runs: signal the adapter which interactive driver
-	// strategy the template's adapter image should use (per-prompt-process
-	// vs persistent-process). Only emitted when both the run is
-	// Interactive AND the template declares a non-empty Interactive.Mode;
-	// Batch runs and templates without an InteractiveSpec are unaffected.
-	if run.Spec.Mode == paddockv1alpha1.HarnessRunModeInteractive &&
-		template.Spec.Interactive != nil &&
-		template.Spec.Interactive.Mode != "" {
+	// PADDOCK_INTERACTIVE_MODE signals which interactive driver strategy
+	// the runtime should use (per-prompt-process vs persistent-process).
+	// Only emitted when the template declares a non-empty Interactive.Mode;
+	// Batch runs without an InteractiveSpec are unaffected.
+	if template.Spec.Interactive != nil && template.Spec.Interactive.Mode != "" {
 		env = append(env, corev1.EnvVar{
 			Name:  "PADDOCK_INTERACTIVE_MODE",
 			Value: template.Spec.Interactive.Mode,
 		})
 	}
+	// POD_NAMESPACE downward-API for k8s clients that auto-discover.
+	env = append(env, corev1.EnvVar{
+		Name: "POD_NAMESPACE",
+		ValueFrom: &corev1.EnvVarSource{
+			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+		},
+	})
+
 	mounts := []corev1.VolumeMount{
 		{Name: sharedVolumeName, MountPath: sharedMountPath},
+		{Name: workspaceVolumeName, MountPath: mountPath},
+		{Name: promptVolumeName, MountPath: promptMountPath, ReadOnly: true},
 		{Name: paddockSAVolumeName, MountPath: paddockSAMountPath, ReadOnly: true},
 	}
-	// Interactive runs with broker wiring: the adapter shim posts to
-	// the broker's /turn-complete on every Result/Error frame so
-	// CurrentTurnSeq gets cleared and the next /prompts isn't 409'd.
-	// Mount the broker token + CA volumes (already added at pod level
-	// when in.brokerEndpoint != "") and surface the broker URL +
-	// run identity via env so cmd/adapter-claude-code's
-	// buildTurnCompleteHook can wire a brokerclient.
-	//
-	// Workspace PVC is intentionally not mounted on the adapter
-	// container; that invariant is the collector's concern (F-19
-	// preserved boundary).
-	if run.Spec.Mode == paddockv1alpha1.HarnessRunModeInteractive && in.brokerEndpoint != "" {
+	// Broker wiring: surface URL + token/CA mounts whenever broker
+	// integration is enabled. Both Batch and Interactive runs need the
+	// broker reachable — the runtime's publish loop posts /turn-complete
+	// on Result/Error frames for Interactive, and the broker is the
+	// AuditEvent + Capability source of truth for both modes.
+	if in.brokerEndpoint != "" {
 		mounts = append(mounts,
 			corev1.VolumeMount{Name: brokerTokenVolumeName, MountPath: brokerTokenMountPath, ReadOnly: true},
 			corev1.VolumeMount{Name: brokerCAVolumeName, MountPath: brokerCAMountPath, ReadOnly: true},
@@ -539,12 +563,11 @@ func buildAdapterContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTe
 			corev1.EnvVar{Name: "PADDOCK_BROKER_URL", Value: in.brokerEndpoint},
 			corev1.EnvVar{Name: "PADDOCK_BROKER_TOKEN_PATH", Value: brokerTokenPath},
 			corev1.EnvVar{Name: "PADDOCK_BROKER_CA_PATH", Value: brokerCAPath},
-			corev1.EnvVar{Name: "PADDOCK_RUN_NAME", Value: run.Name},
-			corev1.EnvVar{Name: "PADDOCK_RUN_NAMESPACE", Value: run.Namespace},
 		)
 	}
+
 	c := corev1.Container{
-		Name:            adapterContainerName,
+		Name:            runtimeContainerName,
 		Image:           template.Spec.Runtime.Image,
 		RestartPolicy:   &always,
 		SecurityContext: sc,
@@ -557,52 +580,16 @@ func buildAdapterContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTe
 	return c
 }
 
-// buildCollectorContainer constructs the generic collector sidecar.
-// Same restart-policy contract as the adapter; additionally mounts the
-// workspace PVC so it can persist raw/events/result under
-// <workspace>/.paddock/runs/<run>/.
-func buildCollectorContainer(
-	run *paddockv1alpha1.HarnessRun,
-	template *resolvedTemplate,
-	image, outputConfigMap string,
-) corev1.Container {
-	always := corev1.ContainerRestartPolicyAlways
-	mountPath := effectiveWorkspaceMount(template)
-	sc := runContainerSecurityContextRestricted()
-	sc.RunAsUser = ptr.To(int64(collectorRunAsUID))
-	// RunAsGroup pinned to the shared workspace GID. See the comment on
-	// the adapter for the rationale. The collector pre-creates the run
-	// output directory at /workspace/.paddock/runs/<run>/ which the
-	// agent later writes result.json into; without an explicit
-	// RunAsGroup, the directory ends up owned by 1339:0 instead of
-	// 1339:65532 and the agent (UID 65532) can't write into it via the
-	// group bits. F-20 follow-up.
-	sc.RunAsGroup = ptr.To(int64(65532))
-	return corev1.Container{
-		Name:            collectorContainerName,
-		Image:           image,
-		RestartPolicy:   &always,
-		SecurityContext: sc,
-		Env: []corev1.EnvVar{
-			{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
-			{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
-			{Name: "PADDOCK_RESULT_PATH", Value: resultFilePath(run, template)},
-			{Name: "PADDOCK_WORKSPACE", Value: mountPath},
-			{Name: "PADDOCK_RUN_NAME", Value: run.Name},
-			{Name: "PADDOCK_OUTPUT_CONFIGMAP", Value: outputConfigMap},
-			{
-				Name: "POD_NAMESPACE",
-				ValueFrom: &corev1.EnvVarSource{
-					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
-				},
-			},
-		},
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: sharedVolumeName, MountPath: sharedMountPath},
-			{Name: workspaceVolumeName, MountPath: mountPath},
-			{Name: paddockSAVolumeName, MountPath: paddockSAMountPath, ReadOnly: true},
-		},
+// effectiveMode returns the effective Mode of a run, defaulting to
+// Batch when Mode is empty (the CRD's documented default — see
+// HarnessRunSpec.Mode comment in api/v1alpha1/harnessrun_types.go).
+// Surfaced so PADDOCK_MODE is always a non-empty string the runtime
+// can branch on.
+func effectiveMode(run *paddockv1alpha1.HarnessRun) paddockv1alpha1.HarnessRunMode {
+	if run.Spec.Mode == "" {
+		return paddockv1alpha1.HarnessRunModeBatch
 	}
+	return run.Spec.Mode
 }
 
 func buildPodVolumes(in podSpecInputs) []corev1.Volume {
@@ -649,7 +636,7 @@ func buildPodVolumes(in podSpecInputs) []corev1.Volume {
 		})
 	}
 	// paddock-sa-token: explicit projected SA-token volume mounted on
-	// sidecars only (collector, adapter, proxy). Pod-level
+	// sidecars only (runtime, proxy). Pod-level
 	// AutomountServiceAccountToken=false means the agent container
 	// gets no token; sidecars that need API access mount this volume
 	// explicitly. Mirrors the standard Kubernetes SA-token projection
@@ -691,17 +678,17 @@ func buildPodVolumes(in podSpecInputs) []corev1.Volume {
 	})
 	if in.brokerEndpoint != "" {
 		// ProjectedServiceAccountToken gives consumers (proxy + the
-		// interactive adapter shim) a short-lived credential scoped
-		// specifically to the broker. The kubelet rotates it on its own
-		// cadence (1/ExpirationSeconds by default); consumers read it
-		// fresh on every broker call.
+		// runtime sidecar) a short-lived credential scoped specifically
+		// to the broker. The kubelet rotates it on its own cadence
+		// (1/ExpirationSeconds by default); consumers read it fresh on
+		// every broker call.
 		//
-		// Originally gated on proxyEnabled too, but the F-19 turn-
-		// complete callback means the adapter container also needs
-		// these mounts whenever broker wiring is on, regardless of
-		// whether the proxy sidecar is injected. Volumes are
-		// no-cost-when-unused; mounting them on a pod that doesn't
-		// reference them is harmless.
+		// Originally gated on proxyEnabled too, but the runtime
+		// sidecar's /turn-complete callback means it also needs these
+		// mounts whenever broker wiring is on, regardless of whether
+		// the proxy sidecar is injected. Volumes are no-cost-when-unused;
+		// mounting them on a pod that doesn't reference them is
+		// harmless.
 		expiry := brokerTokenExpirationSeconds
 		vols = append(vols,
 			corev1.Volume{
@@ -732,7 +719,7 @@ func buildPodVolumes(in podSpecInputs) []corev1.Volume {
 }
 
 // buildProxyContainer constructs the egress-proxy sidecar (ADR-0013).
-// Same restart-policy contract as adapter + collector.
+// Same restart-policy contract as the runtime sidecar.
 //
 // Listen address differs by mode:
 //   - cooperative: 127.0.0.1:15001 — only loopback, agent reaches it
@@ -846,7 +833,7 @@ func buildIPTablesInitContainer(in podSpecInputs) corev1.Container {
 		Name:  iptablesInitContainerName,
 		Image: img,
 		Args: []string{
-			fmt.Sprintf("--bypass-uids=%d,%d,%d", proxyRunAsUID, adapterRunAsUID, collectorRunAsUID),
+			fmt.Sprintf("--bypass-uids=%d,%d", proxyRunAsUID, runtimeRunAsUID),
 			fmt.Sprintf("--proxy-port=%d", proxyListenPort),
 			"--ports=80,443",
 		},
@@ -935,10 +922,11 @@ func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in po
 		corev1.EnvVar{Name: "PADDOCK_REPOS_PATH", Value: mount + "/" + reposManifestRelPath},
 		corev1.EnvVar{Name: "PADDOCK_RUN_NAME", Value: run.Name},
 		corev1.EnvVar{Name: "PADDOCK_MODEL", Value: effectiveModel(run, template)},
-		// UDS paths the supervisor listens on; the adapter dials
-		// these. Single source of truth shared with the adapter env
-		// in buildAdapterContainer. Spec
-		// 2026-05-02-interactive-adapter-as-proxy §4.4.
+		// UDS paths the supervisor listens on; the runtime dials
+		// these. Single source of truth shared with the runtime env
+		// in buildRuntimeContainer. Spec
+		// 2026-05-02-interactive-adapter-as-proxy §4.4 (UDS contract
+		// preserved across the unified-runtime refactor).
 		corev1.EnvVar{Name: "PADDOCK_AGENT_DATA_SOCKET", Value: agentDataSocketPath},
 		corev1.EnvVar{Name: "PADDOCK_AGENT_CTL_SOCKET", Value: agentCtlSocketPath},
 	)
@@ -957,7 +945,7 @@ func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in po
 	// PADDOCK_INTERACTIVE_MODE on the agent container so the harness
 	// entrypoint can branch on interactive vs batch (e.g. stay alive
 	// after the initial event flush instead of exiting). Same value as
-	// the adapter container's env — single source of truth.
+	// the runtime container's env — single source of truth.
 	if run.Spec.Mode == paddockv1alpha1.HarnessRunModeInteractive &&
 		template.Spec.Interactive != nil && template.Spec.Interactive.Mode != "" {
 		env = append(env, corev1.EnvVar{
@@ -1054,21 +1042,45 @@ func collectorSAName(run *paddockv1alpha1.HarnessRun) string  { return run.Name 
 func ephemeralWSName(run *paddockv1alpha1.HarnessRun) string  { return run.Name + "-ws" }
 
 // resultFilePath is the conventional location of result.json on the
-// workspace PVC. Published to both the agent (PADDOCK_RESULT_PATH
-// env) and the collector (same env) so both agree on where to write
-// and read it.
+// workspace PVC. The agent writes it (via PADDOCK_RESULT_PATH); the
+// runtime archives it into the run-output ConfigMap.
 func resultFilePath(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate) string {
 	return fmt.Sprintf("%s/.paddock/runs/%s/result.json", effectiveWorkspaceMount(template), run.Name)
 }
 
 // runLabels returns the common labels on all resources owned by a run.
+//
+// The paddock.dev/* set is the contract for log-aggregator scraping
+// (Loki / Promtail / fluent-bit selectors): every pod the controller
+// owns carries enough identity for an operator to filter by run,
+// workspace, template, or mode without needing a per-cluster
+// label-stitching step.
+//
+//   - paddock.dev/run, paddock.dev/namespace: per-run identity
+//   - paddock.dev/workspace: stable cross-run identifier (a long-lived
+//     workspace surfaces the same label across every run that mounts
+//     it). Empty when the run uses an ephemeral workspace.
+//   - paddock.dev/template, paddock.dev/harness: template provenance
+//   - paddock.dev/mode: Batch | Interactive — handy for SLO splits.
 func runLabels(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate) map[string]string {
-	return map[string]string{
+	labels := map[string]string{
 		"app.kubernetes.io/name":       "paddock",
 		"app.kubernetes.io/component":  "harnessrun",
 		"app.kubernetes.io/managed-by": "paddock-controller",
 		"paddock.dev/run":              run.Name,
+		"paddock.dev/namespace":        run.Namespace,
 		"paddock.dev/template":         template.SourceName,
 		"paddock.dev/harness":          template.Spec.Harness,
+		"paddock.dev/mode":             string(effectiveMode(run)),
 	}
+	// Workspace is empty on runs that auto-create an ephemeral
+	// Workspace; the controller fills run.Spec.WorkspaceRef on those
+	// before pod creation so this is rarely empty in practice. Omit
+	// the key when empty rather than emitting an empty value, so
+	// label-selector queries (`paddock.dev/workspace=foo`) don't match
+	// every unrelated run.
+	if run.Spec.WorkspaceRef != "" {
+		labels["paddock.dev/workspace"] = run.Spec.WorkspaceRef
+	}
+	return labels
 }

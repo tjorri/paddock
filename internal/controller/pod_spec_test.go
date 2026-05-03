@@ -95,19 +95,24 @@ func TestBuildPodSpec_EchoShape(t *testing.T) {
 		t.Errorf("main container name = %q, want %q", ps.Containers[0].Name, agentContainerName)
 	}
 
-	// Three init containers: paddock-home-init (plain), then adapter and
-	// collector (native sidecars with restartPolicy=Always).
-	if len(ps.InitContainers) != 3 {
-		t.Fatalf("initContainers = %d, want 3 (home-init + adapter + collector)", len(ps.InitContainers))
+	// Two init containers: paddock-home-init (plain) then runtime
+	// (native sidecar with restartPolicy=Always). Post-unified-runtime
+	// shape — adapter + collector collapsed into one runtime container.
+	if len(ps.InitContainers) != 2 {
+		t.Fatalf("initContainers = %d, want 2 (home-init + runtime)", len(ps.InitContainers))
 	}
 	if ps.InitContainers[0].Name != paddockHomeInitContainerName {
 		t.Errorf("initContainers[0] = %q, want %q", ps.InitContainers[0].Name, paddockHomeInitContainerName)
 	}
-	if ps.InitContainers[1].Name != adapterContainerName {
-		t.Errorf("initContainers[1] = %q, want %q", ps.InitContainers[1].Name, adapterContainerName)
+	if ps.InitContainers[1].Name != runtimeContainerName {
+		t.Errorf("initContainers[1] = %q, want %q", ps.InitContainers[1].Name, runtimeContainerName)
 	}
-	if ps.InitContainers[2].Name != collectorContainerName {
-		t.Errorf("initContainers[2] = %q, want %q", ps.InitContainers[2].Name, collectorContainerName)
+	for _, c := range ps.InitContainers {
+		// Regression guard: pre-unified-runtime container names must
+		// never appear in a freshly built pod spec.
+		if c.Name == "adapter" || c.Name == "collector" {
+			t.Errorf("legacy container name %q present — unified runtime should have replaced it", c.Name)
+		}
 	}
 	for _, c := range ps.InitContainers {
 		// paddock-home-init is a plain init container — no restartPolicy.
@@ -175,23 +180,20 @@ func TestBuildPodSpec_MountsPerContainer(t *testing.T) {
 		t.Errorf("agent mounts = %v, want %v", agentMounts, wantAgent)
 	}
 
-	adapterMounts := mountSet(ps.InitContainers[1].VolumeMounts)
-	wantAdapter := map[string]bool{
-		sharedVolumeName:    true,
-		paddockSAVolumeName: true, // F-38: sidecars get explicit SA token; agent does not
-	}
-	if !mapsEqualBool(adapterMounts, wantAdapter) {
-		t.Errorf("adapter mounts = %v, want %v — adapter must not see workspace", adapterMounts, wantAdapter)
-	}
-
-	collectorMounts := mountSet(ps.InitContainers[2].VolumeMounts)
-	wantCollector := map[string]bool{
+	// Runtime sidecar: shared emptyDir + workspace PVC + prompt
+	// (Batch-mode prompt replay) + paddock-sa-token (ConfigMap
+	// publish + AuditEvent emission). The workspace mount is a
+	// post-unified-runtime change — the prior adapter container did
+	// not see workspace; the prior collector did. Now they're one.
+	runtimeMounts := mountSet(ps.InitContainers[1].VolumeMounts)
+	wantRuntime := map[string]bool{
 		sharedVolumeName:    true,
 		workspaceVolumeName: true,
-		paddockSAVolumeName: true, // F-38: collector needs SA token for auditevents:create
+		promptVolumeName:    true,
+		paddockSAVolumeName: true,
 	}
-	if !mapsEqualBool(collectorMounts, wantCollector) {
-		t.Errorf("collector mounts = %v, want %v", collectorMounts, wantCollector)
+	if !mapsEqualBool(runtimeMounts, wantRuntime) {
+		t.Errorf("runtime mounts = %v, want %v", runtimeMounts, wantRuntime)
 	}
 }
 
@@ -217,69 +219,77 @@ func TestBuildPodSpec_AgentEnvContract(t *testing.T) {
 	}
 }
 
-func TestBuildPodSpec_CollectorEnvContract(t *testing.T) {
+// TestBuildPodSpec_RuntimeEnvContract pins the runtime sidecar's
+// env-var surface — the contract cmd/runtime-* binaries load via
+// loadEnvOnly. Any drift here breaks an in-cluster run silently.
+func TestBuildPodSpec_RuntimeEnvContract(t *testing.T) {
 	run := echoRunFixture()
+	run.Spec.WorkspaceRef = "ws-echo"
 	tpl := echoTemplateFixture()
 	ps := buildPodSpec(run, tpl, defaultInputs())
 
-	col := ps.InitContainers[2]
-	env := envToMap(col.Env)
+	rt := findContainer(t, ps.InitContainers, runtimeContainerName)
+	env := envToMap(rt.Env)
 	cases := []struct{ key, want string }{
 		{"PADDOCK_RAW_PATH", "/paddock/raw/out"},
-		{"PADDOCK_EVENTS_PATH", "/paddock/events/events.jsonl"},
-		{"PADDOCK_RESULT_PATH", "/workspace/.paddock/runs/run-echo/result.json"},
-		{"PADDOCK_WORKSPACE", "/workspace"},
+		{"PADDOCK_AGENT_DATA_SOCKET", "/paddock/agent-data.sock"},
+		{"PADDOCK_AGENT_CTL_SOCKET", "/paddock/agent-ctl.sock"},
 		{"PADDOCK_RUN_NAME", "run-echo"},
+		{"PADDOCK_RUN_NAMESPACE", "default"},
+		{"PADDOCK_WORKSPACE_NAME", "ws-echo"},
+		{"PADDOCK_TEMPLATE_NAME", "echo-default"},
+		{"PADDOCK_HARNESS_IMAGE", "paddock-echo:dev"},
+		{"PADDOCK_MODE", "Batch"},
+		{"PADDOCK_TRANSCRIPT_DIR", "/workspace/.paddock/runs/run-echo"},
 		{"PADDOCK_OUTPUT_CONFIGMAP", "run-echo-out"},
+		{"PADDOCK_PROMPT_FILE", "/paddock/prompt/prompt.txt"},
 	}
 	for _, tc := range cases {
 		if env[tc.key] != tc.want {
-			t.Errorf("collector env[%q] = %q, want %q", tc.key, env[tc.key], tc.want)
+			t.Errorf("runtime env[%q] = %q, want %q", tc.key, env[tc.key], tc.want)
 		}
 	}
 
-	// POD_NAMESPACE must come from the downward API, not a literal.
+	// POD_NAMESPACE comes from the downward API, not a literal.
 	var nsVar *corev1.EnvVar
-	for i := range col.Env {
-		if col.Env[i].Name == "POD_NAMESPACE" {
-			nsVar = &col.Env[i]
+	for i := range rt.Env {
+		if rt.Env[i].Name == "POD_NAMESPACE" {
+			nsVar = &rt.Env[i]
 			break
 		}
 	}
 	if nsVar == nil {
-		t.Fatal("collector missing POD_NAMESPACE env var")
+		t.Fatal("runtime missing POD_NAMESPACE env var")
 	}
 	if nsVar.ValueFrom == nil || nsVar.ValueFrom.FieldRef == nil ||
 		nsVar.ValueFrom.FieldRef.FieldPath != "metadata.namespace" {
 		t.Errorf("POD_NAMESPACE must reference downward-API metadata.namespace, got %+v", nsVar)
 	}
+
+	// Batch mode: PADDOCK_INTERACTIVE_MODE must be absent.
+	if _, ok := env["PADDOCK_INTERACTIVE_MODE"]; ok {
+		t.Errorf("Batch run runtime must not have PADDOCK_INTERACTIVE_MODE; got %q", env["PADDOCK_INTERACTIVE_MODE"])
+	}
 }
 
-func TestBuildPodSpec_OmitsAdapterWhenUnset(t *testing.T) {
+// TestBuildPodSpec_OmitsRuntimeWhenUnset asserts that templates without
+// a Runtime spec emit an agent-only pod (no runtime sidecar).
+func TestBuildPodSpec_OmitsRuntimeWhenUnset(t *testing.T) {
 	run := echoRunFixture()
 	tpl := echoTemplateFixture()
 	tpl.Spec.Runtime = nil
 
 	ps := buildPodSpec(run, tpl, defaultInputs())
-	if len(ps.InitContainers) != 2 {
-		t.Fatalf("expected home-init + collector when Runtime is nil; got %d init containers", len(ps.InitContainers))
+	if len(ps.InitContainers) != 1 {
+		t.Fatalf("expected only home-init when Runtime is nil; got %d init containers", len(ps.InitContainers))
 	}
-	if ps.InitContainers[1].Name != collectorContainerName {
-		t.Errorf("second init container should be collector; got %q", ps.InitContainers[1].Name)
+	if ps.InitContainers[0].Name != paddockHomeInitContainerName {
+		t.Errorf("only init container should be home-init; got %q", ps.InitContainers[0].Name)
 	}
-}
-
-func TestBuildPodSpec_DefaultCollectorImageWhenEmpty(t *testing.T) {
-	run := echoRunFixture()
-	tpl := echoTemplateFixture()
-
-	in := defaultInputs()
-	in.collectorImage = ""
-	ps := buildPodSpec(run, tpl, in)
-
-	col := ps.InitContainers[2]
-	if col.Image != DefaultCollectorImage {
-		t.Errorf("collector image = %q, want fallback %q", col.Image, DefaultCollectorImage)
+	for _, c := range ps.InitContainers {
+		if c.Name == runtimeContainerName {
+			t.Errorf("runtime container leaked into pod with nil Runtime spec")
+		}
 	}
 }
 
@@ -298,13 +308,13 @@ func TestBuildPodSpec_ProxySidecar(t *testing.T) {
 
 	ps := buildPodSpec(run, tpl, in)
 
-	// Init containers: home-init, then adapter, collector, proxy (native sidecars).
-	if len(ps.InitContainers) != 4 {
-		t.Fatalf("initContainers = %d, want 4 (home-init + adapter + collector + proxy)", len(ps.InitContainers))
+	// Init containers: home-init, then runtime + proxy (native sidecars).
+	if len(ps.InitContainers) != 3 {
+		t.Fatalf("initContainers = %d, want 3 (home-init + runtime + proxy)", len(ps.InitContainers))
 	}
-	proxy := ps.InitContainers[3]
+	proxy := ps.InitContainers[2]
 	if proxy.Name != proxyContainerName {
-		t.Errorf("initContainers[3] = %q, want %q", proxy.Name, proxyContainerName)
+		t.Errorf("initContainers[2] = %q, want %q", proxy.Name, proxyContainerName)
 	}
 	if proxy.Image != testProxyImage {
 		t.Errorf("proxy image = %q, want %q", proxy.Image, testProxyImage)
@@ -402,10 +412,10 @@ func TestBuildPodSpec_TransparentMode(t *testing.T) {
 
 	ps := buildPodSpec(run, tpl, in)
 
-	// Init containers: home-init, iptables-init (both plain inits), then
-	// adapter, collector, proxy (all native sidecars).
-	if len(ps.InitContainers) != 5 {
-		t.Fatalf("initContainers = %d, want 5 (home-init + iptables-init + adapter + collector + proxy)", len(ps.InitContainers))
+	// Init containers: home-init, iptables-init (both plain inits),
+	// then runtime, proxy (both native sidecars).
+	if len(ps.InitContainers) != 4 {
+		t.Fatalf("initContainers = %d, want 4 (home-init + iptables-init + runtime + proxy)", len(ps.InitContainers))
 	}
 	if ps.InitContainers[0].Name != paddockHomeInitContainerName {
 		t.Errorf("initContainers[0] = %q, want %q (must run first)", ps.InitContainers[0].Name, paddockHomeInitContainerName)
@@ -431,9 +441,9 @@ func TestBuildPodSpec_TransparentMode(t *testing.T) {
 	}
 
 	// Proxy has --mode=transparent and runs as UID 1337.
-	proxy := ps.InitContainers[4]
+	proxy := ps.InitContainers[3]
 	if proxy.Name != proxyContainerName {
-		t.Fatalf("initContainers[4] = %q, want %q", proxy.Name, proxyContainerName)
+		t.Fatalf("initContainers[3] = %q, want %q", proxy.Name, proxyContainerName)
 	}
 	var hasTransparentMode, hasExternalListen bool
 	for _, a := range proxy.Args {
@@ -552,8 +562,8 @@ func TestBuildPodSpec_NoProxyWhenDisabled(t *testing.T) {
 	tpl := echoTemplateFixture()
 	ps := buildPodSpec(run, tpl, defaultInputs())
 
-	if len(ps.InitContainers) != 3 {
-		t.Fatalf("expected 3 init containers without proxy; got %d", len(ps.InitContainers))
+	if len(ps.InitContainers) != 2 {
+		t.Fatalf("expected 2 init containers without proxy (home-init + runtime); got %d", len(ps.InitContainers))
 	}
 	for _, v := range ps.Volumes {
 		if v.Name == proxyCAVolumeName {
@@ -574,13 +584,13 @@ func TestBuildPodSpec_AgentHasNoServiceAccountToken(t *testing.T) {
 	}
 	template := &resolvedTemplate{
 		Spec: paddockv1alpha1.HarnessTemplateSpec{
-			Image: "ghcr.io/test/echo:dev",
+			Image:   "ghcr.io/test/echo:dev",
+			Runtime: &paddockv1alpha1.RuntimeSpec{Image: "ghcr.io/test/runtime:dev"},
 		},
 	}
 	in := podSpecInputs{
 		serviceAccount:  "test-sa",
 		outputConfigMap: "hr-1-out",
-		collectorImage:  "ghcr.io/test/collector:dev",
 	}
 
 	spec := buildPodSpec(run, template, in)
@@ -607,10 +617,10 @@ func TestBuildPodSpec_AgentHasNoServiceAccountToken(t *testing.T) {
 		}
 	}
 
-	// At least one sidecar (collector or adapter or proxy) MUST have
-	// the explicit paddock-sa-token mount. The collector definitely
-	// needs it (auditevents:create) — assert presence on at least one
-	// init container.
+	// At least one sidecar (runtime or proxy) MUST have the explicit
+	// paddock-sa-token mount. The runtime definitely needs it (it
+	// patches the run-output ConfigMap and emits AuditEvents) —
+	// assert presence on at least one init container.
 	sawSidecarWithToken := false
 	for _, c := range spec.InitContainers {
 		for _, vm := range c.VolumeMounts {
@@ -630,6 +640,24 @@ func mountSet(mounts []corev1.VolumeMount) map[string]bool {
 		out[m.Name] = true
 	}
 	return out
+}
+
+// findContainer locates a container by name in a slice; fails the
+// test if not found. Centralised so the unified-runtime tests don't
+// repeat the lookup pattern.
+func findContainer(t *testing.T, cs []corev1.Container, name string) corev1.Container {
+	t.Helper()
+	for i := range cs {
+		if cs[i].Name == name {
+			return cs[i]
+		}
+	}
+	names := make([]string, 0, len(cs))
+	for _, c := range cs {
+		names = append(names, c.Name)
+	}
+	t.Fatalf("container %q not found; have %v", name, names)
+	return corev1.Container{} // unreachable
 }
 
 func envToMap(envs []corev1.EnvVar) map[string]string {
@@ -707,82 +735,46 @@ func TestBuildPodSpec_AgentSecurityContext(t *testing.T) {
 	}
 }
 
-// TestBuildPodSpec_AdapterSecurityContext asserts the baseline envelope
-// is set on the adapter container (template-author image). Same shape
+// TestBuildPodSpec_RuntimeSecurityContext asserts the baseline envelope
+// is set on the runtime container (harness-author image). Same shape
 // as agent — drop caps, no priv-esc, seccomp=RuntimeDefault, no forced
-// non-root or RO root.
-func TestBuildPodSpec_AdapterSecurityContext(t *testing.T) {
+// non-root or RO root. The runtime container holds the unified data
+// plane, replacing the prior adapter (baseline) + collector (restricted)
+// pair. Baseline (not restricted) is intentional: the runtime image is
+// supplied by harness authors, who may use a non-distroless base; we
+// don't force RunAsNonRoot or ReadOnlyRootFilesystem on third-party
+// images. The pinned runAsUser (1339) and runAsGroup (65532) come
+// from the controller, not the image.
+func TestBuildPodSpec_RuntimeSecurityContext(t *testing.T) {
 	run := echoRunFixture()
-	tpl := echoTemplateFixture() // declares Runtime, so adapter is present
+	tpl := echoTemplateFixture() // declares Runtime, so runtime sidecar is present
 	ps := buildPodSpec(run, tpl, defaultInputs())
 
-	var adapter *corev1.Container
-	for i := range ps.InitContainers {
-		if ps.InitContainers[i].Name == adapterContainerName {
-			adapter = &ps.InitContainers[i]
-			break
-		}
-	}
-	if adapter == nil {
-		t.Fatalf("adapter container not found in InitContainers")
-	}
-	sc := adapter.SecurityContext
+	rt := findContainer(t, ps.InitContainers, runtimeContainerName)
+	sc := rt.SecurityContext
 	if sc == nil {
-		t.Fatalf("adapter SecurityContext = nil, want baseline envelope")
+		t.Fatalf("runtime SecurityContext = nil, want baseline envelope")
 	}
 	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
-		t.Errorf("adapter AllowPrivilegeEscalation = %v, want false", sc.AllowPrivilegeEscalation)
+		t.Errorf("runtime AllowPrivilegeEscalation = %v, want false", sc.AllowPrivilegeEscalation)
 	}
 	if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
-		t.Errorf("adapter Capabilities.Drop = %v, want [ALL]", sc.Capabilities)
+		t.Errorf("runtime Capabilities.Drop = %v, want [ALL]", sc.Capabilities)
 	}
 	if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-		t.Errorf("adapter SeccompProfile = %v, want RuntimeDefault", sc.SeccompProfile)
+		t.Errorf("runtime SeccompProfile = %v, want RuntimeDefault", sc.SeccompProfile)
 	}
 	if sc.RunAsNonRoot != nil {
-		t.Errorf("adapter RunAsNonRoot = %v, want nil (template-author image compat)", *sc.RunAsNonRoot)
+		t.Errorf("runtime RunAsNonRoot = %v, want nil (harness-author image compat)", *sc.RunAsNonRoot)
 	}
 	if sc.ReadOnlyRootFilesystem != nil {
-		t.Errorf("adapter ReadOnlyRootFilesystem = %v, want nil (template-author image compat)", *sc.ReadOnlyRootFilesystem)
+		t.Errorf("runtime ReadOnlyRootFilesystem = %v, want nil (harness-author image compat)", *sc.ReadOnlyRootFilesystem)
 	}
-}
-
-// TestBuildPodSpec_CollectorSecurityContext asserts the restricted
-// envelope on the collector (first-party): RunAsNonRoot:true,
-// ReadOnlyRootFilesystem:true, drop caps, no priv-esc, seccomp.
-func TestBuildPodSpec_CollectorSecurityContext(t *testing.T) {
-	run := echoRunFixture()
-	tpl := echoTemplateFixture()
-	ps := buildPodSpec(run, tpl, defaultInputs())
-
-	var collector *corev1.Container
-	for i := range ps.InitContainers {
-		if ps.InitContainers[i].Name == collectorContainerName {
-			collector = &ps.InitContainers[i]
-			break
-		}
+	if sc.RunAsUser == nil || *sc.RunAsUser != int64(runtimeRunAsUID) {
+		t.Errorf("runtime RunAsUser = %v, want %d (iptables bypass-uids match)", sc.RunAsUser, runtimeRunAsUID)
 	}
-	if collector == nil {
-		t.Fatalf("collector container not found in InitContainers")
-	}
-	sc := collector.SecurityContext
-	if sc == nil {
-		t.Fatalf("collector SecurityContext = nil, want restricted envelope")
-	}
-	if sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
-		t.Errorf("collector RunAsNonRoot = %v, want true", sc.RunAsNonRoot)
-	}
-	if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
-		t.Errorf("collector ReadOnlyRootFilesystem = %v, want true", sc.ReadOnlyRootFilesystem)
-	}
-	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
-		t.Errorf("collector AllowPrivilegeEscalation = %v, want false", sc.AllowPrivilegeEscalation)
-	}
-	if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
-		t.Errorf("collector Capabilities.Drop = %v, want [ALL]", sc.Capabilities)
-	}
-	if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-		t.Errorf("collector SeccompProfile = %v, want RuntimeDefault", sc.SeccompProfile)
+	if sc.RunAsGroup == nil || *sc.RunAsGroup != 65532 {
+		t.Errorf("runtime RunAsGroup = %v, want 65532 (workspace-PVC group write parity)", sc.RunAsGroup)
 	}
 }
 
@@ -832,8 +824,10 @@ func TestBuildPodSpec_PassesPSSBaseline(t *testing.T) {
 // SecurityContext that the real pod spec ships with) so the evaluator
 // sees a well-formed pod for each check.
 //
-// First-party containers: collector, proxy, iptables-init.
-// (Agent + adapter intentionally only target baseline; see Section 3.1.)
+// First-party containers: proxy, iptables-init.
+// (Agent + runtime intentionally only target baseline — both are
+// third-party images: tenant agent and harness-author runtime.
+// See Section 3.1.)
 func TestBuildPodSpec_FirstPartyContainersPassPSSRestricted(t *testing.T) {
 	run := echoRunFixture()
 	tpl := echoTemplateFixture()
@@ -855,7 +849,6 @@ func TestBuildPodSpec_FirstPartyContainersPassPSSRestricted(t *testing.T) {
 	podMeta := &metav1.ObjectMeta{Name: run.Name, Namespace: run.Namespace}
 
 	firstParty := map[string]bool{
-		collectorContainerName:    true,
 		proxyContainerName:        true,
 		iptablesInitContainerName: true,
 	}
@@ -1048,11 +1041,13 @@ func TestBuildPodSpec_PassesDenyCIDR(t *testing.T) {
 	}
 }
 
-// TestSidecarUIDsArePinned verifies that the adapter and collector
-// sidecars have RunAsUser pinned to adapterRunAsUID (1338) and
-// collectorRunAsUID (1339) respectively. F-20 / Phase 2h Theme 4:
+// TestSidecarUIDsArePinned verifies that the runtime sidecar has
+// RunAsUser pinned to runtimeRunAsUID (1339). F-20 / Phase 2h Theme 4:
 // pinned UIDs allow iptables-init to RETURN sidecar egress by
-// owner-UID match without routing it through the proxy.
+// owner-UID match without routing it through the proxy. The
+// pre-unified-runtime split (adapter=1338, collector=1339) is gone;
+// the runtime inherits the collector's UID since it inherits the
+// workspace-write trust profile.
 func TestSidecarUIDsArePinned(t *testing.T) {
 	run := echoRunFixture()
 	tpl := echoTemplateFixture()
@@ -1069,25 +1064,19 @@ func TestSidecarUIDsArePinned(t *testing.T) {
 			uids[c.Name] = *c.SecurityContext.RunAsUser
 		}
 	}
-	want := map[string]int64{
-		adapterContainerName:   1338,
-		collectorContainerName: 1339,
-	}
-	for name, wantUID := range want {
-		if got, ok := uids[name]; !ok || got != wantUID {
-			t.Errorf("%s UID = %d (present=%v), want %d", name, got, ok, wantUID)
-		}
+	if got, ok := uids[runtimeContainerName]; !ok || got != int64(runtimeRunAsUID) {
+		t.Errorf("%s UID = %d (present=%v), want %d", runtimeContainerName, got, ok, runtimeRunAsUID)
 	}
 }
 
 // TestPodFSGroupIsSet verifies that the pod-level SecurityContext sets
 // FSGroup so the workspace PVC remains writable across the pinned
-// sidecar UIDs (adapter=1338, collector=1339) AND the agent's
-// image-default UID (typically 65532). Without fsGroup, the collector
-// (which starts before the agent) creates `/workspace/.paddock/runs/...`
-// at uid:gid 1339:1339 mode 0755, and the agent at UID 65532 fails to
-// write its result.json there. Regression test for the F-20 sidecar UID
-// pinning. F-20 follow-up.
+// runtime sidecar UID (1339) AND the agent's image-default UID
+// (typically 65532). Without fsGroup, the runtime (which starts before
+// the agent) creates `/workspace/.paddock/runs/...` at uid:gid 1339:1339
+// mode 0755, and the agent at UID 65532 fails to write its result.json
+// there. Regression test for the F-20 sidecar UID pinning, carried
+// across the unified-runtime refactor.
 func TestPodFSGroupIsSet(t *testing.T) {
 	run := echoRunFixture()
 	tpl := echoTemplateFixture()
@@ -1105,8 +1094,11 @@ func TestPodFSGroupIsSet(t *testing.T) {
 }
 
 // TestIPTablesInitArgs_BypassUIDs verifies that buildIPTablesInitContainer
-// emits --bypass-uids=1337,1338,1339 and does NOT emit the legacy
-// --proxy-uid flag. F-20 / Phase 2h Theme 4.
+// emits --bypass-uids=1337,1339 (proxy + runtime) and does NOT emit
+// the legacy --proxy-uid flag. F-20 / Phase 2h Theme 4. The
+// pre-unified-runtime list was 1337,1338,1339; with the adapter and
+// collector merged into a single runtime sidecar at UID 1339, the
+// list shrinks by one.
 func TestIPTablesInitArgs_BypassUIDs(t *testing.T) {
 	run := echoRunFixture()
 	tpl := echoTemplateFixture()
@@ -1128,12 +1120,17 @@ func TestIPTablesInitArgs_BypassUIDs(t *testing.T) {
 	if ipt.Name == "" {
 		t.Fatalf("iptables-init container not found in InitContainers")
 	}
-	if !slices.Contains(ipt.Args, "--bypass-uids=1337,1338,1339") {
-		t.Errorf("missing --bypass-uids=1337,1338,1339; got %v", ipt.Args)
+	if !slices.Contains(ipt.Args, "--bypass-uids=1337,1339") {
+		t.Errorf("missing --bypass-uids=1337,1339; got %v", ipt.Args)
 	}
 	for _, bad := range ipt.Args {
 		if strings.HasPrefix(bad, "--proxy-uid=") {
 			t.Errorf("legacy --proxy-uid flag still emitted: %s", bad)
+		}
+		// Stale 1338 (adapter) UID would mean the adapter constant
+		// leaked back somewhere.
+		if bad == "--bypass-uids=1337,1338,1339" {
+			t.Errorf("stale pre-unified-runtime bypass list: %s", bad)
 		}
 	}
 }
@@ -1260,14 +1257,14 @@ func TestBuildPodSpec_InteractiveTemplateDefaultsOverrideGrace(t *testing.T) {
 	}
 }
 
-// TestBuildPodSpec_InteractiveModeEnvVar verifies that the adapter
+// TestBuildPodSpec_InteractiveModeEnvVar verifies that the runtime
 // container receives PADDOCK_INTERACTIVE_MODE for Interactive runs.
 func TestBuildPodSpec_InteractiveModeEnvVar(t *testing.T) {
 	t.Parallel()
 	tpl := &resolvedTemplate{Spec: paddockv1alpha1.HarnessTemplateSpec{
 		Image:       "x:v1",
 		Interactive: &paddockv1alpha1.InteractiveSpec{Mode: "persistent-process"},
-		Runtime:     &paddockv1alpha1.RuntimeSpec{Image: "adapter:v1"},
+		Runtime:     &paddockv1alpha1.RuntimeSpec{Image: "runtime:v1"},
 	}}
 	run := &paddockv1alpha1.HarnessRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: "ns"},
@@ -1279,7 +1276,7 @@ func TestBuildPodSpec_InteractiveModeEnvVar(t *testing.T) {
 	podSpec := buildPodSpec(run, tpl, podSpecInputs{})
 	var found bool
 	for _, c := range podSpec.InitContainers {
-		if c.Name == adapterContainerName {
+		if c.Name == runtimeContainerName {
 			for _, e := range c.Env {
 				if e.Name == "PADDOCK_INTERACTIVE_MODE" && e.Value == "persistent-process" {
 					found = true
@@ -1288,7 +1285,7 @@ func TestBuildPodSpec_InteractiveModeEnvVar(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("PADDOCK_INTERACTIVE_MODE env var not found on adapter container")
+		t.Fatalf("PADDOCK_INTERACTIVE_MODE env var not found on runtime container")
 	}
 }
 
@@ -1407,15 +1404,16 @@ func TestBuildPodSpec_HomeInitFirst(t *testing.T) {
 	}
 }
 
-// TestBuildAdapterContainer_HasUDSSocketEnv asserts that the adapter
+// TestBuildRuntimeContainer_HasUDSSocketEnv asserts that the runtime
 // sidecar gets the UDS socket paths it needs to dial the supervisor
-// running in the agent container. Spec §4.4 (interactive-adapter-as-proxy):
-// adapter and agent must agree on the IPC paths.
-func TestBuildAdapterContainer_HasUDSSocketEnv(t *testing.T) {
+// running in the agent container. Spec §4.4 (interactive-adapter-as-proxy
+// — same UDS contract carries across the unified-runtime refactor):
+// runtime and agent must agree on the IPC paths.
+func TestBuildRuntimeContainer_HasUDSSocketEnv(t *testing.T) {
 	tpl := echoTemplateFixture()
 	run := echoRunFixture()
 
-	c := buildAdapterContainer(run, tpl, defaultInputs())
+	c := buildRuntimeContainer(run, tpl, defaultInputs())
 
 	want := map[string]string{
 		"PADDOCK_AGENT_DATA_SOCKET": "/paddock/agent-data.sock",
@@ -1433,7 +1431,7 @@ func TestBuildAdapterContainer_HasUDSSocketEnv(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("env %s not set on adapter container", k)
+			t.Errorf("env %s not set on runtime container", k)
 		}
 	}
 }
@@ -1468,82 +1466,96 @@ func TestBuildEnv_AgentHasUDSSocketEnv(t *testing.T) {
 	}
 }
 
-// TestBuildAdapterContainer_InteractiveBrokerWiring asserts that the
-// adapter sidecar gets the broker token+CA volume mounts and broker
-// URL/run identity env vars when the run is Interactive AND the
-// controller has wired in.brokerEndpoint. The adapter shim's
-// turn-complete callback (F-19) needs all of these to POST to the
-// broker on every Result/Error frame.
-func TestBuildAdapterContainer_InteractiveBrokerWiring(t *testing.T) {
+// TestBuildRuntimeContainer_BrokerWiring asserts that the runtime
+// sidecar gets broker URL + token/CA volume mounts and the run
+// identity env vars when the controller has wired in.brokerEndpoint.
+// Unlike the prior adapter (Interactive-only), the unified runtime
+// always wires the broker when an endpoint is configured — both Batch
+// and Interactive runs publish AuditEvents and (for Interactive) drive
+// the broker /turn-complete callback.
+func TestBuildRuntimeContainer_BrokerWiring(t *testing.T) {
 	tpl := echoTemplateFixture()
-	run := echoRunFixture()
-	run.Spec.Mode = paddockv1alpha1.HarnessRunModeInteractive
 
-	in := defaultInputs()
-	in.brokerEndpoint = "https://paddock-broker.paddock-system.svc:8443"
-	in.brokerCASecret = "run-echo-broker-ca"
-
-	c := buildAdapterContainer(run, tpl, in)
-
-	// Env vars the adapter shim consumes via buildTurnCompleteHook.
-	wantEnv := map[string]string{
-		"PADDOCK_BROKER_URL":        in.brokerEndpoint,
-		"PADDOCK_BROKER_TOKEN_PATH": brokerTokenPath,
-		"PADDOCK_BROKER_CA_PATH":    brokerCAPath,
-		"PADDOCK_RUN_NAME":          run.Name,
-		"PADDOCK_RUN_NAMESPACE":     run.Namespace,
+	cases := []struct {
+		name string
+		mode paddockv1alpha1.HarnessRunMode
+	}{
+		{"interactive", paddockv1alpha1.HarnessRunModeInteractive},
+		{"batch", paddockv1alpha1.HarnessRunModeBatch},
 	}
-	gotEnv := map[string]string{}
-	for _, e := range c.Env {
-		gotEnv[e.Name] = e.Value
-	}
-	for k, v := range wantEnv {
-		if gotEnv[k] != v {
-			t.Errorf("env[%s] = %q, want %q", k, gotEnv[k], v)
-		}
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run := echoRunFixture()
+			run.Spec.Mode = tc.mode
 
-	mounts := mountSet(c.VolumeMounts)
-	for _, want := range []string{brokerTokenVolumeName, brokerCAVolumeName} {
-		if !mounts[want] {
-			t.Errorf("adapter missing volume mount %q; got %v", want, c.VolumeMounts)
-		}
-	}
+			in := defaultInputs()
+			in.brokerEndpoint = "https://paddock-broker.paddock-system.svc:8443"
+			in.brokerCASecret = "run-echo-broker-ca"
 
-	// Workspace PVC must NOT be mounted on the adapter — that invariant
-	// (the workspace PVC is the collector's concern) is preserved
-	// from F-19.
-	if mounts[workspaceVolumeName] {
-		t.Errorf("adapter container must not mount the workspace PVC; got %v", c.VolumeMounts)
+			c := buildRuntimeContainer(run, tpl, in)
+
+			wantEnv := map[string]string{
+				"PADDOCK_BROKER_URL":        in.brokerEndpoint,
+				"PADDOCK_BROKER_TOKEN_PATH": brokerTokenPath,
+				"PADDOCK_BROKER_CA_PATH":    brokerCAPath,
+				"PADDOCK_RUN_NAME":          run.Name,
+				"PADDOCK_RUN_NAMESPACE":     run.Namespace,
+			}
+			gotEnv := envToMap(c.Env)
+			for k, v := range wantEnv {
+				if gotEnv[k] != v {
+					t.Errorf("env[%s] = %q, want %q", k, gotEnv[k], v)
+				}
+			}
+
+			mounts := mountSet(c.VolumeMounts)
+			for _, want := range []string{brokerTokenVolumeName, brokerCAVolumeName} {
+				if !mounts[want] {
+					t.Errorf("runtime missing volume mount %q; got %v", want, c.VolumeMounts)
+				}
+			}
+
+			// Workspace PVC: the unified runtime DOES mount workspace
+			// (was a collector-only mount pre-refactor; the prior
+			// adapter did not have it). Regression guard for the
+			// unified-runtime trust-profile change documented in spec
+			// §1.
+			if !mounts[workspaceVolumeName] {
+				t.Errorf("runtime must mount workspace PVC; got %v", c.VolumeMounts)
+			}
+		})
 	}
 }
 
-// TestBuildAdapterContainer_BatchNoBrokerWiring asserts that a Batch
-// run does NOT receive broker URL env or token/CA mounts on its
-// adapter container, even when in.brokerEndpoint is wired (the broker
-// hookup is Interactive-only).
-func TestBuildAdapterContainer_BatchNoBrokerWiring(t *testing.T) {
+// TestBuildRuntimeContainer_NoBrokerWiringWhenUnset asserts that a
+// run with no broker endpoint configured does not receive broker URL
+// env or token/CA mounts on the runtime container — the broker
+// volumes are gated on in.brokerEndpoint.
+func TestBuildRuntimeContainer_NoBrokerWiringWhenUnset(t *testing.T) {
 	tpl := echoTemplateFixture()
-	run := echoRunFixture() // Mode is Batch (default).
+	run := echoRunFixture()
 
 	in := defaultInputs()
-	in.brokerEndpoint = "https://paddock-broker.paddock-system.svc:8443"
-	in.brokerCASecret = "run-echo-broker-ca"
+	// Deliberately leave brokerEndpoint unset.
 
-	c := buildAdapterContainer(run, tpl, in)
+	c := buildRuntimeContainer(run, tpl, in)
 
 	for _, e := range c.Env {
 		switch e.Name {
-		case "PADDOCK_BROKER_URL", "PADDOCK_BROKER_TOKEN_PATH", "PADDOCK_BROKER_CA_PATH",
-			"PADDOCK_RUN_NAME", "PADDOCK_RUN_NAMESPACE":
-			t.Errorf("Batch adapter must not get broker env %s=%q", e.Name, e.Value)
+		case "PADDOCK_BROKER_URL", "PADDOCK_BROKER_TOKEN_PATH", "PADDOCK_BROKER_CA_PATH":
+			t.Errorf("runtime must not get broker env %s=%q when broker is unwired", e.Name, e.Value)
 		}
 	}
 	mounts := mountSet(c.VolumeMounts)
 	for _, want := range []string{brokerTokenVolumeName, brokerCAVolumeName} {
 		if mounts[want] {
-			t.Errorf("Batch adapter must not get volume mount %q", want)
+			t.Errorf("runtime must not get volume mount %q when broker is unwired", want)
 		}
+	}
+	// Run identity env must still be present even without broker.
+	gotEnv := envToMap(c.Env)
+	if gotEnv["PADDOCK_RUN_NAME"] != run.Name {
+		t.Errorf("PADDOCK_RUN_NAME = %q, want %q (always present)", gotEnv["PADDOCK_RUN_NAME"], run.Name)
 	}
 }
 
@@ -1577,5 +1589,207 @@ func TestBuildPodSpec_InteractiveBrokerVolumesPresent(t *testing.T) {
 		if _, ok := vols[want]; !ok {
 			t.Errorf("pod missing volume %q; got %v", want, ps.Volumes)
 		}
+	}
+}
+
+// TestRunLabels_UnifiedRuntime asserts the post-unified-runtime label
+// set. The paddock.dev/* keys are the contract for log-aggregator
+// scraping (Loki/Promtail selectors); operators filter by run, mode,
+// workspace, or template without needing label-stitching.
+func TestRunLabels_UnifiedRuntime(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name             string
+		runName          string
+		runNamespace     string
+		workspaceRef     string
+		mode             paddockv1alpha1.HarnessRunMode
+		templateName     string
+		harness          string
+		wantWorkspaceKey bool
+		wantMode         string
+	}{
+		{
+			name:             "batch with workspace",
+			runName:          "run-1",
+			runNamespace:     "team-a",
+			workspaceRef:     "ws-shared",
+			mode:             paddockv1alpha1.HarnessRunModeBatch,
+			templateName:     "echo-default",
+			harness:          "echo",
+			wantWorkspaceKey: true,
+			wantMode:         "Batch",
+		},
+		{
+			name:             "interactive with workspace",
+			runName:          "run-2",
+			runNamespace:     "team-b",
+			workspaceRef:     "ws-claude",
+			mode:             paddockv1alpha1.HarnessRunModeInteractive,
+			templateName:     "claude-code",
+			harness:          "claude-code",
+			wantWorkspaceKey: true,
+			wantMode:         "Interactive",
+		},
+		{
+			name:             "ephemeral workspace (WorkspaceRef empty)",
+			runName:          "run-3",
+			runNamespace:     "team-c",
+			workspaceRef:     "",
+			mode:             "",
+			templateName:     "echo-default",
+			harness:          "echo",
+			wantWorkspaceKey: false,
+			wantMode:         "Batch", // empty mode defaults to Batch
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run := &paddockv1alpha1.HarnessRun{
+				ObjectMeta: metav1.ObjectMeta{Name: tc.runName, Namespace: tc.runNamespace},
+				Spec: paddockv1alpha1.HarnessRunSpec{
+					WorkspaceRef: tc.workspaceRef,
+					Mode:         tc.mode,
+				},
+			}
+			tpl := &resolvedTemplate{
+				SourceName: tc.templateName,
+				Spec: paddockv1alpha1.HarnessTemplateSpec{
+					Harness: tc.harness,
+				},
+			}
+			labels := runLabels(run, tpl)
+			if labels["paddock.dev/run"] != tc.runName {
+				t.Errorf("paddock.dev/run = %q, want %q", labels["paddock.dev/run"], tc.runName)
+			}
+			if labels["paddock.dev/namespace"] != tc.runNamespace {
+				t.Errorf("paddock.dev/namespace = %q, want %q", labels["paddock.dev/namespace"], tc.runNamespace)
+			}
+			if labels["paddock.dev/template"] != tc.templateName {
+				t.Errorf("paddock.dev/template = %q, want %q", labels["paddock.dev/template"], tc.templateName)
+			}
+			if labels["paddock.dev/harness"] != tc.harness {
+				t.Errorf("paddock.dev/harness = %q, want %q", labels["paddock.dev/harness"], tc.harness)
+			}
+			if labels["paddock.dev/mode"] != tc.wantMode {
+				t.Errorf("paddock.dev/mode = %q, want %q", labels["paddock.dev/mode"], tc.wantMode)
+			}
+			ws, hasWS := labels["paddock.dev/workspace"]
+			if tc.wantWorkspaceKey {
+				if !hasWS || ws != tc.workspaceRef {
+					t.Errorf("paddock.dev/workspace = %q (present=%v), want %q",
+						ws, hasWS, tc.workspaceRef)
+				}
+			} else {
+				if hasWS {
+					t.Errorf("paddock.dev/workspace must be absent when WorkspaceRef is empty (label-selector hygiene); got %q",
+						ws)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildPodSpec_PodLabels_UnifiedRuntime asserts the labels stamped
+// on the rendered Job's PodTemplateSpec — the runtime sidecar's pod
+// labels carry the same paddock.dev/* contract the run resources do.
+func TestBuildPodSpec_PodLabels_UnifiedRuntime(t *testing.T) {
+	t.Parallel()
+	run := echoRunFixture()
+	run.Spec.WorkspaceRef = "ws-echo"
+	run.Spec.Mode = paddockv1alpha1.HarnessRunModeInteractive
+	tpl := echoTemplateFixture()
+
+	job := buildJob(run, tpl, "ws-echo", defaultInputs())
+	podLabels := job.Spec.Template.Labels
+
+	if podLabels["paddock.dev/run"] != run.Name {
+		t.Errorf("pod label paddock.dev/run = %q, want %q",
+			podLabels["paddock.dev/run"], run.Name)
+	}
+	if podLabels["paddock.dev/namespace"] != run.Namespace {
+		t.Errorf("pod label paddock.dev/namespace = %q, want %q",
+			podLabels["paddock.dev/namespace"], run.Namespace)
+	}
+	if podLabels["paddock.dev/workspace"] != run.Spec.WorkspaceRef {
+		t.Errorf("pod label paddock.dev/workspace = %q, want %q",
+			podLabels["paddock.dev/workspace"], run.Spec.WorkspaceRef)
+	}
+	if podLabels["paddock.dev/template"] != tpl.SourceName {
+		t.Errorf("pod label paddock.dev/template = %q, want %q",
+			podLabels["paddock.dev/template"], tpl.SourceName)
+	}
+	if podLabels["paddock.dev/mode"] != "Interactive" {
+		t.Errorf("pod label paddock.dev/mode = %q, want Interactive",
+			podLabels["paddock.dev/mode"])
+	}
+}
+
+// TestBuildRuntimeContainer_BatchOmitsInteractiveModeEnv asserts that
+// a Batch run's runtime container does NOT receive PADDOCK_INTERACTIVE_MODE
+// even when the template happens to declare an InteractiveSpec — the
+// env is only set when Interactive.Mode is non-empty AND ... actually,
+// per the runtime contract the env is set whenever the template
+// declares a non-empty Mode regardless of run mode (the runtime uses
+// it to pick the driver strategy). Pin the expected behaviour: env is
+// gated on template.Spec.Interactive.Mode, not run.Spec.Mode.
+func TestBuildRuntimeContainer_InteractiveModeEnvGating(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		tplMode     string
+		wantEnvKey  bool
+		wantEnvVal  string
+		runMode     paddockv1alpha1.HarnessRunMode
+		description string
+	}{
+		{
+			name:        "no interactive spec",
+			tplMode:     "", // template omits Interactive entirely
+			wantEnvKey:  false,
+			runMode:     paddockv1alpha1.HarnessRunModeBatch,
+			description: "Batch run on a non-interactive template",
+		},
+		{
+			name:        "template declares per-prompt-process",
+			tplMode:     "per-prompt-process",
+			wantEnvKey:  true,
+			wantEnvVal:  "per-prompt-process",
+			runMode:     paddockv1alpha1.HarnessRunModeInteractive,
+			description: "Interactive run with per-prompt strategy",
+		},
+		{
+			name:        "template declares persistent-process",
+			tplMode:     "persistent-process",
+			wantEnvKey:  true,
+			wantEnvVal:  "persistent-process",
+			runMode:     paddockv1alpha1.HarnessRunModeInteractive,
+			description: "Interactive run with persistent-process strategy",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tpl := echoTemplateFixture()
+			if tc.tplMode != "" {
+				tpl.Spec.Interactive = &paddockv1alpha1.InteractiveSpec{Mode: tc.tplMode}
+			}
+			run := echoRunFixture()
+			run.Spec.Mode = tc.runMode
+
+			c := buildRuntimeContainer(run, tpl, defaultInputs())
+			env := envToMap(c.Env)
+			got, has := env["PADDOCK_INTERACTIVE_MODE"]
+			if tc.wantEnvKey {
+				if !has || got != tc.wantEnvVal {
+					t.Errorf("PADDOCK_INTERACTIVE_MODE = %q (present=%v), want %q (%s)",
+						got, has, tc.wantEnvVal, tc.description)
+				}
+			} else {
+				if has {
+					t.Errorf("PADDOCK_INTERACTIVE_MODE must be absent (%s); got %q",
+						tc.description, got)
+				}
+			}
+		})
 	}
 }
