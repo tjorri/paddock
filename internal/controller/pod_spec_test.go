@@ -1415,7 +1415,7 @@ func TestBuildAdapterContainer_HasUDSSocketEnv(t *testing.T) {
 	tpl := echoTemplateFixture()
 	run := echoRunFixture()
 
-	c := buildAdapterContainer(run, tpl)
+	c := buildAdapterContainer(run, tpl, defaultInputs())
 
 	want := map[string]string{
 		"PADDOCK_AGENT_DATA_SOCKET": "/paddock/agent-data.sock",
@@ -1464,6 +1464,118 @@ func TestBuildEnv_AgentHasUDSSocketEnv(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("env %s not set on agent container", k)
+		}
+	}
+}
+
+// TestBuildAdapterContainer_InteractiveBrokerWiring asserts that the
+// adapter sidecar gets the broker token+CA volume mounts and broker
+// URL/run identity env vars when the run is Interactive AND the
+// controller has wired in.brokerEndpoint. The adapter shim's
+// turn-complete callback (F-19) needs all of these to POST to the
+// broker on every Result/Error frame.
+func TestBuildAdapterContainer_InteractiveBrokerWiring(t *testing.T) {
+	tpl := echoTemplateFixture()
+	run := echoRunFixture()
+	run.Spec.Mode = paddockv1alpha1.HarnessRunModeInteractive
+
+	in := defaultInputs()
+	in.brokerEndpoint = "https://paddock-broker.paddock-system.svc:8443"
+	in.brokerCASecret = "run-echo-broker-ca"
+
+	c := buildAdapterContainer(run, tpl, in)
+
+	// Env vars the adapter shim consumes via buildTurnCompleteHook.
+	wantEnv := map[string]string{
+		"PADDOCK_BROKER_URL":        in.brokerEndpoint,
+		"PADDOCK_BROKER_TOKEN_PATH": brokerTokenPath,
+		"PADDOCK_BROKER_CA_PATH":    brokerCAPath,
+		"PADDOCK_RUN_NAME":          run.Name,
+		"PADDOCK_RUN_NAMESPACE":     run.Namespace,
+	}
+	gotEnv := map[string]string{}
+	for _, e := range c.Env {
+		gotEnv[e.Name] = e.Value
+	}
+	for k, v := range wantEnv {
+		if gotEnv[k] != v {
+			t.Errorf("env[%s] = %q, want %q", k, gotEnv[k], v)
+		}
+	}
+
+	mounts := mountSet(c.VolumeMounts)
+	for _, want := range []string{brokerTokenVolumeName, brokerCAVolumeName} {
+		if !mounts[want] {
+			t.Errorf("adapter missing volume mount %q; got %v", want, c.VolumeMounts)
+		}
+	}
+
+	// Workspace PVC must NOT be mounted on the adapter — that invariant
+	// (the workspace PVC is the collector's concern) is preserved
+	// from F-19.
+	if mounts[workspaceVolumeName] {
+		t.Errorf("adapter container must not mount the workspace PVC; got %v", c.VolumeMounts)
+	}
+}
+
+// TestBuildAdapterContainer_BatchNoBrokerWiring asserts that a Batch
+// run does NOT receive broker URL env or token/CA mounts on its
+// adapter container, even when in.brokerEndpoint is wired (the broker
+// hookup is Interactive-only).
+func TestBuildAdapterContainer_BatchNoBrokerWiring(t *testing.T) {
+	tpl := echoTemplateFixture()
+	run := echoRunFixture() // Mode is Batch (default).
+
+	in := defaultInputs()
+	in.brokerEndpoint = "https://paddock-broker.paddock-system.svc:8443"
+	in.brokerCASecret = "run-echo-broker-ca"
+
+	c := buildAdapterContainer(run, tpl, in)
+
+	for _, e := range c.Env {
+		switch e.Name {
+		case "PADDOCK_BROKER_URL", "PADDOCK_BROKER_TOKEN_PATH", "PADDOCK_BROKER_CA_PATH",
+			"PADDOCK_RUN_NAME", "PADDOCK_RUN_NAMESPACE":
+			t.Errorf("Batch adapter must not get broker env %s=%q", e.Name, e.Value)
+		}
+	}
+	mounts := mountSet(c.VolumeMounts)
+	for _, want := range []string{brokerTokenVolumeName, brokerCAVolumeName} {
+		if mounts[want] {
+			t.Errorf("Batch adapter must not get volume mount %q", want)
+		}
+	}
+}
+
+// TestBuildPodSpec_InteractiveBrokerVolumesPresent asserts the pod-
+// level broker token + CA volumes are added whenever
+// in.brokerEndpoint is set, regardless of whether the proxy sidecar
+// is enabled. Required so the adapter (which runs on Interactive
+// runs that may not have a proxy in tests) can mount them. The pod
+// spec previously gated these on `proxyEnabled(in) &&
+// in.brokerEndpoint != ""`; F-19's turn-complete callback decoupled
+// them.
+func TestBuildPodSpec_InteractiveBrokerVolumesPresent(t *testing.T) {
+	run := echoRunFixture()
+	run.Spec.Mode = paddockv1alpha1.HarnessRunModeInteractive
+	tpl := echoTemplateFixture()
+
+	in := defaultInputs()
+	// Deliberately leave proxyImage/proxyTLSSecret unset — proxy
+	// sidecar will not be injected, but the broker volumes must
+	// still be present for the adapter.
+	in.brokerEndpoint = "https://paddock-broker.paddock-system.svc:8443"
+	in.brokerCASecret = "run-echo-broker-ca"
+
+	ps := buildPodSpec(run, tpl, in)
+
+	vols := map[string]corev1.Volume{}
+	for _, v := range ps.Volumes {
+		vols[v.Name] = v
+	}
+	for _, want := range []string{brokerTokenVolumeName, brokerCAVolumeName} {
+		if _, ok := vols[want]; !ok {
+			t.Errorf("pod missing volume %q; got %v", want, ps.Volumes)
 		}
 	}
 }
