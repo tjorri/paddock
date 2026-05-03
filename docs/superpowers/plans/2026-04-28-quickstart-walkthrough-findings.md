@@ -31,7 +31,7 @@ the proposed revision (if any).
 | **(walkthrough-found, no F-number)** Issue #83 — InContainer-delivered credentials can't be used as `Authorization` bearer tokens | **Resolved** | Issue [#83](https://github.com/tjorri/paddock/issues/83) → fixed in [PR #84](https://github.com/tjorri/paddock/pull/84). Broker now derives `SubstituteAuth: true` from credential grants' `proxyInjected.hosts`; InContainer-only grants get `false` and the proxy doesn't MITM, so the agent's real `Authorization` reaches upstream untouched. |
 | **F17** TUI command palette never rendered (state opens but overlay invisible) | **Resolved** | `internal/paddocktui/ui/view.go` only switched on `m.Modal`; `PaletteView` was never invoked. Fixed by branching on `m.Palette.Open()` before the modal switch + regression test. |
 | **F18** harness-claude-code launcher: `claude: command not found` after upstream native install | **Resolved** | `bootstrap.sh` now installs to `$HOME/.local/bin/claude` and only warns about PATH. `images/harness-claude-code/run.sh` now `export`s `$HOME/.local/bin` onto `PATH` after install. |
-| **F19** Interactive claude-code runs are structurally non-functional | **Open (engineering)** | Two independent bugs combine to make `Mode: Interactive` runs report Succeeded with an empty event timeline. See finding below. |
+| **F19** Interactive claude-code runs are structurally non-functional | **Resolved** | Redesign landed in PR #105. Harness CLI now runs in the agent container under `paddock-harness-supervisor`; adapter is a stream-json frame proxy across a UDS pair on `/paddock`. See [design](../specs/2026-05-02-interactive-adapter-as-proxy-design.md), [plan](2026-05-02-interactive-adapter-as-proxy.md), and [`docs/contributing/harness-authoring.md`](../../contributing/harness-authoring.md). |
 
 The diagnostic detail below is preserved as a record of how each
 finding was discovered, even where the eventual fix or framing
@@ -912,3 +912,31 @@ harness that requires it. The `harness-echo` `run.sh` has the
 correct `sleep infinity` branch
 (`images/harness-echo/run.sh:48-50`); the claude variant has
 neither piece in place.
+
+#### Resolution (2026-05-02, PR #105)
+
+Option 3 from the "possible fix paths" list above was chosen and
+implemented on `feature/interactive-adapter-as-proxy`: the harness
+CLI now runs in the **agent container** under a new
+harness-agnostic binary, `paddock-harness-supervisor`
+(`cmd/harness-supervisor/`), which listens on
+`/paddock/agent-data.sock` (data) and `/paddock/agent-ctl.sock`
+(control) and bridges them to the harness CLI's stdio. Both modes
+(`per-prompt-process`, `persistent-process`) live in the
+supervisor. The adapter sidecar (`cmd/adapter-claude-code/`) is
+now a thin shim around `internal/adapter/proxy/` — a stream-json
+frame proxy that dials the supervisor's UDS pair with backoff.
+The deleted files cited above (`cmd/adapter-claude-code/{per_prompt,
+persistent,server,driver}.go` and their tests) no longer exist;
+the diagnostic narrative is preserved as a record of how the
+F19 bug was discovered. The "adapter must not see workspace"
+invariant (`internal/controller/pod_spec_test.go`) is preserved.
+The webhook (`internal/webhook/v1alpha1/harnessrun_webhook.go`)
+now validates `template.Spec.Interactive.Mode` against the
+template's `paddock.dev/adapter-interactive-modes` annotation.
+
+See:
+
+- [`../specs/2026-05-02-interactive-adapter-as-proxy-design.md`](../specs/2026-05-02-interactive-adapter-as-proxy-design.md) — design.
+- [`2026-05-02-interactive-adapter-as-proxy.md`](2026-05-02-interactive-adapter-as-proxy.md) — implementation plan.
+- [`../../contributing/harness-authoring.md`](../../contributing/harness-authoring.md) — the new harness-image author contract.

@@ -30,7 +30,8 @@ container plus the sidecars and init containers below.
 | Component | Role |
 |---|---|
 | Generic collector sidecar | Writes agent output into the owned `<run>-out` ConfigMap |
-| Per-harness adapters | Convert raw agent output to `PaddockEvent`s |
+| Per-harness adapters | Convert raw agent output to `PaddockEvent`s. For Interactive runs, the adapter is additionally a stream-json frame proxy between the broker and `paddock-harness-supervisor` over a UDS pair on `/paddock` — it does not spawn or own the harness CLI process and does not mount the workspace PVC. |
+| **`paddock-harness-supervisor`** (Interactive runs) | Harness-agnostic binary in the **agent container** that listens on `/paddock/agent-data.sock` (data plane) and `/paddock/agent-ctl.sock` (control plane) and bridges them to the harness CLI's stdio. Implements both `per-prompt-process` and `persistent-process` modes. See [`../contributing/harness-authoring.md`](../contributing/harness-authoring.md) for the harness-image author contract. |
 | **Per-run egress proxy** | L7 HTTPS MITM; calls broker `ValidateEgress` per connection and `SubstituteAuth` per request so the agent only sees Paddock-issued bearers |
 | **iptables-init** (transparent mode) | NET_ADMIN init container that installs REDIRECT rules so the agent can't bypass the proxy |
 
@@ -48,6 +49,9 @@ container plus the sidecars and init containers below.
 
 ## Related reading
 
+- [`../contributing/harness-authoring.md`](../contributing/harness-authoring.md)
+  — image-author contract: supervisor binary, env vars, CLI
+  requirements, mode-selection guidance.
 - [`../security/threat-model.md`](../security/threat-model.md) — trust
   boundaries and what each component must defend.
 - [`../contributing/adr/`](../contributing/adr/) — design rationale for

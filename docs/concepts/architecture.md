@@ -25,10 +25,18 @@ HarnessRun               one invocation: prompt + workspace + model
         ├── AuditEvent (per decision)    TTL-retained security trail
         │
         └── Job           init:  iptables-init (transparent mode only)
-                          sidecar: adapter                (per-harness event translator)
+                          sidecar: adapter                (per-harness event translator;
+                                                           interactive: stream-json frame
+                                                           proxy across UDS pair)
                           sidecar: collector              (status + PVC persistence)
                           sidecar: proxy  ── ValidateEgress + SubstituteAuth ──► broker
-                          main:    agent  (sees Paddock-issued bearers only)
+                          main:    agent  (sees Paddock-issued bearers only;
+                                           interactive: also runs paddock-harness-supervisor
+                                           which owns the harness CLI process)
+
+                          shared volume /paddock/  (interactive runs):
+                            agent-data.sock  ── stream-json frames (broker ↔ harness stdio)
+                            agent-ctl.sock   ── control plane (interrupt, end, attach state)
 ```
 
 The top half is the CRD reference chain — a `ClusterHarnessTemplate`
@@ -42,6 +50,17 @@ collector, proxy) run alongside the agent, and the agent itself only
 ever sees Paddock-issued bearer tokens; the proxy swaps them for the
 real upstream credential at request time.
 
+For Interactive runs, the agent container additionally runs
+`paddock-harness-supervisor` — a harness-agnostic binary that listens
+on two Unix-domain sockets (`agent-data.sock` and `agent-ctl.sock`) on
+the shared `/paddock` volume and bridges them to the harness CLI's
+stdio. The adapter sidecar dials those sockets and acts as a
+stream-json frame proxy between the broker and the supervisor; the
+adapter does not mount the workspace PVC and never spawns the harness
+CLI itself. See
+[`../contributing/harness-authoring.md`](../contributing/harness-authoring.md)
+for the harness-image author contract.
+
 ## Admission
 
 Admission intersects the template's `spec.requires` with the union of
@@ -54,6 +73,9 @@ through.
 
 - [`components.md`](components.md) — component inventory grouped by
   CRDs, control plane, per-run runtime, and tooling.
+- [`../contributing/harness-authoring.md`](../contributing/harness-authoring.md)
+  — the contract a harness image must implement to participate in
+  Paddock's batch and interactive runtime.
 - [`../security/threat-model.md`](../security/threat-model.md) — trust
   boundaries and what each component must defend.
 - [`../contributing/adr/0014-capability-model-and-admission.md`](../contributing/adr/0014-capability-model-and-admission.md)

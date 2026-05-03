@@ -1,5 +1,15 @@
 # Interactive `HarnessRun` and shell access: implementation plan
 
+> **Note (2026-05-02): The runtime architecture in this plan (§Phase 2's
+> per-prompt-process and persistent-process drivers inside the adapter)
+> was superseded before final delivery. The CRD types and broker
+> contract sections remain accurate; the adapter implementation lives
+> in `cmd/adapter-claude-code/` as a thin shim around
+> `internal/adapter/proxy/`, and a new `paddock-harness-supervisor`
+> binary in the agent container owns the harness CLI's lifecycle. See
+> [the 2026-05-02 design](../specs/2026-05-02-interactive-adapter-as-proxy-design.md)
+> and its [implementation plan](2026-05-02-interactive-adapter-as-proxy.md).**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `spec.mode: Interactive` to `HarnessRun` (long-lived pod accepting multiple prompts over time) and an orthogonal operator-gated shell-access capability, both flowing through new broker-mediated HTTP/WebSocket endpoints. Both features are additive `v1alpha1` evolutions per CLAUDE.md (no `v1alpha2`).

@@ -69,6 +69,22 @@ Actors are numbered `T-1` through `T-8`. Findings cite these IDs (`Threats: T-1,
 
 **Current defences.** Default-deny egress (transparent mode unbypassable); broker bearer scope limited to current run; per-run MITM CA (not shared, enforced by Phase 2f cert-manager `ClusterIssuer` per-run intermediate — tenant A's intermediate cannot forge leaves trusted by tenant B)[^per-run-ca]; broker validates SA-token identity; AuditEvent CRD records every credential issuance and egress decision (writes fail-closed — broker returns 503 on audit-write failure since Phase 2c); substitute-auth per-request re-validation of run phase + policy grant + egress grant + `AllowedHosts` (Phase 2g); proxy strips non-allowlisted headers and query params on substituted requests (Phase 2g); per-run NetworkPolicy excludes RFC1918 / link-local / cluster pod+service CIDRs from the public-internet allow rule (Phase 2a); pod-level `seccompProfile=RuntimeDefault`, agent at PSS-baseline with `automountServiceAccountToken: false`, proxy/collector at PSS-restricted (Phase 2a/2e).
 
+**Update 2026-05-02 (interactive runtime, F19 redesign).** The
+adapter sidecar's role narrowed: it is a thin policy/auth/framing
+layer between the broker and `paddock-harness-supervisor`, performing
+no harness-specific computation. The harness CLI now runs in the
+agent container under the supervisor; the adapter does not spawn it,
+does not see the workspace, and never holds harness-runtime state.
+The "adapter must not see workspace" invariant
+(`internal/controller/pod_spec_test.go`) remains load-bearing: the
+broker-facing surface stays workspace-blind. The supervisor and the
+harness CLI share the agent container's trust domain, and the UDS
+pair on `/paddock` (`agent-data.sock`, `agent-ctl.sock`) is
+filesystem-permissioned IPC inside that single domain — no new
+cross-trust-boundary surface is introduced. T-1's capability list is
+unchanged; the supervisor is, from the agent's perspective, just
+another process in the same container.
+
 ### T-2: Untrusted prompt / workspace content
 
 **Capabilities.** The agent itself is trusted but operates on attacker-controlled content (prompt text, seeded repository contents). Can influence what the agent does next (prompt injection, malicious README, malicious devcontainer config).
@@ -301,6 +317,7 @@ The cells are short — they say what the threat is and what defence exists. Eac
 
 ## Revision history
 
+- 2026-05-02 — F19 interactive-runtime redesign. T-1 update added: adapter sidecar narrowed to a thin policy/auth/framing layer (no harness-specific computation, no workspace mount); harness CLI now runs in the agent container under `paddock-harness-supervisor`; UDS pair on `/paddock` is in-trust-domain IPC. No new trust boundaries introduced. See `docs/superpowers/specs/2026-05-02-interactive-adapter-as-proxy-design.md`.
 - 2026-04-27 — Phase 2h Theme 4. Updated B-4 and B-5 defences (cooperative single-point-of-trust, F-19 residual documented; F-20 UID-based RETURN; F-22 layers 1+2; F-26 connection cap + slow-loris; F-27 refuse-to-start). See `docs/superpowers/specs/2026-04-27-v0.4-theme-4-runtime-egress-residuals-design.md`.
 - 2026-04-26 — Phase 2 recheck. Updated defence claims affected by Phase 2a/2c/2e/2f/2g (per-run intermediate CA, audit fail-closed, NetworkPolicy hardening, substitute-auth host scoping, run-pod hardening, seed-pod NP). See `docs/superpowers/specs/2026-04-26-v0.4-security-recheck-design.md` for the recheck spec and `docs/internal/security-audits/2026-04-25-v0.4-audit-findings.md` Recheck history for per-finding state.
 - 2026-04-25 — Initial threat model produced as part of Phase 1 audit (PR #21).
