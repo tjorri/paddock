@@ -65,3 +65,36 @@ func TestProject_LeavesOtherFieldsIntact(t *testing.T) {
 		t.Fatalf("ToolUse fields must pass through, got %#v", out.Fields)
 	}
 }
+
+func TestProject_NilFieldsReturnsAsIs(t *testing.T) {
+	in := paddockv1alpha1.PaddockEvent{Type: "Result", Summary: "done"}
+	out := Project(in)
+	if out.Fields != nil {
+		t.Fatalf("nil Fields must remain nil, got %#v", out.Fields)
+	}
+	if out.Summary != "done" || out.Type != "Result" {
+		t.Fatalf("metadata corrupted: %#v", out)
+	}
+}
+
+func TestProject_UserMessagePassesContentThrough(t *testing.T) {
+	in := paddockv1alpha1.PaddockEvent{
+		Type:   "Message",
+		Fields: map[string]string{"role": "user", "content": "hi from user"},
+	}
+	out := Project(in)
+	if out.Fields["content"] != "hi from user" {
+		t.Fatalf("user-role content must pass through (only assistant content is dropped), got %#v", out.Fields)
+	}
+}
+
+func TestProject_PromptSubmittedWithoutTextField(t *testing.T) {
+	in := paddockv1alpha1.PaddockEvent{
+		Type:   "PromptSubmitted",
+		Fields: map[string]string{"length": "0", "hash": "sha256:xyz"},
+	}
+	out := Project(in)
+	if out.Fields["length"] != "0" || out.Fields["hash"] != "sha256:xyz" {
+		t.Fatalf("non-text fields must survive even when text is absent, got %#v", out.Fields)
+	}
+}

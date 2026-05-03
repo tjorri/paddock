@@ -29,16 +29,24 @@ import paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 //
 // Spec ref: docs/superpowers/specs/2026-05-03-unified-runtime-design.md §7.1.
 func Project(e paddockv1alpha1.PaddockEvent) paddockv1alpha1.PaddockEvent {
-	out := e
-	if out.Fields == nil {
-		return out
+	if e.Fields == nil {
+		return e
 	}
+	dropText := e.Type == "PromptSubmitted"
+	dropContent := e.Type == "Message" && e.Fields["role"] == "assistant"
+	if !dropText && !dropContent {
+		// Fast path: nothing to project, return the event as-is so we don't
+		// allocate a fresh Fields map for every ToolUse/Result/Error event.
+		// Project() runs once per appended event in the runtime hot path.
+		return e
+	}
+	out := e
 	cleaned := make(map[string]string, len(out.Fields))
 	for k, v := range out.Fields {
-		if e.Type == "PromptSubmitted" && k == "text" {
+		if dropText && k == "text" {
 			continue
 		}
-		if e.Type == "Message" && k == "content" && out.Fields["role"] == "assistant" {
+		if dropContent && k == "content" {
 			continue
 		}
 		cleaned[k] = v
