@@ -55,8 +55,17 @@ func limitBody(next http.HandlerFunc) http.HandlerFunc {
 // net/http.Server configured for mTLS on :8443.
 type Server struct {
 	// Client reads HarnessRuns, templates, BrokerPolicies, and
-	// provider-backing Secrets.
+	// provider-backing Secrets. Reads served from the controller-runtime
+	// informer cache.
 	Client client.Client
+
+	// APIReader is an uncached reader. The interactive turn-complete path
+	// uses it to bypass the controller-runtime informer cache, whose
+	// catch-up lag can otherwise hide a fresh CurrentTurnSeq patch from a
+	// nearly-concurrent handlePrompts. May be nil; handleTurnComplete
+	// falls back to Client when so. Wired to directClient by cmd/broker;
+	// tests can leave it unset.
+	APIReader client.Reader
 
 	// Auth validates caller Bearer tokens.
 	Auth TokenValidator
