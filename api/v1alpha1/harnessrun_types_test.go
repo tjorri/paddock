@@ -97,3 +97,28 @@ func TestInteractiveStatus_CountersAlwaysSerialized(t *testing.T) {
 		}
 	}
 }
+
+// TestPaddockEventTypes pins the canonical event-type string values.
+// The unified runtime emits these literals into events.jsonl and the
+// ConfigMap projection; consumers (controller, kubectl-paddock,
+// log aggregators) match against the strings, not the constants, so
+// drift here is a wire-format break.
+func TestPaddockEventTypes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"Message", v1alpha1.PaddockEventTypeMessage, "Message"},
+		{"Result", v1alpha1.PaddockEventTypeResult, "Result"},
+		{"Error", v1alpha1.PaddockEventTypeError, "Error"},
+		{"ToolUse", v1alpha1.PaddockEventTypeToolUse, "ToolUse"},
+		{"PromptSubmitted", v1alpha1.PaddockEventTypePromptSubmitted, "PromptSubmitted"},
+	}
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("%s constant: got %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+}
