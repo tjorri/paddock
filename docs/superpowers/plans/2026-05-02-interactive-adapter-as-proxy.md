@@ -2696,7 +2696,7 @@ COPY --from=paddock-harness-supervisor:dev /supervisor /usr/local/bin/paddock-ha
 # Harness invocation contract for the supervisor (per spec §4.3).
 ENV PADDOCK_HARNESS_BIN=/root/.local/bin/claude
 ENV PADDOCK_HARNESS_ARGS_PERSISTENT="--input-format stream-json --output-format stream-json"
-ENV PADDOCK_HARNESS_ARGS_PER_PROMPT="--print --input-format stream-json --output-format stream-json"
+ENV PADDOCK_HARNESS_ARGS_PER_PROMPT="--print --input-format stream-json --output-format stream-json --verbose"
 ```
 
 > Note: the actual `claude` install location depends on bootstrap.sh's behavior. Verify after `make image-claude-code` that `/root/.local/bin/claude` is correct (it's `$HOME/.local/bin/claude` and `HOME=/root` in the image's runtime user; if the image runs as a non-root UID, adjust accordingly — Paddock's run pod uses UID 65532 with `HOME=$PADDOCK_WORKSPACE/.home`, so the runtime resolves to a workspace-PVC path, but the env-var declaration here is the *image-build-time* default; the runtime override comes from the controller's `HOME` env var set on the agent container).

@@ -182,7 +182,7 @@ The Dockerfile gains a `COPY --from` of the supervisor binary, and ENV declarati
 ```dockerfile
 ENV PADDOCK_HARNESS_BIN=/root/.local/bin/claude
 ENV PADDOCK_HARNESS_ARGS_PERSISTENT="--input-format stream-json --output-format stream-json"
-ENV PADDOCK_HARNESS_ARGS_PER_PROMPT="--print --input-format stream-json --output-format stream-json"
+ENV PADDOCK_HARNESS_ARGS_PER_PROMPT="--print --input-format stream-json --output-format stream-json --verbose"
 ```
 
 The image declares both per-mode argv strings; `run.sh` selects one based on `PADDOCK_INTERACTIVE_MODE` and exposes it as `PADDOCK_HARNESS_ARGS` for the supervisor to consume. The controller is not involved in mode-vs-argv resolution — it just sets `PADDOCK_INTERACTIVE_MODE`.
