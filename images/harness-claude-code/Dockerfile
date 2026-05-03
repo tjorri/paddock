@@ -49,7 +49,7 @@ COPY --from=paddock-harness-supervisor:dev /supervisor /usr/local/bin/paddock-ha
 
 # Harness invocation contract for the supervisor (per spec §4.3).
 ENV PADDOCK_HARNESS_BIN=/home/paddock/.local/bin/claude
-ENV PADDOCK_HARNESS_ARGS_PERSISTENT="--input-format stream-json --output-format stream-json"
+ENV PADDOCK_HARNESS_ARGS_PERSISTENT="--input-format stream-json --output-format stream-json --verbose"
 # --verbose is REQUIRED by claude when --print is combined with
 # --output-format=stream-json. Without it claude exits with
 # "Error: When using --print, --output-format=stream-json requires --verbose"

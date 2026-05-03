@@ -181,7 +181,7 @@ fi
 The Dockerfile gains a `COPY --from` of the supervisor binary, and ENV declarations:
 ```dockerfile
 ENV PADDOCK_HARNESS_BIN=/root/.local/bin/claude
-ENV PADDOCK_HARNESS_ARGS_PERSISTENT="--input-format stream-json --output-format stream-json"
+ENV PADDOCK_HARNESS_ARGS_PERSISTENT="--input-format stream-json --output-format stream-json --verbose"
 ENV PADDOCK_HARNESS_ARGS_PER_PROMPT="--print --input-format stream-json --output-format stream-json --verbose"
 ```
 

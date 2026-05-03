@@ -2695,7 +2695,7 @@ COPY --from=paddock-harness-supervisor:dev /supervisor /usr/local/bin/paddock-ha
 
 # Harness invocation contract for the supervisor (per spec §4.3).
 ENV PADDOCK_HARNESS_BIN=/root/.local/bin/claude
-ENV PADDOCK_HARNESS_ARGS_PERSISTENT="--input-format stream-json --output-format stream-json"
+ENV PADDOCK_HARNESS_ARGS_PERSISTENT="--input-format stream-json --output-format stream-json --verbose"
 ENV PADDOCK_HARNESS_ARGS_PER_PROMPT="--print --input-format stream-json --output-format stream-json --verbose"
 ```
 
