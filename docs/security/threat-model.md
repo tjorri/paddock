@@ -67,23 +67,40 @@ Actors are numbered `T-1` through `T-8`. Findings cite these IDs (`Threats: T-1,
 
 **Expected attacks.** Exfiltrate broker bearer to substitute it elsewhere; bypass proxy via raw TCP / IP literal / DNS rebinding; read other tenant's PVC if shared; forge MITM CA-signed certs; cause audit events to be dropped or backdated; attempt direct calls to broker gRPC.
 
-**Current defences.** Default-deny egress (transparent mode unbypassable); broker bearer scope limited to current run; per-run MITM CA (not shared, enforced by Phase 2f cert-manager `ClusterIssuer` per-run intermediate — tenant A's intermediate cannot forge leaves trusted by tenant B)[^per-run-ca]; broker validates SA-token identity; AuditEvent CRD records every credential issuance and egress decision (writes fail-closed — broker returns 503 on audit-write failure since Phase 2c); substitute-auth per-request re-validation of run phase + policy grant + egress grant + `AllowedHosts` (Phase 2g); proxy strips non-allowlisted headers and query params on substituted requests (Phase 2g); per-run NetworkPolicy excludes RFC1918 / link-local / cluster pod+service CIDRs from the public-internet allow rule (Phase 2a); pod-level `seccompProfile=RuntimeDefault`, agent at PSS-baseline with `automountServiceAccountToken: false`, proxy/collector at PSS-restricted (Phase 2a/2e).
+**Current defences.** Default-deny egress (transparent mode unbypassable); broker bearer scope limited to current run; per-run MITM CA (not shared, enforced by Phase 2f cert-manager `ClusterIssuer` per-run intermediate — tenant A's intermediate cannot forge leaves trusted by tenant B)[^per-run-ca]; broker validates SA-token identity; AuditEvent CRD records every credential issuance and egress decision (writes fail-closed — broker returns 503 on audit-write failure since Phase 2c); substitute-auth per-request re-validation of run phase + policy grant + egress grant + `AllowedHosts` (Phase 2g); proxy strips non-allowlisted headers and query params on substituted requests (Phase 2g); per-run NetworkPolicy excludes RFC1918 / link-local / cluster pod+service CIDRs from the public-internet allow rule (Phase 2a); pod-level `seccompProfile=RuntimeDefault`, agent at PSS-baseline with `automountServiceAccountToken: false`, proxy/runtime at PSS-restricted (Phase 2a/2e).
 
-**Update 2026-05-02 (interactive runtime, F19 redesign).** The
-adapter sidecar's role narrowed: it is a thin policy/auth/framing
-layer between the broker and `paddock-harness-supervisor`, performing
-no harness-specific computation. The harness CLI now runs in the
-agent container under the supervisor; the adapter does not spawn it,
-does not see the workspace, and never holds harness-runtime state.
-The "adapter must not see workspace" invariant
-(`internal/controller/pod_spec_test.go`) remains load-bearing: the
-broker-facing surface stays workspace-blind. The supervisor and the
-harness CLI share the agent container's trust domain, and the UDS
-pair on `/paddock` (`agent-data.sock`, `agent-ctl.sock`) is
-filesystem-permissioned IPC inside that single domain — no new
-cross-trust-boundary surface is introduced. T-1's capability list is
-unchanged; the supervisor is, from the agent's perspective, just
-another process in the same container.
+**Update 2026-05-03 (unified runtime).** The per-run pod composition
+is now `agent + runtime + proxy` (plus `iptables-init` in transparent
+mode). The previous adapter and collector sidecars are collapsed into
+a single per-harness `paddock-runtime-<harness>` sidecar that owns
+the full harness-side data plane: input recording (PromptSubmitted
+events into `events.jsonl`), output translation (Converter), transcript
+persistence on the workspace PVC, ConfigMap projection of recent
+events, stdout passthrough (so `kubectl logs <pod> -c runtime` is
+byte-identical to the on-disk transcript), and — interactive only —
+the broker HTTP+WS surface dialed against the supervisor's UDS pair.
+The runtime now mounts the workspace PVC (the previous "adapter must
+not see workspace" invariant is retired — it was theatre, since the
+runtime needs PVC access to persist the transcript anyway). The
+runtime runs at PSS-restricted, UID 1339, with `automountService
+AccountToken: false` like the previous collector. The supervisor still
+runs in the agent container; the UDS pair on `/paddock`
+(`agent-data.sock`, `agent-ctl.sock`) is filesystem-permissioned IPC
+inside that single trust domain. T-1's capability list is unchanged;
+the workspace boundary moves from "adapter doesn't see it" to
+"runtime collaborates on it via FSGroup-based GID 65532, agent at
+image-default 65532". See `docs/superpowers/specs/2026-05-03-unified-
+runtime-design.md`.
+
+**Update 2026-05-02 (interactive runtime, F19 redesign — superseded by
+2026-05-03).** The adapter sidecar's role had narrowed to a thin
+policy/auth/framing layer between the broker and the supervisor,
+performing no harness-specific computation. The harness CLI ran in
+the agent container under the supervisor; the adapter did not spawn
+it, did not see the workspace, and never held harness-runtime state.
+The "adapter must not see workspace" invariant remained load-bearing
+in this design. Retained for revision history; superseded by the
+2026-05-03 unified-runtime change above.
 
 ### T-2: Untrusted prompt / workspace content
 
@@ -240,7 +257,7 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | Denial of service          | Tenant submits unbounded HarnessRuns                       | Admission limits (configurable); k8s ResourceQuota             |
 | Elevation of privilege     | Tenant gains paddock-system access via Pod creation       | PSA on tenant ns; controller does not run privileged Pods      |
 
-**Phase 2 update (2026-04-26).** Phase 2a and 2e significantly strengthened B-2 defences. Run pods now carry pod-level `seccompProfile=RuntimeDefault`; agent and adapter containers run at PSS-baseline; collector and proxy containers run at PSS-restricted. Agent containers have `automountServiceAccountToken: false`. ExtraEnv reserved-key names are rejected at admission (Phase 2e). The Repudiation cell now holds more strongly — controller emits `credential-issued`, `run-completed`, `run-failed`, and `ca-projected` AuditEvents at all key decision points (Phase 2c/2d). The per-run intermediate CA (Phase 2f) ensures that a tenant cannot use the MITM CA bundle projected into their run pod to forge certs trusted by another run's proxy.
+**Phase 2 update (2026-04-26).** Phase 2a and 2e significantly strengthened B-2 defences. Run pods now carry pod-level `seccompProfile=RuntimeDefault`; the agent container runs at PSS-baseline; the runtime and proxy sidecars run at PSS-restricted (the runtime sidecar replaced the previous adapter+collector pair in 2026-05-03). Agent containers have `automountServiceAccountToken: false`. ExtraEnv reserved-key names are rejected at admission (Phase 2e). The Repudiation cell now holds more strongly — controller emits `credential-issued`, `run-completed`, `run-failed`, and `ca-projected` AuditEvents at all key decision points (Phase 2c/2d). The per-run intermediate CA (Phase 2f) ensures that a tenant cannot use the MITM CA bundle projected into their run pod to forge certs trusted by another run's proxy.
 
 ### B-3: run pod ↔ broker
 
@@ -260,7 +277,7 @@ The cells are short — they say what the threat is and what defence exists. Eac
 | STRIDE                     | Threat                                                    | Defence                                                       |
 |----------------------------|-----------------------------------------------------------|---------------------------------------------------------------|
 | Spoofing                   | Agent forges proxy CA-signed cert                         | Per-run CA; CA private key not reachable from agent            |
-| Tampering                  | Agent unsets HTTPS_PROXY env (cooperative mode)           | Cooperative is single-point-of-trust — agent must honour HTTPS_PROXY (F-19 residual; tracked for sibling-Pod refactor in v1.0). Transparent mode is bypass-resistant: iptables UID-RETURN exempts only sidecar UIDs (proxy 1337, adapter 1338, collector 1339); RFC1918 RETURN removed (F-20). Both modes' dial path checks resolved IPs against denied CIDRs and (transparent) compares agent origIP to proxy-resolved set (F-22). |
+| Tampering                  | Agent unsets HTTPS_PROXY env (cooperative mode)           | Cooperative is single-point-of-trust — agent must honour HTTPS_PROXY (F-19 residual; tracked for sibling-Pod refactor in v1.0). Transparent mode is bypass-resistant: iptables UID-RETURN exempts only sidecar UIDs (proxy 1337, runtime 1339); RFC1918 RETURN removed (F-20). Both modes' dial path checks resolved IPs against denied CIDRs and (transparent) compares agent origIP to proxy-resolved set (F-22). |
 | Repudiation                | Agent attempts ungranted egress without record            | Proxy logs every connection; AuditEvent on deny                |
 | Information disclosure     | Agent reads CA private key                                | CA key in proxy-only Secret; not mounted in agent              |
 | Denial of service          | Agent floods proxy with connections                       | Proxy connection limits (see F-26)                             |
@@ -317,7 +334,8 @@ The cells are short — they say what the threat is and what defence exists. Eac
 
 ## Revision history
 
-- 2026-05-02 — F19 interactive-runtime redesign. T-1 update added: adapter sidecar narrowed to a thin policy/auth/framing layer (no harness-specific computation, no workspace mount); harness CLI now runs in the agent container under `paddock-harness-supervisor`; UDS pair on `/paddock` is in-trust-domain IPC. No new trust boundaries introduced. See `docs/superpowers/specs/2026-05-02-interactive-adapter-as-proxy-design.md`.
+- 2026-05-03 — Unified runtime. Adapter and collector sidecars collapsed into a single per-harness `paddock-runtime-<harness>` sidecar. Pod composition is now `agent + runtime + proxy` (3 containers, was 4). Runtime mounts the workspace PVC (the previous "adapter doesn't see workspace" invariant is retired — it was theatre, since transcript persistence requires PVC access). Runtime UID 1339; iptables-init bypass list narrows to `1337,1339`. PSS posture unchanged (agent baseline; runtime + proxy restricted). No new trust boundaries introduced. See `docs/superpowers/specs/2026-05-03-unified-runtime-design.md`.
+- 2026-05-02 — F19 interactive-runtime redesign (superseded by 2026-05-03). T-1 update added: adapter sidecar narrowed to a thin policy/auth/framing layer (no harness-specific computation, no workspace mount); harness CLI now runs in the agent container under `paddock-harness-supervisor`; UDS pair on `/paddock` is in-trust-domain IPC. No new trust boundaries introduced. See `docs/superpowers/specs/2026-05-02-interactive-adapter-as-proxy-design.md`.
 - 2026-04-27 — Phase 2h Theme 4. Updated B-4 and B-5 defences (cooperative single-point-of-trust, F-19 residual documented; F-20 UID-based RETURN; F-22 layers 1+2; F-26 connection cap + slow-loris; F-27 refuse-to-start). See `docs/superpowers/specs/2026-04-27-v0.4-theme-4-runtime-egress-residuals-design.md`.
 - 2026-04-26 — Phase 2 recheck. Updated defence claims affected by Phase 2a/2c/2e/2f/2g (per-run intermediate CA, audit fail-closed, NetworkPolicy hardening, substitute-auth host scoping, run-pod hardening, seed-pod NP). See `docs/superpowers/specs/2026-04-26-v0.4-security-recheck-design.md` for the recheck spec and `docs/internal/security-audits/2026-04-25-v0.4-audit-findings.md` Recheck history for per-finding state.
 - 2026-04-25 — Initial threat model produced as part of Phase 1 audit (PR #21).
