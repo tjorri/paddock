@@ -131,6 +131,18 @@ linters:
           - noctx
         text: "G118|os/exec.Command"
         path: cmd/adapter-claude-code/.*
+      # Same rationale as cmd/adapter-claude-code above: runtime-
+      # claude-code's runInteractive spawns a shutdown goroutine that
+      # uses context.Background() with a bounded timeout once ctx
+      # is already cancelled. Plus the data-reader's per-event
+      # turn-complete callback creates its own context.Background()
+      # for the broker POST so a slow apiserver cannot stall the
+      # transcript pipeline.
+      - linters:
+          - gosec
+          - noctx
+        text: "G118|os/exec.Command"
+        path: cmd/runtime-claude-code/.*
       # gosec G204 / noctx: harness-supervisor spawns the harness CLI
       # whose path comes from the PADDOCK_HARNESS_BIN env var
       # (controller-set on the agent container's Pod spec). Not user

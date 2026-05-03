@@ -218,6 +218,7 @@ COLLECTOR_IMG ?= paddock-collector:dev
 HARNESS_SUPERVISOR_IMG ?= paddock-harness-supervisor:dev
 CLAUDE_CODE_IMG ?= paddock-claude-code:dev
 ADAPTER_CLAUDE_CODE_IMG ?= paddock-adapter-claude-code:dev
+RUNTIME_CLAUDE_CODE_IMG ?= paddock-runtime-claude-code:dev
 BROKER_IMG ?= paddock-broker:dev
 PROXY_IMG ?= paddock-proxy:dev
 IPTABLES_INIT_IMG ?= paddock-iptables-init:dev
@@ -319,6 +320,18 @@ image-adapter-claude-code: ## Build the paddock-adapter-claude-code sidecar imag
 		$(CONTAINER_TOOL) build -t $(ADAPTER_CLAUDE_CODE_IMG) -t $$tag -f images/adapter-claude-code/Dockerfile .; \
 	fi
 
+.PHONY: image-runtime-claude-code
+image-runtime-claude-code: ## Build the paddock-runtime-claude-code sidecar image, skipping if source hash matches.
+	@hash=$$(hack/image-hash.sh runtime-claude-code); \
+	tag="paddock-runtime-claude-code:dev-$$hash"; \
+	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
+		echo "image-runtime-claude-code: source hash $$hash unchanged, retagging :dev-$$hash to :dev"; \
+		$(CONTAINER_TOOL) tag $$tag $(RUNTIME_CLAUDE_CODE_IMG); \
+	else \
+		echo "image-runtime-claude-code: building $(RUNTIME_CLAUDE_CODE_IMG) (hash $$hash)"; \
+		$(CONTAINER_TOOL) build -t $(RUNTIME_CLAUDE_CODE_IMG) -t $$tag -f images/runtime-claude-code/Dockerfile .; \
+	fi
+
 .PHONY: image-broker
 image-broker: ## Build the paddock-broker image, skipping if source hash matches.
 	@hash=$$(hack/image-hash.sh broker); \
@@ -368,7 +381,7 @@ image-e2e-egress: ## Build the paddock-e2e-egress harness (e2e-only probe tool),
 	fi
 
 .PHONY: images
-images: image-echo image-adapter-echo image-collector image-harness-supervisor image-claude-code image-adapter-claude-code image-broker image-proxy image-iptables-init image-evil-echo ## Build all reference images.
+images: image-echo image-adapter-echo image-collector image-harness-supervisor image-claude-code image-adapter-claude-code image-runtime-claude-code image-broker image-proxy image-iptables-init image-evil-echo ## Build all reference images.
 
 .PHONY: trivy-images
 trivy-images: ## Run trivy on all Paddock images. Fails on HIGH/CRITICAL.

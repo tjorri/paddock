@@ -102,6 +102,85 @@ func TestServer_PromptWritesToDataUDS(t *testing.T) {
 	}
 }
 
+// TestServer_PromptInvokesOnPromptReceived asserts the new hook is
+// called once per /prompts request with the parsed text/seq/
+// submitter, and that it fires before the data UDS write so the
+// runtime can record the prompt even if downstream I/O fails.
+func TestServer_PromptInvokesOnPromptReceived(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	dataLn, err := net.Listen("unix", dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dataLn.Close() })
+	ctlLn, err := net.Listen("unix", ctlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ctlLn.Close() })
+
+	go func() {
+		c, _ := dataLn.Accept()
+		if c != nil {
+			defer func() { _ = c.Close() }()
+			_, _ = c.Read(make([]byte, 4096))
+		}
+	}()
+	go func() {
+		c, _ := ctlLn.Accept()
+		if c != nil {
+			_ = c.Close()
+		}
+	}()
+
+	type promptCall struct {
+		text      string
+		seq       int32
+		submitter string
+	}
+	calls := make(chan promptCall, 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	srv, err := NewServer(ctx, Config{
+		Mode:       "persistent-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		Backoff:    BackoffConfig{Initial: 10 * time.Millisecond, Max: 100 * time.Millisecond, Tries: 5},
+		OnPromptReceived: func(text string, seq int32, submitter string) {
+			calls <- promptCall{text: text, seq: seq, submitter: submitter}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	body, _ := json.Marshal(map[string]any{
+		"text":      "hello",
+		"seq":       int32(7),
+		"submitter": "alice",
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewReader(body))
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+
+	select {
+	case got := <-calls:
+		if got.text != "hello" || got.seq != 7 || got.submitter != "alice" {
+			t.Errorf("OnPromptReceived = %+v, want hello/7/alice", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnPromptReceived not called within 2s")
+	}
+}
+
 func TestServer_InterruptWritesToCtl(t *testing.T) {
 	dir := shortTempDir(t)
 	dataPath := filepath.Join(dir, "data.sock")

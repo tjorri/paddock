@@ -77,6 +77,14 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Notify the runtime so it can persist the prompt to the
+	// transcript before any UDS I/O happens. We do this even if the
+	// downstream write fails — the input record reflects what was
+	// received from the broker, not what landed on the agent's stdin.
+	if s.cfg.OnPromptReceived != nil {
+		s.cfg.OnPromptReceived(req.Text, req.Seq, req.Submitter)
+	}
+
 	// Format the prompt for the harness CLI's stdin. The proxy is
 	// harness-agnostic; the per-harness shim (cmd/adapter-claude-code/
 	// main.go for claude) supplies a PromptFormatter that wraps the

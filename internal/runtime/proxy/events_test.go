@@ -60,7 +60,7 @@ func TestRunDataReader_OnTurnCompleteFiresOnTerminalEvent(t *testing.T) {
 	}
 
 	fan := newFanout()
-	if err := runDataReader(lines, fan, "", conv, hook); err != nil {
+	if err := runDataReader(lines, fan, "", conv, nil, hook); err != nil {
 		t.Fatalf("runDataReader: %v", err)
 	}
 
@@ -90,7 +90,50 @@ func TestRunDataReader_OnTurnCompleteNilSafe(t *testing.T) {
 		return []paddockv1alpha1.PaddockEvent{{Type: "Result"}}, nil
 	}
 	fan := newFanout()
-	if err := runDataReader(lines, fan, "", conv, nil); err != nil {
+	if err := runDataReader(lines, fan, "", conv, nil, nil); err != nil {
 		t.Fatalf("runDataReader: %v", err)
+	}
+}
+
+// TestRunDataReader_OnEventReceivesEveryConvertedEvent asserts the
+// new transcript-callback path: when OnEvent is supplied, every
+// PaddockEvent emitted by the converter flows through it. The
+// legacy events-file path (eventsPath) must be skipped — the
+// presence of OnEvent disables file writes from inside the proxy
+// package, so callers cannot accidentally double-write.
+func TestRunDataReader_OnEventReceivesEveryConvertedEvent(t *testing.T) {
+	t.Parallel()
+
+	lines := strings.NewReader("a\nb\n")
+	conv := func(line string) ([]paddockv1alpha1.PaddockEvent, error) {
+		switch strings.TrimSpace(line) {
+		case "a":
+			return []paddockv1alpha1.PaddockEvent{{Type: "Message", Summary: "first"}}, nil
+		case "b":
+			return []paddockv1alpha1.PaddockEvent{{Type: "ToolUse", Summary: "second"}}, nil
+		}
+		return nil, nil
+	}
+
+	var got []paddockv1alpha1.PaddockEvent
+	onEvent := func(e paddockv1alpha1.PaddockEvent) { got = append(got, e) }
+
+	// Pass a non-empty eventsPath as well to confirm OnEvent wins.
+	// The path points to a directory that does not exist; if the
+	// proxy ignored OnEvent and tried the legacy path, mkdirAll on
+	// a permission-denied parent would surface here.
+	fan := newFanout()
+	if err := runDataReader(lines, fan, "/this/path/should/not/be/touched", conv, onEvent, nil); err != nil {
+		t.Fatalf("runDataReader: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("OnEvent received %d events, want 2", len(got))
+	}
+	if got[0].Type != "Message" || got[0].Summary != "first" {
+		t.Errorf("first event = %+v, want Message/first", got[0])
+	}
+	if got[1].Type != "ToolUse" || got[1].Summary != "second" {
+		t.Errorf("second event = %+v, want ToolUse/second", got[1])
 	}
 }

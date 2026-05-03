@@ -41,7 +41,16 @@ func turnTerminalEventType(t string) bool {
 
 // runDataReader reads the data UDS line-by-line, broadcasts each
 // line to subscribers (for /stream WS clients) and translates each
-// line via cfg.Converter, appending results to cfg.EventsPath.
+// line via conv, dispatching the resulting PaddockEvents.
+//
+// Event sink selection: when onEvent is non-nil, every converted
+// event is delivered through it (the unified runtime wires this to
+// transcript.Writer.Append). When onEvent is nil but eventsPath is
+// set, events are JSON-encoded directly to the file at eventsPath
+// (the legacy adapter behaviour, retained until cmd/adapter-claude-
+// code is deleted). The two paths are mutually exclusive in
+// practice; if both are set, onEvent wins and the file is left
+// untouched.
 //
 // onTurnComplete, when non-nil, is invoked in a goroutine once per
 // turn-terminal PaddockEvent (Type=Result or Type=Error) so a slow
@@ -56,13 +65,17 @@ func runDataReader(
 	fan *fanout,
 	eventsPath string,
 	conv func(string) ([]paddockv1alpha1.PaddockEvent, error),
+	onEvent func(paddockv1alpha1.PaddockEvent),
 	onTurnComplete func(ctx context.Context),
 ) error {
 	var (
 		out *os.File
 		enc *json.Encoder
 	)
-	if eventsPath != "" && conv != nil {
+	// Legacy file-write path: enabled only when the caller has not
+	// supplied OnEvent. New callers (the unified runtime) leave
+	// EventsPath empty and route every event through OnEvent.
+	if onEvent == nil && eventsPath != "" && conv != nil {
 		if err := os.MkdirAll(filepath.Dir(eventsPath), 0o755); err != nil {
 			return fmt.Errorf("mkdir events: %w", err)
 		}
@@ -85,7 +98,11 @@ func runDataReader(
 				if cerr != nil {
 					log.Printf("convert line: %v", cerr)
 				}
-				if enc != nil {
+				if onEvent != nil {
+					for _, ev := range events {
+						onEvent(ev)
+					}
+				} else if enc != nil {
 					for _, ev := range events {
 						if werr := enc.Encode(ev); werr != nil {
 							log.Printf("write event: %v", werr)

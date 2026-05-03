@@ -35,6 +35,8 @@ case "$image" in
     deps="images/evil-echo internal/brokerclient go.mod go.sum" ;;
   adapter-claude-code)
     deps="api cmd/adapter-claude-code internal/adapter/proxy images/adapter-claude-code go.mod go.sum" ;;
+  runtime-claude-code)
+    deps="api cmd/runtime-claude-code internal/runtime internal/broker/api internal/brokerclient internal/auditing images/runtime-claude-code go.mod go.sum" ;;
   claude-code)
     deps="images/harness-claude-code" ;;
   claude-code-fake)

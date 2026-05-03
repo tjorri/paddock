@@ -41,7 +41,14 @@ type Config struct {
 	Mode       string // "per-prompt-process" | "persistent-process"
 	DataSocket string
 	CtlSocket  string
-	EventsPath string // path for events.jsonl translation (PADDOCK_EVENTS_PATH)
+	// EventsPath is the legacy path used by cmd/adapter-claude-code:
+	// when set (and OnEvent is nil), runDataReader writes converted
+	// PaddockEvents directly to this path. The unified runtime leaves
+	// this empty and supplies OnEvent instead, so transcript writes
+	// flow through the transcript package on the workspace PVC. The
+	// field is retained until the legacy adapter is deleted in a
+	// follow-up task; do not add new callers.
+	EventsPath string
 	Backoff    BackoffConfig
 	// Converter is the harness-specific line-to-PaddockEvent translator
 	// (e.g. cmd/adapter-claude-code/convert.go). May be nil for tests.
@@ -54,6 +61,27 @@ type Config struct {
 	// that accept Paddock's {text,seq,submitter} wire shape directly
 	// and for proxy unit tests.
 	PromptFormatter func(text string, seq int32) ([]byte, error)
+	// OnPromptReceived, when non-nil, is invoked by handlePrompts
+	// after the request body has been parsed and before any UDS
+	// writes. The unified runtime wires this to append a
+	// PromptSubmitted event to the transcript so the input record is
+	// captured even if the downstream UDS write later fails. Calls are
+	// serialized per-request (one HTTP handler at a time per server
+	// instance, but multiple servers are not shared); the callback
+	// must be safe to invoke from the HTTP server's request goroutines
+	// concurrently with OnEvent calls from the data-reader goroutine.
+	// May be nil — proxy unit tests leave it unset.
+	OnPromptReceived func(text string, seq int32, submitter string)
+	// OnEvent, when non-nil, is invoked by the data reader once per
+	// converted PaddockEvent. The unified runtime wires this to the
+	// transcript writer; with OnEvent set the proxy package becomes
+	// transcript-agnostic (no events.jsonl writes from inside the
+	// package). Hot-path callback: avoid extra allocations. Called
+	// from a single goroutine (the data reader), but in interactive
+	// mode it runs concurrently with OnPromptReceived, which fires
+	// from HTTP request goroutines — implementations that share
+	// state across the two must serialize internally.
+	OnEvent func(paddockv1alpha1.PaddockEvent)
 	// OnTurnComplete is invoked by the data reader once per turn-
 	// terminal event observed via Converter — i.e. a PaddockEvent of
 	// Type "Result" or "Error". The adapter shim wires this to a
@@ -120,7 +148,7 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 		// the lifetime of the Server. It returns on EOF (supervisor
 		// closed the connection) or any I/O error; the Server's
 		// callers observe failure via subsequent /prompts errors.
-		_ = runDataReader(dataConn, s.fanout, cfg.EventsPath, cfg.Converter, cfg.OnTurnComplete)
+		_ = runDataReader(dataConn, s.fanout, cfg.EventsPath, cfg.Converter, cfg.OnEvent, cfg.OnTurnComplete)
 	}()
 
 	return s, nil
