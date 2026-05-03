@@ -296,6 +296,18 @@ func startPublisher(cfg *Config, tw *transcript.Writer) (*publish.Publisher, cha
 			ring.Add(string(line))
 			pub.Set("events.jsonl", ring.Snapshot())
 		}
+		// On shutdown: read the agent-written result.json from the
+		// workspace PVC (same dir as the transcript) and surface it on
+		// the ConfigMap so the controller's parseResultJSON can populate
+		// status.outputs. Inherits the collector's pre-unified-runtime
+		// behaviour. Missing result.json is fine — harnesses without a
+		// result-emit phase just don't populate status.outputs.
+		resultPath := filepath.Join(cfg.TranscriptDir, "result.json")
+		if data, err := os.ReadFile(resultPath); err == nil { //nolint:gosec // G304: path derived from controller-set env, not user input
+			pub.Set("result.json", string(data))
+		} else if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("runtime-claude-code: read result.json: %v", err)
+		}
 		pub.Set("phase", "Completed")
 	}()
 

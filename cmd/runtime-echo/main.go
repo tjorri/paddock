@@ -286,6 +286,15 @@ func startPublisher(cfg *Config, tw *transcript.Writer) (*publish.Publisher, cha
 			ring.Add(string(line))
 			pub.Set("events.jsonl", ring.Snapshot())
 		}
+		// On shutdown: surface result.json (if the harness wrote one)
+		// so the controller can populate status.outputs. See
+		// cmd/runtime-claude-code/main.go for full rationale.
+		resultPath := filepath.Join(cfg.TranscriptDir, "result.json")
+		if data, err := os.ReadFile(resultPath); err == nil { //nolint:gosec // G304: path derived from controller-set env, not user input
+			pub.Set("result.json", string(data))
+		} else if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("runtime-echo: read result.json: %v", err)
+		}
 		pub.Set("phase", "Completed")
 	}()
 

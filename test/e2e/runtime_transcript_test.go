@@ -236,16 +236,44 @@ spec:
 			GinkgoWriter.Printf("submitted prompt %d\n", i+1)
 		}
 
-		By("ending the run via paddockbroker.End")
-		// Allow the supervisor's stdin-close + cmd.Wait to settle so the
-		// run reaches a terminal phase before we reach for the
-		// transcript file. We exec into the runtime container while it's
-		// still running (the runtime stays up under RestartPolicy=Always
-		// even after the agent exits, modulo pod teardown), so capture
-		// the pod name before /end races the kubelet.
+		// Capture the pod name before any teardown; we'll exec into the
+		// runtime container while the run is still active (BEFORE End)
+		// because End drives the pod to a terminal phase and `kubectl
+		// exec` is rejected against Succeeded/Failed pods.
 		podName = run.PodName(ctx)
 		Expect(podName).NotTo(BeEmpty(), "PodName empty")
 
+		// --- Assertion 1: events.jsonl carries every prompt + result ---
+		By("reading /workspace/.paddock/runs/<run>/events.jsonl from the runtime container (pre-End)")
+		eventsPath := fmt.Sprintf("%s/%s/events.jsonl", transcriptArchDir, transcriptRunName)
+		var transcriptText string
+		Eventually(func(g Gomega) {
+			out, err := framework.RunCmd(ctx, "kubectl", "-n", ns,
+				"exec", podName, "-c", "runtime", "--",
+				"cat", eventsPath)
+			g.Expect(err).NotTo(HaveOccurred(),
+				"kubectl exec cat events.jsonl: %v", err)
+			g.Expect(strings.TrimSpace(out)).NotTo(BeEmpty(),
+				"events.jsonl empty: %q", out)
+			transcriptText = out
+		}, 60*time.Second, 2*time.Second).Should(Succeed())
+
+		// --- Assertion 2 prep: kubectl logs while pod is still running ---
+		By("capturing `kubectl logs <pod> -c runtime` (pre-End)")
+		logsBeforeEnd, err := framework.RunCmd(ctx, "kubectl", "-n", ns,
+			"logs", podName, "-c", "runtime")
+		Expect(err).NotTo(HaveOccurred(), "kubectl logs runtime")
+
+		// --- Assertion 3 prep: metadata.json captured while pod runs ---
+		By("reading /workspace/.paddock/runs/<run>/metadata.json (pre-End)")
+		metaPath := fmt.Sprintf("%s/%s/metadata.json", transcriptArchDir, transcriptRunName)
+		metaText, err := framework.RunCmd(ctx, "kubectl", "-n", ns,
+			"exec", podName, "-c", "runtime", "--",
+			"cat", metaPath)
+		Expect(err).NotTo(HaveOccurred(),
+			"kubectl exec cat metadata.json: %v", err)
+
+		By("ending the run via paddockbroker.End")
 		endCtx, endCancel := context.WithTimeout(ctx, 30*time.Second)
 		defer endCancel()
 		Expect(bc.End(endCtx, ns, transcriptRunName, "transcript-test")).
@@ -262,21 +290,6 @@ spec:
 		case <-time.After(15 * time.Second):
 			GinkgoWriter.Printf("frame drain still running 15s after End; proceeding\n")
 		}
-
-		// --- Assertion 1: events.jsonl carries every prompt + result ---
-		By("reading /workspace/.paddock/runs/<run>/events.jsonl from the runtime container")
-		eventsPath := fmt.Sprintf("%s/%s/events.jsonl", transcriptArchDir, transcriptRunName)
-		var transcriptText string
-		Eventually(func(g Gomega) {
-			out, err := framework.RunCmd(ctx, "kubectl", "-n", ns,
-				"exec", podName, "-c", "runtime", "--",
-				"cat", eventsPath)
-			g.Expect(err).NotTo(HaveOccurred(),
-				"kubectl exec cat events.jsonl: %v", err)
-			g.Expect(strings.TrimSpace(out)).NotTo(BeEmpty(),
-				"events.jsonl empty: %q", out)
-			transcriptText = out
-		}, 60*time.Second, 2*time.Second).Should(Succeed())
 
 		var prompts, results int
 		for _, line := range strings.Split(transcriptText, "\n") {
@@ -307,13 +320,11 @@ spec:
 		By("verifying `kubectl logs <pod> -c runtime` matches events.jsonl byte stream")
 		// kubectl-logs is allowed to add a trailing newline; compare on
 		// the trimmed JSONL line set rather than byte-for-byte to stay
-		// tolerant. Each line should be present in both surfaces.
-		logs, err := framework.RunCmd(ctx, "kubectl", "-n", ns,
-			"logs", podName, "-c", "runtime")
-		Expect(err).NotTo(HaveOccurred(), "kubectl logs runtime")
-
+		// tolerant. Each line should be present in both surfaces. We
+		// captured logs pre-End above for the same reason as the file
+		// read — the pod's terminal phase blocks kubectl exec/logs.
 		fileLines := splitNonEmptyLines(transcriptText)
-		logLines := splitNonEmptyLines(logs)
+		logLines := splitNonEmptyLines(logsBeforeEnd)
 		Expect(len(logLines)).To(BeNumerically(">=", len(fileLines)),
 			"runtime stdout has fewer lines (%d) than events.jsonl (%d)",
 			len(logLines), len(fileLines))
@@ -335,13 +346,13 @@ spec:
 			fileIdx, safeIndex(fileLines, fileIdx))
 
 		// --- Assertion 3: metadata.json is well-formed ---
-		By("reading /workspace/.paddock/runs/<run>/metadata.json from the runtime container")
-		metaPath := fmt.Sprintf("%s/%s/metadata.json", transcriptArchDir, transcriptRunName)
-		metaText, err := framework.RunCmd(ctx, "kubectl", "-n", ns,
-			"exec", podName, "-c", "runtime", "--",
-			"cat", metaPath)
-		Expect(err).NotTo(HaveOccurred(),
-			"kubectl exec cat metadata.json: %v", err)
+		// We use the metaText we captured pre-End above for the same
+		// reason as the file/log reads — terminal phase blocks
+		// kubectl exec. The completion fields (completedAt, exitStatus)
+		// are only set after agent shutdown so we don't assert on them
+		// here; the start-time fields are sufficient to verify the
+		// archive layout.
+		By("verifying the metadata.json captured pre-End is well-formed")
 
 		var meta struct {
 			SchemaVersion string `json:"schemaVersion"`

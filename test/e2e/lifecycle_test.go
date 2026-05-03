@@ -59,17 +59,23 @@ var _ = Describe("harness lifecycle", Label("smoke"), func() {
 		status := run.Status(ctx)
 
 		By("verifying status.recentEvents came through the runtime sidecar")
-		Expect(status.RecentEvents).To(HaveLen(4),
-			"expected the 4 deterministic echo events; got %+v", status.RecentEvents)
+		// Unified runtime emits a PromptSubmitted event from Spec.Prompt
+		// at startup, followed by the 4 deterministic echo harness events
+		// (system, tool_use, assistant, result -> Message, ToolUse,
+		// Message, Result). Total 5.
+		Expect(status.RecentEvents).To(HaveLen(5),
+			"expected PromptSubmitted + 4 deterministic echo events; got %+v", status.RecentEvents)
 		types := make([]string, len(status.RecentEvents))
 		for i, ev := range status.RecentEvents {
 			types[i] = ev.Type
 			Expect(ev.SchemaVersion).To(Equal("1"), "event[%d] schemaVersion", i)
 			Expect(ev.Timestamp).NotTo(BeEmpty(), "event[%d] timestamp", i)
 		}
-		Expect(types).To(Equal([]string{"Message", "ToolUse", "Message", "Result"}))
-		Expect(status.RecentEvents[2].Summary).To(ContainSubstring("hello from paddock e2e"),
-			"the echoed prompt should appear in the 3rd event summary")
+		Expect(types).To(Equal([]string{"PromptSubmitted", "Message", "ToolUse", "Message", "Result"}))
+		Expect(status.RecentEvents[0].Summary).To(ContainSubstring("hello from paddock e2e"),
+			"PromptSubmitted summary should be the prompt text")
+		Expect(status.RecentEvents[3].Summary).To(ContainSubstring("hello from paddock e2e"),
+			"the echoed prompt should appear in the 4th event summary (assistant Message)")
 
 		By("verifying status.outputs.summary came from result.json")
 		Expect(status.Outputs).NotTo(BeNil())
