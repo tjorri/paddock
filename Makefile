@@ -125,6 +125,14 @@ cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 kind-up: ## Create local dev Kind cluster and install cert-manager.
 	hack/kind-up.sh
 
+.PHONY: kind-load
+kind-load: ## Load all paddock-*:dev images into the local dev Kind cluster (paddock-dev).
+	@for img in paddock-manager:dev paddock-broker:dev paddock-proxy:dev paddock-iptables-init:dev \
+	           paddock-echo:dev paddock-adapter-echo:dev paddock-collector:dev \
+	           paddock-claude-code:dev paddock-adapter-claude-code:dev; do \
+		$(KIND) load docker-image --name paddock-dev "$$img"; \
+	done
+
 .PHONY: kind-down
 kind-down: ## Delete the local dev Kind cluster.
 	hack/kind-down.sh

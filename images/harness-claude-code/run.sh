@@ -93,6 +93,12 @@ echo "paddock-claude-code: installing Claude Code @ ${PADDOCK_CLAUDE_CODE_VERSIO
 curl -fsSL https://downloads.claude.ai/claude-code-releases/bootstrap.sh \
   | bash -s "${PADDOCK_CLAUDE_CODE_VERSION}"
 
+# bootstrap.sh's native installer drops the binary at $HOME/.local/bin/claude
+# and only prints a warning when that directory isn't in PATH (no auto-export).
+# Prepend it ourselves so the `claude` invocation below resolves regardless of
+# what the upstream installer does to the rest of the environment.
+export PATH="$HOME/.local/bin:$PATH"
+
 prompt=$(cat "$PADDOCK_PROMPT_PATH")
 
 # Build argv: -p puts claude in print-mode; --verbose is required to
