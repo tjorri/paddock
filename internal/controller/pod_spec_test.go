@@ -51,7 +51,7 @@ func echoTemplateFixture() *resolvedTemplate {
 			Harness: "echo",
 			Image:   "paddock-echo:dev",
 			Command: []string{"/usr/local/bin/paddock-echo"},
-			EventAdapter: &paddockv1alpha1.EventAdapterSpec{
+			Runtime: &paddockv1alpha1.RuntimeSpec{
 				Image: "paddock-adapter-echo:dev",
 			},
 			Workspace: paddockv1alpha1.WorkspaceRequirement{
@@ -258,11 +258,11 @@ func TestBuildPodSpec_CollectorEnvContract(t *testing.T) {
 func TestBuildPodSpec_OmitsAdapterWhenUnset(t *testing.T) {
 	run := echoRunFixture()
 	tpl := echoTemplateFixture()
-	tpl.Spec.EventAdapter = nil
+	tpl.Spec.Runtime = nil
 
 	ps := buildPodSpec(run, tpl, defaultInputs())
 	if len(ps.InitContainers) != 2 {
-		t.Fatalf("expected home-init + collector when EventAdapter is nil; got %d init containers", len(ps.InitContainers))
+		t.Fatalf("expected home-init + collector when Runtime is nil; got %d init containers", len(ps.InitContainers))
 	}
 	if ps.InitContainers[1].Name != collectorContainerName {
 		t.Errorf("second init container should be collector; got %q", ps.InitContainers[1].Name)
@@ -713,7 +713,7 @@ func TestBuildPodSpec_AgentSecurityContext(t *testing.T) {
 // non-root or RO root.
 func TestBuildPodSpec_AdapterSecurityContext(t *testing.T) {
 	run := echoRunFixture()
-	tpl := echoTemplateFixture() // declares EventAdapter, so adapter is present
+	tpl := echoTemplateFixture() // declares Runtime, so adapter is present
 	ps := buildPodSpec(run, tpl, defaultInputs())
 
 	var adapter *corev1.Container
@@ -1265,9 +1265,9 @@ func TestBuildPodSpec_InteractiveTemplateDefaultsOverrideGrace(t *testing.T) {
 func TestBuildPodSpec_InteractiveModeEnvVar(t *testing.T) {
 	t.Parallel()
 	tpl := &resolvedTemplate{Spec: paddockv1alpha1.HarnessTemplateSpec{
-		Image:        "x:v1",
-		Interactive:  &paddockv1alpha1.InteractiveSpec{Mode: "persistent-process"},
-		EventAdapter: &paddockv1alpha1.EventAdapterSpec{Image: "adapter:v1"},
+		Image:       "x:v1",
+		Interactive: &paddockv1alpha1.InteractiveSpec{Mode: "persistent-process"},
+		Runtime:     &paddockv1alpha1.RuntimeSpec{Image: "adapter:v1"},
 	}}
 	run := &paddockv1alpha1.HarnessRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: "ns"},

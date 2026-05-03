@@ -29,7 +29,7 @@ import (
 type HarnessTemplateSpec struct {
 	// BaseTemplateRef, when set on a namespaced HarnessTemplate, inherits
 	// the referenced ClusterHarnessTemplate's pod shape. Locked fields
-	// (Image, Command, Args, EventAdapter, Workspace) must be empty on
+	// (Image, Command, Args, Runtime, Workspace) must be empty on
 	// the inheriting template. Not valid on ClusterHarnessTemplate.
 	// +optional
 	BaseTemplateRef *LocalObjectReference `json:"baseTemplateRef,omitempty"`
@@ -63,12 +63,15 @@ type HarnessTemplateSpec struct {
 	// +optional
 	Defaults HarnessTemplateDefaults `json:"defaults,omitempty"`
 
-	// EventAdapter is the per-harness sidecar image that converts raw
-	// harness output to PaddockEvents. When unset, events.jsonl is not
-	// produced and status.recentEvents carries only lifecycle events.
-	// Locked when inheriting.
+	// Runtime is the per-harness sidecar image that owns the harness-side
+	// data plane: input recording, output translation to PaddockEvents,
+	// transcript persistence (events.jsonl), ConfigMap publishing of
+	// recent events, and the broker HTTP+WS surface for interactive
+	// modes. When unset, events.jsonl is not produced and
+	// status.recentEvents carries only lifecycle events. Locked when
+	// inheriting.
 	// +optional
-	EventAdapter *EventAdapterSpec `json:"eventAdapter,omitempty"`
+	Runtime *RuntimeSpec `json:"runtime,omitempty"`
 
 	// Requires declares the capabilities the agent will exercise at
 	// runtime: credentials it expects to be injected, and upstream
@@ -170,13 +173,13 @@ type InteractiveSpec struct {
 	MaxRecentEvents *int32 `json:"maxRecentEvents,omitempty"`
 }
 
-// EventAdapterSpec identifies the adapter sidecar image.
-type EventAdapterSpec struct {
-	// Image is the adapter sidecar image reference.
+// RuntimeSpec identifies the per-harness runtime sidecar image.
+type RuntimeSpec struct {
+	// Image is the runtime sidecar image reference.
 	// +kubebuilder:validation:Required
 	Image string `json:"image"`
 
-	// ImagePullPolicy overrides the default pull policy for the adapter.
+	// ImagePullPolicy overrides the default pull policy for the runtime.
 	// +optional
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
 }

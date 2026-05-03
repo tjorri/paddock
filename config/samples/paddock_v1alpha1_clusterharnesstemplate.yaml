@@ -11,7 +11,7 @@ spec:
   image: paddock-echo:dev
   command:
     - /usr/local/bin/paddock-echo
-  eventAdapter:
+  runtime:
     # Built locally via `make image-adapter-echo`.
     image: paddock-adapter-echo:dev
   defaults:

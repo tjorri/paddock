@@ -104,7 +104,7 @@ spec:
   harness: echo
   image: %s
   command: ["/usr/local/bin/paddock-echo"]
-  eventAdapter:
+  runtime:
     image: %s
   requires:
     credentials:

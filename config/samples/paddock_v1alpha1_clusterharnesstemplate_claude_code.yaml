@@ -12,7 +12,7 @@ spec:
   image: paddock-claude-code:dev
   command:
     - /usr/local/bin/paddock-claude-code
-  eventAdapter:
+  runtime:
     # Built locally via `make image-adapter-claude-code`.
     image: paddock-adapter-claude-code:dev
   # v0.3: templates declare capability requirements; namespaces grant

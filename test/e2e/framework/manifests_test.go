@@ -15,7 +15,7 @@ func TestTemplateBuilder_BasicHarness(t *testing.T) {
 	out := NewHarnessTemplate("paddock-echo", "echo").
 		WithImage("paddock-echo:dev").
 		WithCommand("/usr/local/bin/paddock-echo").
-		WithEventAdapter("paddock-adapter-echo:dev").
+		WithRuntime("paddock-adapter-echo:dev").
 		WithDefaultTimeout("60s").
 		WithWorkspaceMount("/workspace").
 		BuildYAML()
@@ -40,7 +40,7 @@ func TestTemplateBuilder_WithRequiredCredential(t *testing.T) {
 	out := NewHarnessTemplate("paddock-x", "harness").
 		WithImage("img:dev").
 		WithCommand("/bin/sh").
-		WithEventAdapter("adapter:dev").
+		WithRuntime("adapter:dev").
 		WithRequiredCredential("DEMO_TOKEN").
 		BuildYAML()
 
@@ -53,7 +53,7 @@ func TestTemplateBuilder_MultiArgCommandIsValidYAML(t *testing.T) {
 	yamlStr := NewHarnessTemplate("paddock-x", "harness").
 		WithImage("img:dev").
 		WithCommand("/bin/sh", "-c", "echo hello && sleep 1").
-		WithEventAdapter("adapter:dev").
+		WithRuntime("adapter:dev").
 		BuildYAML()
 
 	if !strings.Contains(yamlStr, `command: ["/bin/sh", "-c", "echo hello && sleep 1"]`) {

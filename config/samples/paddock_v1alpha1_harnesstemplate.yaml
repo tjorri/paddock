@@ -7,7 +7,7 @@ metadata:
   name: echo-team
   namespace: default
 spec:
-  # Inherit pod shape (image, command, eventAdapter) from the cluster template.
+  # Inherit pod shape (image, command, runtime) from the cluster template.
   # Only defaults, credentials, and podTemplateOverlay may be overridden;
   # see docs/contributing/adr/0003-template-override-semantics.md.
   baseTemplateRef:

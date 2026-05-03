@@ -34,7 +34,7 @@ import (
 
 func newEchoClusterTemplateWithAdapter(name string) *paddockv1alpha1.ClusterHarnessTemplate {
 	t := newEchoClusterTemplate(name)
-	t.Spec.EventAdapter = &paddockv1alpha1.EventAdapterSpec{
+	t.Spec.Runtime = &paddockv1alpha1.RuntimeSpec{
 		Image: "paddock-adapter-echo:dev",
 	}
 	return t

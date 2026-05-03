@@ -302,7 +302,7 @@ func buildJob(
 // adapter + collector as native sidecars (init containers with
 // restartPolicy: Always — K8s 1.29+; see ADR-0009). The collector is
 // always present; the adapter is present only when the template
-// declares an eventAdapter image.
+// declares a runtime image.
 func buildPodSpec(
 	run *paddockv1alpha1.HarnessRun,
 	template *resolvedTemplate,
@@ -346,7 +346,7 @@ func buildPodSpec(
 		initContainers = append(initContainers, buildIPTablesInitContainer(in))
 	}
 
-	if template.Spec.EventAdapter != nil {
+	if template.Spec.Runtime != nil {
 		initContainers = append(initContainers, buildAdapterContainer(run, template, in))
 	}
 	initContainers = append(initContainers, buildCollectorContainer(run, template, collectorImage, in.outputConfigMap))
@@ -545,14 +545,14 @@ func buildAdapterContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTe
 	}
 	c := corev1.Container{
 		Name:            adapterContainerName,
-		Image:           template.Spec.EventAdapter.Image,
+		Image:           template.Spec.Runtime.Image,
 		RestartPolicy:   &always,
 		SecurityContext: sc,
 		Env:             env,
 		VolumeMounts:    mounts,
 	}
-	if template.Spec.EventAdapter.ImagePullPolicy != "" {
-		c.ImagePullPolicy = template.Spec.EventAdapter.ImagePullPolicy
+	if template.Spec.Runtime.ImagePullPolicy != "" {
+		c.ImagePullPolicy = template.Spec.Runtime.ImagePullPolicy
 	}
 	return c
 }

@@ -72,17 +72,17 @@ var _ = Describe("HarnessTemplate Webhook", func() {
 			Expect(err.Error()).To(ContainSubstring("command"))
 		})
 
-		It("rejects eventAdapter with empty image", func() {
+		It("rejects runtime with empty image", func() {
 			obj := &paddockv1alpha1.HarnessTemplate{
 				Spec: paddockv1alpha1.HarnessTemplateSpec{
-					Image:        "ghcr.io/paddock/harness-echo:v1",
-					Command:      []string{"/bin/echo"},
-					EventAdapter: &paddockv1alpha1.EventAdapterSpec{},
+					Image:   "ghcr.io/paddock/harness-echo:v1",
+					Command: []string{"/bin/echo"},
+					Runtime: &paddockv1alpha1.RuntimeSpec{},
 				},
 			}
 			_, err := validator.ValidateCreate(ctx, obj)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("eventAdapter.image"))
+			Expect(err.Error()).To(ContainSubstring("runtime.image"))
 		})
 	})
 

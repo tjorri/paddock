@@ -100,7 +100,7 @@ spec:
   harness: echo
   image: %s
   command: ["/usr/local/bin/paddock-echo"]
-  eventAdapter:
+  runtime:
     image: %s
   interactive:
     mode: per-prompt-process
@@ -352,7 +352,7 @@ spec:
   harness: claude-code-fake
   image: %s
   command: ["/usr/local/bin/paddock-claude-code-fake"]
-  eventAdapter:
+  runtime:
     image: %s
   interactive:
     mode: persistent-process
@@ -382,7 +382,7 @@ spec:
   harness: claude-code-fake
   image: %s
   command: ["/usr/local/bin/paddock-claude-code-fake"]
-  eventAdapter:
+  runtime:
     image: %s
   interactive:
     mode: per-prompt-process
