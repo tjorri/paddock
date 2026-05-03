@@ -52,6 +52,22 @@ func TestAppend_WritesJSONL(t *testing.T) {
 	}
 }
 
+func TestClose_IsIdempotent(t *testing.T) {
+	w, err := Open(filepath.Join(t.TempDir(), "events.jsonl"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	// Second Close must not return an os.ErrClosed; it should reuse
+	// the recorded result (nil) so `defer w.Close()` paired with an
+	// explicit shutdown is safe.
+	if err := w.Close(); err != nil {
+		t.Fatalf("second Close should return same err as first; got %v", err)
+	}
+}
+
 func TestAppend_FansOutToSubscribers(t *testing.T) {
 	w, err := Open(filepath.Join(t.TempDir(), "events.jsonl"))
 	if err != nil {

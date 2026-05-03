@@ -8,6 +8,15 @@
 // frames rather than blocking the writer. The on-disk file remains
 // the source of truth, so a client that misses a broadcast frame
 // can recover by re-reading events.jsonl.
+//
+// Durability: Append does not fsync. Writes go to the OS page cache
+// and are flushed by the kernel on its own cadence; a node-level
+// crash before flush can lose the most-recent events. The trade is
+// per-event throughput; persistence guarantees match the rest of
+// Paddock's pod-local writes (collector ConfigMap publishes,
+// audit-event emission). Operators needing strict durability should
+// configure a workspace PVC backed by a synchronously-replicating
+// storage class.
 package transcript
 
 import (
@@ -27,6 +36,8 @@ import (
 type Writer struct {
 	mu          sync.Mutex
 	f           *os.File
+	closeOnce   sync.Once
+	closeErr    error
 	subMu       sync.Mutex
 	subscribers map[chan<- []byte]struct{}
 }
@@ -51,10 +62,17 @@ func Open(path string) (*Writer, error) {
 // Close releases the underlying file handle. Subscribers' channels
 // are not closed by this call (their owners are responsible for the
 // lifecycle of any goroutine consuming them).
+//
+// Close is idempotent: a second call returns the same error as the
+// first (typically nil). This makes `defer w.Close()` paired with an
+// explicit shutdown call safe.
 func (w *Writer) Close() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.f.Close()
+	w.closeOnce.Do(func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.closeErr = w.f.Close()
+	})
+	return w.closeErr
 }
 
 // Append serializes e to one JSONL line, appends to the file, and
