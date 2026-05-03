@@ -46,6 +46,14 @@ type Config struct {
 	// Converter is the harness-specific line-to-PaddockEvent translator
 	// (e.g. cmd/adapter-claude-code/convert.go). May be nil for tests.
 	Converter func(line string) ([]paddockv1alpha1.PaddockEvent, error)
+	// PromptFormatter wraps the user's text + broker-assigned seq into
+	// the harness CLI's native stdin shape (e.g. claude stream-json).
+	// Per-harness shims provide the implementation; the proxy package
+	// stays harness-agnostic. May be nil — the request body is then
+	// written to the data UDS verbatim, which is correct for harnesses
+	// that accept Paddock's {text,seq,submitter} wire shape directly
+	// and for proxy unit tests.
+	PromptFormatter func(text string, seq int32) ([]byte, error)
 }
 
 // Server wraps the adapter's HTTP+WS surface and the dialed UDS pair.

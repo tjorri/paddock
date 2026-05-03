@@ -50,6 +50,16 @@ import (
 // write error so subsequent calls hard-fail with a definitive error
 // -- is a planned follow-up tracked alongside the supervisor-side
 // {"event":"crashed"} ctl emission.
+// promptRequest is the wire shape the broker (internal/broker/interactive.go
+// handlePrompts) forwards on POST /prompts. `seq` is broker-assigned; we
+// echo it back in the response body so the caller can correlate a turn
+// without holding the WS open for the round-trip.
+type promptRequest struct {
+	Text      string `json:"text"`
+	Seq       int32  `json:"seq"`
+	Submitter string `json:"submitter,omitempty"`
+}
+
 func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -61,20 +71,37 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	var p struct {
-		Seq int32 `json:"_paddock_seq"`
+	var req promptRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
 	}
-	_ = json.Unmarshal(body, &p)
+
+	// Format the prompt for the harness CLI's stdin. The proxy is
+	// harness-agnostic; the per-harness shim (cmd/adapter-claude-code/
+	// main.go for claude) supplies a PromptFormatter that wraps the
+	// user's text into the harness's native stream-json shape. When
+	// PromptFormatter is nil, fall back to writing the request body
+	// verbatim — useful for harnesses that already accept Paddock's
+	// {text,seq,submitter} wire shape on stdin (and for tests).
+	harnessLine := body
+	if s.cfg.PromptFormatter != nil {
+		harnessLine, err = s.cfg.PromptFormatter(req.Text, req.Seq)
+		if err != nil {
+			http.Error(w, "format prompt: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 
 	if s.cfg.Mode == "per-prompt-process" {
-		if err := s.writeCtl(ctlMessage{Action: "begin-prompt", Seq: p.Seq}); err != nil {
+		if err := s.writeCtl(ctlMessage{Action: "begin-prompt", Seq: req.Seq}); err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
 	}
 
 	s.dataWriteMu.Lock()
-	_, werr := s.dataConn.Write(append(body, '\n'))
+	_, werr := s.dataConn.Write(append(harnessLine, '\n'))
 	s.dataWriteMu.Unlock()
 	if werr != nil {
 		http.Error(w, fmt.Sprintf("write data UDS: %v", werr), http.StatusBadGateway)
@@ -82,10 +109,15 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.cfg.Mode == "per-prompt-process" {
-		if err := s.writeCtl(ctlMessage{Action: "end-prompt", Seq: p.Seq}); err != nil {
+		if err := s.writeCtl(ctlMessage{Action: "end-prompt", Seq: req.Seq}); err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
 	}
+
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(struct {
+		Seq int32 `json:"seq"`
+	}{Seq: req.Seq})
 }

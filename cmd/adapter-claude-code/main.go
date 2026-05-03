@@ -26,6 +26,7 @@ package main
 import (
 	"context"
 	"errors"
+	"encoding/json"
 	"flag"
 	"log"
 	"net"
@@ -74,6 +75,7 @@ func runInteractive(ctx context.Context, mode, eventsPath string) {
 		Converter: func(line string) ([]paddockv1alpha1.PaddockEvent, error) {
 			return convertLine(line, time.Now().UTC())
 		},
+		PromptFormatter: claudePromptFormatter,
 	})
 	if err != nil {
 		logger.Fatalf("proxy NewServer: %v", err)
@@ -112,4 +114,33 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// claudePromptFormatter wraps the user's prompt text into the
+// stream-json shape claude reads when invoked with
+// `--input-format stream-json`. The "_paddock_seq" tag is a custom
+// correlation field; claude ignores unknown keys, so it survives the
+// round-trip without disturbing the model. Pre-F19 this wrapping
+// lived in cmd/adapter-claude-code/persistent.go's SubmitPrompt;
+// after the proxy refactor it migrated here as the proxy.Config
+// PromptFormatter hook so the proxy package stays harness-agnostic.
+func claudePromptFormatter(text string, seq int32) ([]byte, error) {
+	type contentBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	type message struct {
+		Role    string         `json:"role"`
+		Content []contentBlock `json:"content"`
+	}
+	type userPrompt struct {
+		Type       string  `json:"type"`
+		Message    message `json:"message"`
+		PaddockSeq int32   `json:"_paddock_seq,omitempty"`
+	}
+	return json.Marshal(userPrompt{
+		Type:       "user",
+		Message:    message{Role: "user", Content: []contentBlock{{Type: "text", Text: text}}},
+		PaddockSeq: seq,
+	})
 }
