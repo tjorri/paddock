@@ -28,6 +28,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -104,6 +105,11 @@ type Server struct {
 	mu          sync.Mutex
 	dataWriteMu sync.Mutex // serializes writes from concurrent /prompts (defense in depth)
 	ctlWriteMu  sync.Mutex
+
+	// ctlReaderDone closes when the ctl-reader goroutine exits. Close()
+	// blocks on it (with a short timeout) so the goroutine doesn't
+	// outlive the Server.
+	ctlReaderDone chan struct{}
 }
 
 // ctlMessage is the wire shape for control frames emitted to the supervisor.
@@ -150,6 +156,16 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 		_ = runDataReader(dataConn, s.fanout, cfg.EventsPath, cfg.Converter, cfg.OnEvent, cfg.OnTurnComplete)
 	}()
 
+	s.ctlReaderDone = make(chan struct{})
+	go func() {
+		defer close(s.ctlReaderDone)
+		// Use the local ctlConn rather than s.ctlConn — Close() may
+		// nil out the field concurrently with this goroutine running.
+		if err := runCtlReader(ctx, ctlConn, log.Default()); err != nil {
+			log.Printf("ctl reader: %v", err)
+		}
+	}()
+
 	return s, nil
 }
 
@@ -172,6 +188,13 @@ func (s *Server) Close() error {
 			firstErr = err
 		}
 		s.ctlConn = nil
+	}
+	if s.ctlReaderDone != nil {
+		select {
+		case <-s.ctlReaderDone:
+		case <-time.After(500 * time.Millisecond):
+		}
+		s.ctlReaderDone = nil
 	}
 	return firstErr
 }
