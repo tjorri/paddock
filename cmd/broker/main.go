@@ -175,6 +175,7 @@ func main() {
 
 	srv := &broker.Server{
 		Client:     cachedClient,
+		APIReader:  directClient,
 		Auth:       &broker.Authenticator{Client: kclient},
 		Providers:  registry,
 		Audit:      broker.NewAuditWriter(&auditing.KubeSink{Client: cachedClient, Component: "broker"}),

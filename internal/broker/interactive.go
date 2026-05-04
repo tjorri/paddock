@@ -417,8 +417,17 @@ func (s *Server) handleTurnComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reads in this handler use the uncached APIReader (when wired) to
+	// avoid a controller-runtime informer-cache lag against handlePrompts'
+	// post-forward CurrentTurnSeq patch: the runtime's turn-complete
+	// callback can arrive within milliseconds of /prompts' 202, and a
+	// cached read would observe a stale CurrentTurnSeq=nil and treat the
+	// callback as an idempotent retry — stranding the seq once the patch
+	// finally surfaces in the cache. (Issue #122.) Tests that don't wire
+	// APIReader fall back to Client.
+	reader := s.uncachedReader()
 	var run paddockv1alpha1.HarnessRun
-	if err := s.Client.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &run); err != nil {
+	if err := reader.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &run); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, brokerapi.CodeRunNotFound, "run not found")
 			return
@@ -432,54 +441,86 @@ func (s *Server) handleTurnComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Capture the seq we're clearing BEFORE the patch so the audit
-	// records which turn completed. Idempotent retries (already nil)
-	// fall through to the 202 without an audit emission.
+	// Resolve CurrentTurnSeq inside the retry loop — using the uncached
+	// reader — so that we observe the latest apiserver state on every
+	// attempt rather than a possibly-stale cache snapshot.
+	//
+	// Issue #122: the runtime's onTurnComplete fires the moment the
+	// harness emits a Result frame, which on a fast-responding harness
+	// can race ahead of handlePrompts' post-forward CurrentTurnSeq
+	// patch. A naive single-shot read of CurrentTurnSeq here would
+	// observe nil and idempotently no-op, leaving the seq stranded once
+	// the patch finally lands. Poll briefly (50ms × ≤40 attempts = ≤2s)
+	// for a non-nil seq before treating the call as a true idempotent
+	// retry; the runtime fires turn-complete from a fire-and-forget
+	// goroutine *after* the runtime's /prompts handler has already
+	// returned 202, so the matching post-forward patch is always
+	// in-flight — typically arrives within tens of ms — and the wait
+	// budget collapses to a single iteration in the common case.
+	const (
+		seqWaitInterval = 50 * time.Millisecond
+		seqWaitDeadline = 2 * time.Second
+	)
 	var completedSeq *int32
-	if run.Status.Interactive != nil && run.Status.Interactive.CurrentTurnSeq != nil {
-		seq := *run.Status.Interactive.CurrentTurnSeq
-		completedSeq = &seq
-	}
-
-	// Patch under retry-on-conflict mirroring handlePrompts: re-Get
-	// inside the loop so each MergeFrom base reflects the latest
-	// ResourceVersion. Skip the patch entirely when there's nothing to
-	// clear.
-	if completedSeq != nil {
-		now := nowMeta()
-		if pErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			var fresh paddockv1alpha1.HarnessRun
-			if gErr := s.Client.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &fresh); gErr != nil {
+	now := nowMeta()
+	if pErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh paddockv1alpha1.HarnessRun
+		deadline := time.Now().Add(seqWaitDeadline)
+		for {
+			if gErr := reader.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &fresh); gErr != nil {
 				return gErr
 			}
-			base := fresh.DeepCopy()
-			if fresh.Status.Interactive == nil {
-				fresh.Status.Interactive = &paddockv1alpha1.InteractiveStatus{}
+			if fresh.Status.Interactive != nil && fresh.Status.Interactive.CurrentTurnSeq != nil {
+				break
 			}
-			fresh.Status.Interactive.CurrentTurnSeq = nil
-			fresh.Status.Interactive.IdleSince = &now
-			return s.Client.Status().Patch(ctx, &fresh, client.MergeFrom(base))
-		}); pErr != nil {
-			logger.Error(pErr, "patching interactive status on turn-complete", "run", name)
-			writeError(w, http.StatusInternalServerError, brokerapi.CodeProviderFailure, pErr.Error())
-			return
+			if time.Now().After(deadline) {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(seqWaitInterval):
+			}
 		}
+		if fresh.Status.Interactive == nil || fresh.Status.Interactive.CurrentTurnSeq == nil {
+			completedSeq = nil
+			return nil
+		}
+		seq := *fresh.Status.Interactive.CurrentTurnSeq
+		completedSeq = &seq
+		base := fresh.DeepCopy()
+		fresh.Status.Interactive.CurrentTurnSeq = nil
+		fresh.Status.Interactive.IdleSince = &now
+		return s.Client.Status().Patch(ctx, &fresh, client.MergeFrom(base))
+	}); pErr != nil {
+		logger.Error(pErr, "patching interactive status on turn-complete", "run", name)
+		writeError(w, http.StatusInternalServerError, brokerapi.CodeProviderFailure, pErr.Error())
+		return
+	}
 
-		if s.Audit != nil {
-			ae := auditing.NewPromptCompleted(auditing.PromptCompletedInput{
-				RunName:   name,
-				Namespace: ns,
-				TurnSeq:   *completedSeq,
-				Outcome:   "ok",
-				When:      time.Now().UTC(),
-			})
-			if wErr := s.Audit.Write(ctx, ae); wErr != nil {
-				logger.Error(wErr, "writing prompt-completed audit", "run", name)
-			}
+	if completedSeq != nil && s.Audit != nil {
+		ae := auditing.NewPromptCompleted(auditing.PromptCompletedInput{
+			RunName:   name,
+			Namespace: ns,
+			TurnSeq:   *completedSeq,
+			Outcome:   "ok",
+			When:      time.Now().UTC(),
+		})
+		if wErr := s.Audit.Write(ctx, ae); wErr != nil {
+			logger.Error(wErr, "writing prompt-completed audit", "run", name)
 		}
 	}
 
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// uncachedReader returns the Server's APIReader when wired, falling
+// back to the cached Client for tests that don't set APIReader.
+func (s *Server) uncachedReader() client.Reader {
+	if s.APIReader != nil {
+		return s.APIReader
+	}
+	return s.Client
 }
 
 // pathRunIdentity extracts (ns, name) from the ServeMux 1.22+ path

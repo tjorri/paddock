@@ -98,7 +98,11 @@ spec:
     idleTimeout: 50s
     detachIdleTimeout: 50s
     detachTimeout: 50s
-    maxLifetime: 60s
+    # 180s gives CI's pod warm-up + first-frame round-trip enough
+    # headroom that the watchdog isn't on the critical path. The
+    # test ends the run via paddockbroker.End well before this
+    # fires; the cap exists only as a fail-safe.
+    maxLifetime: 180s
   defaults:
     timeout: 5m
   workspace:
@@ -192,10 +196,30 @@ spec:
 		ch, err := bc.Open(ctx, ns, tuiE2ERun)
 		Expect(err).NotTo(HaveOccurred(), "broker.Open")
 
+		By("submitting a prompt via paddockbroker.Submit")
+		// spec.prompt is materialised as PADDOCK_PROMPT_FILE inside the pod
+		// but the runtime never auto-feeds it to the harness in
+		// interactive mode — only POST /prompts bodies reach the harness's
+		// stdin (via the agent UDS). Submit a prompt explicitly so the
+		// echo harness has something to echo back. Eventually retries on
+		// ErrTurnInFlight (rare here) and on the warm-up 502s the broker
+		// returns until the runtime has bound :8431. The 120 s budget
+		// also covers paddockbroker's port-forward auto-reconnect — CI
+		// occasionally drops the SPDY tunnel mid-test and a single
+		// reconnect attempt costs up to ~10 s.
+		Eventually(func(g Gomega) {
+			_, sErr := bc.Submit(ctx, ns, tuiE2ERun, "hello-tui-e2e")
+			if paddockbroker.IsTurnInFlight(sErr) {
+				return
+			}
+			g.Expect(sErr).NotTo(HaveOccurred())
+		}, 120*time.Second, 1*time.Second).Should(Succeed())
+
 		By("waiting for at least one StreamFrame within 2 minutes")
-		// Per-prompt-process echo runtime emits frames in response to the
-		// initial prompt supplied in spec.prompt. The timeout covers both
-		// the pod warm-up window and the stream dial+first-frame round-trip.
+		// echo-interactive emits an assistant + a result frame per
+		// /prompts body; we just need one to confirm the broker→runtime
+		// stream proxy is wired end-to-end. The 2-minute budget covers
+		// the residual warm-up tail after Submit returns.
 		select {
 		case f, ok := <-ch:
 			Expect(ok).To(BeTrue(), "stream channel closed before any frame arrived")
