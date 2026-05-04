@@ -428,6 +428,81 @@ func TestServer_HandlersReturn503AfterClose(t *testing.T) {
 	}
 }
 
+// TestServer_PromptCloseOnDataWriteError asserts a UDS write failure
+// in handlePrompts not only returns 502 but also closes the Server
+// — so the next /prompts call short-circuits with 503 (per Task 5)
+// instead of retrying against a known-broken connection.
+func TestServer_PromptCloseOnDataWriteError(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	dataLn, err := net.Listen("unix", dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dataLn.Close() })
+	ctlLn, err := net.Listen("unix", ctlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ctlLn.Close() })
+
+	// Fake supervisor: accept then immediately close the data conn so
+	// the next Write from the runtime side fails.
+	supDataAccepted := make(chan struct{})
+	go func() {
+		c, _ := dataLn.Accept()
+		if c != nil {
+			_ = c.Close()
+			close(supDataAccepted)
+		}
+	}()
+	go func() {
+		c, _ := ctlLn.Accept()
+		if c != nil {
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv, err := NewServer(ctx, Config{
+		Mode:       "persistent-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		Backoff:    BackoffConfig{Initial: 10 * time.Millisecond, Max: 100 * time.Millisecond, Tries: 5},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	<-supDataAccepted
+	// Give the kernel a moment to propagate the FIN to the runtime side
+	// so the next Write returns EPIPE deterministically.
+	time.Sleep(50 * time.Millisecond)
+
+	// First /prompts: data write fails → handler returns 502 AND
+	// closes the Server.
+	body := []byte(`{"text":"hi","seq":1,"submitter":"alice"}`)
+	w1 := httptest.NewRecorder()
+	r1 := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewReader(body))
+	srv.Handler().ServeHTTP(w1, r1)
+	if w1.Code != http.StatusBadGateway {
+		t.Errorf("first /prompts: status = %d, want 502", w1.Code)
+	}
+
+	// Second /prompts: Server is now closed; handler short-circuits 503.
+	w2 := httptest.NewRecorder()
+	r2 := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewReader(body))
+	srv.Handler().ServeHTTP(w2, r2)
+	if w2.Code != http.StatusServiceUnavailable {
+		t.Errorf("second /prompts: status = %d, want 503 (Server should be closed after first failure)", w2.Code)
+	}
+}
+
 func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 	dir := shortTempDir(t)
 	dataPath := filepath.Join(dir, "data.sock")

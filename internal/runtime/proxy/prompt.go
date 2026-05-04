@@ -41,15 +41,12 @@ import (
 //
 // Failure mode: when any UDS write below fails (begin-prompt ctl,
 // data body, or end-prompt ctl), the supervisor's prompt-boundary
-// state is desynchronized. The handler returns 502, but there is no
-// recovery path on the proxy side: a subsequent /prompts will issue
-// another begin-prompt against a connection the supervisor has
-// already given up on, and that call will also fail. Treat 502 from
-// this endpoint as run-fatal at the broker layer, not as a retryable
-// transient. The cleaner recovery -- close the entire Server on UDS
-// write error so subsequent calls hard-fail with a definitive error
-// -- is a planned follow-up tracked alongside the supervisor-side
-// {"event":"crashed"} ctl emission.
+// state is desynchronized. The handler returns 502 AND calls
+// s.Close() so the closed flag is set; subsequent /prompts return
+// 503 immediately rather than retrying against half-open conns.
+// Treat the first 502 from this endpoint as run-fatal at the broker
+// layer; it signals "the supervisor connection is gone, the run
+// cannot continue."
 // promptRequest is the wire shape the broker (internal/broker/interactive.go
 // handlePrompts) forwards on POST /prompts. `seq` is broker-assigned; we
 // echo it back in the response body so the caller can correlate a turn
@@ -107,6 +104,7 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 
 	if s.cfg.Mode == "per-prompt-process" {
 		if err := s.writeCtl(ctlMessage{Action: "begin-prompt", Seq: req.Seq}); err != nil {
+			_ = s.Close()
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
@@ -116,12 +114,14 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 	_, werr := s.dataConn.Write(append(harnessLine, '\n'))
 	s.dataWriteMu.Unlock()
 	if werr != nil {
+		_ = s.Close()
 		http.Error(w, fmt.Sprintf("write data UDS: %v", werr), http.StatusBadGateway)
 		return
 	}
 
 	if s.cfg.Mode == "per-prompt-process" {
 		if err := s.writeCtl(ctlMessage{Action: "end-prompt", Seq: req.Seq}); err != nil {
+			_ = s.Close()
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
