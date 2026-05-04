@@ -138,6 +138,69 @@ func TestPerPrompt_BoundedShutdown(t *testing.T) {
 	}
 }
 
+func TestPerPrompt_PromptCrashedEvent(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	cfg := Config{
+		Mode:       "per-prompt-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		HarnessBin: filepath.Join(testFixturesDir(t), "crash_on_first_prompt.sh"),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runPerPrompt(ctx, testLogger(t), cfg) }()
+
+	dataConn := dialEventually(t, dataPath)
+	defer func() { _ = dataConn.Close() }()
+	ctlConn := dialEventually(t, ctlPath)
+	defer func() { _ = ctlConn.Close() }()
+
+	enc := json.NewEncoder(ctlConn)
+	if err := enc.Encode(map[string]any{"action": "begin-prompt", "seq": 7}); err != nil {
+		t.Fatal(err)
+	}
+	scanner := bufio.NewScanner(dataConn)
+	if !scanner.Scan() { // ready
+		t.Fatalf("scan ready: %v", scanner.Err())
+	}
+	if _, err := dataConn.Write([]byte(`"hi"` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.Encode(map[string]any{"action": "end-prompt"}); err != nil {
+		t.Fatal(err)
+	}
+
+	dec := json.NewDecoder(ctlConn)
+	var got ctlMessage
+	_ = ctlConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("decode prompt-crashed event: %v", err)
+	}
+	if got.Event != "prompt-crashed" {
+		t.Errorf("event = %q, want \"prompt-crashed\"", got.Event)
+	}
+	if got.Seq != 7 {
+		t.Errorf("seq = %d, want 7", got.Seq)
+	}
+	if got.ExitCode != 1 {
+		t.Errorf("exit_code = %d, want 1", got.ExitCode)
+	}
+
+	// Clean up.
+	if err := enc.Encode(map[string]any{"action": "end"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("runPerPrompt: %v", err)
+	}
+}
+
 func TestPerPrompt_InterruptKillsCurrentProcess(t *testing.T) {
 	dir := shortTempDir(t)
 	dataPath := filepath.Join(dir, "data.sock")
