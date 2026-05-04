@@ -219,6 +219,60 @@ func TestPersistent_CleanExitOnDataEOFIsNotCrash(t *testing.T) {
 	}
 }
 
+func TestPersistent_BoundedShutdown(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	// sleep_forever.sh ignores stdin EOF AND SIGTERM, so the supervisor
+	// must escalate to SIGKILL within shutdownHard.
+	cfg := Config{
+		Mode:       "persistent-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		HarnessBin: filepath.Join(testFixturesDir(t), "sleep_forever.sh"),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runPersistent(ctx, testLogger(t), cfg) }()
+
+	dataConn := dialEventually(t, dataPath)
+	defer func() { _ = dataConn.Close() }()
+	ctlConn := dialEventually(t, ctlPath)
+	defer func() { _ = ctlConn.Close() }()
+
+	// Drain the "ready" event before sending end (otherwise stdoutDone
+	// fires before the dispatch loop consumes the ctl message and we
+	// race on which branch runs).
+	scanner := bufio.NewScanner(dataConn)
+	if !scanner.Scan() {
+		t.Fatalf("scan ready: %v", scanner.Err())
+	}
+
+	if err := json.NewEncoder(ctlConn).Encode(map[string]string{"action": "end"}); err != nil {
+		t.Fatalf("write ctl end: %v", err)
+	}
+
+	// The supervisor must return within shutdownGentle + shutdownHard
+	// (2s + 3s = 5s default) plus a small slack. A naked cmd.Wait()
+	// would hang forever and the test ctx would time out at 5s.
+	start := time.Now()
+	select {
+	case err := <-errCh:
+		// ExitError is fine (CLI killed by signal); nil means it
+		// somehow exited cleanly which would be surprising but ok.
+		_ = err
+	case <-time.After(7 * time.Second):
+		t.Fatalf("supervisor did not bound shutdown within 7s")
+	}
+	if elapsed := time.Since(start); elapsed > 6*time.Second {
+		t.Errorf("shutdown took %v, want <6s", elapsed)
+	}
+}
+
 // shortTempDir returns a per-test temp directory rooted at /tmp.
 // Unix domain sockets are capped at ~104 bytes on macOS (sun_path),
 // and Go's t.TempDir() under /var/folders/... blows that limit for
@@ -241,6 +295,15 @@ func testFixtureHarness(t *testing.T) string {
 		t.Fatalf("getwd: %v", err)
 	}
 	return filepath.Join(wd, "testfixtures", "fake_harness.sh")
+}
+
+func testFixturesDir(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	return filepath.Join(wd, "testfixtures")
 }
 
 func dialEventually(t *testing.T, path string) net.Conn {

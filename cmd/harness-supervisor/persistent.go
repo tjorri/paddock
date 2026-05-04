@@ -10,6 +10,18 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
+)
+
+// shutdownGentle is how long we wait for the harness CLI to exit on
+// its own (after stdin close) before sending SIGTERM. shutdownHard is
+// the additional grace before escalating to SIGKILL. Defaults size for
+// "harness completes a final stream-json frame and exits" while still
+// guaranteeing the supervisor itself returns within the kubelet's
+// terminationGracePeriodSeconds (Paddock pods default to 30s).
+const (
+	shutdownGentle = 2 * time.Second
+	shutdownHard   = 3 * time.Second
 )
 
 // runPersistent owns the harness CLI's lifetime: spawn one process,
@@ -81,12 +93,12 @@ func runPersistent(ctx context.Context, logger *log.Logger, cfg Config) error {
 		select {
 		case <-ctx.Done():
 			_ = stdin.Close()
-			return cmd.Wait()
+			return waitWithTimeout(cmd, shutdownGentle, shutdownHard)
 		case msg, ok := <-ctlMsgs:
 			if !ok {
 				// ctl reader exited; treat as end.
 				_ = stdin.Close()
-				return cmd.Wait()
+				return waitWithTimeout(cmd, shutdownGentle, shutdownHard)
 			}
 			switch msg.Action {
 			case "interrupt":
@@ -95,8 +107,14 @@ func runPersistent(ctx context.Context, logger *log.Logger, cfg Config) error {
 				}
 			case "end":
 				_ = stdin.Close()
-				<-stdoutDone
-				return cmd.Wait()
+				// Don't block on stdoutDone here: a misbehaving harness
+				// that ignores stdin EOF would never close stdout and we'd
+				// hang forever, never reaching waitWithTimeout. cmd.Wait()
+				// inside waitWithTimeout drains the stdout pipe as part of
+				// reaping, and the SIGTERM/SIGKILL escalation guarantees
+				// the process dies (and therefore stdout closes) within
+				// shutdownGentle+shutdownHard.
+				return waitWithTimeout(cmd, shutdownGentle, shutdownHard)
 			default:
 				logger.Printf("unknown ctl action: %q", msg.Action)
 			}
@@ -111,7 +129,7 @@ func runPersistent(ctx context.Context, logger *log.Logger, cfg Config) error {
 			//
 			// cmd.Wait() returning nil (exit 0) means (1); a non-nil error
 			// (non-zero exit, signal, etc.) means (2).
-			waitErr := cmd.Wait()
+			waitErr := waitWithTimeout(cmd, shutdownGentle, shutdownHard)
 			if waitErr == nil {
 				return nil
 			}
