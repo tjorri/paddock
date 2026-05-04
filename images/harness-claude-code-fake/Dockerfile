@@ -4,12 +4,29 @@
 # and does not install anything at run time, so the e2e suite can
 # exercise the broker -> adapter -> UDS -> supervisor -> CLI -> UDS
 # -> adapter -> broker WS path without external network or API budget.
+#
+# Build context is the repo root (not images/harness-claude-code-fake)
+# so the supervisor binary can be built inline from
+# cmd/harness-supervisor — see harness-echo/Dockerfile for the
+# rationale.
+
+FROM --platform=$BUILDPLATFORM golang:1.26 AS supervisor-builder
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /workspace
+COPY go.mod go.sum ./
+COPY cmd/harness-supervisor/ cmd/harness-supervisor/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -o /supervisor ./cmd/harness-supervisor
+
 FROM alpine:3.22
 
 # Supervisor binary for interactive mode.
-COPY --from=paddock-harness-supervisor:dev /supervisor /usr/local/bin/paddock-harness-supervisor
+COPY --from=supervisor-builder /supervisor /usr/local/bin/paddock-harness-supervisor
 
-COPY run.sh /usr/local/bin/paddock-claude-code-fake
+COPY images/harness-claude-code-fake/run.sh /usr/local/bin/paddock-claude-code-fake
 RUN chmod +x /usr/local/bin/paddock-claude-code-fake
 
 ENV PADDOCK_HARNESS_BIN=/usr/local/bin/fake-claude

@@ -4,14 +4,31 @@
 # exits 0. In interactive mode dispatches to paddock-harness-supervisor,
 # which spawns the inline echo-interactive harness binary and bridges
 # /prompts ↔ harness stdio over the agent UDS.
+#
+# Build context is the repo root (not images/harness-echo) so the
+# supervisor binary can be built inline from cmd/harness-supervisor.
+# Inlining avoids a cross-image COPY --from that would require a
+# preexisting :dev tag in the local docker daemon — which is fine for
+# `make image-echo` but breaks buildx jobs in CI that have no such tag.
+
+FROM --platform=$BUILDPLATFORM golang:1.26 AS supervisor-builder
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /workspace
+COPY go.mod go.sum ./
+COPY cmd/harness-supervisor/ cmd/harness-supervisor/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -o /supervisor ./cmd/harness-supervisor
+
 FROM alpine:3.22
 
 RUN adduser -D -u 65532 paddock
 
-# Supervisor binary for interactive mode (mirrors harness-claude-code-fake).
-COPY --from=paddock-harness-supervisor:dev /supervisor /usr/local/bin/paddock-harness-supervisor
+COPY --from=supervisor-builder /supervisor /usr/local/bin/paddock-harness-supervisor
 
-COPY run.sh /usr/local/bin/paddock-echo
+COPY images/harness-echo/run.sh /usr/local/bin/paddock-echo
 RUN chmod +x /usr/local/bin/paddock-echo
 
 ENV PADDOCK_HARNESS_BIN=/usr/local/bin/echo-interactive

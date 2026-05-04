@@ -223,7 +223,7 @@ IPTABLES_INIT_IMG ?= paddock-iptables-init:dev
 E2E_EGRESS_IMG ?= paddock-e2e-egress:dev
 
 .PHONY: image-echo
-image-echo: image-harness-supervisor ## Build the paddock-echo harness image, skipping if source hash matches.
+image-echo: ## Build the paddock-echo harness image, skipping if source hash matches.
 	@hash=$$(hack/image-hash.sh echo); \
 	tag="paddock-echo:dev-$$hash"; \
 	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
@@ -231,7 +231,7 @@ image-echo: image-harness-supervisor ## Build the paddock-echo harness image, sk
 		$(CONTAINER_TOOL) tag $$tag $(ECHO_IMG); \
 	else \
 		echo "image-echo: building $(ECHO_IMG) (hash $$hash)"; \
-		$(CONTAINER_TOOL) build -t $(ECHO_IMG) -t $$tag images/harness-echo; \
+		$(CONTAINER_TOOL) build -t $(ECHO_IMG) -t $$tag -f images/harness-echo/Dockerfile .; \
 	fi
 
 .PHONY: image-evil-echo
@@ -259,7 +259,7 @@ image-harness-supervisor: ## Build the paddock-harness-supervisor image (bridges
 	fi
 
 .PHONY: image-claude-code
-image-claude-code: image-harness-supervisor ## Build the paddock-claude-code demo harness image (wraps Anthropic's claude CLI), skipping if source hash matches.
+image-claude-code: ## Build the paddock-claude-code demo harness image (wraps Anthropic's claude CLI), skipping if source hash matches.
 	@hash=$$(hack/image-hash.sh claude-code); \
 	tag="paddock-claude-code:dev-$$hash"; \
 	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
@@ -267,11 +267,11 @@ image-claude-code: image-harness-supervisor ## Build the paddock-claude-code dem
 		$(CONTAINER_TOOL) tag $$tag $(CLAUDE_CODE_IMG); \
 	else \
 		echo "image-claude-code: building $(CLAUDE_CODE_IMG) (hash $$hash)"; \
-		$(CONTAINER_TOOL) build -t $(CLAUDE_CODE_IMG) -t $$tag images/harness-claude-code; \
+		$(CONTAINER_TOOL) build -t $(CLAUDE_CODE_IMG) -t $$tag -f images/harness-claude-code/Dockerfile .; \
 	fi
 
 .PHONY: image-claude-code-fake
-image-claude-code-fake: image-harness-supervisor ## Build the fake-claude harness image (e2e only — no install, no API call), skipping if source hash matches.
+image-claude-code-fake: ## Build the fake-claude harness image (e2e only — no install, no API call), skipping if source hash matches.
 	@hash=$$(hack/image-hash.sh claude-code-fake); \
 	tag="paddock-claude-code-fake:dev-$$hash"; \
 	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
@@ -279,7 +279,7 @@ image-claude-code-fake: image-harness-supervisor ## Build the fake-claude harnes
 		$(CONTAINER_TOOL) tag $$tag paddock-claude-code-fake:dev; \
 	else \
 		echo "image-claude-code-fake: building paddock-claude-code-fake:dev (hash $$hash)"; \
-		$(CONTAINER_TOOL) build -t paddock-claude-code-fake:dev -t $$tag images/harness-claude-code-fake; \
+		$(CONTAINER_TOOL) build -t paddock-claude-code-fake:dev -t $$tag -f images/harness-claude-code-fake/Dockerfile .; \
 	fi
 
 .PHONY: image-runtime-claude-code
