@@ -91,7 +91,7 @@ func runDataReader(
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
-			fan.broadcast(line)
+			fan.broadcast(wrapStreamLine(line))
 			if conv != nil {
 				events, cerr := conv(string(line))
 				if cerr != nil {

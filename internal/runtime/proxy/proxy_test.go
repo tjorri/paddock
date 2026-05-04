@@ -377,6 +377,8 @@ func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 	startWrite := make(chan struct{})
 
 	// Fake supervisor: accept data, push two newline-delimited frames.
+	// Use an assistant-shaped first frame so we can verify the wrapped
+	// envelope's Type field and inner Data payload after wrapStreamLine.
 	go func() {
 		c, _ := dataLn.Accept()
 		if c == nil {
@@ -384,7 +386,7 @@ func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 		}
 		defer func() { _ = c.Close() }()
 		<-startWrite
-		_, _ = c.Write([]byte(`{"type":"first"}` + "\n" + `{"type":"second"}` + "\n"))
+		_, _ = c.Write([]byte(`{"type":"assistant","text":"hi"}` + "\n" + `{"type":"second"}` + "\n"))
 		// Hold open until the test closes us.
 		<-time.After(2 * time.Second)
 	}()
@@ -414,16 +416,34 @@ func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 	defer srv.fanout.unsubscribe(ch)
 	close(startWrite)
 
-	got := []string{}
+	got := [][]byte{}
 	for i := 0; i < 2; i++ {
 		select {
 		case line := <-ch:
-			got = append(got, strings.TrimSpace(string(line)))
+			// Copy: the fanout reuses the underlying buffer across sends.
+			cp := make([]byte, len(line))
+			copy(cp, line)
+			got = append(got, cp)
 		case <-time.After(2 * time.Second):
 			t.Fatalf("fanout receive timeout after %d/%d", i, 2)
 		}
 	}
-	if got[0] != `{"type":"first"}` || got[1] != `{"type":"second"}` {
-		t.Errorf("fanout lines = %v, want [first, second]", got)
+
+	// Replace the existing assertion (single substring check on the
+	// raw line) with a structured assertion that the broadcast frame
+	// is now wrapped in the StreamFrame envelope.
+	received := got[0]
+	var frame struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(received, &frame); err != nil {
+		t.Fatalf("broadcast frame not valid JSON: %v\nframe=%q", err, received)
+	}
+	if frame.Type != "assistant" {
+		t.Errorf("frame.Type = %q, want \"assistant\"", frame.Type)
+	}
+	if !strings.Contains(string(frame.Data), `"text":"hi"`) {
+		t.Errorf("frame.Data missing inner content; got %q", frame.Data)
 	}
 }
