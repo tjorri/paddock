@@ -100,6 +100,12 @@ func (f *fanout) broadcast(line []byte) {
 		select {
 		case ch <- cp:
 		default:
+			// Slow /stream subscriber dropped — keeps the data pump
+			// non-blocking. Audit-trail integrity is not affected:
+			// runDataReader writes events.jsonl on a separate path
+			// (events.go's events.jsonl write block, lines 104-114)
+			// so dropped fan-out frames never truncate the on-disk
+			// record.
 		}
 	}
 	f.mu.Unlock()

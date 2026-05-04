@@ -238,7 +238,7 @@ func totalBackoff(cfg BackoffConfig) time.Duration {
 		}
 		total += d
 	}
-	return total + 5*time.Second // headroom for the dial calls themselves
+	return total + 5*time.Second // 5s slack for syscall + scheduling overhead per attempt
 }
 
 func (s *Server) handleEnd(w http.ResponseWriter, r *http.Request) {
