@@ -420,10 +420,7 @@ func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		select {
 		case line := <-ch:
-			// Copy: the fanout reuses the underlying buffer across sends.
-			cp := make([]byte, len(line))
-			copy(cp, line)
-			got = append(got, cp)
+			got = append(got, line)
 		case <-time.After(2 * time.Second):
 			t.Fatalf("fanout receive timeout after %d/%d", i, 2)
 		}
