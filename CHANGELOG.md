@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.6.0](https://github.com/tjorri/paddock/compare/v0.5.2...v0.6.0) (2026-05-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* collapse adapter+collector into unified runtime ([#121](https://github.com/tjorri/paddock/issues/121))
+
+### Features
+
+* collapse adapter+collector into unified runtime ([#121](https://github.com/tjorri/paddock/issues/121)) ([f8bbb4c](https://github.com/tjorri/paddock/commit/f8bbb4ce1e49fe9aa6a3a06039c163887dbc2082))
+* **harness-supervisor:** bounded shutdown, crashed events, accept-loop ([#125](https://github.com/tjorri/paddock/issues/125)) ([7db2dd5](https://github.com/tjorri/paddock/commit/7db2dd50a21f38422d47133fe0c6e615b1c42de7))
+* rework Interactive HarnessRun runtime as adapter proxy + supervisor ([#105](https://github.com/tjorri/paddock/issues/105)) ([523fbcf](https://github.com/tjorri/paddock/commit/523fbcf378860904e3fbd5b05b5218a6bf23f3f5))
+
+
+### Bug Fixes
+
+* **ci:** inline harness-supervisor build, refresh image matrix ([#126](https://github.com/tjorri/paddock/issues/126)) ([6592cb2](https://github.com/tjorri/paddock/commit/6592cb263b3b097e80e71d69bcc75525f2164364))
+* **ci:** unblock Codecov on PRs and stop main baseline rot ([#99](https://github.com/tjorri/paddock/issues/99)) ([4981f63](https://github.com/tjorri/paddock/commit/4981f6309315dad91b636fab057367785abfffa4))
+* **runtime/proxy:** TUI stream wrap, Close drain, close-on-error, test contract ([#127](https://github.com/tjorri/paddock/issues/127)) ([6e7faa2](https://github.com/tjorri/paddock/commit/6e7faa27a70e5b12cef7a3662e81f0ec1944b9b7))
+* TUI command palette + claude install PATH (F17, F18) ([#117](https://github.com/tjorri/paddock/issues/117)) ([61f2a59](https://github.com/tjorri/paddock/commit/61f2a59f4be69776af791b9937ebfffee59ef758))
+
 ## [0.5.2](https://github.com/tjorri/paddock/compare/v0.5.1...v0.5.2) (2026-05-02)
 
 
