@@ -273,6 +273,53 @@ func TestPersistent_BoundedShutdown(t *testing.T) {
 	}
 }
 
+func TestPersistent_CrashedEventOnNonZeroExit(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	falseBin, err := exec.LookPath("false")
+	if err != nil {
+		t.Skipf("no `false` binary on PATH: %v", err)
+	}
+	cfg := Config{
+		Mode:       "persistent-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		HarnessBin: falseBin,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runPersistent(ctx, testLogger(t), cfg) }()
+
+	dataConn := dialEventually(t, dataPath)
+	defer func() { _ = dataConn.Close() }()
+	ctlConn := dialEventually(t, ctlPath)
+	defer func() { _ = ctlConn.Close() }()
+
+	// The supervisor must emit {"event":"crashed","exit_code":1} on
+	// the ctl UDS before runPersistent returns.
+	dec := json.NewDecoder(ctlConn)
+	var got ctlMessage
+	_ = ctlConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if err := dec.Decode(&got); err != nil {
+		t.Fatalf("decode crashed event: %v", err)
+	}
+	if got.Event != "crashed" {
+		t.Errorf("event = %q, want \"crashed\"", got.Event)
+	}
+	if got.ExitCode != 1 {
+		t.Errorf("exit_code = %d, want 1", got.ExitCode)
+	}
+
+	if err := <-errCh; err == nil || !strings.Contains(err.Error(), "crashed") {
+		t.Errorf("runPersistent err = %v, want \"crashed\"", err)
+	}
+}
+
 // shortTempDir returns a per-test temp directory rooted at /tmp.
 // Unix domain sockets are capped at ~104 bytes on macOS (sun_path),
 // and Go's t.TempDir() under /var/folders/... blows that limit for

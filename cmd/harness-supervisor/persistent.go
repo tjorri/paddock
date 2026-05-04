@@ -133,6 +133,12 @@ func runPersistent(ctx context.Context, logger *log.Logger, cfg Config) error {
 			if waitErr == nil {
 				return nil
 			}
+			if err := writeEvent(ctlConn, ctlMessage{
+				Event:    "crashed",
+				ExitCode: exitCodeOf(waitErr),
+			}); err != nil {
+				logger.Printf("write crashed event: %v", err)
+			}
 			return fmt.Errorf("harness crashed: %w", waitErr)
 		}
 	}
@@ -163,4 +169,16 @@ func acceptOnce(ctx context.Context, ln net.Listener) (net.Conn, error) {
 		}
 		return r.c, nil
 	}
+}
+
+// exitCodeOf extracts the numeric exit code from a cmd.Wait error.
+// Returns -1 for signal-killed processes (which wraps via *exec.ExitError
+// with ProcessState.Sys() carrying the signal) and 0 for nil — though
+// callers only invoke this on a non-nil error.
+func exitCodeOf(err error) int {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
 }
