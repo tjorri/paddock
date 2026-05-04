@@ -20,7 +20,7 @@ limitations under the License.
 // Package e2e — Interactive HarnessRun lifecycle + shell scenarios.
 //
 // These specs exercise Stage A (broker wiring) + Stage B (interactive
-// adapter-echo + stay-alive harness) of the Interactive HarnessRun MVP:
+// runtime-echo + stay-alive harness) of the Interactive HarnessRun MVP:
 //
 //   - Lifecycle: create an Interactive HarnessRun, wait for Phase=Running,
 //     POST a prompt to the broker over port-forward+SA-token, assert 202,
@@ -100,7 +100,7 @@ spec:
   harness: echo
   image: %s
   command: ["/usr/local/bin/paddock-echo"]
-  eventAdapter:
+  runtime:
     image: %s
   interactive:
     mode: per-prompt-process
@@ -112,7 +112,7 @@ spec:
     timeout: 5m
   workspace:
     required: true
-    mountPath: /workspace`, interactiveTpl, ns, echoImage, adapterEchoImage))
+    mountPath: /workspace`, interactiveTpl, ns, echoImage, runtimeEchoImage))
 
 		// BrokerPolicy granting runs.interact + runs.shell against the
 		// stub template. Shell command is /bin/sh because the alpine-
@@ -161,7 +161,7 @@ spec:
 			brokerPort, ns, interactiveRunLifecycle)
 		// Eventually because Phase=Running fires before the pod's PodIP
 		// is necessarily populated (init containers can still be
-		// running) — the broker's adapter resolver returns 502 "no
+		// running) — the broker's runtime resolver returns 502 "no
 		// ready pod" until the kubelet has finished pod startup.
 		// 60s is comfortable headroom; the typical settle is a few s.
 		var lastStatus int
@@ -295,8 +295,8 @@ spec:
 })
 
 // Supervisor-mode interactive specs (spec 2026-05-02-interactive-adapter-as-proxy §8,
-// testing layer 3): exercise the full broker → adapter → UDS → supervisor →
-// fake-CLI → UDS → adapter → broker WS path. The fake-claude harness mimics
+// testing layer 3): exercise the full broker → runtime → UDS → supervisor →
+// fake-CLI → UDS → runtime → broker WS path. The fake-claude harness mimics
 // the stream-json contract without the install + API call, so CI runs without
 // external network or API budget.
 //
@@ -347,12 +347,12 @@ metadata:
   name: %s
   namespace: %s
   annotations:
-    paddock.dev/adapter-interactive-modes: "persistent-process,per-prompt-process"
+    paddock.dev/runtime-interactive-modes: "persistent-process,per-prompt-process"
 spec:
   harness: claude-code-fake
   image: %s
   command: ["/usr/local/bin/paddock-claude-code-fake"]
-  eventAdapter:
+  runtime:
     image: %s
   interactive:
     mode: persistent-process
@@ -364,11 +364,11 @@ spec:
     timeout: 5m
   workspace:
     required: true
-    mountPath: /workspace`, supervisorTplPersistent, ns, claudeCodeFakeImage, adapterClaudeCodeImage))
+    mountPath: /workspace`, supervisorTplPersistent, ns, claudeCodeFakeImage, runtimeClaudeCodeImage))
 
 		// Per-prompt-process template. Same shape, different
 		// interactive.mode — the controller wires PADDOCK_INTERACTIVE_MODE
-		// onto the supervisor + adapter containers so each turn spawns
+		// onto the supervisor + runtime containers so each turn spawns
 		// a fresh fake-claude process.
 		framework.ApplyYAML(fmt.Sprintf(`
 apiVersion: paddock.dev/v1alpha1
@@ -377,12 +377,12 @@ metadata:
   name: %s
   namespace: %s
   annotations:
-    paddock.dev/adapter-interactive-modes: "persistent-process,per-prompt-process"
+    paddock.dev/runtime-interactive-modes: "persistent-process,per-prompt-process"
 spec:
   harness: claude-code-fake
   image: %s
   command: ["/usr/local/bin/paddock-claude-code-fake"]
-  eventAdapter:
+  runtime:
     image: %s
   interactive:
     mode: per-prompt-process
@@ -394,7 +394,7 @@ spec:
     timeout: 5m
   workspace:
     required: true
-    mountPath: /workspace`, supervisorTplPerPrompt, ns, claudeCodeFakeImage, adapterClaudeCodeImage))
+    mountPath: /workspace`, supervisorTplPerPrompt, ns, claudeCodeFakeImage, runtimeClaudeCodeImage))
 
 		// Per-template BrokerPolicy granting runs.interact. Two
 		// policies (one per template) so each spec's admission check is
@@ -412,7 +412,7 @@ spec:
 	// broker stream via paddockbroker.Client, posts a prompt, asserts a
 	// stream-json frame returns, ends the run, and asserts the run
 	// reaches Succeeded. The events.jsonl assertion is via
-	// HarnessRun.status.recentEvents (populated by the collector
+	// HarnessRun.status.recentEvents (populated by the runtime
 	// flushing the workspace events.jsonl into the output ConfigMap),
 	// which is the test surface the framework exposes for events.
 	runSupervisorRoundTrip := func(ctx context.Context, runName, templateName string) {
@@ -458,12 +458,12 @@ spec:
 		// The stream-json input the prompt body is serialized into is
 		// passed verbatim to the supervisor's data UDS, which pipes it
 		// to fake-claude's stdin. fake-claude echoes back as
-		// {"type":"assistant","message":<input>}\n. The adapter
+		// {"type":"assistant","message":<input>}\n. The runtime
 		// converts each line and forwards to the broker stream.
 		//
-		// Submit may transiently fail with HTTP 502 while the adapter
+		// Submit may transiently fail with HTTP 502 while the runtime
 		// is warming up (the agent container's run.sh + supervisor
-		// take a few seconds to bind UDS, during which the adapter
+		// take a few seconds to bind UDS, during which the runtime
 		// dial-with-backoff is still connecting). Retry on 502 until
 		// the broker accepts the prompt; ErrTurnInFlight (409) means
 		// a previous attempt's turn is still recorded — also a
@@ -480,9 +480,9 @@ spec:
 		GinkgoWriter.Printf("submitted prompt seq=%d\n", submittedSeq)
 
 		By("waiting for at least one stream-json frame within 30s")
-		// Generous budget: the supervisor + adapter UDS round-trip is
+		// Generous budget: the supervisor + runtime UDS round-trip is
 		// sub-second once the connections are up, but pod warm-up +
-		// adapter dial-with-backoff can take a few seconds on a busy
+		// runtime dial-with-backoff can take a few seconds on a busy
 		// CI node. 30s is comfortable headroom over the typical settle.
 		select {
 		case f, ok := <-ch:
@@ -502,7 +502,7 @@ spec:
 		By("waiting for the run to reach Succeeded (supervisor exits cleanly on /end)")
 		// Termination chain for a supervisor-driven run on /end:
 		//
-		//   broker /end → adapter ctlMessage{"action":"end"} →
+		//   broker /end → runtime ctlMessage{"action":"end"} →
 		//   supervisor closes stdin to fake-claude → fake-claude
 		//   read loop exits → supervisor cmd.Wait returns →
 		//   agent container exits 0 → Job completes → run = Succeeded.
@@ -513,15 +513,15 @@ spec:
 		run.WaitForPhaseIn(ctx, []string{"Succeeded", "Cancelled"}, 3*time.Minute)
 
 		By("asserting status.recentEvents contains a fake-harness 'assistant' frame")
-		// The adapter-claude-code converter emits a Message-type
+		// The runtime-claude-code converter emits a Message-type
 		// PaddockEvent for every "assistant" stream frame, and the
-		// collector flushes the workspace events.jsonl into the
+		// runtime publishes the workspace events.jsonl into the
 		// output ConfigMap which the controller projects into
 		// status.recentEvents. Thus a single recentEvents entry of
 		// type=Message is sufficient evidence the full path worked.
 		//
 		// status.recentEvents is updated on a reconcile that fires
-		// after the collector flushes the ConfigMap — Eventually
+		// after the runtime flushes the ConfigMap — Eventually
 		// covers the small post-Succeeded settle window.
 		Eventually(func(g Gomega) {
 			status := run.Status(ctx)

@@ -127,7 +127,7 @@ func getClusterHarnessTemplate(ctx context.Context, c client.Client, name string
 
 // MergeTemplates applies child overrides onto a parent's locked fields
 // per ADR-0003. Locked (inherited verbatim): Image, Command, Args,
-// EventAdapter, Workspace, Harness. Overridable (child wins when set):
+// Runtime, Workspace, Harness. Overridable (child wins when set):
 // Defaults, Requires, PodTemplateOverlay. The controller's reconciler
 // and this package's webhook + (in M3+) broker clients all route
 // through this function.

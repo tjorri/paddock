@@ -18,7 +18,7 @@ type TemplateBuilder struct {
 	harness             string
 	image               string
 	command             []string
-	eventAdapterImage   string
+	runtimeImage        string
 	defaultTimeout      string
 	workspaceMountPath  string
 	requiredCredentials []string
@@ -38,8 +38,8 @@ func (b *TemplateBuilder) WithCommand(cmd ...string) *TemplateBuilder {
 	b.command = cmd
 	return b
 }
-func (b *TemplateBuilder) WithEventAdapter(img string) *TemplateBuilder {
-	b.eventAdapterImage = img
+func (b *TemplateBuilder) WithRuntime(img string) *TemplateBuilder {
+	b.runtimeImage = img
 	return b
 }
 func (b *TemplateBuilder) WithDefaultTimeout(t string) *TemplateBuilder {
@@ -71,7 +71,7 @@ func (b *TemplateBuilder) BuildYAML() string {
 		}
 		sb.WriteString("]\n")
 	}
-	fmt.Fprintf(&sb, "  eventAdapter:\n    image: %s\n", b.eventAdapterImage)
+	fmt.Fprintf(&sb, "  runtime:\n    image: %s\n", b.runtimeImage)
 	fmt.Fprintf(&sb, "  defaults:\n    timeout: %s\n", b.defaultTimeout)
 	fmt.Fprintf(&sb, "  workspace:\n    required: true\n    mountPath: %s\n", b.workspaceMountPath)
 	if len(b.requiredCredentials) > 0 {

@@ -97,9 +97,8 @@ cmd/
   ├── broker/                # paddock-broker Deployment entry point
   ├── proxy/                 # per-run egress proxy
   ├── iptables-init/         # NET_ADMIN init container (transparent mode)
-  ├── adapter-echo/          # paddock-echo adapter sidecar
-  ├── adapter-claude-code/   # Claude Code adapter sidecar
-  └── collector/             # generic collector sidecar
+  ├── runtime-echo/          # paddock-echo unified runtime sidecar
+  └── runtime-claude-code/   # Claude Code unified runtime sidecar
 config/
   ├── broker/                # broker Deployment + Service + RBAC
   ├── certmanager/           # Issuer + Certificate for the cluster MITM CA root

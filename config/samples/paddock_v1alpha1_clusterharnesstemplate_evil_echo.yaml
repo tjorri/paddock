@@ -31,8 +31,8 @@ spec:
     - "--bypass-proxy-env"
     - "--connect-raw-tcp"
     - "10.96.0.10:443"
-  eventAdapter:
-    image: paddock-adapter-echo:dev
+  runtime:
+    image: paddock-runtime-echo:dev
     imagePullPolicy: IfNotPresent
   # Non-empty requires triggers per-run NetworkPolicy emission (the
   # controller skips NP for empty-requires runs since there's nothing
@@ -75,8 +75,8 @@ spec:
     - "/var/run/secrets/kubernetes.io/serviceaccount/*"
     - "--probe-broker"
     - "https://paddock-broker.paddock-system.svc:8443/v1/issue"
-  eventAdapter:
-    image: paddock-adapter-echo:dev
+  runtime:
+    image: paddock-runtime-echo:dev
     imagePullPolicy: IfNotPresent
   requires:
     egress:
@@ -117,8 +117,8 @@ spec:
   args:
     - "--smuggle-headers"
     - "Cookie=session=stolen,X-Forwarded-For=1.2.3.4,X-Anthropic-Account=evil"
-  eventAdapter:
-    image: paddock-adapter-echo:dev
+  runtime:
+    image: paddock-runtime-echo:dev
     imagePullPolicy: IfNotPresent
   requires:
     egress:
@@ -156,8 +156,8 @@ spec:
   args:
     - "--probe-provider-substitution-host"
     - "https://evil.com/"
-  eventAdapter:
-    image: paddock-adapter-echo:dev
+  runtime:
+    image: paddock-runtime-echo:dev
     imagePullPolicy: IfNotPresent
   requires:
     egress:
@@ -194,8 +194,8 @@ spec:
   # terminal phase cleanly with the new code path.
   args:
     - "--probe-env-override"
-  eventAdapter:
-    image: paddock-adapter-echo:dev
+  runtime:
+    image: paddock-runtime-echo:dev
     imagePullPolicy: IfNotPresent
   requires:
     egress:

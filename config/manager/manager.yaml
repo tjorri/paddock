@@ -68,11 +68,6 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
-          # The collector image is a separate binary that ships alongside
-          # the manager; the two version in lockstep. hack/gen-helm-chart.sh
-          # rewrites this literal into a {{ .Values.collectorImage ... }}
-          # template when generating the Helm chart.
-          - --collector-image=paddock-collector:dev
           # HarnessRun.status.recentEvents cap (ADR-0007). Literal here;
           # hack/gen-helm-chart.sh substitutes it with .Values.recentEventsCap
           # when rendering the Helm chart.

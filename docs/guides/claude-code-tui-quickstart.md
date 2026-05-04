@@ -19,9 +19,9 @@ The whole flow takes about five minutes against a Paddock-equipped cluster.
 
 - A Kubernetes cluster running the Paddock control plane (see
   [`getting-started/`](../getting-started/) if you need to install it).
-- The `paddock-claude-code` and `paddock-adapter-claude-code` images
+- The `paddock-claude-code` and `paddock-runtime-claude-code` images
   available on the cluster — either pulled from your registry or
-  side-loaded into Kind via `make image-claude-code image-adapter-claude-code`
+  side-loaded into Kind via `make image-claude-code image-runtime-claude-code`
   and `kind load docker-image …`.
 - `kubectl` pointed at the cluster, with permission to create `Secret`,
   `HarnessTemplate`, and `BrokerPolicy` objects in your target namespace.
@@ -77,8 +77,8 @@ The repo ships a `ClusterHarnessTemplate` named `claude-code` that uses
 `ANTHROPIC_API_KEY` and the `AnthropicAPI` vertical provider
 (see [`config/samples/paddock_v1alpha1_clusterharnesstemplate_claude_code.yaml`](../../config/samples/paddock_v1alpha1_clusterharnesstemplate_claude_code.yaml)).
 For OAuth-token auth we declare a new namespaced template that requires
-`CLAUDE_CODE_OAUTH_TOKEN` instead. Same image, same adapter, same egress —
-just a different credential name.
+`CLAUDE_CODE_OAUTH_TOKEN` instead. Same image, same runtime, same
+egress — just a different credential name.
 
 ```yaml
 # claude-code-oauth-template.yaml
@@ -92,8 +92,8 @@ spec:
   image: paddock-claude-code:dev
   command:
     - /usr/local/bin/paddock-claude-code
-  eventAdapter:
-    image: paddock-adapter-claude-code:dev
+  runtime:
+    image: paddock-runtime-claude-code:dev
   requires:
     credentials:
       - name: CLAUDE_CODE_OAUTH_TOKEN

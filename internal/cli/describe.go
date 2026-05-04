@@ -91,8 +91,8 @@ func printTemplateDescription(out io.Writer, name, source, namespace string, spe
 	if len(spec.Args) > 0 {
 		fmt.Fprintf(out, "Args:       %s\n", strings.Join(spec.Args, " "))
 	}
-	if spec.EventAdapter != nil {
-		fmt.Fprintf(out, "EventAdapter: %s\n", spec.EventAdapter.Image)
+	if spec.Runtime != nil {
+		fmt.Fprintf(out, "Runtime:    %s\n", spec.Runtime.Image)
 	}
 	if spec.Workspace.Required {
 		mount := spec.Workspace.MountPath

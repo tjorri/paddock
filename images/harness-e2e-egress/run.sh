@@ -14,7 +14,7 @@
 #   E2E_HOLD_SECONDS    Total hold duration (default 0 = no hold).
 #
 # Emits echo-compatible JSONL events (kind ∈ {message,tool,result}) so
-# paddock-adapter-echo can translate them unchanged.
+# paddock-runtime-echo can translate them unchanged.
 
 set -eu
 

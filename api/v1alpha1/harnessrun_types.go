@@ -371,6 +371,22 @@ type PaddockEvent struct {
 	Fields map[string]string `json:"fields,omitempty"`
 }
 
+// PaddockEvent.Type values. Adapters may emit custom types beyond
+// these (consumers should tolerate unknown types per the godoc on
+// Type), but these are the canonical built-ins. The unified runtime
+// (internal/runtime/) emits all of them; PromptSubmitted is new with
+// the unified runtime and carries the full prompt text in
+// Fields["text"] (stripped from the ConfigMap projection).
+//
+// See docs/superpowers/specs/2026-05-03-unified-runtime-design.md §7.
+const (
+	PaddockEventTypeMessage         = "Message"
+	PaddockEventTypeResult          = "Result"
+	PaddockEventTypeError           = "Error"
+	PaddockEventTypeToolUse         = "ToolUse"
+	PaddockEventTypePromptSubmitted = "PromptSubmitted"
+)
+
 // HarnessRunOutputs are structured outputs reported by the harness.
 // Populated by the controller from the harness's result.json on the
 // workspace at Job completion.

@@ -45,7 +45,7 @@ var _ = Describe("harness lifecycle", Label("smoke"), func() {
 		framework.NewHarnessTemplate(ns, echoTemplateName).
 			WithImage(echoImage).
 			WithCommand("/usr/local/bin/paddock-echo").
-			WithEventAdapter(adapterEchoImage).
+			WithRuntime(runtimeEchoImage).
 			Apply(ctx)
 
 		By("submitting a HarnessRun (ephemeral workspace, inline prompt)")
@@ -58,18 +58,24 @@ var _ = Describe("harness lifecycle", Label("smoke"), func() {
 		run.WaitForPhase(ctx, "Succeeded", 2*time.Minute)
 		status := run.Status(ctx)
 
-		By("verifying status.recentEvents came through the adapter + collector")
-		Expect(status.RecentEvents).To(HaveLen(4),
-			"expected the 4 deterministic echo events; got %+v", status.RecentEvents)
+		By("verifying status.recentEvents came through the runtime sidecar")
+		// Unified runtime emits a PromptSubmitted event from Spec.Prompt
+		// at startup, followed by the 4 deterministic echo harness events
+		// (system, tool_use, assistant, result -> Message, ToolUse,
+		// Message, Result). Total 5.
+		Expect(status.RecentEvents).To(HaveLen(5),
+			"expected PromptSubmitted + 4 deterministic echo events; got %+v", status.RecentEvents)
 		types := make([]string, len(status.RecentEvents))
 		for i, ev := range status.RecentEvents {
 			types[i] = ev.Type
 			Expect(ev.SchemaVersion).To(Equal("1"), "event[%d] schemaVersion", i)
 			Expect(ev.Timestamp).NotTo(BeEmpty(), "event[%d] timestamp", i)
 		}
-		Expect(types).To(Equal([]string{"Message", "ToolUse", "Message", "Result"}))
-		Expect(status.RecentEvents[2].Summary).To(ContainSubstring("hello from paddock e2e"),
-			"the echoed prompt should appear in the 3rd event summary")
+		Expect(types).To(Equal([]string{"PromptSubmitted", "Message", "ToolUse", "Message", "Result"}))
+		Expect(status.RecentEvents[0].Summary).To(ContainSubstring("hello from paddock e2e"),
+			"PromptSubmitted summary should be the prompt text")
+		Expect(status.RecentEvents[3].Summary).To(ContainSubstring("hello from paddock e2e"),
+			"the echoed prompt should appear in the 4th event summary (assistant Message)")
 
 		By("verifying status.outputs.summary came from result.json")
 		Expect(status.Outputs).NotTo(BeNil())
@@ -81,7 +87,11 @@ var _ = Describe("harness lifecycle", Label("smoke"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(out)).To(Equal("Completed"))
 
-		By("verifying the per-run collector RBAC was provisioned")
+		By("verifying the per-run runtime RBAC was provisioned")
+		// Naming retained as <run>-collector for backwards compatibility
+		// with pre-unified-runtime workspaces; the SA is mounted into the
+		// runtime sidecar and grants get+update on the run's output
+		// ConfigMap.
 		_, err = utils.Run(exec.Command("kubectl", "-n", ns,
 			"get", "serviceaccount", echoRunName+"-collector"))
 		Expect(err).NotTo(HaveOccurred())

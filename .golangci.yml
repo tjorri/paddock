@@ -108,7 +108,7 @@ linters:
           - gosec
         text: "G104"
         path: internal/cli/.*
-      # gosec G301/G302/G306: adapter and collector write event files into
+      # gosec G301/G302/G306: the runtime binaries write event files into
       # a Pod-local workspace directory (/paddock/…). 0o755 dirs and 0o644
       # files are intentional — sibling containers in the same Pod must be
       # able to read the audit trail. Test fakes (fake-claude.sh) need
@@ -116,42 +116,43 @@ linters:
       - linters:
           - gosec
         text: "G30[126]"
-        path: cmd/(adapter-claude-code|adapter-echo|collector)/.*
+        path: cmd/runtime-(claude-code|echo)/.*
       - linters:
           - gosec
         text: "G30[126]"
-        path: internal/adapter/proxy/.*
-      # gosec G118 / noctx: adapter-claude-code's runInteractive spawns
+        path: internal/runtime/proxy/.*
+      # gosec G118 / noctx: the runtime binaries' runInteractive spawns
       # a shutdown goroutine that uses context.Background() with a
-      # bounded timeout because the HTTP server's graceful shutdown
-      # deadline is independent of the run lifecycle context (which
-      # is already done by the time the goroutine fires).
+      # bounded timeout once ctx is already cancelled. Plus the
+      # data-reader's per-event turn-complete callback creates its own
+      # context.Background() for the broker POST so a slow apiserver
+      # cannot stall the transcript pipeline.
       - linters:
           - gosec
           - noctx
         text: "G118|os/exec.Command"
-        path: cmd/adapter-claude-code/.*
+        path: cmd/runtime-(claude-code|echo)/.*
       # gosec G204 / noctx: harness-supervisor spawns the harness CLI
       # whose path comes from the PADDOCK_HARNESS_BIN env var
       # (controller-set on the agent container's Pod spec). Not user
       # input. The subprocess lifetime is owned by ctl messages
       # (interrupt/end), not an HTTP request context — same rationale
-      # as adapter-claude-code. noctx also fires on net.Listen for the
-      # UDS sockets and net.Dial in tests; the supervisor's listener
-      # lifecycle is owned by the run, not an HTTP context.
+      # as the runtime binaries above. noctx also fires on net.Listen
+      # for the UDS sockets and net.Dial in tests; the supervisor's
+      # listener lifecycle is owned by the run, not an HTTP context.
       - linters:
           - gosec
           - noctx
         text: "G204|os/exec.Command|net\\.Listen|net\\.Dial"
         path: cmd/harness-supervisor/.*
-      # noctx: internal/adapter/proxy tests use net.Listen for UDS
+      # noctx: internal/runtime/proxy tests use net.Listen for UDS
       # listeners and httptest.NewRequest for handler unit tests; the
       # production code under test owns its own listener via
       # net.ListenConfig and uses request-scoped contexts.
       - linters:
           - noctx
         text: "net\\.Listen|httptest\\.NewRequest"
-        path: internal/adapter/proxy/.*
+        path: internal/runtime/proxy/.*
       # gosec G703: per-prompt driver writes prompt files and events.jsonl
       # under <PADDOCK_WORKSPACE>/.paddock/runs/<run>/. Both env vars are
       # controller-set on the agent container's Pod spec (trusted control
@@ -161,11 +162,11 @@ linters:
       - linters:
           - gosec
         text: "G703"
-        path: cmd/adapter-claude-code/.*
+        path: cmd/runtime-(claude-code|echo)/.*
       # gosec G304: file paths from variables in these packages come from
       # trusted sources:
-      #   - cmd/adapter-*/collector: paths from flags/env set by the
-      #     controller in the Pod spec (trusted control plane).
+      #   - cmd/runtime-*: paths from flags/env set by the controller
+      #     in the Pod spec (trusted control plane).
       #   - internal/cli: --prompt-file flag is an intentional user-supplied
       #     file path for a CLI tool; analogous to `cat <file>`.
       #   - internal/controller + internal/proxy (caPath): CA cert paths
@@ -173,11 +174,11 @@ linters:
       - linters:
           - gosec
         text: "G304"
-        path: cmd/(adapter-claude-code|adapter-echo|collector)/.*
+        path: cmd/runtime-(claude-code|echo)/.*
       - linters:
           - gosec
         text: "G304"
-        path: internal/adapter/proxy/.*
+        path: internal/runtime/proxy/.*
       - linters:
           - gosec
         text: "G304"
@@ -238,7 +239,7 @@ linters:
           - gosec
         text: "G704"
         path: internal/proxy/broker_client\.go
-      # gosec G704: InteractiveRouter forwards to the adapter sidecar at
+      # gosec G704: InteractiveRouter forwards to the runtime sidecar at
       # an address resolved from the run pod's IP via a controller-runtime
       # cache lookup (see cmd/broker/main.go's adapterResolver). Neither
       # the URL host nor the path comes from user input — the resolver

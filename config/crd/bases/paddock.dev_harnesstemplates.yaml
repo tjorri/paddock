@@ -71,7 +71,7 @@ spec:
                 description: |-
                   BaseTemplateRef, when set on a namespaced HarnessTemplate, inherits
                   the referenced ClusterHarnessTemplate's pod shape. Locked fields
-                  (Image, Command, Args, EventAdapter, Workspace) must be empty on
+                  (Image, Command, Args, Runtime, Workspace) must be empty on
                   the inheriting template. Not valid on ClusterHarnessTemplate.
                 properties:
                   name:
@@ -173,23 +173,6 @@ spec:
                     description: Timeout is the default active deadline for a run.
                       Overridable per-run.
                     type: string
-                type: object
-              eventAdapter:
-                description: |-
-                  EventAdapter is the per-harness sidecar image that converts raw
-                  harness output to PaddockEvents. When unset, events.jsonl is not
-                  produced and status.recentEvents carries only lifecycle events.
-                  Locked when inheriting.
-                properties:
-                  image:
-                    description: Image is the adapter sidecar image reference.
-                    type: string
-                  imagePullPolicy:
-                    description: ImagePullPolicy overrides the default pull policy
-                      for the adapter.
-                    type: string
-                required:
-                - image
                 type: object
               harness:
                 description: |-
@@ -8785,6 +8768,26 @@ spec:
                       - host
                       type: object
                     type: array
+                type: object
+              runtime:
+                description: |-
+                  Runtime is the per-harness sidecar image that owns the harness-side
+                  data plane: input recording, output translation to PaddockEvents,
+                  transcript persistence (events.jsonl), ConfigMap publishing of
+                  recent events, and the broker HTTP+WS surface for interactive
+                  modes. When unset, events.jsonl is not produced and
+                  status.recentEvents carries only lifecycle events. Locked when
+                  inheriting.
+                properties:
+                  image:
+                    description: Image is the runtime sidecar image reference.
+                    type: string
+                  imagePullPolicy:
+                    description: ImagePullPolicy overrides the default pull policy
+                      for the runtime.
+                    type: string
+                required:
+                - image
                 type: object
               workspace:
                 description: |-

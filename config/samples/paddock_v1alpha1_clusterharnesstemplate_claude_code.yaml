@@ -12,9 +12,9 @@ spec:
   image: paddock-claude-code:dev
   command:
     - /usr/local/bin/paddock-claude-code
-  eventAdapter:
-    # Built locally via `make image-adapter-claude-code`.
-    image: paddock-adapter-claude-code:dev
+  runtime:
+    # Built locally via `make image-runtime-claude-code`.
+    image: paddock-runtime-claude-code:dev
   # v0.3: templates declare capability requirements; namespaces grant
   # them via BrokerPolicy (ADR-0014). Before submitting a run against
   # this template, apply a BrokerPolicy in the target namespace:

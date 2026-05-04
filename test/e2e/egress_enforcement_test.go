@@ -60,7 +60,7 @@ var _ = Describe("egress enforcement", Label("hostile"), func() {
 		framework.NewHarnessTemplate(ns, egressBlockTemplate).
 			WithImage(e2eEgressImage).
 			WithCommand("/usr/local/bin/paddock-e2e-egress").
-			WithEventAdapter(adapterEchoImage).
+			WithRuntime(runtimeEchoImage).
 			WithDefaultTimeout("120s").
 			Apply(context.Background())
 
@@ -99,7 +99,7 @@ var _ = Describe("egress enforcement", Label("hostile"), func() {
 		framework.NewHarnessTemplate(ns, egressBlockTemplate).
 			WithImage(e2eEgressImage).
 			WithCommand("/usr/local/bin/paddock-e2e-egress").
-			WithEventAdapter(adapterEchoImage).
+			WithRuntime(runtimeEchoImage).
 			WithDefaultTimeout("120s").
 			Apply(context.Background())
 

@@ -142,8 +142,9 @@ are dialogues, not batch jobs.
 ### 6. Cancel a turn
 
 In the palette, run `cancel`. The TUI calls `POST /interrupt`, which
-signals the adapter to stop the in-flight turn. The run stays alive;
-the session remains bound. Submit another prompt to continue.
+signals the runtime sidecar (and through it, the supervisor) to stop
+the in-flight turn. The run stays alive; the session remains bound.
+Submit another prompt to continue.
 
 `cancel` with no turn in flight surfaces a status banner: "nothing to
 interrupt".

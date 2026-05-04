@@ -63,11 +63,12 @@ helm install paddock ./charts/paddock \
   --namespace paddock-system --create-namespace \
   --wait --timeout 5m \
   --set image.tag=dev \
-  --set collectorImage.tag=dev \
   --set brokerImage.tag=dev \
   --set proxyImage.tag=dev \
   --set iptablesInitImage.tag=dev
 ```
+
+The per-harness runtime sidecar images (`paddock-runtime-echo:dev`, `paddock-runtime-claude-code:dev`) are referenced by `HarnessTemplate.spec.runtime.image`, not the chart — `make images` builds them and `make kind-load` loads them into the cluster.
 
 `--wait` blocks until both `paddock-controller-manager` and
 `paddock-broker` are Ready, replacing the equivalent two `kubectl
@@ -84,9 +85,9 @@ is issuing the proxy MITM CA — that race is expected and self-heals.
 `echo-default` is a no-LLM reference template. The harness reads your
 prompt, "thinks" briefly, and echoes the byte count back — purely to
 demonstrate the full pipeline shape (admission → broker → proxy
-sidecar → harness → adapter → collector → status) without any
-network egress or credentials. It declares no `requires`, so admission
-passes without a `BrokerPolicy`.
+sidecar → agent → runtime sidecar → status) without any network
+egress or credentials. It declares no `requires`, so admission passes
+without a `BrokerPolicy`.
 
 ```sh
 kubectl apply -f config/samples/paddock_v1alpha1_clusterharnesstemplate.yaml

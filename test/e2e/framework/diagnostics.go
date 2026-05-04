@@ -151,7 +151,7 @@ func listPaddockTenantNamespaces(ctx context.Context) []string {
 
 // dumpNamespace emits diagnostics for a single tenant namespace: events,
 // pod list, pod descriptions, HarnessRun YAML, per-container logs
-// (proxy, iptables-init, agent, adapter, collector), and AuditEvents.
+// (proxy, iptables-init, agent, runtime), and AuditEvents.
 func dumpNamespace(ctx context.Context, ns string) {
 	dump := func(title string, args ...string) {
 		out, err := exec.CommandContext(ctx, "kubectl", args...).CombinedOutput()
@@ -171,7 +171,7 @@ func dumpNamespace(ctx context.Context, ns string) {
 	dump("harnessrun descriptions",
 		"-n", ns, "describe", "harnessruns")
 
-	for _, c := range []string{"proxy", "iptables-init", "agent", "adapter", "collector"} {
+	for _, c := range []string{"proxy", "iptables-init", "agent", "runtime"} {
 		out, err := exec.CommandContext(ctx, "kubectl",
 			"-n", ns, "logs", "-l", "paddock.dev/run", "-c", c, "--tail=100").
 			CombinedOutput()

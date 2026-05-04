@@ -29,8 +29,7 @@ container plus the sidecars and init containers below.
 
 | Component | Role |
 |---|---|
-| Generic collector sidecar | Writes agent output into the owned `<run>-out` ConfigMap |
-| Per-harness adapters | Convert raw agent output to `PaddockEvent`s. For Interactive runs, the adapter is additionally a stream-json frame proxy between the broker and `paddock-harness-supervisor` over a UDS pair on `/paddock` — it does not spawn or own the harness CLI process and does not mount the workspace PVC. |
+| **Per-harness runtime sidecar** (`paddock-runtime-<harness>`) | Owns the harness-side data plane end-to-end: tails the agent's raw output and runs the harness-specific Converter to produce `PaddockEvent`s, persists the transcript at `/workspace/.paddock/runs/<run>/events.jsonl` on the workspace PVC, mirrors the same JSONL stream to its own stdout (so `kubectl logs <pod> -c runtime` is byte-identical to the file), debounces a recent-events projection into the run's `<run>-output` ConfigMap, and (interactive only) serves the broker HTTP+WS surface over the supervisor's UDS pair. |
 | **`paddock-harness-supervisor`** (Interactive runs) | Harness-agnostic binary in the **agent container** that listens on `/paddock/agent-data.sock` (data plane) and `/paddock/agent-ctl.sock` (control plane) and bridges them to the harness CLI's stdio. Implements both `per-prompt-process` and `persistent-process` modes. See [`../contributing/harness-authoring.md`](../contributing/harness-authoring.md) for the harness-image author contract. |
 | **Per-run egress proxy** | L7 HTTPS MITM; calls broker `ValidateEgress` per connection and `SubstituteAuth` per request so the agent only sees Paddock-issued bearers |
 | **iptables-init** (transparent mode) | NET_ADMIN init container that installs REDIRECT rules so the agent can't bypass the proxy |

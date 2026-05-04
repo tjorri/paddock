@@ -28,7 +28,7 @@ type HostileEvent struct {
 
 // ParseHostileEvents parses lines of evil-echo JSON output. Tolerates
 // non-JSON lines (e.g., the harness's stderr leaking into the output
-// ConfigMap if collector misroutes).
+// ConfigMap if the runtime misroutes).
 func ParseHostileEvents(text string) []HostileEvent {
 	var events []HostileEvent
 	for _, line := range strings.Split(text, "\n") {

@@ -4,8 +4,7 @@
 # under charts/paddock/. Splits CustomResourceDefinitions into
 # charts/paddock/crds/ (Helm installs these once) and routes
 # everything else into templates/paddock.yaml with Helm value
-# substitutions for the manager image and optional collector-image
-# flag.
+# substitutions for the manager image and other manager flags.
 #
 # Run this whenever config/** changes. The generated files are
 # committed so `helm install` works straight from a fresh clone
@@ -72,16 +71,12 @@ for doc in "$tmp"/doc-*.yml "$tmp"/doc-*.yaml; do
       # Use '@' as the sed delimiter because the Helm template syntax
       # {{ tag | default … }} contains a bare pipe character.
       #
-      # Three substitutions get rewritten:
+      # The substitutions rewritten:
       #   - the manager container image (Deployment.spec.containers[0].image)
-      #   - the --collector-image arg on the manager, which the
-      #     controller forwards into every HarnessRun Pod's collector
-      #     sidecar
       #   - the --recent-events-cap arg, wired from .Values.recentEventsCap
       #     (ADR-0007)
       sed \
         -e 's@image: paddock-manager:dev@image: {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}@g' \
-        -e 's@- --collector-image=paddock-collector:dev@- --collector-image={{ .Values.collectorImage.repository }}:{{ .Values.collectorImage.tag | default .Chart.AppVersion }}@g' \
         -e 's@- --recent-events-cap=50@- --recent-events-cap={{ .Values.recentEventsCap | default 50 }}@g' \
         -e 's@- --audit-retention-days=30@- --audit-retention-days={{ .Values.auditRetentionDays | default 30 }}@g' \
         -e 's@image: paddock-broker:dev@image: {{ .Values.brokerImage.repository }}:{{ .Values.brokerImage.tag | default .Chart.AppVersion }}@g' \

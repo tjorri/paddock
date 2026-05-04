@@ -104,7 +104,7 @@ spec:
   harness: echo
   image: %s
   command: ["/usr/local/bin/paddock-echo"]
-  eventAdapter:
+  runtime:
     image: %s
   requires:
     credentials:
@@ -117,7 +117,7 @@ spec:
   workspace:
     required: true
     mountPath: /workspace
-`, templateName, echoImage, adapterEchoImage))
+`, templateName, echoImage, runtimeEchoImage))
 
 		By("applying a BrokerPolicy granting the credential + egress")
 		// BrokerPolicy egress grants are not expressible via PolicyBuilder;

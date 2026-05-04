@@ -43,7 +43,7 @@ import (
 // → soft warning only (backwards compatible). The runtime supervisor
 // is the load-bearing enforcement; this admission check just fails
 // fast on operator typos.
-const adapterInteractiveModesAnnotation = "paddock.dev/adapter-interactive-modes"
+const adapterInteractiveModesAnnotation = "paddock.dev/runtime-interactive-modes"
 
 var harnessrunlog = logf.Log.WithName("harnessrun-resource")
 
@@ -189,7 +189,7 @@ func (v *HarnessRunCustomValidator) validateAgainstTemplate(ctx context.Context,
 				run.Spec.TemplateRef.Name)
 		}
 		// Annotation gate: when the template carries
-		// paddock.dev/adapter-interactive-modes, require
+		// paddock.dev/runtime-interactive-modes, require
 		// spec.interactive.mode to be a member of that
 		// comma-separated set. Absent annotation → soft warning only
 		// (backwards compat); the runtime supervisor is the
@@ -240,7 +240,7 @@ func (v *HarnessRunCustomValidator) validateAgainstTemplate(ctx context.Context,
 }
 
 // validateInteractiveModeAnnotation enforces the
-// paddock.dev/adapter-interactive-modes annotation when present on the
+// paddock.dev/runtime-interactive-modes annotation when present on the
 // referenced template. The annotation is operator-asserted (this
 // adapter image supports modes X, Y) — image introspection inside the
 // webhook would require a registry round-trip and is intentionally not

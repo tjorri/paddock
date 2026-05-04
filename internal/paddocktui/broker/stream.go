@@ -31,8 +31,11 @@ import (
 const streamSubprotocol = "paddock.stream.v1"
 
 // maxReconnectAttempts is the number of reconnect attempts before Open
-// gives up and closes the frame channel.
-const maxReconnectAttempts = 5
+// gives up and closes the frame channel. 10 attempts at 1/2/4/8/8/8…
+// backoff give ~60s of total reconnect runway — enough to ride out a
+// run pod's full warm-up window plus a couple of SPDY tunnel drops on
+// top, which is the failure shape we see in CI.
+const maxReconnectAttempts = 10
 
 // StreamFrame is one event frame off the broker stream. Type and Data
 // are passed through verbatim from the adapter; the TUI projects them
@@ -89,6 +92,24 @@ func (c *Client) Open(ctx context.Context, ns, run string) (<-chan StreamFrame, 
 			if err != nil {
 				if ctx.Err() != nil {
 					return
+				}
+				// If the local SPDY port-forward listener has died,
+				// every dial here will return ECONNREFUSED on the
+				// loopback address and the reconnect attempts will
+				// burn through the budget without ever recovering.
+				// Re-dial the upstream tunnel — it preserves the
+				// local port, so wsURL is still valid.
+				if c.pf != nil && isLocalPortRefused(err) {
+					rcCtx, rcCancel := context.WithTimeout(ctx, 10*time.Second)
+					if rcErr := c.pf.Reconnect(rcCtx); rcErr != nil {
+						// Log path is the goroutine's stderr via
+						// the upstream caller; surfacing the
+						// reconnect error here would require a
+						// channel; the next dial attempt will
+						// surface it instead.
+						_ = rcErr
+					}
+					rcCancel()
 				}
 				backoff(ctx, attempt)
 				attempt++

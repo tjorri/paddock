@@ -60,7 +60,7 @@ var _ = Describe("broker failure modes", Ordered, Serial, Label("broker"), func(
 		framework.NewHarnessTemplate(ns, brokerDownTemplate).
 			WithImage(echoImage).
 			WithCommand("/usr/local/bin/paddock-echo").
-			WithEventAdapter(adapterEchoImage).
+			WithRuntime(runtimeEchoImage).
 			WithDefaultTimeout("60s").
 			WithRequiredCredential("DEMO_TOKEN").
 			Apply(ctx)
@@ -165,7 +165,7 @@ stringData:
 		framework.NewHarnessTemplate(ns, "tg19-template").
 			WithImage(echoImage).
 			WithCommand("/usr/local/bin/paddock-echo").
-			WithEventAdapter(adapterEchoImage).
+			WithRuntime(runtimeEchoImage).
 			WithRequiredCredential("DEMO_TOKEN").
 			Apply(ctxT)
 

@@ -67,8 +67,8 @@ func validateHarnessTemplateSpec(spec *paddockv1alpha1.HarnessTemplateSpec, isCl
 			errs = append(errs, field.Forbidden(specPath.Child("args"),
 				"must be empty when baseTemplateRef is set; inherited from the base template"))
 		}
-		if spec.EventAdapter != nil {
-			errs = append(errs, field.Forbidden(specPath.Child("eventAdapter"),
+		if spec.Runtime != nil {
+			errs = append(errs, field.Forbidden(specPath.Child("runtime"),
 				"must be empty when baseTemplateRef is set; inherited from the base template"))
 		}
 		// Workspace block is locked too — empty struct (zero value) is fine,
@@ -90,9 +90,9 @@ func validateHarnessTemplateSpec(spec *paddockv1alpha1.HarnessTemplateSpec, isCl
 		}
 	}
 
-	if spec.EventAdapter != nil && spec.EventAdapter.Image == "" {
-		errs = append(errs, field.Required(specPath.Child("eventAdapter").Child("image"),
-			"eventAdapter.image is required when eventAdapter is set"))
+	if spec.Runtime != nil && spec.Runtime.Image == "" {
+		errs = append(errs, field.Required(specPath.Child("runtime").Child("image"),
+			"runtime.image is required when runtime is set"))
 	}
 
 	errs = append(errs, validateTerminationGracePeriodSeconds(

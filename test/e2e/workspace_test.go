@@ -198,13 +198,13 @@ var _ = Describe("workspace persistence", Ordered, func() {
 		// Namespaced HarnessTemplate. The command overrides paddock-echo's
 		// entrypoint with a shell script that reads E2E_HOME_PHASE and
 		// performs either a write or a read against $HOME. The script writes
-		// echo-adapter-compatible events to PADDOCK_RAW_PATH and a result
-		// JSON to PADDOCK_RESULT_PATH so the collector processes them normally.
+		// echo-runtime-compatible events to PADDOCK_RAW_PATH and a result
+		// JSON to PADDOCK_RESULT_PATH so the runtime processes them normally.
 		script := strings.Replace(homePersistScriptTemplate, "__SENTINEL__", homePersistSentinel, 1)
 		framework.NewHarnessTemplate(ns, homePersistTemplate).
 			WithImage(echoImage).
 			WithCommand("/bin/sh", "-c", script).
-			WithEventAdapter(adapterEchoImage).
+			WithRuntime(runtimeEchoImage).
 			WithDefaultTimeout("120s").
 			Apply(ctx)
 
@@ -272,7 +272,7 @@ var _ = Describe("workspace persistence", Ordered, func() {
 		run.WaitForPhase(ctx, "Succeeded", 2*time.Minute)
 
 		By("verifying the read run's output summary contains the written sentinel")
-		// The collector writes the harness's result.json summary into the
+		// The runtime writes the harness's result.json summary into the
 		// output ConfigMap (<run>-out) under key "phase"="Completed" and
 		// the run's status.outputs.summary field. Poll status.outputs
 		// rather than the ConfigMap — same poll we'd use for events.

@@ -56,12 +56,12 @@ const shellSubprotocol = "paddock.shell.v1"
 
 // Container names mirror those baked in by the controller's pod spec
 // (see internal/controller/pod_spec.go: agentContainerName = "agent",
-// adapterContainerName = "adapter"). Duplicated here as local
+// runtimeContainerName = "runtime"). Duplicated here as local
 // constants to avoid an internal/broker -> internal/controller import
 // cycle. Keep in sync if the controller ever renames either.
 const (
 	shellContainerAgent   = "agent"
-	shellContainerAdapter = "adapter"
+	shellContainerRuntime = "runtime"
 )
 
 // runPodLabelKey is the label the controller stamps on every Pod it
@@ -302,8 +302,8 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 	}
 
 	containerName := shellContainerAgent
-	if shellCap.Target == "adapter" {
-		containerName = shellContainerAdapter
+	if shellCap.Target == "runtime" {
+		containerName = shellContainerRuntime
 	}
 	// TODO(shell-fallback): the spec calls for trying /bin/bash and
 	// falling back to /bin/sh when bash isn't installed. v1 hard-codes

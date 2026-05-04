@@ -339,7 +339,7 @@ spec:
                               into.
                             enum:
                             - agent
-                            - adapter
+                            - runtime
                             type: string
                         type: object
                     type: object

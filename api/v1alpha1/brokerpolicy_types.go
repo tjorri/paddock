@@ -89,7 +89,7 @@ type GrantRunsCapabilities struct {
 // ShellCapability declares the shape of granted shell access.
 type ShellCapability struct {
 	// Target is which container the broker exec's into.
-	// +kubebuilder:validation:Enum=agent;adapter
+	// +kubebuilder:validation:Enum=agent;runtime
 	// +kubebuilder:default=agent
 	// +optional
 	Target string `json:"target,omitempty"`

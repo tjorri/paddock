@@ -36,9 +36,9 @@ streaming events, opening a debug shell, and ending the run cleanly.
 Three things must align for an Interactive run to admit and operate:
 
 1. **Template** — `HarnessTemplate.spec.interactive.mode` must be set
-   (`per-prompt-process` or `persistent-process`). The adapter image
+   (`per-prompt-process` or `persistent-process`). The runtime image
    must declare the matching mode in its
-   `paddock.dev/interactive-modes` annotation.
+   `paddock.dev/runtime-interactive-modes` label (comma-separated).
 2. **Run** — `HarnessRun.spec.mode: Interactive`.
 3. **Policy** — A `BrokerPolicy` matching the template must grant
    `runs.interact: true`. `runs.shell` is a separate, opt-in grant.
@@ -64,11 +64,11 @@ Two interactive modes exist:
 
 Both modes are implemented by `paddock-harness-supervisor`, a
 harness-agnostic binary that ships in the agent container alongside
-the harness CLI. The adapter sidecar is a stream-json frame proxy
-between the broker and the supervisor — it does not spawn the harness
-CLI itself and never mounts the workspace PVC. See [Harness image
-requirements](#harness-image-requirements) for the image-author
-contract.
+the harness CLI. The per-harness runtime sidecar
+(`paddock-runtime-<harness>`) dials the supervisor's UDS pair and
+serves the broker's HTTP+WS surface — it does not spawn the harness
+CLI itself. See [Harness image requirements](#harness-image-requirements)
+for the image-author contract.
 
 ```yaml
 apiVersion: paddock.dev/v1alpha1
@@ -80,6 +80,8 @@ spec:
   harness: claude-code
   image: paddock-claude-code:dev
   command: ["/usr/local/bin/claude"]
+  runtime:
+    image: paddock-runtime-claude-code:dev
   interactive:
     mode: persistent-process
     # All four timeouts have built-in defaults; override here to tighten
@@ -139,7 +141,7 @@ spec:
     runs:
       interact: true
       shell:
-        target: agent           # or "adapter" — same pod, no credential access
+        target: agent           # or "runtime" — same pod, no credential access
         # command:              # optional override; default is /bin/bash
         #   - /bin/sh
         # allowedPhases:        # optional restriction; default is every phase that has a pod
@@ -148,10 +150,11 @@ spec:
         # recordTranscript: false  # default — set true to capture the byte stream to /paddock/shell/<id>.log
 ```
 
-For the safest configuration, set `target: adapter` — the adapter
+For the safest configuration, set `target: runtime` — the runtime
 sidecar doesn't hold the run's credentials, so a shell there is useful
-for inspecting `/paddock/...` artefacts without exposing secrets. Use
-`target: agent` only when debugging the agent's own state requires it.
+for inspecting `/workspace/.paddock/runs/<run>/...` transcript artefacts
+without exposing secrets. Use `target: agent` only when debugging the
+agent's own state requires it.
 
 ## Get a bearer token
 
@@ -196,10 +199,10 @@ Batch run, which Interactive doesn't support today.
 ## Stream events
 
 The event stream is a WebSocket reverse-proxy: the broker dials the
-adapter's loopback `/stream`, the adapter forwards frames over the
-data UDS to the supervisor in the agent container, and the supervisor
-relays them to the harness CLI's stdio. Frames flow in both directions
-until either side closes.
+runtime sidecar's loopback `/stream`, the runtime forwards frames over
+the data UDS to the supervisor in the agent container, and the
+supervisor relays them to the harness CLI's stdio. Frames flow in both
+directions until either side closes.
 
 ```sh
 # wscat is convenient for ad-hoc; production clients should use a real WS library.
@@ -212,9 +215,10 @@ wscat \
 
 Subprotocol `paddock.stream.v1` must be negotiated — the broker rejects
 the upgrade otherwise. Frame types and payload shape pass through
-verbatim from the adapter; refer to the adapter you're running for the
-event schema (the reference `paddock-claude-code` adapter emits
-JSON-line events mirroring `claude --output-format stream-json`).
+verbatim from the runtime; refer to the runtime you're running for the
+event schema (the reference `paddock-runtime-claude-code` emits
+JSON-line `PaddockEvent`s converted from `claude --output-format
+stream-json`).
 
 While at least one client is attached, `Status.Interactive.AttachedSessions`
 counts up and the watchdog uses the (longer) `idleTimeout` rather than
@@ -243,8 +247,8 @@ have a pod: Running, Idle, Succeeded, Failed, Cancelled).
 ## Cancel an in-flight turn
 
 `POST /v1/runs/{ns}/{name}/interrupt` signals the supervisor (via the
-adapter's control socket) to stop the current prompt. Implementation
-depends on the mode:
+runtime sidecar's control socket) to stop the current prompt.
+Implementation depends on the mode:
 
 - `per-prompt-process` — supervisor delivers SIGTERM to the in-flight
   harness CLI subprocess in the agent container and clears
@@ -270,8 +274,24 @@ curl --cacert /path/to/broker-ca.crt \
 `reason` is optional (defaults to `explicit`) and is sanitized before
 landing in the `interactive-run-terminated` audit event: control
 characters are stripped and the value is capped at 256 bytes. The audit
-emits only after the adapter actually receives the End signal — a 502
-from a missing adapter does not produce a "terminated" record.
+emits only after the runtime sidecar actually receives the End signal —
+a 502 from a missing runtime does not produce a "terminated" record.
+
+## Harness image requirements
+
+Interactive runs depend on the agent image meeting a small contract:
+the image must ship `paddock-harness-supervisor` at
+`/usr/local/bin/`, declare `PADDOCK_HARNESS_BIN` (and the per-mode
+`PADDOCK_HARNESS_ARGS_*` env vars) in its Dockerfile, and branch
+`run.sh` to `exec paddock-harness-supervisor` when
+`PADDOCK_INTERACTIVE_MODE` is set. The supervisor handles the UDS
+plumbing back to the runtime sidecar; the harness CLI only needs to
+read prompts from stdin and write responses to stdout.
+
+The full contract — env vars, mode-selection guidance, validation
+script, and an empirical compatibility table covering Claude Code,
+OpenAI Codex CLI, Gemini CLI, Aider, and others — is documented in
+[`../contributing/harness-authoring.md`](../contributing/harness-authoring.md).
 
 ## Harness image requirements
 
@@ -354,6 +374,8 @@ spec:
   harness: claude-code
   image: paddock-claude-code:dev
   command: ["/usr/local/bin/claude"]
+  runtime:
+    image: paddock-runtime-claude-code:dev
   interactive:
     mode: persistent-process
     idleTimeout: 20m
@@ -386,7 +408,7 @@ spec:
     runs:
       interact: true
       shell:
-        target: adapter   # safer default — no credential access
+        target: runtime   # safer default — no credential access
 ---
 apiVersion: paddock.dev/v1alpha1
 kind: HarnessRun
@@ -437,8 +459,8 @@ for status and discussion:
 - **`Phase=Idle` is declared but not entered.** Interactive runs sit in
   `Phase=Running` continuously today; the in-flight guard tolerates this
   by checking `CurrentTurnSeq` rather than phase. The Idle phase is
-  reserved for a follow-up that wires adapter → controller turn-complete
-  events.
+  reserved for a follow-up that wires runtime → controller turn-complete
+  events end-to-end.
 - **`/bin/sh` fallback.** `handleShell` defaults to `/bin/bash`. Images
   without bash require an operator-supplied
   `BrokerPolicy.spec.grants.runs.shell.command` override.
@@ -462,10 +484,15 @@ for status and discussion:
   the threat model walks through the credential-exposure consequences.
 - [`./picking-a-delivery-mode.md`](./picking-a-delivery-mode.md) — for
   the credential side of an Interactive harness's `requires`.
-- [`../superpowers/specs/2026-05-02-interactive-adapter-as-proxy-design.md`](../superpowers/specs/2026-05-02-interactive-adapter-as-proxy-design.md)
-  — current runtime design (adapter-as-proxy + supervisor in agent
+- [`../superpowers/specs/2026-05-03-unified-runtime-design.md`](../superpowers/specs/2026-05-03-unified-runtime-design.md)
+  — current runtime design (single per-harness runtime sidecar that
+  owns the harness-side data plane; supervisor stays in the agent
   container).
+- [`../superpowers/specs/2026-05-02-interactive-adapter-as-proxy-design.md`](../superpowers/specs/2026-05-02-interactive-adapter-as-proxy-design.md)
+  — predecessor design that introduced the supervisor-in-agent +
+  adapter-as-frame-proxy split; superseded by the 2026-05-03
+  unified-runtime design (the adapter and collector containers are
+  collapsed into a single runtime sidecar).
 - [`../superpowers/specs/2026-04-29-interactive-harnessrun-design.md`](../superpowers/specs/2026-04-29-interactive-harnessrun-design.md)
   — original design spec for the CRD shapes, lifecycle state machine,
-  and audit semantics; runtime architecture in §2 is superseded by
-  the 2026-05-02 design.
+  and audit semantics; runtime architecture in §2 is superseded.

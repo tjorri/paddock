@@ -12,7 +12,7 @@ model, see [`../security/threat-model.md`](../security/threat-model.md).
 ## CRD shape and Pod composition
 
 ```
-ClusterHarnessTemplate   image + command + eventAdapter + requires (cred + egress)
+ClusterHarnessTemplate   image + command + runtime + requires (cred + egress)
         ▲
         │ baseTemplateRef (inherits locked fields)
 HarnessTemplate          namespaced; can override defaults + requires
@@ -25,14 +25,18 @@ HarnessRun               one invocation: prompt + workspace + model
         ├── AuditEvent (per decision)    TTL-retained security trail
         │
         └── Job           init:  iptables-init (transparent mode only)
-                          sidecar: adapter                (per-harness event translator;
-                                                           interactive: stream-json frame
-                                                           proxy across UDS pair)
-                          sidecar: collector              (status + PVC persistence)
-                          sidecar: proxy  ── ValidateEgress + SubstituteAuth ──► broker
-                          main:    agent  (sees Paddock-issued bearers only;
-                                           interactive: also runs paddock-harness-supervisor
-                                           which owns the harness CLI process)
+                          sidecar: runtime   (per-harness data plane: input
+                                              recording, output translation,
+                                              transcript persistence on PVC,
+                                              ConfigMap publishing, stdout
+                                              passthrough; interactive:
+                                              broker HTTP+WS surface, dials the
+                                              supervisor's UDS pair)
+                          sidecar: proxy     ── ValidateEgress + SubstituteAuth ──► broker
+                          main:    agent     (harness CLI; sees Paddock-issued
+                                              bearers only; interactive: also
+                                              runs paddock-harness-supervisor
+                                              which owns the harness CLI process)
 
                           shared volume /paddock/  (interactive runs):
                             agent-data.sock  ── stream-json frames (broker ↔ harness stdio)
@@ -45,10 +49,27 @@ override unlocked fields, and a `HarnessRun` is one invocation that
 references the template plus a prompt and (optionally) a workspace. The
 middle shows the per-run resources reconciled from a `HarnessRun`. The
 bottom is the Pod that executes the run — an init container sets up
-iptables redirects in transparent mode, three sidecars (adapter,
-collector, proxy) run alongside the agent, and the agent itself only
-ever sees Paddock-issued bearer tokens; the proxy swaps them for the
-real upstream credential at request time.
+iptables redirects in transparent mode, two sidecars (runtime and
+proxy) run alongside the agent, and the agent itself only ever sees
+Paddock-issued bearer tokens; the proxy swaps them for the real
+upstream credential at request time. The runtime sidecar owns the
+harness-side data plane end-to-end: it tails the agent's raw output,
+converts each line to PaddockEvents, persists the transcript at
+`/workspace/.paddock/runs/<run>/events.jsonl` on the workspace PVC,
+mirrors the same JSONL stream to its own stdout (so `kubectl logs <pod>
+-c runtime` is byte-identical to the file), and debounces a recent-
+events projection into the run's `<run>-output` ConfigMap.
+
+For Interactive runs, the agent container additionally runs
+`paddock-harness-supervisor` — a harness-agnostic binary that listens
+on two Unix-domain sockets (`agent-data.sock` and `agent-ctl.sock`) on
+the shared `/paddock` volume and bridges them to the harness CLI's
+stdio. The runtime sidecar dials those sockets and serves the broker's
+HTTP+WS surface (`/prompts`, `/stream`, `/interrupt`, `/end`),
+forwarding stream-json frames between the broker and the supervisor;
+the runtime never spawns the harness CLI itself. See
+[`../contributing/harness-authoring.md`](../contributing/harness-authoring.md)
+for both the runtime-image and agent-image author contracts.
 
 For Interactive runs, the agent container additionally runs
 `paddock-harness-supervisor` — a harness-agnostic binary that listens

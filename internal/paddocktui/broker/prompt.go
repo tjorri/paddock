@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 // ErrTurnInFlight is returned by Submit when the broker reports HTTP 409
@@ -46,7 +47,7 @@ func (c *Client) Submit(ctx context.Context, ns, run, text string) (int32, error
 	}
 	res, err := c.do(ctx, http.MethodPost,
 		fmt.Sprintf("/v1/runs/%s/%s/prompts", ns, run),
-		bytes.NewReader(body))
+		body)
 	if err != nil {
 		return 0, err
 	}
@@ -99,7 +100,7 @@ func (c *Client) End(ctx context.Context, ns, run, reason string) error {
 	}
 	res, err := c.do(ctx, http.MethodPost,
 		fmt.Sprintf("/v1/runs/%s/%s/end", ns, run),
-		bytes.NewReader(body))
+		body)
 	if err != nil {
 		return err
 	}
@@ -116,12 +117,42 @@ func (c *Client) End(ctx context.Context, ns, run, reason string) error {
 // bearer token, sets Content-Type, and issues the request. The caller
 // is responsible for closing res.Body on success. On transport error,
 // do returns a non-nil error with no response to close.
-func (c *Client) do(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+//
+// If the local SPDY port-forward listener has died (the loopback dial
+// returns ECONNREFUSED), do calls c.pf.Reconnect once and retries the
+// request. The body is taken as []byte rather than io.Reader so the
+// retry can reconstruct a fresh reader without forcing every caller
+// to buffer.
+func (c *Client) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
 	tok, err := c.auth.Get(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("broker: get token: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+
+	res, err := c.doOnce(ctx, method, path, tok, body)
+	if err != nil && c.pf != nil && isLocalPortRefused(err) {
+		// Tunnel dropped — kubernetes apiserver / SPDY proxy reset
+		// the connection or the kubelet recycled the broker pod's
+		// netns. Re-dial and retry once. Bound at one retry so a
+		// genuinely-down broker doesn't loop forever in here.
+		rcCtx, rcCancel := context.WithTimeout(ctx, 10*time.Second)
+		defer rcCancel()
+		if rcErr := c.pf.Reconnect(rcCtx); rcErr != nil {
+			return nil, fmt.Errorf("broker: reconnect after %v: %w", err, rcErr)
+		}
+		return c.doOnce(ctx, method, path, tok, body)
+	}
+	return res, err
+}
+
+// doOnce builds and issues a single HTTP request. Split from do so the
+// reconnect-and-retry path can replay it without recursive calls.
+func (c *Client) doOnce(ctx context.Context, method, path, tok string, body []byte) (*http.Response, error) {
+	var br io.Reader
+	if body != nil {
+		br = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, br)
 	if err != nil {
 		return nil, fmt.Errorf("broker: build request: %w", err)
 	}
