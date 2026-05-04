@@ -28,6 +28,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
 )
 
 func TestServer_PromptWritesToDataUDS(t *testing.T) {
@@ -81,9 +83,9 @@ func TestServer_PromptWritesToDataUDS(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	body, _ := json.Marshal(map[string]any{
-		"type":         "user",
-		"_paddock_seq": 1,
-		"message":      map[string]any{"content": []any{map[string]any{"type": "text", "text": "hi"}}},
+		"text":      "hi",
+		"seq":       int32(1),
+		"submitter": "alice",
 	})
 	r := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewReader(body))
 	srv.Handler().ServeHTTP(w, r)
@@ -241,6 +243,266 @@ func TestServer_InterruptWritesToCtl(t *testing.T) {
 	}
 }
 
+// TestServer_CloseWaitsForDataReaderDrain asserts Close synchronizes
+// with the runDataReader goroutine's exit via dataReaderDone. We hold
+// runDataReader inside an OnEvent callback that blocks on a test
+// channel. While the goroutine is held there, srv.Close() must block
+// (waiting on dataReaderDone). After we release the OnEvent block,
+// runDataReader returns and Close unblocks.
+//
+// Without the dataReaderDone wait in Close, Close would return
+// immediately while runDataReader is still in flight — the bug this
+// test guards against.
+func TestServer_CloseWaitsForDataReaderDrain(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	dataLn, err := net.Listen("unix", dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dataLn.Close() })
+	ctlLn, err := net.Listen("unix", ctlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ctlLn.Close() })
+
+	supDataConnCh := make(chan net.Conn, 1)
+	go func() {
+		c, _ := dataLn.Accept()
+		if c != nil {
+			supDataConnCh <- c
+		}
+	}()
+	go func() {
+		c, _ := ctlLn.Accept()
+		if c != nil {
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// onEventEntered closes when runDataReader hits the OnEvent callback
+	// (so we know it's processed at least one line and is now blocked
+	// inside our user-controlled callback rather than back at Read).
+	// releaseOnEvent unblocks the callback when the test is ready.
+	onEventEntered := make(chan struct{})
+	releaseOnEvent := make(chan struct{})
+
+	srv, err := NewServer(ctx, Config{
+		Mode:       "persistent-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		Backoff:    BackoffConfig{Initial: 10 * time.Millisecond, Max: 100 * time.Millisecond, Tries: 5},
+		Converter: func(line string) ([]paddockv1alpha1.PaddockEvent, error) {
+			return []paddockv1alpha1.PaddockEvent{{Type: "Test", Summary: line}}, nil
+		},
+		OnEvent: func(e paddockv1alpha1.PaddockEvent) {
+			select {
+			case <-onEventEntered:
+				// already signaled; later events shouldn't re-block
+			default:
+				close(onEventEntered)
+				<-releaseOnEvent
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	supData := <-supDataConnCh
+	t.Cleanup(func() { _ = supData.Close() })
+	if _, err := supData.Write([]byte(`{"type":"system"}` + "\n")); err != nil {
+		t.Fatalf("write supervisor side: %v", err)
+	}
+
+	// Wait for runDataReader to enter our OnEvent callback. After this
+	// point, the goroutine is blocked inside our callback; it has NOT
+	// yet returned, so dataReaderDone is still open.
+	select {
+	case <-onEventEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("OnEvent never fired — runDataReader did not deliver the line")
+	}
+
+	// Now call Close in a goroutine; it should block on dataReaderDone.
+	closeDone := make(chan struct{})
+	go func() {
+		_ = srv.Close()
+		close(closeDone)
+	}()
+
+	// Confirm Close is blocked. Use a short window — if Close returns
+	// quickly, dataReaderDone isn't synchronizing.
+	select {
+	case <-closeDone:
+		t.Fatalf("Close returned while runDataReader was still in flight — dataReaderDone wait missing or broken")
+	case <-time.After(100 * time.Millisecond):
+		// Good: Close is blocking.
+	}
+
+	// Release the OnEvent block; runDataReader's loop continues, the
+	// next Read returns ErrClosed (Close already shut the data conn),
+	// and the goroutine exits — closing dataReaderDone.
+	close(releaseOnEvent)
+
+	select {
+	case <-closeDone:
+		// Good: Close unblocked after the goroutine returned.
+	case <-time.After(1 * time.Second):
+		t.Fatalf("Close did not return after OnEvent released — possible 500ms timeout but should be much faster")
+	}
+}
+
+// TestServer_HandlersReturn503AfterClose asserts /prompts, /interrupt,
+// and /end all short-circuit with 503 once Close has been called. This
+// is the runtime-side half of #112: subsequent calls don't retry
+// against half-open UDS conns and instead surface a definitive
+// "service unavailable" so the broker can mark the run failed.
+func TestServer_HandlersReturn503AfterClose(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	dataLn, err := net.Listen("unix", dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dataLn.Close() })
+	ctlLn, err := net.Listen("unix", ctlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ctlLn.Close() })
+
+	go func() {
+		c, _ := dataLn.Accept()
+		if c != nil {
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+	go func() {
+		c, _ := ctlLn.Accept()
+		if c != nil {
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv, err := NewServer(ctx, Config{
+		Mode:       "persistent-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		Backoff:    BackoffConfig{Initial: 10 * time.Millisecond, Max: 100 * time.Millisecond, Tries: 5},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	// Close the Server first; subsequent handler calls must 503.
+	_ = srv.Close()
+
+	cases := []struct {
+		path string
+		body string
+	}{
+		{"/prompts", `{"text":"hi","seq":1,"submitter":"alice"}`},
+		{"/interrupt", `{}`},
+		{"/end", `{}`},
+	}
+	for _, tc := range cases {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+		srv.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s after Close: status = %d, want 503", tc.path, w.Code)
+		}
+	}
+}
+
+// TestServer_PromptCloseOnDataWriteError asserts a UDS write failure
+// in handlePrompts not only returns 502 but also closes the Server
+// — so the next /prompts call short-circuits with 503 (per Task 5)
+// instead of retrying against a known-broken connection.
+func TestServer_PromptCloseOnDataWriteError(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	dataLn, err := net.Listen("unix", dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dataLn.Close() })
+	ctlLn, err := net.Listen("unix", ctlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ctlLn.Close() })
+
+	// Fake supervisor: accept then immediately close the data conn so
+	// the next Write from the runtime side fails.
+	supDataAccepted := make(chan struct{})
+	go func() {
+		c, _ := dataLn.Accept()
+		if c != nil {
+			_ = c.Close()
+			close(supDataAccepted)
+		}
+	}()
+	go func() {
+		c, _ := ctlLn.Accept()
+		if c != nil {
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv, err := NewServer(ctx, Config{
+		Mode:       "persistent-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		Backoff:    BackoffConfig{Initial: 10 * time.Millisecond, Max: 100 * time.Millisecond, Tries: 5},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	<-supDataAccepted
+	// Give the kernel a moment to propagate the FIN to the runtime side
+	// so the next Write returns EPIPE deterministically.
+	time.Sleep(50 * time.Millisecond)
+
+	// First /prompts: data write fails → handler returns 502 AND
+	// closes the Server.
+	body := []byte(`{"text":"hi","seq":1,"submitter":"alice"}`)
+	w1 := httptest.NewRecorder()
+	r1 := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewReader(body))
+	srv.Handler().ServeHTTP(w1, r1)
+	if w1.Code != http.StatusBadGateway {
+		t.Errorf("first /prompts: status = %d, want 502", w1.Code)
+	}
+
+	// Second /prompts: Server is now closed; handler short-circuits 503.
+	w2 := httptest.NewRecorder()
+	r2 := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewReader(body))
+	srv.Handler().ServeHTTP(w2, r2)
+	if w2.Code != http.StatusServiceUnavailable {
+		t.Errorf("second /prompts: status = %d, want 503 (Server should be closed after first failure)", w2.Code)
+	}
+}
+
 func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 	dir := shortTempDir(t)
 	dataPath := filepath.Join(dir, "data.sock")
@@ -258,6 +520,8 @@ func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 	startWrite := make(chan struct{})
 
 	// Fake supervisor: accept data, push two newline-delimited frames.
+	// Use an assistant-shaped first frame so we can verify the wrapped
+	// envelope's Type field and inner Data payload after wrapStreamLine.
 	go func() {
 		c, _ := dataLn.Accept()
 		if c == nil {
@@ -265,7 +529,7 @@ func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 		}
 		defer func() { _ = c.Close() }()
 		<-startWrite
-		_, _ = c.Write([]byte(`{"type":"first"}` + "\n" + `{"type":"second"}` + "\n"))
+		_, _ = c.Write([]byte(`{"type":"assistant","text":"hi"}` + "\n" + `{"type":"second"}` + "\n"))
 		// Hold open until the test closes us.
 		<-time.After(2 * time.Second)
 	}()
@@ -295,16 +559,153 @@ func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 	defer srv.fanout.unsubscribe(ch)
 	close(startWrite)
 
-	got := []string{}
+	got := [][]byte{}
 	for i := 0; i < 2; i++ {
 		select {
 		case line := <-ch:
-			got = append(got, strings.TrimSpace(string(line)))
+			got = append(got, line)
 		case <-time.After(2 * time.Second):
 			t.Fatalf("fanout receive timeout after %d/%d", i, 2)
 		}
 	}
-	if got[0] != `{"type":"first"}` || got[1] != `{"type":"second"}` {
-		t.Errorf("fanout lines = %v, want [first, second]", got)
+
+	// Replace the existing assertion (single substring check on the
+	// raw line) with a structured assertion that the broadcast frame
+	// is now wrapped in the StreamFrame envelope.
+	received := got[0]
+	var frame struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(received, &frame); err != nil {
+		t.Fatalf("broadcast frame not valid JSON: %v\nframe=%q", err, received)
+	}
+	if frame.Type != "assistant" {
+		t.Errorf("frame.Type = %q, want \"assistant\"", frame.Type)
+	}
+	if !strings.Contains(string(frame.Data), `"text":"hi"`) {
+		t.Errorf("frame.Data missing inner content; got %q", frame.Data)
+	}
+}
+
+// TestServer_PromptForwardsBrokerWireShape is a contract test
+// guarding against the class of bugs in #120: the proxy_test.go
+// fixtures drift away from the broker's actual /prompts request
+// shape, the handler accepts the old shape (because JSON ignores
+// extra fields), and bugs slip through unit tests.
+//
+// This test constructs a request whose body is BYTE-IDENTICAL to
+// what internal/broker/interactive.go forwards on POST /prompts to
+// the runtime, and asserts:
+//  1. The proxy responds 202 with the seq echoed back.
+//  2. The bytes hitting the data UDS are non-empty newline-terminated
+//     JSON containing the prompt text — i.e., the kind of frame the
+//     harness CLI's stream-json reader can actually parse.
+//
+// When a PromptFormatter is wired (production claude config), it
+// transforms {text, seq, submitter} into the harness's stream-json
+// shape. When PromptFormatter is nil (tests + paddock-echo), the
+// bytes pass through verbatim. Both paths must produce data UDS
+// output that's a valid newline-delimited JSON object.
+func TestServer_PromptForwardsBrokerWireShape(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	dataLn, err := net.Listen("unix", dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dataLn.Close() })
+	ctlLn, err := net.Listen("unix", ctlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ctlLn.Close() })
+
+	dataReceived := make(chan []byte, 1)
+	go func() {
+		c, _ := dataLn.Accept()
+		if c == nil {
+			return
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		buf := make([]byte, 4096)
+		n, _ := c.Read(buf)
+		dataReceived <- buf[:n]
+	}()
+	go func() {
+		c, _ := ctlLn.Accept()
+		if c != nil {
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv, err := NewServer(ctx, Config{
+		Mode:       "persistent-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		Backoff:    BackoffConfig{Initial: 10 * time.Millisecond, Max: 100 * time.Millisecond, Tries: 5},
+		// No PromptFormatter — verbatim passthrough path. Production
+		// claude wires its own formatter; this test exercises the
+		// other code path.
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	// Byte-identical to internal/broker/interactive.go's outgoing body
+	// on POST /prompts (see the anonymous struct at lines 193-195
+	// of interactive.go: {Text, Seq, Submitter}).
+	body, err := json.Marshal(struct {
+		Text      string `json:"text"`
+		Seq       int32  `json:"seq"`
+		Submitter string `json:"submitter"`
+	}{Text: "tell me a fact", Seq: 42, Submitter: "system:serviceaccount:test:broker"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewReader(body))
+	srv.Handler().ServeHTTP(w, r)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+	// Response body must echo seq.
+	var resp struct {
+		Seq int32 `json:"seq"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Seq != 42 {
+		t.Errorf("response seq = %d, want 42", resp.Seq)
+	}
+
+	select {
+	case got := <-dataReceived:
+		if len(got) == 0 {
+			t.Fatalf("data UDS got empty bytes")
+		}
+		if got[len(got)-1] != '\n' {
+			t.Errorf("data UDS frame missing trailing newline; got %q", got)
+		}
+		// Should be parseable as a JSON object — that's the contract
+		// every harness's stream-json reader expects.
+		var parsed map[string]any
+		if err := json.Unmarshal(bytes.TrimRight(got, "\n"), &parsed); err != nil {
+			t.Errorf("data UDS frame is not a JSON object: %v\nbytes=%q", err, got)
+		}
+		if !strings.Contains(string(got), "tell me a fact") {
+			t.Errorf("data UDS frame missing prompt text; got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("no data on UDS after 2s")
 	}
 }
