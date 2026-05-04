@@ -83,9 +83,9 @@ func TestServer_PromptWritesToDataUDS(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	body, _ := json.Marshal(map[string]any{
-		"type":         "user",
-		"_paddock_seq": 1,
-		"message":      map[string]any{"content": []any{map[string]any{"type": "text", "text": "hi"}}},
+		"text":      "hi",
+		"seq":       int32(1),
+		"submitter": "alice",
 	})
 	r := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewReader(body))
 	srv.Handler().ServeHTTP(w, r)
