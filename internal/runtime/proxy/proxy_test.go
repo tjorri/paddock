@@ -587,3 +587,125 @@ func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 		t.Errorf("frame.Data missing inner content; got %q", frame.Data)
 	}
 }
+
+// TestServer_PromptForwardsBrokerWireShape is a contract test
+// guarding against the class of bugs in #120: the proxy_test.go
+// fixtures drift away from the broker's actual /prompts request
+// shape, the handler accepts the old shape (because JSON ignores
+// extra fields), and bugs slip through unit tests.
+//
+// This test constructs a request whose body is BYTE-IDENTICAL to
+// what internal/broker/interactive.go forwards on POST /prompts to
+// the runtime, and asserts:
+//  1. The proxy responds 202 with the seq echoed back.
+//  2. The bytes hitting the data UDS are non-empty newline-terminated
+//     JSON containing the prompt text — i.e., the kind of frame the
+//     harness CLI's stream-json reader can actually parse.
+//
+// When a PromptFormatter is wired (production claude config), it
+// transforms {text, seq, submitter} into the harness's stream-json
+// shape. When PromptFormatter is nil (tests + paddock-echo), the
+// bytes pass through verbatim. Both paths must produce data UDS
+// output that's a valid newline-delimited JSON object.
+func TestServer_PromptForwardsBrokerWireShape(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	dataLn, err := net.Listen("unix", dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dataLn.Close() })
+	ctlLn, err := net.Listen("unix", ctlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ctlLn.Close() })
+
+	dataReceived := make(chan []byte, 1)
+	go func() {
+		c, _ := dataLn.Accept()
+		if c == nil {
+			return
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		buf := make([]byte, 4096)
+		n, _ := c.Read(buf)
+		dataReceived <- buf[:n]
+	}()
+	go func() {
+		c, _ := ctlLn.Accept()
+		if c != nil {
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv, err := NewServer(ctx, Config{
+		Mode:       "persistent-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		Backoff:    BackoffConfig{Initial: 10 * time.Millisecond, Max: 100 * time.Millisecond, Tries: 5},
+		// No PromptFormatter — verbatim passthrough path. Production
+		// claude wires its own formatter; this test exercises the
+		// other code path.
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	// Byte-identical to internal/broker/interactive.go's outgoing body
+	// on POST /prompts (see the anonymous struct at lines 193-195
+	// of interactive.go: {Text, Seq, Submitter}).
+	body, err := json.Marshal(struct {
+		Text      string `json:"text"`
+		Seq       int32  `json:"seq"`
+		Submitter string `json:"submitter"`
+	}{Text: "tell me a fact", Seq: 42, Submitter: "system:serviceaccount:test:broker"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/prompts", bytes.NewReader(body))
+	srv.Handler().ServeHTTP(w, r)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+	// Response body must echo seq.
+	var resp struct {
+		Seq int32 `json:"seq"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Seq != 42 {
+		t.Errorf("response seq = %d, want 42", resp.Seq)
+	}
+
+	select {
+	case got := <-dataReceived:
+		if len(got) == 0 {
+			t.Fatalf("data UDS got empty bytes")
+		}
+		if got[len(got)-1] != '\n' {
+			t.Errorf("data UDS frame missing trailing newline; got %q", got)
+		}
+		// Should be parseable as a JSON object — that's the contract
+		// every harness's stream-json reader expects.
+		var parsed map[string]any
+		if err := json.Unmarshal(bytes.TrimRight(got, "\n"), &parsed); err != nil {
+			t.Errorf("data UDS frame is not a JSON object: %v\nbytes=%q", err, got)
+		}
+		if !strings.Contains(string(got), "tell me a fact") {
+			t.Errorf("data UDS frame missing prompt text; got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("no data on UDS after 2s")
+	}
+}
