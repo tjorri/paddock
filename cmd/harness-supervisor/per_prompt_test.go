@@ -87,6 +87,57 @@ func TestPerPrompt_TwoPromptsTwoProcesses(t *testing.T) {
 	}
 }
 
+func TestPerPrompt_BoundedShutdown(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	cfg := Config{
+		Mode:       "per-prompt-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		HarnessBin: filepath.Join(testFixturesDir(t), "sleep_forever.sh"),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runPerPrompt(ctx, testLogger(t), cfg) }()
+
+	dataConn := dialEventually(t, dataPath)
+	defer func() { _ = dataConn.Close() }()
+	ctlConn := dialEventually(t, ctlPath)
+	defer func() { _ = ctlConn.Close() }()
+
+	enc := json.NewEncoder(ctlConn)
+	if err := enc.Encode(map[string]any{"action": "begin-prompt", "seq": 1}); err != nil {
+		t.Fatal(err)
+	}
+	scanner := bufio.NewScanner(dataConn)
+	if !scanner.Scan() { // ready
+		t.Fatalf("scan ready: %v", scanner.Err())
+	}
+
+	// end-prompt with a CLI that ignores stdin close and SIGTERM. endPrompt
+	// must return within ~shutdownGentle + shutdownHard.
+	start := time.Now()
+	if err := enc.Encode(map[string]any{"action": "end-prompt"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.Encode(map[string]any{"action": "end"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-errCh:
+	case <-time.After(8 * time.Second):
+		t.Fatalf("runPerPrompt did not bound shutdown within 8s")
+	}
+	if elapsed := time.Since(start); elapsed > 7*time.Second {
+		t.Errorf("shutdown took %v, want <7s", elapsed)
+	}
+}
+
 func TestPerPrompt_InterruptKillsCurrentProcess(t *testing.T) {
 	dir := shortTempDir(t)
 	dataPath := filepath.Join(dir, "data.sock")

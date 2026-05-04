@@ -188,11 +188,19 @@ func (s *promptState) endPrompt() {
 	if stdin != nil {
 		_ = stdin.Close()
 	}
-	if doneCh != nil {
-		<-doneCh
-	}
 	if cmd != nil {
-		_ = cmd.Wait()
+		// Bound the shutdown: a misbehaving CLI that ignores stdin EOF
+		// (and its own SIGTERM trap) would otherwise hang us forever.
+		// Wait first so the SIGTERM/SIGKILL escalation can run; that
+		// guarantees stdout closes and the doneCh goroutine exits.
+		_ = waitWithTimeout(cmd, shutdownGentle, shutdownHard)
+	}
+	if doneCh != nil {
+		// Safe to block here now: the process is dead, so its stdout
+		// pipe is closed and the io.Copy goroutine has returned (or is
+		// about to). Reading doneCh after Wait avoids losing trailing
+		// harness output that landed in the pipe before SIGKILL.
+		<-doneCh
 	}
 
 	s.mu.Lock()
