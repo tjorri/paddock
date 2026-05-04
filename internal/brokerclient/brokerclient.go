@@ -271,7 +271,12 @@ func (c *Client) Do(ctx context.Context, path string, body []byte) (*http.Respon
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode != http.StatusOK {
+	// Any 2xx is treated as success. The existing endpoints all return
+	// 200 OK, but the F-19 turn-complete callback returns 202 Accepted
+	// (it's a fire-and-forget signal), so the previous `!= 200` gate
+	// would have surfaced it as a BrokerError. Accept the full 2xx
+	// range — caller decoders already tolerate empty bodies.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer func() { _ = resp.Body.Close() }()
 		return nil, decodeBrokerError(resp)
 	}

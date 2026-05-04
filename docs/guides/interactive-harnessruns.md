@@ -51,14 +51,24 @@ specific error (template missing `interactive.mode`, no policy granting
 
 Two interactive modes exist:
 
-- **`per-prompt-process`** — each prompt spawns a fresh adapter
-  subprocess. Lower memory between prompts; no in-process state carries
-  across turns. The adapter image still has to support the mode (the
-  agent binary needs to be cheap to invoke).
-- **`persistent-process`** — one long-running adapter subprocess
-  receives prompts on stdin and emits events on stdout. Required for
-  agents that maintain conversation state in memory (e.g.
-  `claude --input-format stream-json --output-format stream-json`).
+- **`per-prompt-process`** — each prompt spawns a fresh harness CLI
+  invocation inside the **agent container**. Lower memory between
+  prompts; no in-process state carries across turns. The harness image
+  still has to support the mode (the agent binary needs to be cheap to
+  invoke).
+- **`persistent-process`** — one long-running harness CLI process
+  inside the agent container receives prompts on stdin and emits
+  events on stdout. Required for agents that maintain conversation
+  state in memory (e.g. `claude --input-format stream-json
+  --output-format stream-json`).
+
+Both modes are implemented by `paddock-harness-supervisor`, a
+harness-agnostic binary that ships in the agent container alongside
+the harness CLI. The adapter sidecar is a stream-json frame proxy
+between the broker and the supervisor — it does not spawn the harness
+CLI itself and never mounts the workspace PVC. See [Harness image
+requirements](#harness-image-requirements) for the image-author
+contract.
 
 ```yaml
 apiVersion: paddock.dev/v1alpha1
@@ -186,8 +196,10 @@ Batch run, which Interactive doesn't support today.
 ## Stream events
 
 The event stream is a WebSocket reverse-proxy: the broker dials the
-adapter's loopback `/stream` and copies frames in both directions until
-either side closes.
+adapter's loopback `/stream`, the adapter forwards frames over the
+data UDS to the supervisor in the agent container, and the supervisor
+relays them to the harness CLI's stdio. Frames flow in both directions
+until either side closes.
 
 ```sh
 # wscat is convenient for ad-hoc; production clients should use a real WS library.
@@ -230,13 +242,18 @@ have a pod: Running, Idle, Succeeded, Failed, Cancelled).
 
 ## Cancel an in-flight turn
 
-`POST /v1/runs/{ns}/{name}/interrupt` signals the adapter to stop the
-current prompt. Implementation depends on the driver:
+`POST /v1/runs/{ns}/{name}/interrupt` signals the supervisor (via the
+adapter's control socket) to stop the current prompt. Implementation
+depends on the mode:
 
-- `per-prompt-process` — adapter delivers SIGTERM to the in-flight
-  subprocess and clears `CurrentTurnSeq`.
-- `persistent-process` — adapter writes an interrupt control message to
-  the agent's stdin (the protocol is the agent's, not Paddock's).
+- `per-prompt-process` — supervisor delivers SIGTERM to the in-flight
+  harness CLI subprocess in the agent container and clears
+  `CurrentTurnSeq`.
+- `persistent-process` — supervisor delivers SIGINT to the long-lived
+  harness CLI; the CLI is expected to abort the current turn but stay
+  alive for the next one (per the harness-author contract). For CLIs
+  that exit on SIGINT the operator should pick `per-prompt-process`
+  instead.
 
 The run stays alive after interrupt; submit another prompt to continue.
 
@@ -255,6 +272,22 @@ landing in the `interactive-run-terminated` audit event: control
 characters are stripped and the value is capped at 256 bytes. The audit
 emits only after the adapter actually receives the End signal — a 502
 from a missing adapter does not produce a "terminated" record.
+
+## Harness image requirements
+
+Interactive runs depend on the harness image meeting a small contract:
+the image must ship `paddock-harness-supervisor` at
+`/usr/local/bin/`, declare `PADDOCK_HARNESS_BIN` (and the per-mode
+`PADDOCK_HARNESS_ARGS_*` env vars) in its Dockerfile, and branch
+`run.sh` to `exec paddock-harness-supervisor` when
+`PADDOCK_INTERACTIVE_MODE` is set. The supervisor handles the UDS
+plumbing back to the adapter sidecar; the harness CLI only needs to
+read prompts from stdin and write responses to stdout.
+
+The full contract — env vars, mode-selection guidance, validation
+script, and an empirical compatibility table covering Claude Code,
+OpenAI Codex CLI, Gemini CLI, Aider, and others — is documented in
+[`../contributing/harness-authoring.md`](../contributing/harness-authoring.md).
 
 ## Lifecycle and timeouts
 
@@ -421,11 +454,18 @@ for status and discussion:
 
 - [`../concepts/components.md`](../concepts/components.md) — where
   HarnessRun fits in the Paddock model.
+- [`../contributing/harness-authoring.md`](../contributing/harness-authoring.md)
+  — the contract a harness image must implement to run interactively
+  (supervisor binary, env vars, CLI requirements).
 - [`../security/threat-model.md`](../security/threat-model.md) — the
   `runs.shell` capability is the most sensitive grant in this release;
   the threat model walks through the credential-exposure consequences.
 - [`./picking-a-delivery-mode.md`](./picking-a-delivery-mode.md) — for
   the credential side of an Interactive harness's `requires`.
+- [`../superpowers/specs/2026-05-02-interactive-adapter-as-proxy-design.md`](../superpowers/specs/2026-05-02-interactive-adapter-as-proxy-design.md)
+  — current runtime design (adapter-as-proxy + supervisor in agent
+  container).
 - [`../superpowers/specs/2026-04-29-interactive-harnessrun-design.md`](../superpowers/specs/2026-04-29-interactive-harnessrun-design.md)
-  — design spec (internal; for maintainers tracing a behavior back to
-  intent).
+  — original design spec for the CRD shapes, lifecycle state machine,
+  and audit semantics; runtime architecture in §2 is superseded by
+  the 2026-05-02 design.

@@ -457,6 +457,142 @@ func TestHandleEnd_ReasonSanitization(t *testing.T) {
 	}
 }
 
+// TestHandleTurnComplete_HappyPath asserts the adapter callback clears
+// CurrentTurnSeq, sets IdleSince, and emits a prompt-completed audit
+// capturing the seq that just finished.
+func TestHandleTurnComplete_HappyPath(t *testing.T) {
+	t.Parallel()
+	f := newInteractiveFixture(t, true, paddockv1alpha1.HarnessRunModeInteractive)
+	rec := &recordingAuditSink{}
+	f.srv.Audit = broker.NewAuditWriter(rec)
+
+	// Pre-arm CurrentTurnSeq=7 to simulate an in-flight prompt the
+	// adapter is now reporting completion for.
+	var run paddockv1alpha1.HarnessRun
+	if err := f.c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "r1"}, &run); err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	seq := int32(7)
+	run.Status.Interactive = &paddockv1alpha1.InteractiveStatus{CurrentTurnSeq: &seq}
+	if err := f.c.Status().Update(context.Background(), &run); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+
+	rr := postInteractive(t, f.srv, "/v1/runs/team-a/r1/turn-complete", "valid-token", []byte(`{}`))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	var got paddockv1alpha1.HarnessRun
+	if err := f.c.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: "r1"}, &got); err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.Status.Interactive == nil {
+		t.Fatal("Status.Interactive nil after turn-complete")
+	}
+	if got.Status.Interactive.CurrentTurnSeq != nil {
+		t.Errorf("CurrentTurnSeq = %d, want nil", *got.Status.Interactive.CurrentTurnSeq)
+	}
+	if got.Status.Interactive.IdleSince == nil {
+		t.Errorf("IdleSince nil, want set to now")
+	}
+
+	var seen bool
+	for _, e := range rec.events() {
+		if e.Spec.Kind != paddockv1alpha1.AuditKindPromptCompleted {
+			continue
+		}
+		seen = true
+		if e.Spec.Detail["turnSeq"] != "7" {
+			t.Errorf("turnSeq = %q, want 7", e.Spec.Detail["turnSeq"])
+		}
+		if e.Spec.Detail["outcome"] != "ok" {
+			t.Errorf("outcome = %q, want ok", e.Spec.Detail["outcome"])
+		}
+	}
+	if !seen {
+		t.Errorf("expected prompt-completed audit, got: %+v", rec.events())
+	}
+}
+
+// TestHandleTurnComplete_Idempotent asserts that a callback arriving
+// when CurrentTurnSeq is already nil succeeds with 202 and emits no
+// audit (so adapter retries on transient broker errors are safe).
+func TestHandleTurnComplete_Idempotent(t *testing.T) {
+	t.Parallel()
+	f := newInteractiveFixture(t, true, paddockv1alpha1.HarnessRunModeInteractive)
+	rec := &recordingAuditSink{}
+	f.srv.Audit = broker.NewAuditWriter(rec)
+
+	// CurrentTurnSeq starts nil — the run's just been seeded.
+	rr := postInteractive(t, f.srv, "/v1/runs/team-a/r1/turn-complete", "valid-token", []byte(`{}`))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	for _, e := range rec.events() {
+		if e.Spec.Kind == paddockv1alpha1.AuditKindPromptCompleted {
+			t.Fatalf("unexpected prompt-completed audit on idempotent path: %+v", e)
+		}
+	}
+}
+
+// TestHandleTurnComplete_Unauthorized asserts that a missing bearer
+// surfaces 401 before any state mutation.
+func TestHandleTurnComplete_Unauthorized(t *testing.T) {
+	t.Parallel()
+	f := newInteractiveFixture(t, true, paddockv1alpha1.HarnessRunModeInteractive)
+	f.srv.Audit = broker.NewAuditWriter(&recordingAuditSink{})
+
+	rr := postInteractive(t, f.srv, "/v1/runs/team-a/r1/turn-complete", "", []byte(`{}`))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestHandleTurnComplete_NamespaceMismatch asserts a caller in another
+// namespace gets 403.
+func TestHandleTurnComplete_NamespaceMismatch(t *testing.T) {
+	t.Parallel()
+	f := newInteractiveFixture(t, true, paddockv1alpha1.HarnessRunModeInteractive)
+	f.srv.Audit = broker.NewAuditWriter(&recordingAuditSink{})
+	// Stub auth identity is now in namespace "other", not "team-a".
+	f.srv.Auth = stubAuth{identity: broker.CallerIdentity{Namespace: "other", ServiceAccount: "alice"}}
+
+	rr := postInteractive(t, f.srv, "/v1/runs/team-a/r1/turn-complete", "valid-token", []byte(`{}`))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestHandleTurnComplete_NoInteractGrant asserts the BrokerPolicy gate
+// is enforced — without runs.interact, the callback returns 403.
+func TestHandleTurnComplete_NoInteractGrant(t *testing.T) {
+	t.Parallel()
+	f := newInteractiveFixture(t, false, paddockv1alpha1.HarnessRunModeInteractive)
+	f.srv.Audit = broker.NewAuditWriter(&recordingAuditSink{})
+
+	rr := postInteractive(t, f.srv, "/v1/runs/team-a/r1/turn-complete", "valid-token", []byte(`{}`))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body = %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "runs.interact") {
+		t.Errorf("body = %q, want contains 'runs.interact'", rr.Body.String())
+	}
+}
+
+// TestHandleTurnComplete_RunNotFound asserts the path returns 404 when
+// the run has been deleted.
+func TestHandleTurnComplete_RunNotFound(t *testing.T) {
+	t.Parallel()
+	f := newInteractiveFixture(t, true, paddockv1alpha1.HarnessRunModeInteractive)
+	f.srv.Audit = broker.NewAuditWriter(&recordingAuditSink{})
+
+	rr := postInteractive(t, f.srv, "/v1/runs/team-a/does-not-exist/turn-complete", "valid-token", []byte(`{}`))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
 // TestHandlePrompts_RetriesOnConflict injects an IsConflict on the first
 // Status().Patch call and asserts that retry-on-conflict eventually
 // succeeds and CurrentTurnSeq is armed for the in-flight guard.

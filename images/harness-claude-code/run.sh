@@ -99,6 +99,33 @@ curl -fsSL https://downloads.claude.ai/claude-code-releases/bootstrap.sh \
 # what the upstream installer does to the rest of the environment.
 export PATH="$HOME/.local/bin:$PATH"
 
+# Interactive mode (per spec §4.3): the supervisor takes over the
+# stdin/stdout contract. run.sh has already done install + PATH +
+# CA-bundle setup, so the supervisor just needs the harness binary
+# location and per-mode argv.
+if [ -n "${PADDOCK_INTERACTIVE_MODE:-}" ]; then
+  case "${PADDOCK_INTERACTIVE_MODE}" in
+    persistent-process)
+      export PADDOCK_HARNESS_ARGS="${PADDOCK_HARNESS_ARGS_PERSISTENT:?PADDOCK_HARNESS_ARGS_PERSISTENT not set in image}"
+      ;;
+    per-prompt-process)
+      export PADDOCK_HARNESS_ARGS="${PADDOCK_HARNESS_ARGS_PER_PROMPT:?PADDOCK_HARNESS_ARGS_PER_PROMPT not set in image}"
+      ;;
+    *)
+      echo "paddock-claude-code: unknown PADDOCK_INTERACTIVE_MODE: $PADDOCK_INTERACTIVE_MODE" >&2
+      exit 1
+      ;;
+  esac
+  # PADDOCK_HARNESS_BIN is declared in the Dockerfile as a fallback;
+  # if the runtime install puts claude elsewhere (e.g. via custom
+  # PADDOCK_CLAUDE_CODE_VERSION), prefer the resolved $(command -v
+  # claude) when present.
+  if command -v claude >/dev/null 2>&1; then
+    export PADDOCK_HARNESS_BIN="$(command -v claude)"
+  fi
+  exec paddock-harness-supervisor
+fi
+
 prompt=$(cat "$PADDOCK_PROMPT_PATH")
 
 # Build argv: -p puts claude in print-mode; --verbose is required to

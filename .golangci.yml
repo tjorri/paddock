@@ -117,20 +117,41 @@ linters:
           - gosec
         text: "G30[126]"
         path: cmd/(adapter-claude-code|adapter-echo|collector)/.*
-      # gosec G204 / noctx: adapter-claude-code's per-prompt and
-      # persistent drivers spawn the claude binary whose path comes
-      # from the PADDOCK_CLAUDE_BINARY env var (controller-set on the
-      # agent container's Pod spec). Not user input. exec.Command is
-      # the canonical idiom; CommandContext can't be used here because
-      # the subprocess lifecycle is owned by Driver.Interrupt / End,
-      # not the incoming HTTP request context (which is cancelled when
-      # the broker hangs up after the 202 response and would otherwise
-      # kill the child immediately).
+      - linters:
+          - gosec
+        text: "G30[126]"
+        path: internal/adapter/proxy/.*
+      # gosec G118 / noctx: adapter-claude-code's runInteractive spawns
+      # a shutdown goroutine that uses context.Background() with a
+      # bounded timeout because the HTTP server's graceful shutdown
+      # deadline is independent of the run lifecycle context (which
+      # is already done by the time the goroutine fires).
       - linters:
           - gosec
           - noctx
-        text: "G204|os/exec.Command"
+        text: "G118|os/exec.Command"
         path: cmd/adapter-claude-code/.*
+      # gosec G204 / noctx: harness-supervisor spawns the harness CLI
+      # whose path comes from the PADDOCK_HARNESS_BIN env var
+      # (controller-set on the agent container's Pod spec). Not user
+      # input. The subprocess lifetime is owned by ctl messages
+      # (interrupt/end), not an HTTP request context — same rationale
+      # as adapter-claude-code. noctx also fires on net.Listen for the
+      # UDS sockets and net.Dial in tests; the supervisor's listener
+      # lifecycle is owned by the run, not an HTTP context.
+      - linters:
+          - gosec
+          - noctx
+        text: "G204|os/exec.Command|net\\.Listen|net\\.Dial"
+        path: cmd/harness-supervisor/.*
+      # noctx: internal/adapter/proxy tests use net.Listen for UDS
+      # listeners and httptest.NewRequest for handler unit tests; the
+      # production code under test owns its own listener via
+      # net.ListenConfig and uses request-scoped contexts.
+      - linters:
+          - noctx
+        text: "net\\.Listen|httptest\\.NewRequest"
+        path: internal/adapter/proxy/.*
       # gosec G703: per-prompt driver writes prompt files and events.jsonl
       # under <PADDOCK_WORKSPACE>/.paddock/runs/<run>/. Both env vars are
       # controller-set on the agent container's Pod spec (trusted control
@@ -153,6 +174,10 @@ linters:
           - gosec
         text: "G304"
         path: cmd/(adapter-claude-code|adapter-echo|collector)/.*
+      - linters:
+          - gosec
+        text: "G304"
+        path: internal/adapter/proxy/.*
       - linters:
           - gosec
         text: "G304"

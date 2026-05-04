@@ -51,6 +51,16 @@ const (
 	defaultWorkspaceMount = "/workspace"
 	rawSubdir             = "/paddock/raw/out"
 	eventsSubdir          = "/paddock/events/events.jsonl"
+	// agentDataSocketPath is the UDS the supervisor (in the agent
+	// container) listens on for prompt/event traffic; the adapter
+	// proxy dials this path. Both containers mount /paddock as a
+	// shared emptyDir, so the same path resolves in both.
+	// Spec 2026-05-02-interactive-adapter-as-proxy §4.4.
+	agentDataSocketPath = "/paddock/agent-data.sock"
+	// agentCtlSocketPath is the UDS the supervisor listens on for
+	// out-of-band control RPCs (lifecycle / detach / health). Same
+	// shared-emptyDir contract as agentDataSocketPath.
+	agentCtlSocketPath = "/paddock/agent-ctl.sock"
 	// reposManifestRelPath is the path, relative to the workspace
 	// mount, where the seed Job writes the repo manifest. Kept in sync
 	// with seedManifestRelPath in workspace_seed.go.
@@ -337,7 +347,7 @@ func buildPodSpec(
 	}
 
 	if template.Spec.EventAdapter != nil {
-		initContainers = append(initContainers, buildAdapterContainer(run, template))
+		initContainers = append(initContainers, buildAdapterContainer(run, template, in))
 	}
 	initContainers = append(initContainers, buildCollectorContainer(run, template, collectorImage, in.outputConfigMap))
 	if proxyEnabled(in) {
@@ -470,7 +480,7 @@ func buildAgentContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemp
 // buildAdapterContainer constructs the per-harness event adapter as a
 // native sidecar. It sees only the shared /paddock volume; the
 // workspace PVC is the collector's concern.
-func buildAdapterContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate) corev1.Container {
+func buildAdapterContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in podSpecInputs) corev1.Container {
 	always := corev1.ContainerRestartPolicyAlways
 	sc := runContainerSecurityContextBaseline()
 	sc.RunAsUser = ptr.To(int64(adapterRunAsUID))
@@ -484,6 +494,13 @@ func buildAdapterContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTe
 	env := []corev1.EnvVar{
 		{Name: "PADDOCK_RAW_PATH", Value: rawSubdir},
 		{Name: "PADDOCK_EVENTS_PATH", Value: eventsSubdir},
+		// UDS paths to the supervisor in the agent container. Both
+		// containers see the same /paddock emptyDir mount, so the
+		// adapter proxy dials these from its side and the supervisor
+		// listens on them from the agent's side. Spec
+		// 2026-05-02-interactive-adapter-as-proxy §4.4.
+		{Name: "PADDOCK_AGENT_DATA_SOCKET", Value: agentDataSocketPath},
+		{Name: "PADDOCK_AGENT_CTL_SOCKET", Value: agentCtlSocketPath},
 	}
 	// Interactive runs: signal the adapter which interactive driver
 	// strategy the template's adapter image should use (per-prompt-process
@@ -498,16 +515,41 @@ func buildAdapterContainer(run *paddockv1alpha1.HarnessRun, template *resolvedTe
 			Value: template.Spec.Interactive.Mode,
 		})
 	}
+	mounts := []corev1.VolumeMount{
+		{Name: sharedVolumeName, MountPath: sharedMountPath},
+		{Name: paddockSAVolumeName, MountPath: paddockSAMountPath, ReadOnly: true},
+	}
+	// Interactive runs with broker wiring: the adapter shim posts to
+	// the broker's /turn-complete on every Result/Error frame so
+	// CurrentTurnSeq gets cleared and the next /prompts isn't 409'd.
+	// Mount the broker token + CA volumes (already added at pod level
+	// when in.brokerEndpoint != "") and surface the broker URL +
+	// run identity via env so cmd/adapter-claude-code's
+	// buildTurnCompleteHook can wire a brokerclient.
+	//
+	// Workspace PVC is intentionally not mounted on the adapter
+	// container; that invariant is the collector's concern (F-19
+	// preserved boundary).
+	if run.Spec.Mode == paddockv1alpha1.HarnessRunModeInteractive && in.brokerEndpoint != "" {
+		mounts = append(mounts,
+			corev1.VolumeMount{Name: brokerTokenVolumeName, MountPath: brokerTokenMountPath, ReadOnly: true},
+			corev1.VolumeMount{Name: brokerCAVolumeName, MountPath: brokerCAMountPath, ReadOnly: true},
+		)
+		env = append(env,
+			corev1.EnvVar{Name: "PADDOCK_BROKER_URL", Value: in.brokerEndpoint},
+			corev1.EnvVar{Name: "PADDOCK_BROKER_TOKEN_PATH", Value: brokerTokenPath},
+			corev1.EnvVar{Name: "PADDOCK_BROKER_CA_PATH", Value: brokerCAPath},
+			corev1.EnvVar{Name: "PADDOCK_RUN_NAME", Value: run.Name},
+			corev1.EnvVar{Name: "PADDOCK_RUN_NAMESPACE", Value: run.Namespace},
+		)
+	}
 	c := corev1.Container{
 		Name:            adapterContainerName,
 		Image:           template.Spec.EventAdapter.Image,
 		RestartPolicy:   &always,
 		SecurityContext: sc,
 		Env:             env,
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: sharedVolumeName, MountPath: sharedMountPath},
-			{Name: paddockSAVolumeName, MountPath: paddockSAMountPath, ReadOnly: true},
-		},
+		VolumeMounts:    mounts,
 	}
 	if template.Spec.EventAdapter.ImagePullPolicy != "" {
 		c.ImagePullPolicy = template.Spec.EventAdapter.ImagePullPolicy
@@ -647,11 +689,19 @@ func buildPodVolumes(in podSpecInputs) []corev1.Volume {
 			},
 		},
 	})
-	if proxyEnabled(in) && in.brokerEndpoint != "" {
-		// ProjectedServiceAccountToken gives the proxy a short-lived
-		// credential scoped specifically to the broker. The kubelet
-		// rotates it on its own cadence (1/ExpirationSeconds by
-		// default); the proxy reads it fresh on every broker call.
+	if in.brokerEndpoint != "" {
+		// ProjectedServiceAccountToken gives consumers (proxy + the
+		// interactive adapter shim) a short-lived credential scoped
+		// specifically to the broker. The kubelet rotates it on its own
+		// cadence (1/ExpirationSeconds by default); consumers read it
+		// fresh on every broker call.
+		//
+		// Originally gated on proxyEnabled too, but the F-19 turn-
+		// complete callback means the adapter container also needs
+		// these mounts whenever broker wiring is on, regardless of
+		// whether the proxy sidecar is injected. Volumes are
+		// no-cost-when-unused; mounting them on a pod that doesn't
+		// reference them is harmless.
 		expiry := brokerTokenExpirationSeconds
 		vols = append(vols,
 			corev1.Volume{
@@ -885,6 +935,12 @@ func buildEnv(run *paddockv1alpha1.HarnessRun, template *resolvedTemplate, in po
 		corev1.EnvVar{Name: "PADDOCK_REPOS_PATH", Value: mount + "/" + reposManifestRelPath},
 		corev1.EnvVar{Name: "PADDOCK_RUN_NAME", Value: run.Name},
 		corev1.EnvVar{Name: "PADDOCK_MODEL", Value: effectiveModel(run, template)},
+		// UDS paths the supervisor listens on; the adapter dials
+		// these. Single source of truth shared with the adapter env
+		// in buildAdapterContainer. Spec
+		// 2026-05-02-interactive-adapter-as-proxy §4.4.
+		corev1.EnvVar{Name: "PADDOCK_AGENT_DATA_SOCKET", Value: agentDataSocketPath},
+		corev1.EnvVar{Name: "PADDOCK_AGENT_CTL_SOCKET", Value: agentCtlSocketPath},
 	)
 
 	// HOME-from-PVC default (spec 2026-04-30-paddock-tui-interactive

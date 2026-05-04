@@ -40,15 +40,18 @@ import (
 // config/broker/deployment.yaml so `make deploy` wires the cluster
 // together without a kustomize image override.
 const (
-	managerImage         = "paddock-manager:dev"
-	echoImage            = "paddock-echo:dev"
-	adapterEchoImage     = "paddock-adapter-echo:dev"
-	collectorImage       = "paddock-collector:dev"
-	brokerImage          = "paddock-broker:dev"
-	proxyImage           = "paddock-proxy:dev"
-	iptablesInitImage    = "paddock-iptables-init:dev"
-	e2eEgressImage       = "paddock-e2e-egress:dev"
-	paddockEvilEchoImage = "paddock-evil-echo:dev"
+	managerImage           = "paddock-manager:dev"
+	echoImage              = "paddock-echo:dev"
+	adapterEchoImage       = "paddock-adapter-echo:dev"
+	collectorImage         = "paddock-collector:dev"
+	brokerImage            = "paddock-broker:dev"
+	proxyImage             = "paddock-proxy:dev"
+	iptablesInitImage      = "paddock-iptables-init:dev"
+	e2eEgressImage         = "paddock-e2e-egress:dev"
+	paddockEvilEchoImage   = "paddock-evil-echo:dev"
+	harnessSupervisorImage = "paddock-harness-supervisor:dev"
+	claudeCodeFakeImage    = "paddock-claude-code-fake:dev"
+	adapterClaudeCodeImage = "paddock-adapter-claude-code:dev"
 )
 
 var (
@@ -97,6 +100,15 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 
 	By("building and loading paddock-evil-echo (hostile harness)")
 	buildAndLoad(paddockEvilEchoImage, []string{"image-evil-echo"})
+
+	By("building and loading harness-supervisor + adapter-claude-code + claude-code-fake (interactive)")
+	// image-claude-code-fake's Dockerfile COPY-s from
+	// paddock-harness-supervisor:dev, so the supervisor target must
+	// build first. Order matters: harness-supervisor → claude-code-fake.
+	// adapter-claude-code is independent.
+	buildAndLoad(harnessSupervisorImage, []string{"image-harness-supervisor"})
+	buildAndLoad(adapterClaudeCodeImage, []string{"image-adapter-claude-code"})
+	buildAndLoad(claudeCodeFakeImage, []string{"image-claude-code-fake"})
 
 	if !skipCertManagerInstall {
 		By("checking if cert-manager is already installed")

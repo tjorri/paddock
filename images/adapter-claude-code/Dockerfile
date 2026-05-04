@@ -16,6 +16,9 @@ COPY go.sum go.sum
 
 COPY api/ api/
 COPY cmd/adapter-claude-code/ cmd/adapter-claude-code/
+COPY internal/adapter/proxy/ internal/adapter/proxy/
+COPY internal/broker/api/ internal/broker/api/
+COPY internal/brokerclient/ internal/brokerclient/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \

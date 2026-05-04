@@ -33,11 +33,12 @@ import (
 // brokerOpts collects the broker-connectivity flags. Populated from
 // cobra flag bindings and passed to runTUI.
 type brokerOpts struct {
-	service   string
-	namespace string
-	port      int
-	sa        string
-	caSecret  string
+	service     string
+	namespace   string
+	port        int
+	sa          string
+	saNamespace string
+	caSecret    string
 }
 
 // addBrokerFlags registers the broker-connectivity flags on cmd and
@@ -48,6 +49,7 @@ func addBrokerFlags(cmd *cobra.Command, opts *brokerOpts) {
 	cmd.Flags().StringVar(&opts.namespace, "broker-namespace", "paddock-system", "broker Service namespace")
 	cmd.Flags().IntVar(&opts.port, "broker-port", 8443, "broker Service port")
 	cmd.Flags().StringVar(&opts.sa, "broker-sa", "default", "ServiceAccount whose token authenticates to the broker (mints audience=paddock-broker tokens)")
+	cmd.Flags().StringVar(&opts.saNamespace, "broker-sa-namespace", "", "Namespace of --broker-sa. Defaults to the working namespace (kubeconfig context); the broker uses this to enforce per-namespace authorization on Interactive runs, so it must match the run's namespace unless --broker-sa is the controller SA.")
 	cmd.Flags().StringVar(&opts.caSecret, "broker-ca-secret", "broker-serving-cert", "Secret in --broker-namespace holding the broker's serving CA under key ca.crt")
 }
 
@@ -106,14 +108,24 @@ func runTUI(cfg *genericclioptions.ConfigFlags, bo brokerOpts) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// The SA's namespace defaults to the working namespace (kubeconfig
+	// context), NOT the broker Service namespace. The broker enforces
+	// caller.Namespace == run.Namespace on Interactive endpoints, so
+	// minting a token for a SA in paddock-system would 403 every call
+	// against a tenant run.
+	saNamespace := bo.saNamespace
+	if saNamespace == "" {
+		saNamespace = ns
+	}
 	brokerClient, err := paddockbroker.New(ctx, paddockbroker.Options{
-		Service:           bo.service,
-		Namespace:         bo.namespace,
-		Port:              bo.port,
-		ServiceAccount:    bo.sa,
-		Source:            restCfg,
-		CASecretName:      bo.caSecret,
-		CASecretNamespace: bo.namespace,
+		Service:                 bo.service,
+		Namespace:               bo.namespace,
+		Port:                    bo.port,
+		ServiceAccount:          bo.sa,
+		ServiceAccountNamespace: saNamespace,
+		Source:                  restCfg,
+		CASecretName:            bo.caSecret,
+		CASecretNamespace:       bo.namespace,
 	})
 	if err != nil {
 		return fmt.Errorf("connect to broker: %w", err)

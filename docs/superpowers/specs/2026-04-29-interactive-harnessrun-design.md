@@ -230,6 +230,19 @@ interactive templates that produce more lifecycle events.
 
 ## Architecture
 
+> **Note (2026-05-02): runtime architecture in §2 superseded.** The
+> "adapter spawns claude as a subprocess" model described in §2.4 (and
+> referenced from §2.3) is superseded by
+> [`2026-05-02-interactive-adapter-as-proxy-design.md`](2026-05-02-interactive-adapter-as-proxy-design.md).
+> The harness CLI now runs in the agent container; the adapter sidecar
+> is a stream-json frame proxy across two Unix-domain sockets on the
+> shared `/paddock` volume, brokered by a new harness-agnostic
+> `paddock-harness-supervisor` binary that lives in the agent
+> container. The CRD shapes (§1.x), lifecycle state machine (§3),
+> security model (§5), and audit semantics (§9) of this spec remain
+> authoritative; only the runtime architecture in §2 (Component
+> changes — Adapters in §2.4 specifically) changed.
+
 ### 1. CRD changes (additive, `v1alpha1` in-place)
 
 #### 1.1 `HarnessTemplate.spec.interactive`
@@ -513,6 +526,18 @@ hits an upstream 401 and surfaces it as a `PaddockEvent: Error`, the
 same way a `Batch` run would today.
 
 #### 2.4 Adapters (`cmd/adapter-claude-code/`, others)
+
+> **Superseded (2026-05-02).** The "adapter spawns claude as a
+> subprocess" model in this section was superseded before final
+> delivery — see
+> [`2026-05-02-interactive-adapter-as-proxy-design.md`](2026-05-02-interactive-adapter-as-proxy-design.md)
+> and [`docs/contributing/harness-authoring.md`](../../contributing/harness-authoring.md).
+> The harness CLI now runs in the agent container under
+> `paddock-harness-supervisor`; the adapter is a stream-json frame
+> proxy across two Unix-domain sockets on the shared `/paddock`
+> volume. The mode-dispatch behaviour described below (per-prompt
+> vs. persistent) still exists, but lives in the supervisor, not the
+> adapter.
 
 When `spec.mode: Interactive`, the adapter sidecar gains:
 

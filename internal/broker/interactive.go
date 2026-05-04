@@ -389,6 +389,99 @@ func (s *Server) handleEnd(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleTurnComplete is the adapter's callback when claude emits its
+// terminal Result/Error frame for a turn. Clears
+// Status.Interactive.CurrentTurnSeq + sets IdleSince=now so the next
+// /prompts isn't 409'd by the in-flight guard, and emits a
+// prompt-completed AuditEvent capturing the seq that just finished.
+//
+// Idempotent: if CurrentTurnSeq is already nil when the callback
+// arrives (transient retry from the adapter), succeeds silently
+// without re-emitting the audit.
+func (s *Server) handleTurnComplete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := log.FromContext(ctx)
+
+	caller, err := s.authenticate(ctx, r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, brokerapi.CodeUnauthorized, err.Error())
+		return
+	}
+	ns, name, err := pathRunIdentity(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, brokerapi.CodeBadRequest, err.Error())
+		return
+	}
+	if !caller.IsController && caller.Namespace != ns {
+		writeError(w, http.StatusForbidden, brokerapi.CodeForbidden, "namespace mismatch")
+		return
+	}
+
+	var run paddockv1alpha1.HarnessRun
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &run); err != nil {
+		if apierrors.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, brokerapi.CodeRunNotFound, "run not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, brokerapi.CodeProviderFailure, err.Error())
+		return
+	}
+	if !s.allowInteract(ctx, &run) {
+		writeError(w, http.StatusForbidden, brokerapi.CodeForbidden,
+			"no BrokerPolicy grants runs.interact for this run's template")
+		return
+	}
+
+	// Capture the seq we're clearing BEFORE the patch so the audit
+	// records which turn completed. Idempotent retries (already nil)
+	// fall through to the 202 without an audit emission.
+	var completedSeq *int32
+	if run.Status.Interactive != nil && run.Status.Interactive.CurrentTurnSeq != nil {
+		seq := *run.Status.Interactive.CurrentTurnSeq
+		completedSeq = &seq
+	}
+
+	// Patch under retry-on-conflict mirroring handlePrompts: re-Get
+	// inside the loop so each MergeFrom base reflects the latest
+	// ResourceVersion. Skip the patch entirely when there's nothing to
+	// clear.
+	if completedSeq != nil {
+		now := nowMeta()
+		if pErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var fresh paddockv1alpha1.HarnessRun
+			if gErr := s.Client.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &fresh); gErr != nil {
+				return gErr
+			}
+			base := fresh.DeepCopy()
+			if fresh.Status.Interactive == nil {
+				fresh.Status.Interactive = &paddockv1alpha1.InteractiveStatus{}
+			}
+			fresh.Status.Interactive.CurrentTurnSeq = nil
+			fresh.Status.Interactive.IdleSince = &now
+			return s.Client.Status().Patch(ctx, &fresh, client.MergeFrom(base))
+		}); pErr != nil {
+			logger.Error(pErr, "patching interactive status on turn-complete", "run", name)
+			writeError(w, http.StatusInternalServerError, brokerapi.CodeProviderFailure, pErr.Error())
+			return
+		}
+
+		if s.Audit != nil {
+			ae := auditing.NewPromptCompleted(auditing.PromptCompletedInput{
+				RunName:   name,
+				Namespace: ns,
+				TurnSeq:   *completedSeq,
+				Outcome:   "ok",
+				When:      time.Now().UTC(),
+			})
+			if wErr := s.Audit.Write(ctx, ae); wErr != nil {
+				logger.Error(wErr, "writing prompt-completed audit", "run", name)
+			}
+		}
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+}
+
 // pathRunIdentity extracts (ns, name) from the ServeMux 1.22+ path
 // values. Empty values surface as a 400.
 func pathRunIdentity(r *http.Request) (string, string, error) {
