@@ -7,9 +7,30 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// syncBuffer is a goroutine-safe wrapper around bytes.Buffer for tests
+// where one goroutine writes via log.Logger and another reads to assert
+// log content. bytes.Buffer itself is not safe for concurrent use.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
 
 // TestRunCtlReader_LogsCrashedEvent exercises the supervisor → runtime
 // ctl event path: a {"event":"crashed","exit_code":1} frame written by
@@ -19,7 +40,7 @@ func TestRunCtlReader_LogsCrashedEvent(t *testing.T) {
 	supervisorEnd, runtimeEnd := net.Pipe()
 	defer func() { _ = runtimeEnd.Close() }()
 
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	logger := log.New(&logBuf, "", 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -57,7 +78,7 @@ func TestRunCtlReader_LogsPromptCrashedEvent(t *testing.T) {
 	supervisorEnd, runtimeEnd := net.Pipe()
 	defer func() { _ = runtimeEnd.Close() }()
 
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	logger := log.New(&logBuf, "", 0)
 
 	ctx, cancel := context.WithCancel(context.Background())

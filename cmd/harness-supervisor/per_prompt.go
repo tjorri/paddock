@@ -34,62 +34,30 @@ func runPerPrompt(ctx context.Context, logger *log.Logger, cfg Config) error {
 	}
 	defer func() { _ = ctlLn.Close() }()
 
-	dataConns := acceptLoop(ctx, dataLn)
-	ctlConns := acceptLoop(ctx, ctlLn)
-
-	state := newPromptState()
-	go state.copyFromDataUDS(ctx)
-
-	// Feed the initial data conn + reconnects into state.
-	go func() {
-		for {
-			c, ok := <-dataConns
-			if !ok {
-				return
-			}
-			state.swapDataConn(c)
-			logger.Printf("data UDS connected")
-		}
-	}()
-
-	// ctl reader pumps frames into ctlMsgs across multiple conns; the
-	// current conn is held in currentCtl so the prompt-crashed write
-	// path can find it.
-	var ctlMu sync.Mutex
-	var currentCtl net.Conn
-
-	ctlMsgs := make(chan ctlMessage, 4)
-	go func() {
-		defer close(ctlMsgs)
-		for {
-			c, ok := <-ctlConns
-			if !ok {
-				return
-			}
-			ctlMu.Lock()
-			currentCtl = c
-			ctlMu.Unlock()
-			if err := readCtlInto(ctx, c, ctlMsgs); err != nil {
-				logger.Printf("ctl read: %v", err)
-			}
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-		}
-	}()
-
-	getCtl := func() net.Conn {
-		ctlMu.Lock()
-		defer ctlMu.Unlock()
-		return currentCtl
+	dataConn, err := acceptOnce(ctx, dataLn)
+	if err != nil {
+		return fmt.Errorf("accept data: %w", err)
 	}
+	defer func() { _ = dataConn.Close() }()
+	ctlConn, err := acceptOnce(ctx, ctlLn)
+	if err != nil {
+		return fmt.Errorf("accept ctl: %w", err)
+	}
+	defer func() { _ = ctlConn.Close() }()
+
+	state := newPromptState(dataConn)
+
+	// data UDS reader: pipe bytes to whichever stdin pipe is current.
+	go state.copyFromDataUDS()
+
+	// ctl reader feeds messages one at a time.
+	ctlMsgs := make(chan ctlMessage, 4)
+	go func() { _ = readCtl(ctx, ctlConn, ctlMsgs) }()
 
 	for {
 		select {
 		case <-ctx.Done():
-			state.endActivePrompt(getCtl(), logger)
+			state.endActivePrompt(ctlConn, logger)
 			return nil
 		case msg, ok := <-ctlMsgs:
 			if !ok {
@@ -101,11 +69,11 @@ func runPerPrompt(ctx context.Context, logger *log.Logger, cfg Config) error {
 					return fmt.Errorf("begin-prompt seq=%d: %w", msg.Seq, err)
 				}
 			case "end-prompt":
-				state.endPrompt(getCtl(), logger)
+				state.endPrompt(ctlConn, logger)
 			case "interrupt":
 				state.interrupt()
 			case "end":
-				state.endActivePrompt(getCtl(), logger)
+				state.endActivePrompt(ctlConn, logger)
 				return nil
 			default:
 				logger.Printf("unknown ctl action: %q", msg.Action)
@@ -118,14 +86,14 @@ func runPerPrompt(ctx context.Context, logger *log.Logger, cfg Config) error {
 // CLI: stdin pipe (writable by the data-UDS reader), stdout drain
 // goroutine, process handle. Methods are mutex-guarded.
 //
-// dataConn is swapped under mu when the runtime-side conn drops and
-// reconnects. copyFromDataUDS parks on s.cond when dataConn is nil
-// (between conns) and resumes when swapDataConn installs a new one.
+// dataConn is the adapter↔supervisor data UDS. We hold it as a
+// net.Conn so endPrompt can call SetReadDeadline on it to flush the
+// data reader through a drain handshake before closing stdin.
 type promptState struct {
-	mu       sync.Mutex
-	cond     *sync.Cond
-	dataConn net.Conn // swapped on reconnect; reads under mu
+	dataConn net.Conn
 
+	mu        sync.Mutex
+	cond      *sync.Cond
 	stdin     io.WriteCloser
 	cmd       *exec.Cmd
 	doneCh    chan struct{}
@@ -138,32 +106,10 @@ type promptState struct {
 	drainAck chan struct{}
 }
 
-func newPromptState() *promptState {
-	s := &promptState{}
+func newPromptState(dataConn net.Conn) *promptState {
+	s := &promptState{dataConn: dataConn}
 	s.cond = sync.NewCond(&s.mu)
 	return s
-}
-
-// swapDataConn replaces the active data conn (used by the accept-loop
-// when the previous conn dropped). Wakes the reader so it picks up
-// the new conn instead of looping on a dead one.
-func (s *promptState) swapDataConn(c net.Conn) {
-	s.mu.Lock()
-	old := s.dataConn
-	s.dataConn = c
-	s.mu.Unlock()
-	if old != nil {
-		_ = old.Close()
-	}
-	s.cond.Broadcast()
-}
-
-// currentDataConn returns the active data conn under mu, or nil if
-// no conn is currently installed.
-func (s *promptState) currentDataConn() net.Conn {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.dataConn
 }
 
 // beginPrompt spawns a fresh CLI and wires its pipes.
@@ -198,49 +144,10 @@ func (s *promptState) beginPrompt(cfg Config, seq int32) error {
 	s.doneCh = make(chan struct{})
 	s.activeSeq = seq
 
-	// stdout -> data UDS. The data conn may swap mid-prompt
-	// (runtime-sidecar restart); re-fetch the current conn each
-	// iteration. We can't use io.Copy directly: when the conn is
-	// swapped mid-stream, io.Copy would have already consumed bytes
-	// from stdout into its internal buffer and then failed to write
-	// them to the now-closed old conn. Instead, read into our own
-	// buffer and retry the Write against the (re-fetched) current
-	// conn until it succeeds.
+	// stdout -> data UDS, exits when CLI closes stdout (typically on exit).
 	go func() {
 		defer close(s.doneCh)
-		buf := make([]byte, 32*1024)
-		for {
-			n, rerr := stdout.Read(buf)
-			if n > 0 {
-				for written := 0; written < n; {
-					c := s.currentDataConn()
-					if c == nil {
-						// No conn installed; park briefly and retry.
-						s.mu.Lock()
-						for s.dataConn == nil {
-							s.cond.Wait()
-						}
-						s.mu.Unlock()
-						continue
-					}
-					w, werr := c.Write(buf[written:n])
-					if w > 0 {
-						written += w
-					}
-					if werr == nil {
-						continue
-					}
-					// Write failed (likely closed conn). Wait briefly
-					// for the accept-loop to install the next conn,
-					// then re-fetch and retry the unwritten remainder.
-					time.Sleep(50 * time.Millisecond)
-				}
-			}
-			if rerr != nil {
-				// stdout closed → CLI exited; we're done.
-				return
-			}
-		}
+		_, _ = io.Copy(s.dataConn, stdout)
 	}()
 
 	// Wake the data-UDS reader if it's parked waiting for a stdin.
@@ -265,19 +172,14 @@ func (s *promptState) endPrompt(ctlConn net.Conn, logger *log.Logger) {
 		return
 	}
 	drainAck := make(chan struct{})
-	if s.dataConn != nil {
-		s.drainAck = drainAck
-		// Trip any in-flight Read so the reader observes drainAck
-		// quickly. The reader catches the timeout error, runs the
-		// drain, and clears the deadline before resuming.
-		_ = s.dataConn.SetReadDeadline(time.Now())
-		s.mu.Unlock()
-		<-drainAck
-	} else {
-		// No conn currently installed (runtime sidecar dropped
-		// between prompts); nothing to drain. Skip the handshake.
-		s.mu.Unlock()
-	}
+	s.drainAck = drainAck
+	// Trip any in-flight Read so the reader observes drainAck quickly.
+	// The reader catches the timeout error, runs the drain, and clears
+	// the deadline before resuming.
+	_ = s.dataConn.SetReadDeadline(time.Now())
+	s.mu.Unlock()
+
+	<-drainAck
 
 	s.mu.Lock()
 	stdin, cmd, doneCh, seq := s.stdin, s.cmd, s.doneCh, s.activeSeq
@@ -342,32 +244,16 @@ func (s *promptState) interrupt() {
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGINT)
 }
 
-// copyFromDataUDS is the persistent reader for the data UDS. It parks
-// on s.cond when no conn is installed (between accepts) and resumes
-// when swapDataConn wires a new one. While a prompt is active
-// (stdin != nil), bytes pump straight into stdin. When endPrompt
+// copyFromDataUDS is the persistent reader for the data UDS. While a
+// prompt is active (stdin != nil), bytes pump straight into stdin.
+// Between prompts, the goroutine parks on s.cond. When endPrompt
 // requests a drain (sets s.drainAck and trips a read deadline), the
 // reader collects any remaining kernel-buffered bytes into stdin and
 // closes drainAck to release endPrompt.
-func (s *promptState) copyFromDataUDS(ctx context.Context) {
+func (s *promptState) copyFromDataUDS() {
 	buf := make([]byte, 4096)
 	for {
-		c := s.currentDataConn()
-		if c == nil {
-			// No conn installed yet; park until one arrives or ctx
-			// cancels.
-			s.mu.Lock()
-			for s.dataConn == nil && ctx.Err() == nil {
-				s.cond.Wait()
-			}
-			if ctx.Err() != nil {
-				s.mu.Unlock()
-				return
-			}
-			s.mu.Unlock()
-			continue
-		}
-		n, err := c.Read(buf)
+		n, err := s.dataConn.Read(buf)
 		if n > 0 {
 			s.writeToStdin(buf[:n])
 		}
@@ -376,26 +262,15 @@ func (s *promptState) copyFromDataUDS(ctx context.Context) {
 			if errors.As(err, &ne) && ne.Timeout() {
 				// Tripped by endPrompt's SetReadDeadline. Run the
 				// drain handshake, then resume blocking reads.
-				if s.runDrain(buf, c) {
+				if s.runDrain(buf) {
 					continue
 				}
 			}
-			// Conn-level error (peer closed, ctx cancelled, etc.):
+			// Real I/O error (peer closed, ctx cancelled, etc.):
 			// release any pending drain so endPrompt isn't stuck,
-			// then drop the conn so swapDataConn can install a new
-			// one. Also broadcast cond so anyone parked in
-			// writeToStdin wakes up if the conn went away mid-write.
+			// then exit the goroutine.
 			s.releaseDrain()
-			s.mu.Lock()
-			if s.dataConn == c {
-				s.dataConn = nil
-			}
-			s.mu.Unlock()
-			s.cond.Broadcast()
-			_ = c.Close()
-			if ctx.Err() != nil {
-				return
-			}
+			return
 		}
 	}
 }
@@ -422,25 +297,18 @@ func (s *promptState) writeToStdin(p []byte) {
 // kernel-buffered bytes into stdin (non-blocking via short deadline),
 // clears the deadline, then closes drainAck. Returns true iff a
 // drain was actually pending.
-//
-// drainAck is consumed (set to nil under mu) before close so a
-// subsequent conn-level error in the outer reader loop doesn't see a
-// stale drainAck and double-close it.
-func (s *promptState) runDrain(buf []byte, c net.Conn) bool {
+func (s *promptState) runDrain(buf []byte) bool {
 	s.mu.Lock()
 	drainAck := s.drainAck
 	stdin := s.stdin
-	if drainAck != nil {
-		s.drainAck = nil
-	}
 	s.mu.Unlock()
 	if drainAck == nil {
 		return false
 	}
 
 	for {
-		_ = c.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
-		n, err := c.Read(buf)
+		_ = s.dataConn.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
+		n, err := s.dataConn.Read(buf)
 		if n > 0 && stdin != nil {
 			if _, werr := stdin.Write(buf[:n]); werr != nil {
 				_ = werr
@@ -450,7 +318,7 @@ func (s *promptState) runDrain(buf []byte, c net.Conn) bool {
 			break
 		}
 	}
-	_ = c.SetReadDeadline(time.Time{})
+	_ = s.dataConn.SetReadDeadline(time.Time{})
 
 	close(drainAck)
 	return true
