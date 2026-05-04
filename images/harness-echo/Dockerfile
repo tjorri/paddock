@@ -21,12 +21,17 @@ ENV PADDOCK_HARNESS_ARGS_PER_PROMPT=""
 # Inline interactive harness CLI: reads NDJSON prompts from stdin (the
 # runtime forwards POST /prompts bodies verbatim — paddock-echo has no
 # PromptFormatter), and emits one assistant message + one
-# turn-terminating result frame per input line, in the
-# kind=message / kind=result shape that cmd/runtime-echo's convertLine
-# parses. The result frame is what triggers the runtime's
-# OnTurnComplete hook. The trap on SIGINT lets the supervisor's
-# per-prompt-process mode exercise its interrupt path without the
-# harness dying outright.
+# turn-terminating result frame per input line. The result frame is
+# what triggers the runtime's OnTurnComplete hook. The trap on SIGINT
+# lets the supervisor's per-prompt-process mode exercise its interrupt
+# path without the harness dying outright.
+#
+# Each line carries both a `type` field (consumed by paddockbroker's
+# StreamFrame decoder on /v1/runs/.../stream — empty Type makes the
+# TUI client's smoke assertion fail) and a `kind` field (consumed by
+# cmd/runtime-echo's convertLine, which maps kind → PaddockEvent.Type
+# for the transcript). Mirrors the dual-purpose role of claude-code's
+# `type` field and keeps the existing convertLine schema unchanged.
 RUN cat <<'EOF' > /usr/local/bin/echo-interactive && chmod +x /usr/local/bin/echo-interactive
 #!/bin/sh
 trap 'INTERRUPTED=1' INT
@@ -36,8 +41,8 @@ while IFS= read -r line; do
     continue
   fi
   esc=$(printf '%s' "$line" | sed 's/\\/\\\\/g; s/"/\\"/g')
-  printf '{"kind":"message","text":"echo: %s"}\n' "$esc"
-  printf '{"kind":"result","summary":"echoed %d bytes","filesChanged":0}\n' "${#line}"
+  printf '{"type":"message","kind":"message","text":"echo: %s"}\n' "$esc"
+  printf '{"type":"result","kind":"result","summary":"echoed %d bytes","filesChanged":0}\n' "${#line}"
 done
 EOF
 
