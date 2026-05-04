@@ -32,6 +32,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	paddockv1alpha1 "github.com/tjorri/paddock/api/v1alpha1"
@@ -116,6 +117,14 @@ type Server struct {
 	// chance to flush before the Server returns. Same 500ms cap as
 	// ctlReaderDone.
 	dataReaderDone chan struct{}
+
+	// closed signals that Close() has been called (either via the
+	// deferred runtime-side cleanup or because a UDS write failed and
+	// we want subsequent /prompts to short-circuit with 503 instead of
+	// retrying against half-open conns). Set with Store(true) under
+	// no lock; observed via Load() in handlers — atomic.Bool's memory
+	// model is sufficient for the read/write pattern here.
+	closed atomic.Bool
 }
 
 // ctlMessage is the wire shape for control frames emitted to the supervisor.
@@ -186,6 +195,7 @@ func (s *Server) Handler() http.Handler { return s.mux }
 
 // Close drops both UDS connections.
 func (s *Server) Close() error {
+	s.closed.Store(true)
 	var firstErr error
 	s.mu.Lock()
 	defer s.mu.Unlock()
