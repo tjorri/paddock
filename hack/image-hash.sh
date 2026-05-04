@@ -24,7 +24,7 @@ case "$image" in
   iptables-init)
     deps="cmd/iptables-init images/iptables-init go.mod go.sum" ;;
   echo)
-    deps="images/harness-echo" ;;
+    deps="images/harness-echo cmd/harness-supervisor go.mod go.sum" ;;
   harness-supervisor)
     deps="cmd/harness-supervisor images/harness-supervisor go.mod go.sum" ;;
   evil-echo)
@@ -34,9 +34,9 @@ case "$image" in
   runtime-echo)
     deps="api cmd/runtime-echo internal/runtime internal/broker/api internal/brokerclient internal/auditing images/runtime-echo go.mod go.sum" ;;
   claude-code)
-    deps="images/harness-claude-code" ;;
+    deps="images/harness-claude-code cmd/harness-supervisor go.mod go.sum" ;;
   claude-code-fake)
-    deps="images/harness-claude-code-fake" ;;
+    deps="images/harness-claude-code-fake cmd/harness-supervisor go.mod go.sum" ;;
   e2e-egress)
     deps="images/harness-e2e-egress" ;;
   *)

@@ -12,7 +12,25 @@
 # shape, though, so a major upstream bump may break parsing — pin
 # PADDOCK_CLAUDE_CODE_VERSION to a known-good version in production.
 
+# Build context is the repo root (not images/harness-claude-code) so
+# the supervisor binary can be built inline from cmd/harness-supervisor.
+# Inlining avoids a cross-image COPY --from that would require a
+# preexisting :dev tag in the local docker daemon — which is fine for
+# `make image-claude-code` but breaks buildx jobs in CI that have no
+# such tag.
+
 ARG ALPINE_VERSION=3.22
+
+FROM --platform=$BUILDPLATFORM golang:1.26 AS supervisor-builder
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /workspace
+COPY go.mod go.sum ./
+COPY cmd/harness-supervisor/ cmd/harness-supervisor/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -o /supervisor ./cmd/harness-supervisor
 
 FROM alpine:${ALPINE_VERSION}
 
@@ -41,11 +59,11 @@ ENV USE_BUILTIN_RIPGREP=0
 # the in-process auto-updater would just be wasted work.
 ENV DISABLE_AUTOUPDATER=1
 
-COPY run.sh /usr/local/bin/paddock-claude-code
+COPY images/harness-claude-code/run.sh /usr/local/bin/paddock-claude-code
 RUN chmod +x /usr/local/bin/paddock-claude-code
 
 # Supervisor binary for interactive mode (per spec §7.2).
-COPY --from=paddock-harness-supervisor:dev /supervisor /usr/local/bin/paddock-harness-supervisor
+COPY --from=supervisor-builder /supervisor /usr/local/bin/paddock-harness-supervisor
 
 # Harness invocation contract for the supervisor (per spec §4.3).
 ENV PADDOCK_HARNESS_BIN=/home/paddock/.local/bin/claude

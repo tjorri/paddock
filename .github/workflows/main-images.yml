@@ -45,20 +45,17 @@ jobs:
             context: .
             dockerfile: Dockerfile
           - name: paddock-echo
-            context: images/harness-echo
+            context: .
             dockerfile: images/harness-echo/Dockerfile
-          - name: paddock-adapter-echo
+          - name: paddock-runtime-echo
             context: .
-            dockerfile: images/adapter-echo/Dockerfile
-          - name: paddock-collector
-            context: .
-            dockerfile: images/collector/Dockerfile
+            dockerfile: images/runtime-echo/Dockerfile
           - name: paddock-claude-code
-            context: images/harness-claude-code
-            dockerfile: images/harness-claude-code/Dockerfile
-          - name: paddock-adapter-claude-code
             context: .
-            dockerfile: images/adapter-claude-code/Dockerfile
+            dockerfile: images/harness-claude-code/Dockerfile
+          - name: paddock-runtime-claude-code
+            context: .
+            dockerfile: images/runtime-claude-code/Dockerfile
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 

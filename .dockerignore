@@ -9,3 +9,11 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Re-include harness entrypoint scripts. The harness Dockerfiles
+# (images/harness-{echo,claude-code,claude-code-fake}/) build with the
+# repo root as their context so they can inline the harness-supervisor
+# Go build, so their run.sh has to be re-included here.
+!images/harness-echo/run.sh
+!images/harness-claude-code/run.sh
+!images/harness-claude-code-fake/run.sh
