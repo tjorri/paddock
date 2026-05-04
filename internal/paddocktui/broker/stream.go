@@ -31,8 +31,11 @@ import (
 const streamSubprotocol = "paddock.stream.v1"
 
 // maxReconnectAttempts is the number of reconnect attempts before Open
-// gives up and closes the frame channel.
-const maxReconnectAttempts = 5
+// gives up and closes the frame channel. 10 attempts at 1/2/4/8/8/8…
+// backoff give ~60s of total reconnect runway — enough to ride out a
+// run pod's full warm-up window plus a couple of SPDY tunnel drops on
+// top, which is the failure shape we see in CI.
+const maxReconnectAttempts = 10
 
 // StreamFrame is one event frame off the broker stream. Type and Data
 // are passed through verbatim from the adapter; the TUI projects them

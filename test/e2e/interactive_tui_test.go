@@ -98,7 +98,11 @@ spec:
     idleTimeout: 50s
     detachIdleTimeout: 50s
     detachTimeout: 50s
-    maxLifetime: 60s
+    # 180s gives CI's pod warm-up + first-frame round-trip enough
+    # headroom that the watchdog isn't on the critical path. The
+    # test ends the run via paddockbroker.End well before this
+    # fires; the cap exists only as a fail-safe.
+    maxLifetime: 180s
   defaults:
     timeout: 5m
   workspace:
