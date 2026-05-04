@@ -201,6 +201,84 @@ func TestPerPrompt_PromptCrashedEvent(t *testing.T) {
 	}
 }
 
+func TestPerPrompt_DataReconnectBetweenPrompts(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	cfg := Config{
+		Mode:       "per-prompt-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		HarnessBin: testFixtureHarness(t),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runPerPrompt(ctx, testLogger(t), cfg) }()
+
+	dataConn := dialEventually(t, dataPath)
+	ctlConn := dialEventually(t, ctlPath)
+	defer func() { _ = ctlConn.Close() }()
+
+	enc := json.NewEncoder(ctlConn)
+	scanner := bufio.NewScanner(dataConn)
+
+	// First prompt cycle.
+	if err := enc.Encode(map[string]any{"action": "begin-prompt", "seq": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if !scanner.Scan() { // ready
+		t.Fatalf("scan ready 1: %v", scanner.Err())
+	}
+	if _, err := dataConn.Write([]byte(`"first"` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.Encode(map[string]any{"action": "end-prompt"}); err != nil {
+		t.Fatal(err)
+	}
+	for scanner.Scan() {
+		if strings.Contains(scanner.Text(), `"first"`) {
+			break
+		}
+	}
+
+	// Drop data UDS between prompts.
+	_ = dataConn.Close()
+
+	// Second prompt over the reconnected conn.
+	dataConn2 := dialEventually(t, dataPath)
+	defer func() { _ = dataConn2.Close() }()
+	scanner2 := bufio.NewScanner(dataConn2)
+
+	if err := enc.Encode(map[string]any{"action": "begin-prompt", "seq": 2}); err != nil {
+		t.Fatal(err)
+	}
+	if !scanner2.Scan() { // ready of second CLI
+		t.Fatalf("scan ready 2: %v", scanner2.Err())
+	}
+	if _, err := dataConn2.Write([]byte(`"second"` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.Encode(map[string]any{"action": "end-prompt"}); err != nil {
+		t.Fatal(err)
+	}
+	for scanner2.Scan() {
+		if strings.Contains(scanner2.Text(), `"second"`) {
+			break
+		}
+	}
+
+	if err := enc.Encode(map[string]any{"action": "end"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("runPerPrompt: %v", err)
+	}
+}
+
 func TestPerPrompt_InterruptKillsCurrentProcess(t *testing.T) {
 	dir := shortTempDir(t)
 	dataPath := filepath.Join(dir, "data.sock")

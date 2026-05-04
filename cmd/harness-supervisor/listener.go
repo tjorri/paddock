@@ -41,10 +41,10 @@ func listenUnix(path string) (net.Listener, error) {
 // on the returned channel until ctx is cancelled or the listener is
 // closed. The channel is closed when the loop exits.
 //
-// Used in place of acceptOnce to give each mode resilience against
-// runtime-sidecar restarts: when the runtime-side conn drops, the
-// supervisor's pipe goroutines see EOF and the dispatch loop pulls
-// the next conn from the channel without tearing down the harness CLI.
+// Each mode is resilient against runtime-sidecar restarts: when the
+// runtime-side conn drops, the supervisor's pipe goroutines see EOF
+// and the dispatch loop pulls the next conn from the channel without
+// tearing down the harness CLI.
 //
 // Mid-prompt connection loss is acceptable degradation: the harness
 // CLI's stdin pipe survives across reconnects (the supervisor owns

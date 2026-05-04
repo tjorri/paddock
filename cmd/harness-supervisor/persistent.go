@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"os"
 	"os/exec"
 	"sync"
@@ -254,33 +253,6 @@ func runPersistent(ctx context.Context, logger *log.Logger, cfg Config) error {
 			}
 			return fmt.Errorf("harness crashed: %w", waitErr)
 		}
-	}
-}
-
-// acceptOnce calls ln.Accept once or returns an error if ctx is
-// cancelled first.
-func acceptOnce(ctx context.Context, ln net.Listener) (net.Conn, error) {
-	type result struct {
-		c   net.Conn
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		c, err := ln.Accept()
-		ch <- result{c, err}
-	}()
-	select {
-	case <-ctx.Done():
-		_ = ln.Close()
-		return nil, ctx.Err()
-	case r := <-ch:
-		if r.err != nil {
-			if errors.Is(r.err, net.ErrClosed) {
-				return nil, ctx.Err()
-			}
-			return nil, r.err
-		}
-		return r.c, nil
 	}
 }
 
