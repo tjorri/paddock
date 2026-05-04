@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -48,5 +51,51 @@ func TestValidateEnv_OKPersistent(t *testing.T) {
 	}
 	if got, want := cfg.HarnessArgs, []string{"-u"}; len(got) != 1 || got[0] != want[0] {
 		t.Errorf("HarnessArgs = %v, want %v", got, want)
+	}
+}
+
+func TestAcceptLoop_YieldsConnsAndStopsOnContextCancel(t *testing.T) {
+	dir := shortTempDir(t)
+	path := filepath.Join(dir, "loop.sock")
+	ln, err := listenUnix(path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	conns := acceptLoop(ctx, ln)
+
+	// First dial.
+	c1, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial 1: %v", err)
+	}
+	defer func() { _ = c1.Close() }()
+
+	got1 := <-conns
+	if got1 == nil {
+		t.Fatalf("expected first conn, got nil")
+	}
+	_ = got1.Close()
+
+	// Second dial — proves it's a loop, not a one-shot.
+	c2, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial 2: %v", err)
+	}
+	defer func() { _ = c2.Close() }()
+	got2 := <-conns
+	if got2 == nil {
+		t.Fatalf("expected second conn, got nil")
+	}
+	_ = got2.Close()
+
+	// Context cancel closes the channel.
+	cancel()
+	if _, ok := <-conns; ok {
+		t.Errorf("conns channel still open after cancel")
 	}
 }

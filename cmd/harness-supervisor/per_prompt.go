@@ -57,7 +57,7 @@ func runPerPrompt(ctx context.Context, logger *log.Logger, cfg Config) error {
 	for {
 		select {
 		case <-ctx.Done():
-			state.endActivePrompt()
+			state.endActivePrompt(ctlConn, logger)
 			return nil
 		case msg, ok := <-ctlMsgs:
 			if !ok {
@@ -65,15 +65,15 @@ func runPerPrompt(ctx context.Context, logger *log.Logger, cfg Config) error {
 			}
 			switch msg.Action {
 			case "begin-prompt":
-				if err := state.beginPrompt(cfg); err != nil {
+				if err := state.beginPrompt(cfg, msg.Seq); err != nil {
 					return fmt.Errorf("begin-prompt seq=%d: %w", msg.Seq, err)
 				}
 			case "end-prompt":
-				state.endPrompt()
+				state.endPrompt(ctlConn, logger)
 			case "interrupt":
 				state.interrupt()
 			case "end":
-				state.endActivePrompt()
+				state.endActivePrompt(ctlConn, logger)
 				return nil
 			default:
 				logger.Printf("unknown ctl action: %q", msg.Action)
@@ -92,11 +92,12 @@ func runPerPrompt(ctx context.Context, logger *log.Logger, cfg Config) error {
 type promptState struct {
 	dataConn net.Conn
 
-	mu     sync.Mutex
-	cond   *sync.Cond
-	stdin  io.WriteCloser
-	cmd    *exec.Cmd
-	doneCh chan struct{}
+	mu        sync.Mutex
+	cond      *sync.Cond
+	stdin     io.WriteCloser
+	cmd       *exec.Cmd
+	doneCh    chan struct{}
+	activeSeq int32 // seq of the currently-active prompt; 0 between prompts.
 
 	// drainAck, when non-nil, signals an end-prompt drain handshake
 	// is in flight: endPrompt has requested the data reader to drain
@@ -112,7 +113,7 @@ func newPromptState(dataConn net.Conn) *promptState {
 }
 
 // beginPrompt spawns a fresh CLI and wires its pipes.
-func (s *promptState) beginPrompt(cfg Config) error {
+func (s *promptState) beginPrompt(cfg Config, seq int32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cmd != nil {
@@ -141,6 +142,7 @@ func (s *promptState) beginPrompt(cfg Config) error {
 	s.cmd = cmd
 	s.stdin = stdin
 	s.doneCh = make(chan struct{})
+	s.activeSeq = seq
 
 	// stdout -> data UDS, exits when CLI closes stdout (typically on exit).
 	go func() {
@@ -163,7 +165,7 @@ func (s *promptState) beginPrompt(cfg Config) error {
 // this, a body write that landed in the data-UDS kernel buffer just
 // before end-prompt can be dropped if the reader goroutine is
 // scheduled after stdin is closed.
-func (s *promptState) endPrompt() {
+func (s *promptState) endPrompt(ctlConn net.Conn, logger *log.Logger) {
 	s.mu.Lock()
 	if s.cmd == nil {
 		s.mu.Unlock()
@@ -180,7 +182,7 @@ func (s *promptState) endPrompt() {
 	<-drainAck
 
 	s.mu.Lock()
-	stdin, cmd, doneCh := s.stdin, s.cmd, s.doneCh
+	stdin, cmd, doneCh, seq := s.stdin, s.cmd, s.doneCh, s.activeSeq
 	s.stdin = nil
 	s.drainAck = nil
 	s.mu.Unlock()
@@ -188,26 +190,46 @@ func (s *promptState) endPrompt() {
 	if stdin != nil {
 		_ = stdin.Close()
 	}
-	if doneCh != nil {
-		<-doneCh
-	}
+	var waitErr error
 	if cmd != nil {
-		_ = cmd.Wait()
+		// Bound the shutdown: a misbehaving CLI that ignores stdin EOF
+		// (and its own SIGTERM trap) would otherwise hang us forever.
+		// Wait first so the SIGTERM/SIGKILL escalation can run; that
+		// guarantees stdout closes and the doneCh goroutine exits.
+		waitErr = waitWithTimeout(cmd, shutdownGentle, shutdownHard)
+	}
+	if doneCh != nil {
+		// Safe to block here now: the process is dead, so its stdout
+		// pipe is closed and the io.Copy goroutine has returned (or is
+		// about to). Reading doneCh after Wait avoids losing trailing
+		// harness output that landed in the pipe before SIGKILL.
+		<-doneCh
 	}
 
 	s.mu.Lock()
 	s.cmd = nil
 	s.doneCh = nil
+	s.activeSeq = 0
 	s.mu.Unlock()
+
+	if waitErr != nil && ctlConn != nil {
+		if err := writeEvent(ctlConn, ctlMessage{
+			Event:    "prompt-crashed",
+			Seq:      seq,
+			ExitCode: exitCodeOf(waitErr),
+		}); err != nil {
+			logger.Printf("write prompt-crashed event: %v", err)
+		}
+	}
 }
 
 // endActivePrompt is endPrompt without distinguishing "no active prompt".
-func (s *promptState) endActivePrompt() {
+func (s *promptState) endActivePrompt(ctlConn net.Conn, logger *log.Logger) {
 	s.mu.Lock()
 	hasActive := s.cmd != nil
 	s.mu.Unlock()
 	if hasActive {
-		s.endPrompt()
+		s.endPrompt(ctlConn, logger)
 	}
 }
 
