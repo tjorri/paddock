@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -34,4 +35,51 @@ func listenUnix(path string) (net.Listener, error) {
 		return nil, fmt.Errorf("chmod %s 0666: %w", path, err)
 	}
 	return ln, nil
+}
+
+// acceptLoop accepts connections on ln in a goroutine and yields each
+// on the returned channel until ctx is cancelled or the listener is
+// closed. The channel is closed when the loop exits.
+//
+// Used in place of acceptOnce to give each mode resilience against
+// runtime-sidecar restarts: when the runtime-side conn drops, the
+// supervisor's pipe goroutines see EOF and the dispatch loop pulls
+// the next conn from the channel without tearing down the harness CLI.
+//
+// Mid-prompt connection loss is acceptable degradation: the harness
+// CLI's stdin pipe survives across reconnects (the supervisor owns
+// it), so the next prompt body lands in the same CLI's stdin. If a
+// prompt was half-written when the conn dropped, the harness CLI sees
+// a torn JSON frame and exits non-zero — surfaced via the #106
+// crashed event.
+func acceptLoop(ctx context.Context, ln net.Listener) <-chan net.Conn {
+	out := make(chan net.Conn)
+	// Close the listener when ctx is cancelled so a blocked Accept
+	// returns with net.ErrClosed and the goroutine below can exit.
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
+	go func() {
+		defer close(out)
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				if errors.Is(err, net.ErrClosed) || ctx.Err() != nil {
+					return
+				}
+				// Transient accept error — keep looping. (net.Listener's
+				// Accept returns net.ErrClosed when the listener has been
+				// closed; everything else here is unusual.)
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				_ = c.Close()
+				return
+			case out <- c:
+			}
+		}
+	}()
+	return out
 }
