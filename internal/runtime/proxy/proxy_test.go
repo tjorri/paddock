@@ -24,7 +24,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -244,10 +243,16 @@ func TestServer_InterruptWritesToCtl(t *testing.T) {
 	}
 }
 
-// TestServer_CloseWaitsForDataReaderDrain asserts Close blocks until
-// the runDataReader goroutine has exited (and therefore the deferred
-// events.jsonl close has fired). Without this, the last few lines
-// written to events.jsonl can be lost on graceful shutdown.
+// TestServer_CloseWaitsForDataReaderDrain asserts Close synchronizes
+// with the runDataReader goroutine's exit via dataReaderDone. We hold
+// runDataReader inside an OnEvent callback that blocks on a test
+// channel. While the goroutine is held there, srv.Close() must block
+// (waiting on dataReaderDone). After we release the OnEvent block,
+// runDataReader returns and Close unblocks.
+//
+// Without the dataReaderDone wait in Close, Close would return
+// immediately while runDataReader is still in flight — the bug this
+// test guards against.
 func TestServer_CloseWaitsForDataReaderDrain(t *testing.T) {
 	dir := shortTempDir(t)
 	dataPath := filepath.Join(dir, "data.sock")
@@ -264,8 +269,6 @@ func TestServer_CloseWaitsForDataReaderDrain(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ctlLn.Close() })
 
-	// Fake supervisor: hold both conns open. The data conn will be
-	// half-closed by the test once we want runDataReader to exit.
 	supDataConnCh := make(chan net.Conn, 1)
 	go func() {
 		c, _ := dataLn.Accept()
@@ -283,66 +286,78 @@ func TestServer_CloseWaitsForDataReaderDrain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	eventsPath := filepath.Join(dir, "events.jsonl")
-	// Legacy events-file path is gated on conv != nil; supply a
-	// minimal converter that emits one PaddockEvent per line so the
-	// data reader actually opens and writes events.jsonl, exercising
-	// the deferred-close synchronization Close() must wait on.
-	conv := func(line string) ([]paddockv1alpha1.PaddockEvent, error) {
-		return []paddockv1alpha1.PaddockEvent{{Type: "system", Summary: line}}, nil
-	}
+	// onEventEntered closes when runDataReader hits the OnEvent callback
+	// (so we know it's processed at least one line and is now blocked
+	// inside our user-controlled callback rather than back at Read).
+	// releaseOnEvent unblocks the callback when the test is ready.
+	onEventEntered := make(chan struct{})
+	releaseOnEvent := make(chan struct{})
+
 	srv, err := NewServer(ctx, Config{
 		Mode:       "persistent-process",
 		DataSocket: dataPath,
 		CtlSocket:  ctlPath,
-		EventsPath: eventsPath,
-		Converter:  conv,
 		Backoff:    BackoffConfig{Initial: 10 * time.Millisecond, Max: 100 * time.Millisecond, Tries: 5},
+		Converter: func(line string) ([]paddockv1alpha1.PaddockEvent, error) {
+			return []paddockv1alpha1.PaddockEvent{{Type: "Test", Summary: line}}, nil
+		},
+		OnEvent: func(e paddockv1alpha1.PaddockEvent) {
+			select {
+			case <-onEventEntered:
+				// already signaled; later events shouldn't re-block
+			default:
+				close(onEventEntered)
+				<-releaseOnEvent
+			}
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 
 	supData := <-supDataConnCh
-	// Send one line so runDataReader has something to flush before EOF.
-	if _, err := supData.Write([]byte(`{"type":"system","subtype":"init"}` + "\n")); err != nil {
+	if _, err := supData.Write([]byte(`{"type":"system"}` + "\n")); err != nil {
 		t.Fatalf("write supervisor side: %v", err)
 	}
-	// Closing the supervisor side gives runDataReader an EOF; it then
-	// drains its internal buffers and returns. Close() must wait for
-	// that exit before its own return. Yield briefly so the EOF
-	// propagates to runDataReader via the kernel before Close races
-	// it by closing the runtime end of the conn (without this nudge,
-	// Close's s.dataConn.Close() can abort a still-blocked Read on
-	// the runtime side, and the buffered line we just wrote is lost
-	// regardless of the dataReaderDone wait — that's a separate
-	// Close-ordering bug, not what this test is meant to assert).
-	_ = supData.Close()
-	time.Sleep(50 * time.Millisecond)
 
-	// Close should observe runDataReader's exit (via dataReaderDone)
-	// rather than racing it. Bound this with a generous test timeout.
+	// Wait for runDataReader to enter our OnEvent callback. After this
+	// point, the goroutine is blocked inside our callback; it has NOT
+	// yet returned, so dataReaderDone is still open.
+	select {
+	case <-onEventEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("OnEvent never fired — runDataReader did not deliver the line")
+	}
+
+	// Now call Close in a goroutine; it should block on dataReaderDone.
 	closeDone := make(chan struct{})
 	go func() {
 		_ = srv.Close()
 		close(closeDone)
 	}()
+
+	// Confirm Close is blocked. Use a short window — if Close returns
+	// quickly, dataReaderDone isn't synchronizing.
 	select {
 	case <-closeDone:
-	case <-time.After(3 * time.Second):
-		t.Fatalf("Close did not return within 3s — likely waiting on dataReaderDone with no goroutine to close it")
+		t.Fatalf("Close returned while runDataReader was still in flight — dataReaderDone wait missing or broken")
+	case <-time.After(100 * time.Millisecond):
+		// Good: Close is blocking.
 	}
 
-	// After Close returns, the events.jsonl file must contain the line
-	// runDataReader processed. If Close raced the deferred file close,
-	// this assertion exposes the lost-bytes bug.
-	contents, err := os.ReadFile(eventsPath)
-	if err != nil {
-		t.Fatalf("read events.jsonl: %v", err)
+	// Release the OnEvent block; runDataReader's loop continues, the
+	// next Read returns ErrClosed (Close already shut the data conn),
+	// and the goroutine exits — closing dataReaderDone.
+	close(releaseOnEvent)
+
+	select {
+	case <-closeDone:
+		// Good: Close unblocked after the goroutine returned.
+	case <-time.After(1 * time.Second):
+		t.Fatalf("Close did not return after OnEvent released — possible 500ms timeout but should be much faster")
 	}
-	if !strings.Contains(string(contents), `"system"`) {
-		t.Errorf("events.jsonl missing system frame; got %q", contents)
-	}
+
+	_ = supData.Close()
 }
 
 func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
