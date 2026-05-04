@@ -10,10 +10,22 @@ import (
 )
 
 // ctlMessage is the wire shape of one newline-delimited JSON ctl frame.
+// The frame is bidirectional:
+//
+//   - runtime → supervisor: Action is set ("begin-prompt", "end-prompt",
+//     "interrupt", "end"); Event is empty.
+//   - supervisor → runtime: Event is set ("crashed", "prompt-crashed");
+//     Action is empty. ExitCode carries the harness CLI's exit status.
+//
+// Receivers discriminate by which of Action/Event is non-empty. A frame
+// with both empty is malformed; a frame with both set is also malformed
+// (we never emit one).
 type ctlMessage struct {
-	Action string `json:"action"`
-	Reason string `json:"reason,omitempty"`
-	Seq    int32  `json:"seq,omitempty"`
+	Action   string `json:"action,omitempty"`
+	Event    string `json:"event,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	Seq      int32  `json:"seq,omitempty"`
+	ExitCode int    `json:"exit_code,omitempty"`
 }
 
 // readCtl decodes ctl frames from c and emits them on out until c is
@@ -36,4 +48,15 @@ func readCtl(ctx context.Context, c net.Conn, out chan<- ctlMessage) error {
 		case out <- msg:
 		}
 	}
+}
+
+// writeEvent serializes a supervisor → runtime ctl event onto c. Used
+// by both modes' crash paths so the runtime sidecar can distinguish
+// "supervisor reported crashed" from "supervisor exited cleanly via
+// /end" (which today look identical from the data-UDS side).
+//
+// Errors are returned to the caller, which logs and continues — there
+// is nothing useful to do if the runtime peer has already gone.
+func writeEvent(c net.Conn, msg ctlMessage) error {
+	return json.NewEncoder(c).Encode(msg)
 }
