@@ -314,8 +314,10 @@ func TestServer_CloseWaitsForDataReaderDrain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	supData := <-supDataConnCh
+	t.Cleanup(func() { _ = supData.Close() })
 	if _, err := supData.Write([]byte(`{"type":"system"}` + "\n")); err != nil {
 		t.Fatalf("write supervisor side: %v", err)
 	}
@@ -356,8 +358,6 @@ func TestServer_CloseWaitsForDataReaderDrain(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Fatalf("Close did not return after OnEvent released — possible 500ms timeout but should be much faster")
 	}
-
-	_ = supData.Close()
 }
 
 func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
