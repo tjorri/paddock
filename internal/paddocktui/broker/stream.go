@@ -90,6 +90,24 @@ func (c *Client) Open(ctx context.Context, ns, run string) (<-chan StreamFrame, 
 				if ctx.Err() != nil {
 					return
 				}
+				// If the local SPDY port-forward listener has died,
+				// every dial here will return ECONNREFUSED on the
+				// loopback address and the reconnect attempts will
+				// burn through the budget without ever recovering.
+				// Re-dial the upstream tunnel — it preserves the
+				// local port, so wsURL is still valid.
+				if c.pf != nil && isLocalPortRefused(err) {
+					rcCtx, rcCancel := context.WithTimeout(ctx, 10*time.Second)
+					if rcErr := c.pf.Reconnect(rcCtx); rcErr != nil {
+						// Log path is the goroutine's stderr via
+						// the upstream caller; surfacing the
+						// reconnect error here would require a
+						// channel; the next dial attempt will
+						// surface it instead.
+						_ = rcErr
+					}
+					rcCancel()
+				}
 				backoff(ctx, attempt)
 				attempt++
 				continue

@@ -199,14 +199,17 @@ spec:
 		// stdin (via the agent UDS). Submit a prompt explicitly so the
 		// echo harness has something to echo back. Eventually retries on
 		// ErrTurnInFlight (rare here) and on the warm-up 502s the broker
-		// returns until the runtime has bound :8431.
+		// returns until the runtime has bound :8431. The 120 s budget
+		// also covers paddockbroker's port-forward auto-reconnect — CI
+		// occasionally drops the SPDY tunnel mid-test and a single
+		// reconnect attempt costs up to ~10 s.
 		Eventually(func(g Gomega) {
 			_, sErr := bc.Submit(ctx, ns, tuiE2ERun, "hello-tui-e2e")
 			if paddockbroker.IsTurnInFlight(sErr) {
 				return
 			}
 			g.Expect(sErr).NotTo(HaveOccurred())
-		}, 90*time.Second, 1*time.Second).Should(Succeed())
+		}, 120*time.Second, 1*time.Second).Should(Succeed())
 
 		By("waiting for at least one StreamFrame within 2 minutes")
 		// echo-interactive emits an assistant + a result frame per
