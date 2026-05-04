@@ -110,6 +110,12 @@ type Server struct {
 	// blocks on it (with a short timeout) so the goroutine doesn't
 	// outlive the Server.
 	ctlReaderDone chan struct{}
+
+	// dataReaderDone closes when the runDataReader goroutine exits.
+	// Close() blocks on it so the deferred events.jsonl Close has a
+	// chance to flush before the Server returns. Same 500ms cap as
+	// ctlReaderDone.
+	dataReaderDone chan struct{}
 }
 
 // ctlMessage is the wire shape for control frames emitted to the supervisor.
@@ -148,12 +154,18 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 	s.mux.HandleFunc("/end", s.handleEnd)
 	s.mux.Handle("/stream", s.streamHandler())
 
+	s.dataReaderDone = make(chan struct{})
 	go func() {
+		defer close(s.dataReaderDone)
 		// runDataReader takes ownership of reading from dataConn for
 		// the lifetime of the Server. It returns on EOF (supervisor
 		// closed the connection) or any I/O error; the Server's
 		// callers observe failure via subsequent /prompts errors.
-		_ = runDataReader(dataConn, s.fanout, cfg.EventsPath, cfg.Converter, cfg.OnEvent, cfg.OnTurnComplete)
+		// The deferred close gives Close() a synchronization point so
+		// the events.jsonl tail isn't truncated on graceful shutdown.
+		if err := runDataReader(dataConn, s.fanout, cfg.EventsPath, cfg.Converter, cfg.OnEvent, cfg.OnTurnComplete); err != nil {
+			log.Printf("data reader: %v", err)
+		}
 	}()
 
 	s.ctlReaderDone = make(chan struct{})
@@ -188,6 +200,13 @@ func (s *Server) Close() error {
 			firstErr = err
 		}
 		s.ctlConn = nil
+	}
+	if s.dataReaderDone != nil {
+		select {
+		case <-s.dataReaderDone:
+		case <-time.After(500 * time.Millisecond):
+		}
+		s.dataReaderDone = nil
 	}
 	if s.ctlReaderDone != nil {
 		select {
