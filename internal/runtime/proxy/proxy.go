@@ -246,6 +246,10 @@ func (s *Server) handleEnd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if s.closed.Load() {
+		http.Error(w, "runtime proxy closed", http.StatusServiceUnavailable)
+		return
+	}
 	// Decode optional reason; tolerate empty body.
 	var body struct {
 		Reason string `json:"reason"`
@@ -267,6 +271,10 @@ func (s *Server) handleEnd(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.closed.Load() {
+		http.Error(w, "runtime proxy closed", http.StatusServiceUnavailable)
 		return
 	}
 	if err := s.writeCtl(ctlMessage{Action: "interrupt"}); err != nil {

@@ -360,6 +360,74 @@ func TestServer_CloseWaitsForDataReaderDrain(t *testing.T) {
 	}
 }
 
+// TestServer_HandlersReturn503AfterClose asserts /prompts, /interrupt,
+// and /end all short-circuit with 503 once Close has been called. This
+// is the runtime-side half of #112: subsequent calls don't retry
+// against half-open UDS conns and instead surface a definitive
+// "service unavailable" so the broker can mark the run failed.
+func TestServer_HandlersReturn503AfterClose(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	dataLn, err := net.Listen("unix", dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dataLn.Close() })
+	ctlLn, err := net.Listen("unix", ctlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ctlLn.Close() })
+
+	go func() {
+		c, _ := dataLn.Accept()
+		if c != nil {
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+	go func() {
+		c, _ := ctlLn.Accept()
+		if c != nil {
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv, err := NewServer(ctx, Config{
+		Mode:       "persistent-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		Backoff:    BackoffConfig{Initial: 10 * time.Millisecond, Max: 100 * time.Millisecond, Tries: 5},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	// Close the Server first; subsequent handler calls must 503.
+	_ = srv.Close()
+
+	cases := []struct {
+		path string
+		body string
+	}{
+		{"/prompts", `{"text":"hi","seq":1,"submitter":"alice"}`},
+		{"/interrupt", `{}`},
+		{"/end", `{}`},
+	}
+	for _, tc := range cases {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+		srv.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s after Close: status = %d, want 503", tc.path, w.Code)
+		}
+	}
+}
+
 func TestServer_DataUDSLinesFanOutToStream(t *testing.T) {
 	dir := shortTempDir(t)
 	dataPath := filepath.Join(dir, "data.sock")

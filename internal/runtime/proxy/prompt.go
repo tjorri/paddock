@@ -65,6 +65,10 @@ func (s *Server) handlePrompts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if s.closed.Load() {
+		http.Error(w, "runtime proxy closed", http.StatusServiceUnavailable)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, paddockv1alpha1.MaxInlinePromptBytes+1)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
