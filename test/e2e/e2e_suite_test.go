@@ -86,6 +86,14 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	By("building and loading paddock-manager")
 	buildAndLoad(managerImage, []string{"docker-build", fmt.Sprintf("IMG=%s", managerImage)})
 
+	By("building and loading harness-supervisor (prereq for harness images)")
+	// Both image-echo and image-claude-code-fake's Dockerfiles
+	// COPY --from=paddock-harness-supervisor:dev, so the supervisor
+	// target must build first. Order matters across the rest of the
+	// list: harness-supervisor → echo / claude-code-fake.
+	// runtime-{echo,claude-code} are independent.
+	buildAndLoad(harnessSupervisorImage, []string{"image-harness-supervisor"})
+
 	By("building and loading paddock-echo + runtime-echo")
 	buildAndLoad(echoImage, []string{"image-echo"})
 	buildAndLoad(runtimeEchoImage, []string{"image-runtime-echo"})
@@ -99,12 +107,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	By("building and loading paddock-evil-echo (hostile harness)")
 	buildAndLoad(paddockEvilEchoImage, []string{"image-evil-echo"})
 
-	By("building and loading harness-supervisor + runtime-claude-code + claude-code-fake (interactive)")
-	// image-claude-code-fake's Dockerfile COPY-s from
-	// paddock-harness-supervisor:dev, so the supervisor target must
-	// build first. Order matters: harness-supervisor → claude-code-fake.
-	// runtime-claude-code is independent.
-	buildAndLoad(harnessSupervisorImage, []string{"image-harness-supervisor"})
+	By("building and loading runtime-claude-code + claude-code-fake (interactive)")
 	buildAndLoad(runtimeClaudeCodeImage, []string{"image-runtime-claude-code"})
 	buildAndLoad(claudeCodeFakeImage, []string{"image-claude-code-fake"})
 

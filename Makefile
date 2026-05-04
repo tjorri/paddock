@@ -223,7 +223,7 @@ IPTABLES_INIT_IMG ?= paddock-iptables-init:dev
 E2E_EGRESS_IMG ?= paddock-e2e-egress:dev
 
 .PHONY: image-echo
-image-echo: ## Build the paddock-echo harness image, skipping if source hash matches.
+image-echo: image-harness-supervisor ## Build the paddock-echo harness image, skipping if source hash matches.
 	@hash=$$(hack/image-hash.sh echo); \
 	tag="paddock-echo:dev-$$hash"; \
 	if $(CONTAINER_TOOL) image inspect $$tag >/dev/null 2>&1; then \
