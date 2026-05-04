@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -40,16 +41,19 @@ func runPersistent(ctx context.Context, logger *log.Logger, cfg Config) error {
 	}
 	defer func() { _ = ctlLn.Close() }()
 
-	dataConn, err := acceptOnce(ctx, dataLn)
-	if err != nil {
-		return fmt.Errorf("accept data: %w", err)
+	dataConns := acceptLoop(ctx, dataLn)
+	ctlConns := acceptLoop(ctx, ctlLn)
+
+	// Wait for the first dial of each before spawning the harness CLI.
+	dataConn, ok := <-dataConns
+	if !ok {
+		return ctx.Err()
 	}
-	defer func() { _ = dataConn.Close() }()
-	ctlConn, err := acceptOnce(ctx, ctlLn)
-	if err != nil {
-		return fmt.Errorf("accept ctl: %w", err)
+	ctlConn, ok := <-ctlConns
+	if !ok {
+		_ = dataConn.Close()
+		return ctx.Err()
 	}
-	defer func() { _ = ctlConn.Close() }()
 
 	cmd := exec.Command(cfg.HarnessBin, cfg.HarnessArgs...)
 	cmd.Dir = cfg.WorkDir
@@ -58,37 +62,144 @@ func runPersistent(ctx context.Context, logger *log.Logger, cfg Config) error {
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		_ = dataConn.Close()
+		_ = ctlConn.Close()
 		return fmt.Errorf("stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		_ = dataConn.Close()
+		_ = ctlConn.Close()
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
+		_ = dataConn.Close()
+		_ = ctlConn.Close()
 		return fmt.Errorf("start harness: %w", err)
 	}
 
-	// data UDS -> harness stdin
+	// dataMu/ctlMu guard the active conns. Reconnect goroutines swap
+	// the field when the previous conn drops; the crash-event path
+	// reads ctlMu to find the live ctl conn for writeEvent.
+	var dataMu sync.Mutex
+	currentData := dataConn
+	var ctlMu sync.Mutex
+	currentCtl := ctlConn
+
+	// data UDS -> harness stdin: when the current conn drops, pull
+	// the next from dataConns and resume.
 	stdinDone := make(chan struct{})
 	go func() {
 		defer close(stdinDone)
-		_, _ = io.Copy(stdin, dataConn)
-		_ = stdin.Close()
+		defer func() { _ = stdin.Close() }()
+		for {
+			dataMu.Lock()
+			c := currentData
+			dataMu.Unlock()
+			_, _ = io.Copy(stdin, c)
+			// Current conn drained or errored. Try for a new one.
+			select {
+			case nc, ok := <-dataConns:
+				if !ok {
+					return
+				}
+				dataMu.Lock()
+				_ = currentData.Close()
+				currentData = nc
+				dataMu.Unlock()
+				logger.Printf("data UDS reconnected")
+			case <-ctx.Done():
+				return
+			}
+		}
 	}()
 
-	// harness stdout -> data UDS
+	// harness stdout -> data UDS. We can't use io.Copy here because
+	// when the data conn is swapped mid-stream, io.Copy would have
+	// already consumed bytes from stdout into its internal buffer and
+	// then failed to write them to the now-closed old conn. Instead,
+	// read into our own buffer and retry the Write against the
+	// (re-fetched) current conn until it succeeds.
 	stdoutDone := make(chan struct{})
 	go func() {
 		defer close(stdoutDone)
-		_, _ = io.Copy(dataConn, stdout)
+		buf := make([]byte, 32*1024)
+		for {
+			n, rerr := stdout.Read(buf)
+			if n > 0 {
+				// Write the chunk, retrying against whichever conn is
+				// current. A retry happens when the data UDS has been
+				// dropped but a new one hasn't been installed yet.
+				for written := 0; written < n; {
+					dataMu.Lock()
+					c := currentData
+					dataMu.Unlock()
+					w, werr := c.Write(buf[written:n])
+					if w > 0 {
+						written += w
+					}
+					if werr == nil {
+						continue
+					}
+					// Write failed (likely closed conn). Wait briefly for
+					// the stdin goroutine to install the next conn, then
+					// re-fetch and retry the unwritten remainder.
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(50 * time.Millisecond):
+					}
+				}
+			}
+			if rerr != nil {
+				// stdout closed → CLI exited; we're done.
+				return
+			}
+		}
 	}()
 
-	// ctl UDS -> ctlMessages channel
+	// ctl UDS -> ctlMsgs across multiple consecutive conns. The
+	// current ctl conn is held in currentCtl so the crash-event path
+	// can find it for writeEvent.
 	ctlMsgs := make(chan ctlMessage, 4)
-	ctlErrCh := make(chan error, 1)
-	go func() { ctlErrCh <- readCtl(ctx, ctlConn, ctlMsgs) }()
+	go func() {
+		defer close(ctlMsgs)
+		c := ctlConn
+		for {
+			if err := readCtlInto(ctx, c, ctlMsgs); err != nil {
+				logger.Printf("ctl read: %v", err)
+			}
+			select {
+			case nc, ok := <-ctlConns:
+				if !ok {
+					return
+				}
+				_ = c.Close()
+				ctlMu.Lock()
+				currentCtl = nc
+				ctlMu.Unlock()
+				c = nc
+				logger.Printf("ctl UDS reconnected")
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
-	// ctl dispatch loop runs until end-of-run or fatal CLI exit.
+	// Make sure the conns get closed on any return path.
+	defer func() {
+		dataMu.Lock()
+		if currentData != nil {
+			_ = currentData.Close()
+		}
+		dataMu.Unlock()
+		ctlMu.Lock()
+		if currentCtl != nil {
+			_ = currentCtl.Close()
+		}
+		ctlMu.Unlock()
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -96,7 +207,6 @@ func runPersistent(ctx context.Context, logger *log.Logger, cfg Config) error {
 			return waitWithTimeout(cmd, shutdownGentle, shutdownHard)
 		case msg, ok := <-ctlMsgs:
 			if !ok {
-				// ctl reader exited; treat as end.
 				_ = stdin.Close()
 				return waitWithTimeout(cmd, shutdownGentle, shutdownHard)
 			}
@@ -133,7 +243,10 @@ func runPersistent(ctx context.Context, logger *log.Logger, cfg Config) error {
 			if waitErr == nil {
 				return nil
 			}
-			if err := writeEvent(ctlConn, ctlMessage{
+			ctlMu.Lock()
+			cc := currentCtl
+			ctlMu.Unlock()
+			if err := writeEvent(cc, ctlMessage{
 				Event:    "crashed",
 				ExitCode: exitCodeOf(waitErr),
 			}); err != nil {

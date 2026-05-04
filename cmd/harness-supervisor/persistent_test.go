@@ -320,6 +320,74 @@ func TestPersistent_CrashedEventOnNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestPersistent_DataReconnect(t *testing.T) {
+	dir := shortTempDir(t)
+	dataPath := filepath.Join(dir, "data.sock")
+	ctlPath := filepath.Join(dir, "ctl.sock")
+
+	cfg := Config{
+		Mode:       "persistent-process",
+		DataSocket: dataPath,
+		CtlSocket:  ctlPath,
+		HarnessBin: testFixtureHarness(t),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runPersistent(ctx, testLogger(t), cfg) }()
+
+	dataConn := dialEventually(t, dataPath)
+	ctlConn := dialEventually(t, ctlPath)
+	defer func() { _ = ctlConn.Close() }()
+
+	scanner := bufio.NewScanner(dataConn)
+	if !scanner.Scan() { // ready
+		t.Fatalf("scan ready: %v", scanner.Err())
+	}
+
+	// Send first prompt, observe response.
+	if _, err := dataConn.Write([]byte(`"first"` + "\n")); err != nil {
+		t.Fatalf("write 1: %v", err)
+	}
+	if !scanner.Scan() {
+		t.Fatalf("scan first response: %v", scanner.Err())
+	}
+	if !strings.Contains(scanner.Text(), `"first"`) {
+		t.Errorf("first response = %q", scanner.Text())
+	}
+
+	// Drop the data UDS (simulating runtime-sidecar restart).
+	_ = dataConn.Close()
+
+	// Reconnect.
+	dataConn2 := dialEventually(t, dataPath)
+	defer func() { _ = dataConn2.Close() }()
+	scanner2 := bufio.NewScanner(dataConn2)
+
+	// Second prompt over the reconnected conn must reach the SAME
+	// harness CLI process (so it remembers state from the first
+	// prompt — for fake_harness this is just "the process is still
+	// alive and echoes new input").
+	if _, err := dataConn2.Write([]byte(`"second"` + "\n")); err != nil {
+		t.Fatalf("write 2: %v", err)
+	}
+	if !scanner2.Scan() {
+		t.Fatalf("scan second response: %v", scanner2.Err())
+	}
+	if !strings.Contains(scanner2.Text(), `"second"`) {
+		t.Errorf("second response = %q", scanner2.Text())
+	}
+
+	if err := json.NewEncoder(ctlConn).Encode(map[string]string{"action": "end"}); err != nil {
+		t.Fatalf("write end: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("runPersistent: %v", err)
+	}
+}
+
 // shortTempDir returns a per-test temp directory rooted at /tmp.
 // Unix domain sockets are capped at ~104 bytes on macOS (sun_path),
 // and Go's t.TempDir() under /var/folders/... blows that limit for

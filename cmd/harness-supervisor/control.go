@@ -50,6 +50,27 @@ func readCtl(ctx context.Context, c net.Conn, out chan<- ctlMessage) error {
 	}
 }
 
+// readCtlInto decodes ctl frames from c onto out until c errors or
+// ctx is cancelled. Unlike readCtl, it does NOT close out — the caller
+// owns out across multiple consecutive conns.
+func readCtlInto(ctx context.Context, c net.Conn, out chan<- ctlMessage) error {
+	dec := json.NewDecoder(bufio.NewReader(c))
+	for {
+		var msg ctlMessage
+		if err := dec.Decode(&msg); err != nil {
+			if errors.Is(err, io.EOF) || ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case out <- msg:
+		}
+	}
+}
+
 // writeEvent serializes a supervisor → runtime ctl event onto c. Used
 // by both modes' crash paths so the runtime sidecar can distinguish
 // "supervisor reported crashed" from "supervisor exited cleanly via
