@@ -102,6 +102,22 @@ The "adapter must not see workspace" invariant remained load-bearing
 in this design. Retained for revision history; superseded by the
 2026-05-03 unified-runtime change above.
 
+**Update 2026-05-02 (interactive runtime, F19 redesign).** The
+adapter sidecar's role narrowed: it is a thin policy/auth/framing
+layer between the broker and `paddock-harness-supervisor`, performing
+no harness-specific computation. The harness CLI now runs in the
+agent container under the supervisor; the adapter does not spawn it,
+does not see the workspace, and never holds harness-runtime state.
+The "adapter must not see workspace" invariant
+(`internal/controller/pod_spec_test.go`) remains load-bearing: the
+broker-facing surface stays workspace-blind. The supervisor and the
+harness CLI share the agent container's trust domain, and the UDS
+pair on `/paddock` (`agent-data.sock`, `agent-ctl.sock`) is
+filesystem-permissioned IPC inside that single domain — no new
+cross-trust-boundary surface is introduced. T-1's capability list is
+unchanged; the supervisor is, from the agent's perspective, just
+another process in the same container.
+
 ### T-2: Untrusted prompt / workspace content
 
 **Capabilities.** The agent itself is trusted but operates on attacker-controlled content (prompt text, seeded repository contents). Can influence what the agent does next (prompt injection, malicious README, malicious devcontainer config).

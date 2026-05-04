@@ -293,6 +293,22 @@ script, and an empirical compatibility table covering Claude Code,
 OpenAI Codex CLI, Gemini CLI, Aider, and others — is documented in
 [`../contributing/harness-authoring.md`](../contributing/harness-authoring.md).
 
+## Harness image requirements
+
+Interactive runs depend on the harness image meeting a small contract:
+the image must ship `paddock-harness-supervisor` at
+`/usr/local/bin/`, declare `PADDOCK_HARNESS_BIN` (and the per-mode
+`PADDOCK_HARNESS_ARGS_*` env vars) in its Dockerfile, and branch
+`run.sh` to `exec paddock-harness-supervisor` when
+`PADDOCK_INTERACTIVE_MODE` is set. The supervisor handles the UDS
+plumbing back to the adapter sidecar; the harness CLI only needs to
+read prompts from stdin and write responses to stdout.
+
+The full contract — env vars, mode-selection guidance, validation
+script, and an empirical compatibility table covering Claude Code,
+OpenAI Codex CLI, Gemini CLI, Aider, and others — is documented in
+[`../contributing/harness-authoring.md`](../contributing/harness-authoring.md).
+
 ## Lifecycle and timeouts
 
 The controller's watchdog evaluates four conditions on every reconcile.

@@ -71,6 +71,17 @@ the runtime never spawns the harness CLI itself. See
 [`../contributing/harness-authoring.md`](../contributing/harness-authoring.md)
 for both the runtime-image and agent-image author contracts.
 
+For Interactive runs, the agent container additionally runs
+`paddock-harness-supervisor` — a harness-agnostic binary that listens
+on two Unix-domain sockets (`agent-data.sock` and `agent-ctl.sock`) on
+the shared `/paddock` volume and bridges them to the harness CLI's
+stdio. The adapter sidecar dials those sockets and acts as a
+stream-json frame proxy between the broker and the supervisor; the
+adapter does not mount the workspace PVC and never spawns the harness
+CLI itself. See
+[`../contributing/harness-authoring.md`](../contributing/harness-authoring.md)
+for the harness-image author contract.
+
 ## Admission
 
 Admission intersects the template's `spec.requires` with the union of
