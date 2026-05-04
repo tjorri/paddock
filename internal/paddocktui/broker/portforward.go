@@ -77,7 +77,7 @@ type forwarder struct {
 // Reconnects can re-bind to the same address. This keeps Client.do's
 // cached baseURL valid across tunnel drops.
 func startForwarder(ctx context.Context, kc kubernetes.Interface, cfg *rest.Config, ns, svc string, targetPort int) (*forwarder, error) {
-	local, err := pickLocalPort()
+	local, err := pickLocalPort(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -94,8 +94,11 @@ func startForwarder(ctx context.Context, kc kubernetes.Interface, cfg *rest.Conf
 // releases it, returning the port number. The brief race between
 // release and the SPDY tunnel binding the same port is the same one
 // the e2e framework's kubectl-port-forward wrapper has lived with.
-func pickLocalPort() (int, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+// Uses (*net.ListenConfig).Listen so cancellation propagates and the
+// noctx linter stays happy.
+func pickLocalPort(ctx context.Context) (int, error) {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, fmt.Errorf("broker: pick local port: %w", err)
 	}
